@@ -1,0 +1,10 @@
+singleton Theme 1.0 Theme.qml
+ActionButton 1.0 ActionButton.qml
+AdvancedSettings 1.0 AdvancedSettings.qml
+ChoiceRow 1.0 ChoiceRow.qml
+Field 1.0 Field.qml
+MappingCard 1.0 MappingCard.qml
+MappingSection 1.0 MappingSection.qml
+Section 1.0 Section.qml
+SwitchRow 1.0 SwitchRow.qml
+VirtualKeyboard 1.0 VirtualKeyboard.qml

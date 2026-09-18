@@ -1,0 +1,38 @@
+name = "hole"
+main = "worker.js"
+compatibility_date = "2026-08-22"
+workers_dev = true
+preview_urls = false
+
+[observability]
+enabled = true
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+[[routes]]
+pattern = "hole.yourdomain.com"
+zone_name = "yourdomain.com"
+custom_domain = true
+previews_enabled = false
+enabled = true
+
+[placement]
+mode = "smart"
+
+# Global, device-scoped short-lived TURN credential cache and rate limiter.
+[[durable_objects.bindings]]
+name = "TURN_BROKER"
+class_name = "TurnBroker"
+
+[[migrations]]
+tag = "v2-ice"
+new_sqlite_classes = ["TurnBroker"]
+
+# Configure secrets through wrangler secret put (never commit their values):
+# PASSWORD, TURN_KEY_ID, TURN_KEY_API_TOKEN

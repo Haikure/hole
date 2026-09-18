@@ -1,0 +1,13 @@
+{
+    recheck = false,
+    mtimes = {
+        ["xmake.lua"] = 1789477181
+    },
+    options = {
+        toolchain = "zigcc",
+        mode = "release",
+        qt = "/home/haiku/program/qt",
+        cross = "aarch64-linux-gnu.2.27",
+        arch = "arm64-v8a"
+    }
+}

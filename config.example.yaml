@@ -1,0 +1,37 @@
+# CLI: hole -config config.yaml
+server_url: wss://HOST/ws   # 信令服务器地址，必填
+room: ROOM  # 房间号，同一房间内设备允许进行连接
+password: SIGNAL_PASSWORD   # 信令服务器密码
+token: ROOM_TOKEN   # 房间密码
+device_name: desktop    # 当前设备名，房间内唯一，用于区分设备
+session_timeout: 10m    # 断开会话重建超时时间
+transport:
+  preferred: ice    # 接受 ice 或 ipv6，由ice分配或仅IPv6
+  allow_legacy: true    # 对端仅支持 IPv6 协议时允许兼容
+ice:
+  stun_urls:
+    - stun:stun.cloudflare.com:3478
+  direct_probe_timeout: 3s  # 优先直连时间
+  gather_timeout: 6s    # 候选收集期限
+  connectivity_timeout: 10s    # 连通性检查期限
+  retry_max_delay: 15s    # 最大重试间隔
+  interface_allowlist: []
+# turn 整段可以省略；以下就是缺省值。Worker 签发短期凭据，CLI 不必填账号。
+# 路径：直连 → UDP → TCP（80 → 3478）→ TLS（443 → 5349）。
+turn:
+  mode: worker
+  ttl: 6h
+  urls: []
+  username: ""
+  credential: ""
+
+# 提供方id必须唯一，使用id匹配服务
+provide:
+  - id: ssh
+    service: tcp://127.0.0.1:22    # 提供方需要明确写出协议（tcp/udp）
+  - id: voice
+    service: udp://1270.0.0.1:8888
+consume:
+  - id: remote_web
+    expose: 127.0.0.1:8080
+  
