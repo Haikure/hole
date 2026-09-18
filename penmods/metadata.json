@@ -1,0 +1,9 @@
+{
+  "id": "hole_plugin",
+  "name": "Hole",
+  "version": "0.1.0",
+  "author": "hole",
+  "description": "通过房间连接设备并映射 TCP / UDP 服务",
+  "main_qml": "Main.qml",
+  "main_so": "libhole_plugin.so"
+}

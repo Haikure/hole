@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.type.watch" android:required="true" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.faketouch" android:required="false" />
+    <application>
+        <meta-data android:name="com.google.android.wearable.standalone" android:value="true" />
+        <activity android:name="dev.hole.app.MainActivity" android:theme="@style/Theme.Hole.Wear" />
+    </application>
+</manifest>

@@ -1,0 +1,19 @@
+config.yaml
+/hole*
+.wrangler/
+.dev.vars
+android/.gradle/
+android/.kotlin/
+android/**/build/
+android/local.properties
+android/corebridge/libs/
+*.keystore
+*.jks
+__pycache__/
+
+# Project-local build caches, release artifacts and local signing settings.
+/.cache/
+/dist/
+/penmods/build/
+/signing.env
+/signing.*.env
