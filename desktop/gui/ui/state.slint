@@ -1,0 +1,63 @@
+// 应用状态与命令边界：页面只读这里的属性、只调用这里的回调；
+// Rust 控制器在事件循环线程写属性并接管回调。
+import { Status, MappingRow, PeerRow, EventRow, ConnectionForm, TransportForm, Prefs, MappingForm, ImportPreview, HostInfo, KV } from "models.slint";
+
+export global App {
+    // ---- 运行状态（由快照/事件驱动）----
+    in-out property <Status> status;
+    in-out property <[MappingRow]> provides;
+    in-out property <[MappingRow]> consumes;
+    in-out property <[MappingRow]> runtime-mappings;
+    in-out property <[PeerRow]> peers;
+    in-out property <[EventRow]> events;
+    in-out property <[KV]> network-info;
+    in-out property <[KV]> version-info;
+    in-out property <HostInfo> host;
+
+    // ---- 已保存配置（表单初值）----
+    in-out property <bool> config-loaded: false;
+    in-out property <ConnectionForm> connection;
+    in-out property <TransportForm> transport;
+    in-out property <Prefs> prefs;
+    in-out property <string> default-stun-url: "stun:stun.cloudflare.com:3478";
+
+    // ---- 交换与诊断 ----
+    in-out property <ImportPreview> import-preview;
+    in-out property <string> report-text;
+    in-out property <string> exchange-message;
+    in-out property <bool> exchange-busy: false;
+
+    // ---- 全局提示 ----
+    in-out property <string> toast;
+    in-out property <string> toast-kind: "info";
+    in-out property <bool> undo-available: false;
+
+    // ---- 运行控制 ----
+    callback toggle-run(bool);
+    callback reconnect();
+    callback refresh();
+    callback quit-and-stop();
+
+    // ---- 配置 ----
+    // 返回空字符串表示已接受；否则为可直接展示的错误。
+    callback save-connection(form: ConnectionForm) -> string;
+    callback save-transport(form: TransportForm) -> string;
+    callback save-prefs(prefs: Prefs);
+    callback save-mapping(form: MappingForm) -> string;
+    callback delete-mapping(role: string, entry-id: string);
+    callback toggle-mapping(role: string, entry-id: string, enabled: bool);
+    callback undo-delete();
+    callback move-mapping(role: string, entry-id: string, delta: int);
+
+    // ---- 交换 ----
+    callback import-file(path: string, kind: string);
+    callback import-text(text: string, kind: string);
+    callback confirm-import();
+    callback cancel-import();
+    callback export-file(path: string, kind: string, include-secrets: bool);
+
+    // ---- 诊断 ----
+    callback build-report();
+    callback copy-text(text: string);
+    callback dismiss-toast();
+}

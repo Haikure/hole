@@ -21,7 +21,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 9
-        versionName = "0.3.5"
+        versionName = "0.3.6"
         // 很多 Wear OS 设备是 64 位 SoC + 32 位 Android 用户空间。
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
     }

@@ -1,0 +1,161 @@
+// Slint 侧视图模型。所有计数与 64 位数值都是 Rust 预格式化的字符串，
+// 避免 UI 层做有精度风险的数值运算；kind 字段取 good / warn / bad / info / idle。
+
+export struct KV {
+    key: string,
+    value: string,
+}
+
+export struct Status {
+    bridge-ready: bool,
+    bridge-error: string,
+    run-requested: bool,
+    configured: bool,
+    busy: bool,
+    engine-state: string,
+    engine-label: string,
+    signal-state: string,
+    signal-label: string,
+    title: string,
+    subtitle: string,
+    kind: string,
+    error: string,
+    command-error: string,
+    config-error: string,
+    uptime: string,
+    tcp-sessions: string,
+    udp-sessions: string,
+    provide-enabled: string,
+    consume-enabled: string,
+    runtime-provide: string,
+    runtime-consume: string,
+    active-channels: string,
+    total-channels: string,
+    peers-active: string,
+    peers-total: string,
+    network-label: string,
+    network-state: string,
+    policy-label: string,
+    configuration-text: string,
+    recovery-text: string,
+    session-timeout: string,
+    core-version: string,
+    generation: string,
+    transport-generation: string,
+    protocol-versions: string,
+    traffic-up: string,
+    traffic-down: string,
+    traffic-rate-up: string,
+    traffic-rate-down: string,
+    sparkline-up: string,
+    sparkline-down: string,
+    events-dropped: string,
+}
+
+export struct MappingRow {
+    entry-id: string,
+    id: string,
+    role: string,
+    role-label: string,
+    protocol: string,
+    endpoint: string,
+    enabled: bool,
+    state: string,
+    state-label: string,
+    kind: string,
+    sessions: string,
+    peer: string,
+    details: [KV],
+}
+
+export struct PeerRow {
+    peer-id: string,
+    transport-id: string,
+    state-label: string,
+    path-label: string,
+    kind: string,
+    channels: string,
+    rtt: string,
+    traffic: string,
+    note: string,
+    error: string,
+    details: [KV],
+}
+
+export struct EventRow {
+    time: string,
+    kind: string,
+    level: string,
+    summary: string,
+    detail: string,
+}
+
+export struct ConnectionForm {
+    server-url: string,
+    password: string,
+    room: string,
+    token: string,
+    device-name: string,
+    session-timeout: string,
+    candidate-interfaces: string,
+    candidate-addresses: string,
+}
+
+export struct TransportForm {
+    mode: string,
+    stun-urls: string,
+    relay-mode: string,
+    turn-urls: string,
+    turn-username: string,
+    turn-credential: string,
+    direct-probe-timeout: string,
+    gather-timeout: string,
+    connectivity-timeout: string,
+    retry-max-delay: string,
+    turn-ttl: string,
+    interface-allowlist: string,
+    relay-only: bool,
+    allow-insecure-signal: bool,
+}
+
+export struct Prefs {
+    theme-mode: string,
+    accent: string,
+    close-to-tray: bool,
+    resume-at-login: bool,
+    start-hidden: bool,
+    reduce-motion: bool,
+}
+
+export struct MappingForm {
+    entry-id: string,
+    role: string,
+    id: string,
+    protocol: string,
+    host: string,
+    port: string,
+    enabled: bool,
+}
+
+export struct ImportPreview {
+    visible: bool,
+    kind-label: string,
+    provide-count: string,
+    consume-count: string,
+    enabled-count: string,
+    server-url: string,
+    room: string,
+    secrets-note: string,
+    resume-note: string,
+}
+
+export struct HostInfo {
+    os-label: string,
+    gui-version: string,
+    bridge-path: string,
+    config-path: string,
+    tray-available: bool,
+    tray-note: string,
+    autostart-note: string,
+    last-resume-error: string,
+}

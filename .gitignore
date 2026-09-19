@@ -16,5 +16,7 @@ __pycache__/
 /.cache/
 /dist/
 /penmods/build/
+/penmods/.xmake/
+/desktop/gui/target/
 /signing.env
 /signing.*.env

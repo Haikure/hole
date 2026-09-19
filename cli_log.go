@@ -359,6 +359,7 @@ func peerLogState(p core.PeerTransportSnapshot) core.PeerTransportSnapshot {
 	p.LocalCandidates, p.RemoteCandidates = 0, 0
 	p.BytesSent, p.BytesReceived, p.DroppedDatagrams, p.RTTMS, p.LeaseUntil = 0, 0, 0, 0, 0
 	p.TURNExpiresAt, p.RelayState = 0, ""
+	p.DatagramLimit, p.CandidatePairs = 0, nil
 	return p
 }
 

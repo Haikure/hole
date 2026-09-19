@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/pion/transport/v4"
@@ -19,6 +20,16 @@ type iceNetwork struct {
 	ctx      context.Context
 	platform Platform
 	facts    ICEPlatform
+	mu       sync.Mutex
+	sockets  []net.PacketConn
+}
+
+// rawSocket is the part of *net.UDPConn that quic-go tunes: the DF bit through
+// the raw handle, and the kernel buffers.
+type rawSocket interface {
+	SyscallConn() (syscall.RawConn, error)
+	SetReadBuffer(int) error
+	SetWriteBuffer(int) error
 }
 
 func newICENetwork(ctx context.Context, p Platform) (*iceNetwork, error) {
@@ -29,7 +40,44 @@ func newICENetwork(ctx context.Context, p Platform) (*iceNetwork, error) {
 	return &iceNetwork{ctx: ctx, platform: p, facts: facts}, nil
 }
 func (n *iceNetwork) ListenPacket(network, address string) (net.PacketConn, error) {
-	return n.platform.ListenPacket(n.ctx, network, address)
+	pc, err := n.platform.ListenPacket(n.ctx, network, address)
+	if err == nil {
+		n.track(pc)
+	}
+	return pc, err
+}
+
+// track remembers every UDP socket this agent opens so a direct-phase QUIC
+// connection can tune all of them.
+func (n *iceNetwork) track(pc net.PacketConn) {
+	if _, ok := pc.(rawSocket); !ok {
+		return
+	}
+	n.mu.Lock()
+	n.sockets = append(n.sockets, pc)
+	n.mu.Unlock()
+}
+
+// socketsFor returns every tracked socket with the one bound to base last:
+// quic-go judges DF support and buffer sizes by the last socket its control
+// callback touched, and that should be the one carrying the data.
+func (n *iceNetwork) socketsFor(base string) []rawSocket {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var selected rawSocket
+	result := make([]rawSocket, 0, len(n.sockets))
+	for _, pc := range n.sockets {
+		socket := pc.(rawSocket)
+		if selected == nil && base != "" && pc.LocalAddr() != nil && pc.LocalAddr().String() == base {
+			selected = socket
+			continue
+		}
+		result = append(result, socket)
+	}
+	if selected != nil {
+		result = append(result, selected)
+	}
+	return result
 }
 func (n *iceNetwork) ListenUDP(network string, local *net.UDPAddr) (transport.UDPConn, error) {
 	if local == nil {
@@ -199,7 +247,11 @@ func (l iceListenConfig) Listen(context.Context, string, string) (net.Listener, 
 	return nil, transport.ErrNotSupported
 }
 func (l iceListenConfig) ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error) {
-	return l.n.platform.ListenPacket(ctx, network, address)
+	pc, err := l.n.platform.ListenPacket(ctx, network, address)
+	if err == nil {
+		l.n.track(pc)
+	}
+	return pc, err
 }
 
 // Pion Conn is datagram-oriented despite its net.Conn-shaped methods. Keep a
@@ -247,3 +299,57 @@ func (p *icePacketConn) Close() error {
 	p.closeOnce.Do(func() { p.closed.Store(true); p.closeErr = p.conn.Close() })
 	return p.closeErr
 }
+
+// quic-go starts path MTU discovery only after setting the DF bit through the
+// PacketConn's SyscallConn, and sizes kernel buffers through SetReadBuffer /
+// SetWriteBuffer. The ICE Conn has no socket of its own, so a direct-phase
+// transport hands quic-go every UDP socket the agent opened; the selected
+// host or server-reflexive candidate lives on one of them.
+type mtuProbingConn struct {
+	*icePacketConn
+	sockets []rawSocket
+}
+
+func (c *mtuProbingConn) SyscallConn() (syscall.RawConn, error) {
+	raw := make(fanOutRawConn, 0, len(c.sockets))
+	for _, socket := range c.sockets {
+		if r, err := socket.SyscallConn(); err == nil {
+			raw = append(raw, r)
+		}
+	}
+	if len(raw) == 0 {
+		return nil, errors.New("ICE transport has no UDP socket")
+	}
+	return raw, nil
+}
+func (c *mtuProbingConn) SetReadBuffer(bytes int) error {
+	var err error
+	for _, socket := range c.sockets {
+		if e := socket.SetReadBuffer(bytes); e != nil {
+			err = e
+		}
+	}
+	return err
+}
+func (c *mtuProbingConn) SetWriteBuffer(bytes int) error {
+	var err error
+	for _, socket := range c.sockets {
+		if e := socket.SetWriteBuffer(bytes); e != nil {
+			err = e
+		}
+	}
+	return err
+}
+
+type fanOutRawConn []syscall.RawConn
+
+// Control applies f to each socket. A socket that was already closed does
+// not stop the others from being configured.
+func (s fanOutRawConn) Control(f func(fd uintptr)) error {
+	for _, raw := range s {
+		_ = raw.Control(f)
+	}
+	return nil
+}
+func (fanOutRawConn) Read(func(fd uintptr) bool) error  { return errors.ErrUnsupported }
+func (fanOutRawConn) Write(func(fd uintptr) bool) error { return errors.ErrUnsupported }

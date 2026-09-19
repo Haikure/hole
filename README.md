@@ -5,7 +5,7 @@ CLI、Android 手机与 Wear OS 共用 Go 核心；Cloudflare Worker 负责信�
 
 ## 功能
 
-- ICE IPv4 / IPv6 直连，按需尝试 TURN UDP、TCP、TLS 中继。
+- ICE IPv4 / IPv6 直连，按需尝试 TURN UDP、TCP、TLS 中继；中继阶段优先选择单跳（非对称）候选对。
 - 一对设备共享 QUIC 传输，支持双向、多条 TCP / UDP 映射。
 - 网络切换和传输重连时保留仍存活的应用会话，TCP 支持确认、重放和半关闭。
 - 原生 Android 客户端提供 Material 3 / Miuix 主题、前台服务、配置导入导出和连接报告。

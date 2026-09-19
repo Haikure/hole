@@ -16,10 +16,15 @@ const (
 	udpHeaderSize       = 32
 	maxUDPDatagram      = 65535
 	udpInitialFrameSize = 1100 // fits QUIC's initial 1200-byte path MTU
-	udpFragmentTimeout  = 5 * time.Second
-	udpAssemblyBudget   = 4 * 1024 * 1024
-	maxUDPAssemblies    = 128
-	maxUDPSessions      = 256
+	// quic-go reports its datagram limit as the discovered packet size; the
+	// short header, AEAD tag and DATAGRAM frame header still have to fit in
+	// that packet, or the frame is dropped when no ACK travels with it.
+	udpFrameMargin     = 48
+	udpFrameProbe      = 5 * time.Second
+	udpFragmentTimeout = 5 * time.Second
+	udpAssemblyBudget  = 4 * 1024 * 1024
+	maxUDPAssemblies   = 128
+	maxUDPSessions     = 256
 )
 
 var udpWireMagic = [4]byte{'H', 'U', 'D', 2}
@@ -33,6 +38,7 @@ type udpLink struct {
 	mu         sync.Mutex
 	packetID   uint64
 	frameSize  int
+	probeAt    time.Time
 }
 
 func newUDPLink(ctx context.Context, conn sessionConnection, control *quic.Stream, generation uint64) *udpLink {
@@ -54,7 +60,42 @@ func (l *udpLink) send(id sessionID, data []byte) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.packetID++
+	if len(data) > l.frameSize-udpHeaderSize {
+		growUDPFrame(l.conn, &l.frameSize, &l.probeAt, time.Now())
+	}
 	return sendUDPFragments(l.ctx, l.conn.SendDatagram, id, l.packetID, &l.frameSize, data)
+}
+
+type datagramSender interface{ SendDatagram([]byte) error }
+
+// A DatagramTooLargeError only ever lowers the frame size, while path MTU
+// discovery raises the connection's limit over time. Before fragmenting,
+// re-read the limit now and then so fragments grow with the path.
+func growUDPFrame(conn datagramSender, frameSize *int, probeAt *time.Time, now time.Time) {
+	if now.Before(*probeAt) {
+		return
+	}
+	*probeAt = now.Add(udpFrameProbe)
+	if limit := datagramLimit(conn) - udpFrameMargin; limit > *frameSize {
+		*frameSize = limit
+	}
+}
+
+// datagramLimit reports the largest DATAGRAM payload the connection accepts
+// right now. quic-go exposes the value only through the rejection of an
+// oversized datagram; one larger than any DATAGRAM frame can carry is refused
+// before anything is queued, so nothing reaches the wire.
+var datagramProbe = make([]byte, maxUDPDatagram+1)
+
+func datagramLimit(conn datagramSender) int {
+	if conn == nil {
+		return 0
+	}
+	var tooLarge *quic.DatagramTooLargeError
+	if err := conn.SendDatagram(datagramProbe); errors.As(err, &tooLarge) && tooLarge.MaxDatagramPayloadSize > 0 {
+		return int(tooLarge.MaxDatagramPayloadSize)
+	}
+	return 0
 }
 
 func sendUDPFragments(ctx context.Context, send func([]byte) error, id sessionID, packetID uint64, frameSize *int, data []byte) error {

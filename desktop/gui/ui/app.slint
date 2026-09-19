@@ -1,0 +1,217 @@
+// 应用窗口：侧边栏 + 内容区的桌面布局，页面路由与全局对话框。
+import { Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { App } from "state.slint";
+import { Icon, Icons } from "icons.slint";
+import { Btn, Toggle, Badge, Dialog, Toast, Label, Hint } from "controls.slint";
+import { OverviewPage } from "pages/overview.slint";
+import { MappingsPage } from "pages/mappings.slint";
+import { DevicesPage } from "pages/devices.slint";
+import { DiagnosticsPage } from "pages/diagnostics.slint";
+import { SettingsPage } from "pages/settings.slint";
+import { TransportPage } from "pages/transport.slint";
+import { ExchangePage } from "pages/exchange.slint";
+import { KV, Status, MappingRow, PeerRow, EventRow, ConnectionForm, TransportForm, Prefs, MappingForm, ImportPreview, HostInfo } from "models.slint";
+
+export { App, Theme, KV, Status, MappingRow, PeerRow, EventRow, ConnectionForm, TransportForm, Prefs, MappingForm, ImportPreview, HostInfo }
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <bool> active;
+    callback clicked();
+    height: 36px;
+    border-radius: Theme.radius;
+    background: active ? Theme.accent-soft : ta.has-hover ? Theme.surface-hover : transparent;
+    animate background { duration: Theme.motion-fast; }
+    accessible-role: tab;
+    accessible-label: label;
+    accessible-checked: active;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        Icon { name: root.icon; tint: root.active ? Theme.accent : Theme.text-muted; size: 18px; y: (parent.height - self.height) / 2; }
+        Text {
+            text: root.label;
+            font-size: Theme.font-md;
+            font-weight: root.active ? 600 : 500;
+            color: root.active ? Theme.accent : Theme.text;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+export component MainWindow inherits Window {
+    title: "hole";
+    preferred-width: 1180px;
+    preferred-height: 780px;
+    min-width: 860px;
+    min-height: 560px;
+    background: Theme.bg;
+    default-font-size: Theme.font-body;
+    icon: @image-url("assets/app-icon.png");
+
+    in-out property <string> page: "overview";
+    property <string> pending-page;
+    property <bool> ask-discard: false;
+    property <bool> ask-quit: false;
+
+    // 由 Rust 调用：system | light | dark
+    public function apply-theme-mode(mode: string) {
+        Palette.color-scheme = mode == "dark" ? ColorScheme.dark : mode == "light" ? ColorScheme.light : ColorScheme.unknown;
+    }
+    public function apply-accent(name: string) {
+        if (name == "teal") { Theme.accent-light = #0F766E; Theme.accent-dark = #5EEAD4; }
+        else if (name == "violet") { Theme.accent-light = #7C3AED; Theme.accent-dark = #C4B5FD; }
+        else if (name == "amber") { Theme.accent-light = #B45309; Theme.accent-dark = #FCD34D; }
+        else if (name == "rose") { Theme.accent-light = #BE123C; Theme.accent-dark = #FDA4AF; }
+        else { Theme.accent-light = #2563EB; Theme.accent-dark = #60A5FA; }
+    }
+    public function request-quit() { ask-quit = true; }
+    /// 窗口关闭按钮：运行中弹确认，否则直接退出。由 Rust 的 on_close_requested 调用。
+    public function handle-close() {
+        if (App.status.run-requested) { ask-quit = true; } else { App.quit-and-stop(); }
+    }
+    callback hide-to-tray();
+
+    function page-dirty() -> bool {
+        if (page == "settings") { return settings.dirty; }
+        if (page == "transport") { return transport.dirty; }
+        return false;
+    }
+    function navigate(target: string) {
+        if (target == page) { return; }
+        if (page-dirty()) { pending-page = target; ask-discard = true; return; }
+        page = target;
+    }
+    function discard-and-go() {
+        if (page == "settings") { settings.reset(); }
+        if (page == "transport") { transport.reset(); }
+        ask-discard = false;
+        page = pending-page;
+    }
+
+    HorizontalLayout {
+        // ---- 侧边栏 ----
+        Rectangle {
+            width: Theme.sidebar-width;
+            background: Theme.sidebar;
+            Rectangle { x: parent.width - 1px; width: 1px; background: Theme.border; }
+            VerticalLayout {
+                padding: Theme.space-3;
+                spacing: 4px;
+                HorizontalLayout {
+                    padding: Theme.space-2;
+                    padding-bottom: Theme.space-4;
+                    spacing: 10px;
+                    Rectangle {
+                        width: 30px; height: 30px; border-radius: 9px;
+                        background: Theme.accent;
+                        y: (parent.height - self.height) / 2;
+                        Icon { name: Icons.mappings; tint: Theme.on-accent; size: 18px; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: "hole"; font-size: Theme.font-lg; font-weight: 700; color: Theme.text; }
+                        Text { text: "桌面客户端"; font-size: Theme.font-xs; color: Theme.text-muted; }
+                    }
+                }
+                NavItem { label: "总览"; icon: Icons.overview; active: root.page == "overview"; clicked => { root.navigate("overview"); } }
+                NavItem { label: "映射"; icon: Icons.mappings; active: root.page == "mappings"; clicked => { root.navigate("mappings"); } }
+                NavItem { label: "设备"; icon: Icons.devices; active: root.page == "devices"; clicked => { root.navigate("devices"); } }
+                NavItem { label: "诊断"; icon: Icons.diagnostics; active: root.page == "diagnostics"; clicked => { root.navigate("diagnostics"); } }
+                Rectangle { height: Theme.space-3; }
+                Text { text: "配置"; font-size: Theme.font-xs; font-weight: 600; color: Theme.text-faint; x: 12px; }
+                NavItem { label: "设置"; icon: Icons.settings; active: root.page == "settings"; clicked => { root.navigate("settings"); } }
+                NavItem { label: "连接方式"; icon: Icons.transport; active: root.page == "transport"; clicked => { root.navigate("transport"); } }
+                NavItem { label: "导入导出"; icon: Icons.exchange; active: root.page == "exchange"; clicked => { root.navigate("exchange"); } }
+                Rectangle { vertical-stretch: 1; }
+                // 侧栏底部：运行状态与总开关
+                Rectangle {
+                    border-radius: Theme.radius-lg;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding: Theme.space-3;
+                        spacing: Theme.space-2;
+                        HorizontalLayout {
+                            alignment: space-between;
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text { text: App.status.run-requested ? "转发运行中" : "转发已停止"; font-size: Theme.font-body; font-weight: 600; color: Theme.text; }
+                                Text { text: App.status.engine-label; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
+                            }
+                            Toggle {
+                                y: (parent.height - self.height) / 2;
+                                checked: App.status.run-requested;
+                                enabled: App.config-loaded && App.status.bridge-ready && !App.status.busy;
+                                label: "运行转发";
+                                toggled(v) => { App.toggle-run(v); }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.kind-color(App.status.kind); y: (parent.height - self.height) / 2; }
+                            Text { text: App.status.title; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
+                        }
+                    }
+                }
+                Btn { kind: "ghost"; text: "退出并停止"; icon: Icons.power; clicked => { root.request-quit(); } }
+            }
+        }
+
+        // ---- 内容区 ----
+        Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+            if root.page == "overview" : OverviewPage { open-page(p) => { root.navigate(p); } }
+            if root.page == "mappings" : MappingsPage { }
+            if root.page == "devices" : DevicesPage { }
+            if root.page == "diagnostics" : DiagnosticsPage { }
+            settings := SettingsPage { visible: root.page == "settings"; open-page(p) => { root.navigate(p); } }
+            transport := TransportPage { visible: root.page == "transport"; open-page(p) => { root.navigate(p); } }
+            if root.page == "exchange" : ExchangePage { open-page(p) => { root.navigate(p); } }
+        }
+    }
+
+    // ---- 全局提示 ----
+    if App.toast != "" : Toast {
+        x: parent.width - self.width - Theme.space-5;
+        y: parent.height - self.height - Theme.space-5;
+        text: App.toast;
+        kind: App.toast-kind;
+        undo: App.undo-available;
+        undo-clicked => { App.undo-delete(); }
+        closed => { App.dismiss-toast(); }
+    }
+
+    if root.ask-discard : Dialog {
+        title: "放弃未保存的修改？";
+        dialog-width: 380px;
+        dismissed => { root.ask-discard = false; }
+        Label { text: "当前页面有尚未保存的更改。离开后这些修改会丢失。"; muted: true; }
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            alignment: end;
+            Btn { text: "继续编辑"; clicked => { root.ask-discard = false; } }
+            Btn { text: "放弃"; kind: "danger"; clicked => { root.discard-and-go(); } }
+        }
+    }
+
+    if root.ask-quit : Dialog {
+        title: "退出 hole？";
+        dialog-width: 420px;
+        dismissed => { root.ask-quit = false; }
+        Label { text: App.status.run-requested ? (App.host.tray-available ? "退出会停止所有映射并关闭核心；已建立的应用连接将中断。也可以只隐藏窗口，让转发在后台继续。" : "退出会停止所有映射并关闭核心；已建立的应用连接将中断。") : "转发已停止，退出将关闭核心宿主。"; muted: true; }
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            alignment: end;
+            Btn { text: "取消"; clicked => { root.ask-quit = false; } }
+            if App.status.run-requested && App.host.tray-available : Btn { text: "仅隐藏窗口"; clicked => { root.ask-quit = false; root.hide-to-tray(); } }
+            Btn { text: "退出并停止"; kind: "danger"; clicked => { root.ask-quit = false; App.quit-and-stop(); } }
+        }
+    }
+}

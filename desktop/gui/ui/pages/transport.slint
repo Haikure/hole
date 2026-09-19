@@ -1,0 +1,94 @@
+import { Theme } from "../theme.slint";
+import { App } from "../state.slint";
+import { Icon, Icons } from "../icons.slint";
+import { Card, SectionTitle, Label, Hint, Btn, Field, Choice, SwitchRow, Notice, PageHeader, PageBody, Disclosure, Divider } from "../controls.slint";
+import { TransportForm } from "../models.slint";
+
+export component TransportPage inherits VerticalLayout {
+    spacing: 0px;
+    callback open-page(string);
+    in-out property <TransportForm> form: App.transport;
+    property <string> save-error;
+    property <bool> advanced: false;
+    out property <bool> dirty:
+        form.mode != App.transport.mode || form.stun-urls != App.transport.stun-urls || form.relay-mode != App.transport.relay-mode ||
+        form.turn-urls != App.transport.turn-urls || form.turn-username != App.transport.turn-username || form.turn-credential != App.transport.turn-credential ||
+        form.direct-probe-timeout != App.transport.direct-probe-timeout || form.gather-timeout != App.transport.gather-timeout ||
+        form.connectivity-timeout != App.transport.connectivity-timeout || form.retry-max-delay != App.transport.retry-max-delay ||
+        form.turn-ttl != App.transport.turn-ttl || form.interface-allowlist != App.transport.interface-allowlist ||
+        form.relay-only != App.transport.relay-only || form.allow-insecure-signal != App.transport.allow-insecure-signal;
+
+    public function reset() { form = App.transport; save-error = ""; }
+
+    PageHeader {
+        title: "连接方式";
+        subtitle: "ICE 直连探测、STUN 与 TURN 中继策略；与 Android 使用相同的配置语义。";
+        Btn { text: "返回设置"; clicked => { root.open-page("settings"); } }
+    }
+    PageBody {
+        Card {
+            SectionTitle { text: "连接策略"; }
+            Choice { values: ["auto", "ice", "legacy"]; labels: ["自动", "仅 ICE", "仅 IPv6"]; selected: root.form.mode; changed(v) => { root.form.mode = v; } }
+            Label { text: root.form.mode == "legacy" ? "转发路径仅使用公网 IPv6 直连，双方都需要可用的公网 IPv6。不使用 ICE、STUN 或 TURN 中继。"
+                : root.form.mode == "ice" ? "使用 ICE 探测 IPv4 / IPv6 直连，直连不通时按设置尝试 TURN 中继。协调服务和对端都需要支持 ICE。"
+                : "优先使用 ICE；对端仅支持 IPv6 传输协议时，使用 IPv6 直连。双方都支持 ICE 时，按直连与中继策略连接，不因探测失败而切换协议。"; }
+            if root.form.mode == "legacy" : Hint { text: "下方 ICE 的探测和中继设置仅在“自动”或“仅 ICE”模式下生效。"; }
+        }
+        HorizontalLayout {
+            spacing: Theme.space-4;
+            Card {
+                horizontal-stretch: 1;
+                SectionTitle { text: "直连探测"; }
+                Field { label: "STUN 服务器"; multiline: true; lines: 3; text: root.form.stun-urls; hint: "每行一条；留空时仅尝试本地地址。默认 " + App.default-stun-url; edited(t) => { root.form.stun-urls = t; } }
+                Hint { text: "STUN 只帮助发现公网映射，不转发业务数据。服务之间仍通过加密的 QUIC 通道传输。"; }
+                HorizontalLayout { alignment: start; Btn { kind: "ghost"; compact: true; text: "恢复 Cloudflare 默认值"; clicked => { root.form.stun-urls = App.default-stun-url; } } }
+            }
+            Card {
+                horizontal-stretch: 1;
+                SectionTitle { text: "直连失败后的中继"; }
+                Choice { values: ["worker", "manual", "off"]; labels: ["协调服务", "手动", "关闭"]; selected: root.form.relay-mode; changed(v) => { root.form.relay-mode = v; } }
+                Label { text: root.form.relay-mode == "manual" ? "填写自己的 TURN 服务器。凭据在本机加密保存。"
+                    : root.form.relay-mode == "off" ? "不申请本机 TURN 中继，继续尝试直连。"
+                    : "由 Worker 签发 Cloudflare 短期凭据；主密钥留在部署侧。未配置中继时，直连仍可使用。"; }
+                if root.form.relay-mode == "manual" : VerticalLayout {
+                    spacing: Theme.space-3;
+                    Field { label: "TURN 地址"; multiline: true; lines: 3; text: root.form.turn-urls; hint: "每行一条：UDP 用 turn:HOST:3478?transport=udp；TCP 用 turn:HOST:80?transport=tcp；TLS 用 turns:HOST:443?transport=tcp"; edited(t) => { root.form.turn-urls = t; } }
+                    Field { label: "TURN 用户名"; text: root.form.turn-username; edited(t) => { root.form.turn-username = t; } }
+                    Field { label: "TURN 凭据"; text: root.form.turn-credential; secret: true; edited(t) => { root.form.turn-credential = t; } }
+                }
+                Hint { text: "尝试顺序：直连 → UDP 中继 → TCP 中继（80 → 3478）→ TLS 中继（443 → 5349）。TLS 加密本机到 TURN 的接入；业务数据始终由 QUIC 端到端加密。"; }
+            }
+        }
+        Card {
+            Disclosure {
+                open-label: "高级连接参数";
+                close-label: "收起高级参数";
+                expanded <=> root.advanced;
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+                    Field { label: "优先直连时间"; text: root.form.direct-probe-timeout; hint: "默认 3s；可用 ms、s、m"; edited(t) => { root.form.direct-probe-timeout = t; } }
+                    Field { label: "候选收集期限"; text: root.form.gather-timeout; hint: "默认 6s"; edited(t) => { root.form.gather-timeout = t; } }
+                    Field { label: "连通性检查期限"; text: root.form.connectivity-timeout; hint: "默认 10s"; edited(t) => { root.form.connectivity-timeout = t; } }
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+                    Field { label: "最大重试间隔"; text: root.form.retry-max-delay; hint: "默认 15s"; edited(t) => { root.form.retry-max-delay = t; } }
+                    Field { label: "请求的中继凭据有效期"; text: root.form.turn-ttl; hint: "默认 6h；Worker 最终决定签发期限"; edited(t) => { root.form.turn-ttl = t; } }
+                    Field { label: "允许使用的网卡"; text: root.form.interface-allowlist; hint: "逗号分隔；留空表示自动选择"; edited(t) => { root.form.interface-allowlist = t; } }
+                }
+                SwitchRow { title: "仅用中继测试"; summary: "用于核对 TURN；日常使用保持关闭以优先直连。"; checked: root.form.relay-only; toggled(v) => { root.form.relay-only = v; } }
+                SwitchRow { title: "允许本地 ws 测试"; summary: "默认使用 wss://，此项只为显式配置的本地测试入口启用。"; checked: root.form.allow-insecure-signal; toggled(v) => { root.form.allow-insecure-signal = v; } }
+            }
+        }
+        if root.save-error != "" : Notice { text: root.save-error; kind: "bad"; }
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            alignment: end;
+            Btn { text: "还原"; enabled: root.dirty; clicked => { root.reset(); } }
+            Btn { text: "保存连接方式"; kind: "primary"; enabled: App.config-loaded && root.dirty; clicked => {
+                root.save-error = App.save-transport(root.form);
+                if (root.save-error == "") { root.form = App.transport; }
+            } }
+        }
+    }
+}

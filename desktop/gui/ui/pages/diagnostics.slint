@@ -1,0 +1,118 @@
+import { Theme } from "../theme.slint";
+import { App } from "../state.slint";
+import { Icon, Icons } from "../icons.slint";
+import { Card, SectionTitle, Label, Hint, Btn, Badge, KVRow, KVList, Disclosure, EmptyState, Notice, PageHeader, PageBody, Field, Choice } from "../controls.slint";
+import { EventRow } from "../models.slint";
+
+component EventItem inherits Rectangle {
+    in property <EventRow> item;
+    height: layout.preferred-height;
+    border-radius: Theme.radius;
+    background: ta.has-hover ? Theme.surface-hover : transparent;
+    ta := TouchArea { }
+    layout := HorizontalLayout {
+        padding: Theme.space-2;
+        spacing: Theme.space-3;
+        Text { text: item.time; font-size: Theme.font-xs; color: Theme.text-faint; width: 64px; vertical-alignment: top; }
+        Rectangle { width: 6px; height: 6px; border-radius: 3px; background: Theme.kind-color(item.level); y: 6px; }
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                alignment: start;
+                Text { text: item.summary; font-size: Theme.font-body; color: Theme.text; wrap: word-wrap; }
+                Text { text: item.kind; font-size: Theme.font-xs; color: Theme.text-faint; vertical-alignment: center; }
+            }
+            if item.detail != "" : Text { text: item.detail; font-size: Theme.font-xs; color: Theme.text-muted; wrap: word-wrap; }
+        }
+    }
+}
+
+export component DiagnosticsPage inherits VerticalLayout {
+    spacing: 0px;
+    property <string> filter: "all";
+
+    PageHeader {
+        title: "诊断";
+        subtitle: "运行时间、恢复记录、结构化事件与脱敏连接报告。";
+        Btn { text: "刷新快照"; icon: Icons.refresh; clicked => { App.refresh(); } }
+        Btn { text: "重新连接"; icon: Icons.transport; enabled: App.status.run-requested; clicked => { App.reconnect(); } }
+    }
+    PageBody {
+        Card {
+            tinted: true;
+            Text { text: App.status.title; font-size: Theme.font-xl; font-weight: 600; color: Theme.text; }
+            Label { text: App.status.run-requested ? "当前 " + App.status.active-channels + " / " + App.status.total-channels + " 个服务通道可用。关闭窗口不会停止转发。" : "设置与服务条目仍保留，开启总览页开关后重新连接。"; }
+            HorizontalLayout {
+                spacing: Theme.space-5;
+                VerticalLayout { spacing: 2px; Text { text: "运行时间"; font-size: Theme.font-xs; color: Theme.text-faint; } Text { text: App.status.uptime; font-size: Theme.font-md; font-weight: 600; color: Theme.text; } }
+                VerticalLayout { spacing: 2px; Text { text: "业务连接"; font-size: Theme.font-xs; color: Theme.text-faint; } Text { text: "TCP " + App.status.tcp-sessions + " · UDP " + App.status.udp-sessions; font-size: Theme.font-md; font-weight: 600; color: Theme.text; } }
+                VerticalLayout { spacing: 2px; Text { text: "恢复记录"; font-size: Theme.font-xs; color: Theme.text-faint; } Text { text: App.status.recovery-text; font-size: Theme.font-md; font-weight: 600; color: Theme.text; } }
+            }
+            if App.status.error != "" : Notice { text: App.status.error; kind: "bad"; }
+            if App.status.command-error != "" : Notice { text: App.status.command-error; kind: "warn"; }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.space-4;
+            Card {
+                horizontal-stretch: 1;
+                SectionTitle { text: "设置与恢复"; }
+                Text { text: App.status.configuration-text; font-size: Theme.font-md; color: Theme.accent; }
+                KVRow { key: "协调服务"; value: App.status.signal-label; }
+                KVRow { key: "恢复记录"; value: App.status.recovery-text; }
+                KVRow { key: "断线保留"; value: App.status.session-timeout; }
+                Hint { text: "底层路径断开时，已有 TCP 会话在保留期限内尝试续接；正常转发不会到点停止。UDP 期间可能丢包。删除服务、变更身份或停止运行会结束对应会话。"; }
+            }
+            Card {
+                horizontal-stretch: 1;
+                SectionTitle { text: "本机网络与后台"; }
+                KVRow { key: "网络"; value: App.status.network-label; }
+                KVRow { key: "网络状态"; value: App.status.network-state; }
+                KVRow { key: "连接策略"; value: App.status.policy-label; }
+                Disclosure {
+                    open-label: "网络地址与探测服务";
+                    close-label: "收起网络信息";
+                    KVList { items: App.network-info; }
+                }
+                Hint { text: App.host.tray-note; }
+            }
+        }
+
+        Card {
+            HorizontalLayout {
+                alignment: space-between;
+                SectionTitle { text: "事件"; subtitle: "按核心代次与序号过滤的结构化记录；丢弃事件 " + App.status.events-dropped + " 条。"; }
+                Choice {
+                    width: 260px;
+                    values: ["all", "engine", "mapping", "peer", "error"];
+                    labels: ["全部", "引擎", "映射", "对端", "错误"];
+                    selected <=> root.filter;
+                }
+            }
+            if App.events.length == 0 : Hint { text: "尚无事件。"; }
+            for ev in App.events : EventItem {
+                item: ev;
+                visible: root.filter == "all" || ev.kind == root.filter || (root.filter == "error" && ev.level == "bad");
+                height: self.visible ? self.preferred-height : 0px;
+            }
+        }
+
+        Card {
+            SectionTitle { text: "连接报告"; subtitle: "导出当前状态、线路和服务统计，便于排查问题。不包含密码、TURN 凭据或 Go 原始日志。"; }
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                alignment: start;
+                Btn { text: "生成报告"; kind: "primary"; clicked => { App.build-report(); } }
+                Btn { text: "复制"; icon: Icons.copy; enabled: App.report-text != ""; clicked => { App.copy-text(App.report-text); } }
+            }
+            if App.report-text != "" : Field { multiline: true; lines: 12; text: App.report-text; }
+            Disclosure {
+                open-label: "版本与技术信息";
+                close-label: "收起技术信息";
+                KVList { items: App.version-info; }
+            }
+        }
+    }
+}

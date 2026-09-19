@@ -1,5 +1,23 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
-    <path android:fillColor="#6750A4" android:pathData="M24,0A24,24 0,1 1,24 48A24,24 0,1 1,24 0" />
-    <path android:fillColor="#FFFFFF" android:pathData="M24,9A15,15 0,1 1,24 39A15,15 0,1 1,24 9M24,16A8,8 0,1 0,24 32A8,8 0,1 0,24 16" android:fillType="evenOdd" />
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 1. 平滑圆角背景 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,0 L78,0 C95,0 108,13 108,30 L108,78 C108,95 95,108 78,108 L30,108 C13,108 0,95 0,78 L0,30 C0,13 13,0 30,0 Z" />
+
+    <!-- 2. 紫色圆环 (环宽14) -->
+    <path
+        android:fillColor="#6750A4"
+        android:fillType="evenOdd"
+        android:pathData="M54,18 A36,36 0 1 1 54,90 A36,36 0 1 1 54,18 M54,32 A22,22 0 1 0 54,76 A22,22 0 1 0 54,32" />
+
+    <!-- 3. 中心紫色实心圆 (半径11) -->
+    <path
+        android:fillColor="#6750A4"
+        android:pathData="M54,43 A11,11 0 1 1 54,65 A11,11 0 1 1 54,43" />
+
 </vector>

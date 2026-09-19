@@ -1,0 +1,213 @@
+import { Theme } from "../theme.slint";
+import { App } from "../state.slint";
+import { Icon, Icons } from "../icons.slint";
+import { Card, SectionTitle, Label, Hint, Btn, Toggle, Badge, StatTile, KVRow, Sparkline, LegendDot, EmptyState, Notice, PageHeader, PageBody, Divider } from "../controls.slint";
+import { MappingRow, PeerRow, EventRow } from "../models.slint";
+
+component MiniMapping inherits Rectangle {
+    in property <MappingRow> item;
+    height: 44px;
+    border-radius: Theme.radius;
+    background: ta.has-hover ? Theme.surface-hover : transparent;
+    animate background { duration: Theme.motion-fast; }
+    HorizontalLayout {
+        padding-left: Theme.space-2;
+        padding-right: Theme.space-2;
+        spacing: Theme.space-3;
+        Rectangle {
+            width: 30px; height: 30px; border-radius: 8px;
+            y: (parent.height - self.height) / 2;
+            background: item.role == "provide" ? Theme.accent-soft : Theme.surface-alt;
+            Text {
+                text: item.role == "provide" ? "P" : "C";
+                font-size: Theme.font-sm; font-weight: 700;
+                color: item.role == "provide" ? Theme.accent : Theme.text-muted;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+            horizontal-stretch: 1;
+            Text { text: item.id; font-size: Theme.font-body; font-weight: 500; color: Theme.text; overflow: elide; }
+            Text { text: item.endpoint; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
+        }
+        Badge { text: item.state-label; kind: item.kind; y: (parent.height - self.height) / 2; }
+    }
+    ta := TouchArea { }
+}
+
+component MiniPeer inherits Rectangle {
+    in property <PeerRow> item;
+    height: 52px;
+    border-radius: Theme.radius;
+    background: Theme.surface-alt;
+    HorizontalLayout {
+        padding-left: Theme.space-3;
+        padding-right: Theme.space-3;
+        spacing: Theme.space-3;
+        Rectangle {
+            width: 8px; height: 8px; border-radius: 4px;
+            y: (parent.height - self.height) / 2;
+            background: Theme.kind-color(item.kind);
+        }
+        VerticalLayout {
+            alignment: center; spacing: 1px; horizontal-stretch: 1;
+            Text { text: item.peer-id; font-size: Theme.font-body; font-weight: 600; color: Theme.text; overflow: elide; }
+            Text { text: item.path-label + " · " + item.state-label; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 1px;
+            Text { text: item.rtt; font-size: Theme.font-body; color: Theme.text; horizontal-alignment: right; }
+            Text { text: item.channels + " 通道"; font-size: Theme.font-xs; color: Theme.text-muted; horizontal-alignment: right; }
+        }
+    }
+}
+
+component EventLine inherits HorizontalLayout {
+    in property <EventRow> item;
+    spacing: Theme.space-3;
+    Text { text: item.time; font-size: Theme.font-xs; color: Theme.text-faint; width: 64px; vertical-alignment: center; }
+    Rectangle { width: 6px; height: 6px; border-radius: 3px; background: Theme.kind-color(item.level); y: (parent.height - self.height) / 2; }
+    Text { text: item.summary; font-size: Theme.font-sm; color: Theme.text; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+}
+
+export component OverviewPage inherits VerticalLayout {
+    callback open-page(string);
+    spacing: 0px;
+
+    PageHeader {
+        title: "总览";
+        subtitle: App.status.subtitle;
+        Btn { text: "刷新"; icon: Icons.refresh; clicked => { App.refresh(); } }
+        Btn { text: "重新连接"; icon: Icons.transport; enabled: App.status.run-requested; clicked => { App.reconnect(); } }
+    }
+
+    PageBody {
+        // ---- 主状态卡 ----
+        Card {
+            tinted: App.status.kind == "good";
+            inset: Theme.space-5;
+            HorizontalLayout {
+                spacing: Theme.space-5;
+                VerticalLayout {
+                    spacing: Theme.space-2;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+                        alignment: start;
+                        Badge { text: App.status.engine-label; kind: App.status.kind; }
+                        Badge { text: "信令 · " + App.status.signal-label; kind: App.status.signal-state == "joined" ? "good" : App.status.signal-state == "error" ? "bad" : "idle"; }
+                        if !App.status.bridge-ready : Badge { text: "桥接未就绪"; kind: "bad"; }
+                    }
+                    Text { text: App.status.title; font-size: Theme.font-display; font-weight: 600; color: Theme.text; }
+                    Label { text: App.status.run-requested ? "映射由桌面宿主保持；关闭窗口后可从托盘恢复。" : "开启后启动共享核心并加入房间；配置、映射与凭据在本机保存。"; muted: true; }
+                    if App.status.error != "" : Notice { text: App.status.error; kind: "bad"; }
+                    if App.status.command-error != "" : Notice { text: App.status.command-error; kind: "warn"; }
+                    if App.status.config-error != "" : Notice { text: App.status.config-error; kind: "warn"; }
+                    if App.status.bridge-error != "" : Notice { text: App.status.bridge-error; kind: "bad"; }
+                }
+                VerticalLayout {
+                    alignment: start;
+                    spacing: Theme.space-2;
+                    horizontal-stretch: 0;
+                    HorizontalLayout {
+                        spacing: Theme.space-3;
+                        alignment: end;
+                        Text { text: App.status.run-requested ? "运行中" : "已停止"; font-size: Theme.font-body; font-weight: 500; color: Theme.text-muted; vertical-alignment: center; }
+                        Toggle {
+                            checked: App.status.run-requested;
+                            enabled: App.config-loaded && App.status.bridge-ready && !App.status.busy;
+                            label: "运行转发";
+                            toggled(v) => { App.toggle-run(v); }
+                        }
+                    }
+                    Text { text: App.status.busy ? "正在处理…" : App.status.uptime; font-size: Theme.font-sm; color: Theme.text-faint; horizontal-alignment: right; }
+                }
+            }
+        }
+
+        // ---- 指标 ----
+        HorizontalLayout {
+            spacing: Theme.space-3;
+            StatTile { label: "服务通道"; value: App.status.active-channels + " / " + App.status.total-channels; caption: "可用 / 已启用"; kind: App.status.active-channels == "0" ? "idle" : "good"; }
+            StatTile { label: "对端设备"; value: App.status.peers-active + " / " + App.status.peers-total; caption: "已连接 / 已发现"; kind: App.status.peers-active == "0" ? "idle" : "good"; }
+            StatTile { label: "应用会话"; value: App.status.tcp-sessions + " TCP · " + App.status.udp-sessions + " UDP"; caption: "当前存活"; kind: "info"; }
+            StatTile { label: "配置"; value: "提供 " + App.status.provide-enabled + " · 使用 " + App.status.consume-enabled; caption: App.status.run-requested ? "运行中 提供 " + App.status.runtime-provide + " · 使用 " + App.status.runtime-consume : "已保存的启用项"; kind: "idle"; }
+        }
+
+        // ---- 流量与网络 ----
+        HorizontalLayout {
+            spacing: Theme.space-4;
+            Card {
+                horizontal-stretch: 3;
+                HorizontalLayout {
+                    alignment: space-between;
+                    SectionTitle { text: "线路流量"; subtitle: "所有对端合计，含协议开销"; }
+                    VerticalLayout {
+                        alignment: start; spacing: 2px;
+                        Text { text: "↑ " + App.status.traffic-rate-up; font-size: Theme.font-md; font-weight: 600; color: Theme.series-up; horizontal-alignment: right; }
+                        Text { text: "↓ " + App.status.traffic-rate-down; font-size: Theme.font-md; font-weight: 600; color: Theme.series-down; horizontal-alignment: right; }
+                    }
+                }
+                Sparkline { up: App.status.sparkline-up; down: App.status.sparkline-down; }
+                HorizontalLayout {
+                    spacing: Theme.space-4;
+                    LegendDot { color: Theme.series-up; text: "发送 累计 " + App.status.traffic-up; }
+                    LegendDot { color: Theme.series-down; text: "接收 累计 " + App.status.traffic-down; }
+                }
+            }
+            Card {
+                horizontal-stretch: 2;
+                SectionTitle { text: "本机网络"; }
+                KVRow { key: "网络"; value: App.status.network-label; }
+                KVRow { key: "状态"; value: App.status.network-state; }
+                KVRow { key: "连接策略"; value: App.status.policy-label; }
+                KVRow { key: "恢复记录"; value: App.status.recovery-text; }
+                HorizontalLayout { alignment: start; Btn { kind: "ghost"; compact: true; text: "查看诊断 ›"; clicked => { root.open-page("diagnostics"); } } }
+            }
+        }
+
+        // ---- 设备与映射 ----
+        HorizontalLayout {
+            spacing: Theme.space-4;
+            Card {
+                horizontal-stretch: 1;
+                HorizontalLayout {
+                    alignment: space-between;
+                    SectionTitle { text: "对端设备"; }
+                    Btn { kind: "ghost"; compact: true; text: "全部 ›"; clicked => { root.open-page("devices"); } }
+                }
+                if App.peers.length == 0 : EmptyState {
+                    title: App.status.run-requested ? "等待对端设备" : "连接尚未开启";
+                    description: App.status.run-requested ? "双方使用相同房间并启用匹配服务后显示线路、延迟与流量。" : "开启总开关后显示每台对端实际使用的线路。";
+                }
+                for peer in App.peers : MiniPeer { item: peer; }
+            }
+            Card {
+                horizontal-stretch: 1;
+                HorizontalLayout {
+                    alignment: space-between;
+                    SectionTitle { text: "映射"; }
+                    Btn { kind: "ghost"; compact: true; text: "管理 ›"; clicked => { root.open-page("mappings"); } }
+                }
+                if App.provides.length == 0 && App.consumes.length == 0 : EmptyState {
+                    title: "暂无映射";
+                    description: "在“映射”页新增提供服务或使用服务。";
+                }
+                for row in App.provides : MiniMapping { item: row; }
+                for row in App.consumes : MiniMapping { item: row; }
+            }
+        }
+
+        // ---- 最近事件 ----
+        Card {
+            HorizontalLayout {
+                alignment: space-between;
+                SectionTitle { text: "最近事件"; subtitle: "结构化状态记录，不含原始 Go 日志"; }
+                Btn { kind: "ghost"; compact: true; text: "全部 ›"; clicked => { root.open-page("diagnostics"); } }
+            }
+            if App.events.length == 0 : Hint { text: "尚无事件。"; }
+            for ev[i] in App.events : EventLine { item: ev; visible: i < 6; height: i < 6 ? 24px : 0px; }
+        }
+    }
+}

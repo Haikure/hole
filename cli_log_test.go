@@ -71,6 +71,8 @@ func TestCLILogsActualPathChangesButNotStatisticsOrLeases(t *testing.T) {
 	output.Reset()
 	p.BytesSent, p.BytesReceived, p.RTTMS, p.LeaseUntil, p.LocalCandidates = 10, 20, 5, time.Now().UnixMilli(), 3
 	p.TURNExpiresAt, p.RelayState = time.Now().Add(time.Hour).UnixMilli(), "requesting"
+	p.DatagramLimit = 1400
+	p.CandidatePairs = []core.CandidatePairSnapshot{{LocalType: "host", RemoteType: "srflx", LocalAddress: "192.0.2.1:10000", RemoteAddress: "198.51.100.2:10001", State: "succeeded", RTTMS: 5, Selected: true}}
 	p.Generation++
 	p.ActiveChannels, p.MappingCount = 3, 3
 	s.PeerTransports[0] = p
@@ -312,6 +314,14 @@ func TestCLIDebugPreservesDiagnosticsAndEscapesAllInputs(t *testing.T) {
 	r.event(core.Event{Kind: "log", Message: "底层实现细节"})
 	if !strings.Contains(output.String(), "【调试】底层实现细节") {
 		t.Fatal(output)
+	}
+	output.Reset()
+	r.debugPeer(core.PeerTransportSnapshot{PeerID: "peer", State: "active", Phase: "relay_udp", PathType: "relay", RelaySide: "remote", AddressFamily: "IPv4", DatagramLimit: 1400,
+		CandidatePairs: []core.CandidatePairSnapshot{{LocalType: "srflx", RemoteType: "relay", LocalAddress: "203.0.113.1:20000", RemoteAddress: "198.51.100.9:41000", State: "succeeded", RelayLegs: 1, RTTMS: 30, Selected: true}, {LocalType: "relay", RemoteType: "relay", State: "failed", RelayLegs: 2}}})
+	for _, want := range []string{"数据报上限 1400 字节", "候选对：srflx 203.0.113.1:20000 ↔ relay 198.51.100.9:41000 · 已连通 · 中继跳数 1 · RTT 30 毫秒 · 当前选中", "未连通 · 中继跳数 2"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("debug peer line missing %q: %s", want, output)
+		}
 	}
 }
 

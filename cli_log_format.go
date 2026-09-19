@@ -30,6 +30,7 @@ var cliStates = map[string]string{
 	"active": "已就绪", "ready": "已就绪", "switching": "正在切换", "paused": "对端离线",
 	"pending": "等待中", "requesting": "正在申请中继凭据", "unavailable": "暂不可用", "off": "已关闭",
 	"waiting_credentials": "等待中继凭据（尚未开始探测）", "retrying": "准备重试", "error": "异常", "changed": "已变化",
+	"waiting": "待检查", "in-progress": "检查中", "failed": "未连通", "succeeded": "已连通",
 	"configured": "配置已加载", "applied": "配置已生效", "applying": "正在应用配置", "staged": "配置待应用", "unchanged": "配置未变化",
 }
 
@@ -174,6 +175,9 @@ func (r *cliReporter) debugPeer(p core.PeerTransportSnapshot) {
 			line += " · 对端中继接入协议未上报"
 		}
 	}
+	if p.DatagramLimit > 0 {
+		line += fmt.Sprintf(" · 数据报上限 %d 字节", p.DatagramLimit)
+	}
 	if p.RetryCount > 0 {
 		line += fmt.Sprintf(" · 累计重试 %d 次", p.RetryCount)
 	}
@@ -181,4 +185,14 @@ func (r *cliReporter) debugPeer(p core.PeerTransportSnapshot) {
 		line += " · 原因：" + logText(p.Error.Message) + " [" + logText(p.Error.Code) + "]"
 	}
 	r.debugf("%s", line)
+	for _, pair := range p.CandidatePairs {
+		entry := fmt.Sprintf("  候选对：%s %s ↔ %s %s · %s · 中继跳数 %d", logText(pair.LocalType), logText(pair.LocalAddress), logText(pair.RemoteType), logText(pair.RemoteAddress), logState(pair.State), pair.RelayLegs)
+		if pair.RTTMS > 0 {
+			entry += fmt.Sprintf(" · RTT %d 毫秒", pair.RTTMS)
+		}
+		if pair.Selected {
+			entry += " · 当前选中"
+		}
+		r.debugf("%s", entry)
+	}
 }

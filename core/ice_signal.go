@@ -83,4 +83,8 @@ type PeerTransportSnapshot struct {
 	Error               *Fault `json:"error,omitempty"`
 	RTTMS               int64  `json:"rtt_ms,string"`
 	PendingPhase        string `json:"pending_phase,omitempty"`
+	// DatagramLimit is the largest QUIC DATAGRAM payload the active connection
+	// accepts right now; it grows with path MTU discovery on direct paths.
+	DatagramLimit  int                     `json:"datagram_limit,omitempty"`
+	CandidatePairs []CandidatePairSnapshot `json:"candidate_pairs,omitempty"`
 }

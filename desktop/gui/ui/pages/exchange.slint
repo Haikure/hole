@@ -1,0 +1,75 @@
+import { Theme } from "../theme.slint";
+import { App } from "../state.slint";
+import { Icon, Icons } from "../icons.slint";
+import { Card, SectionTitle, Label, Hint, Btn, Field, Choice, SwitchRow, Notice, PageHeader, PageBody, Dialog, KVRow } from "../controls.slint";
+
+export component ExchangePage inherits VerticalLayout {
+    spacing: 0px;
+    callback open-page(string);
+    property <bool> include-secrets: false;
+    property <string> export-path;
+    property <string> import-path;
+    property <string> paste-text;
+    property <string> import-kind: "cli";
+
+    PageHeader {
+        title: "导入与导出";
+        subtitle: "CLI YAML 与 Android / 桌面互通；完整备份保留停用项、顺序、外观与恢复选项。";
+        Btn { text: "返回设置"; clicked => { root.open-page("settings"); } }
+    }
+    PageBody {
+        HorizontalLayout {
+            spacing: Theme.space-4;
+            Card {
+                horizontal-stretch: 1;
+                SectionTitle { text: "导出"; }
+                SwitchRow { title: "包含连接凭据"; summary: "默认关闭。开启后文件包含明文信令密码、房间密码和手动 TURN 凭据。"; checked: root.include-secrets; toggled(v) => { root.include-secrets = v; } }
+                Hint { text: "CLI YAML 包含信令服务器 server_url 和当前启用项；未包含的凭据需在使用前补齐。完整备份同时保留停用项、列表顺序、外观和登录恢复选项。"; }
+                Field { label: "导出到"; text: root.export-path; placeholder: "例如 /home/me/hole-config.yaml"; hint: "写入前不覆盖已存在的文件；留空则保存到配置目录"; edited(t) => { root.export-path = t; } }
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    alignment: start;
+                    Btn { text: "导出 CLI YAML"; kind: "primary"; enabled: App.config-loaded && !App.exchange-busy; clicked => { App.export-file(root.export-path, "cli", root.include-secrets); } }
+                    Btn { text: "导出完整备份"; enabled: App.config-loaded && !App.exchange-busy; clicked => { App.export-file(root.export-path, "backup", root.include-secrets); } }
+                }
+            }
+            Card {
+                horizontal-stretch: 1;
+                SectionTitle { text: "导入"; }
+                Hint { text: "先检查导入预览，再确认替换。确认后停止当前连接；检查服务器与凭据后手动开启，不自动连接新配置。"; }
+                Choice { values: ["cli", "backup"]; labels: ["CLI YAML / JSON", "完整备份 (Android / 桌面)"]; selected <=> root.import-kind; }
+                Field { label: "文件路径"; text: root.import-path; placeholder: "例如 /home/me/config.yaml"; hint: "最大 128 KiB"; edited(t) => { root.import-path = t; } }
+                HorizontalLayout {
+                    alignment: start;
+                    Btn { text: "读取并预览"; kind: "primary"; enabled: !App.exchange-busy && root.import-path != ""; clicked => { App.import-file(root.import-path, root.import-kind); } }
+                }
+                Field { label: "或粘贴文档内容"; multiline: true; lines: 6; text: root.paste-text; edited(t) => { root.paste-text = t; } }
+                HorizontalLayout {
+                    alignment: start;
+                    Btn { text: "预览粘贴内容"; enabled: !App.exchange-busy && root.paste-text != ""; clicked => { App.import-text(root.paste-text, root.import-kind); } }
+                }
+            }
+        }
+        if App.exchange-busy : Hint { text: "正在处理文件…"; }
+        if App.exchange-message != "" : Notice { text: App.exchange-message; kind: "info"; }
+    }
+
+    if App.import-preview.visible : Dialog {
+        title: "确认替换配置";
+        dismissed => { App.cancel-import(); }
+        KVRow { key: "来源"; value: App.import-preview.kind-label; }
+        KVRow { key: "提供 / 使用"; value: App.import-preview.provide-count + " / " + App.import-preview.consume-count + " 项"; }
+        KVRow { key: "启用项"; value: App.import-preview.enabled-count + " 项"; }
+        KVRow { key: "信令服务器"; value: App.import-preview.server-url == "" ? "待填写" : App.import-preview.server-url; }
+        KVRow { key: "房间"; value: App.import-preview.room == "" ? "待填写" : App.import-preview.room; }
+        KVRow { key: "凭据"; value: App.import-preview.secrets-note; }
+        if App.import-preview.resume-note != "" : KVRow { key: "登录恢复"; value: App.import-preview.resume-note; }
+        Hint { text: "确认后先停止当前连接，再原子替换本机配置并重新加密凭据；连接保持停止。"; }
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            alignment: end;
+            Btn { text: "取消"; clicked => { App.cancel-import(); } }
+            Btn { text: "停止连接并替换"; kind: "primary"; enabled: !App.exchange-busy; clicked => { App.confirm-import(); } }
+        }
+    }
+}

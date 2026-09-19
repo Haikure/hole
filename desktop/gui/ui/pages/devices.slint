@@ -1,0 +1,76 @@
+import { Theme } from "../theme.slint";
+import { App } from "../state.slint";
+import { Icon, Icons } from "../icons.slint";
+import { Card, SectionTitle, Label, Hint, Btn, Badge, KVRow, KVList, Disclosure, EmptyState, Notice, PageHeader, PageBody, Divider } from "../controls.slint";
+import { PeerRow, MappingRow } from "../models.slint";
+
+component PeerCard inherits Card {
+    in property <PeerRow> peer;
+    HorizontalLayout {
+        spacing: Theme.space-3;
+        alignment: space-between;
+        VerticalLayout {
+            spacing: 2px;
+            Text { text: peer.peer-id; font-size: Theme.font-xl; font-weight: 600; color: Theme.text; }
+            Text { text: peer.path-label; font-size: Theme.font-body; color: Theme.text-muted; }
+        }
+        Badge { text: peer.state-label; kind: peer.kind; y: 4px; }
+    }
+    HorizontalLayout {
+        spacing: Theme.space-5;
+        VerticalLayout { spacing: 2px; Text { text: "共享服务"; font-size: Theme.font-xs; color: Theme.text-faint; } Text { text: peer.channels; font-size: Theme.font-md; font-weight: 600; color: Theme.text; } }
+        VerticalLayout { spacing: 2px; Text { text: "往返延迟"; font-size: Theme.font-xs; color: Theme.text-faint; } Text { text: peer.rtt; font-size: Theme.font-md; font-weight: 600; color: Theme.text; } }
+        VerticalLayout { spacing: 2px; Text { text: "线路流量 ↑ / ↓"; font-size: Theme.font-xs; color: Theme.text-faint; } Text { text: peer.traffic; font-size: Theme.font-md; font-weight: 600; color: Theme.text; } }
+    }
+    if peer.note != "" : Hint { text: peer.note; }
+    if peer.error != "" : Notice { text: peer.error; kind: "bad"; }
+    Disclosure {
+        open-label: "查看线路细节";
+        close-label: "收起线路细节";
+        KVList { items: peer.details; }
+    }
+}
+
+component RuntimeMappingCard inherits Card {
+    in property <MappingRow> mapping;
+    HorizontalLayout {
+        spacing: Theme.space-3;
+        alignment: space-between;
+        VerticalLayout {
+            spacing: 2px;
+            Text { text: mapping.id; font-size: Theme.font-md; font-weight: 600; color: Theme.text; }
+            Text { text: mapping.role-label + " · " + (mapping.protocol == "" ? "等待匹配协议" : mapping.protocol); font-size: Theme.font-sm; color: Theme.text-muted; }
+        }
+        Badge { text: mapping.state-label; kind: mapping.kind; y: 2px; }
+    }
+    KVRow { key: "端点"; value: mapping.endpoint == "" ? "等待分配监听地址" : mapping.endpoint; }
+    KVRow { key: "业务连接"; value: mapping.sessions; }
+    KVRow { key: "对端设备"; value: mapping.peer == "" ? "尚未匹配" : mapping.peer; }
+    Disclosure {
+        open-label: "服务地址与数据详情";
+        close-label: "收起服务详情";
+        KVList { items: mapping.details; }
+        Hint { text: "TCP 统计当前存活的业务连接和应用数据；UDP 按本地来源计数。确认前的 TCP 缓存可用于断线续接。"; }
+    }
+}
+
+export component DevicesPage inherits VerticalLayout {
+    spacing: 0px;
+    PageHeader {
+        title: "设备与线路";
+        subtitle: "每台对端设备实际使用的直连或中继路径、延迟与流量；同一对设备的服务共享一条 QUIC 传输。";
+        Btn { text: "重新连接"; icon: Icons.transport; enabled: App.status.run-requested; clicked => { App.reconnect(); } }
+    }
+    PageBody {
+        if App.peers.length == 0 : EmptyState {
+            title: App.status.run-requested ? "暂无已配对的设备" : "连接尚未开启";
+            description: App.status.run-requested ? "双方使用相同房间，并启用匹配的提供 / 使用服务后，这里会显示直连或中继、延迟与流量。" : "连接开启后显示每台对端设备实际使用的线路。";
+        }
+        for peer in App.peers : PeerCard { peer: peer; }
+
+        SectionTitle { text: "服务明细 · " + App.runtime-mappings.length; subtitle: "运行中的映射通道；停止后清空。"; }
+        if App.runtime-mappings.length == 0 : Hint { text: App.status.run-requested ? "尚未启用服务。可以在“映射”页添加提供服务或使用服务。" : "开启连接后显示每条映射的通道状态与会话统计。"; }
+        for mapping in App.runtime-mappings : RuntimeMappingCard { mapping: mapping; }
+        Hint { text: "统计来自当前连接状态；线路流量包含协议开销，不作为中继账单。接入类型按实际选中的 TURN 连接显示，不按候选地址端口猜测。"; }
+    }
+}

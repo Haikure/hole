@@ -1,0 +1,613 @@
+// 中性现代桌面风格的基础控件。所有控件只引用 Theme token。
+import { LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icons.slint";
+import { KV } from "models.slint";
+
+// ---------- 容器 ----------
+
+export component Card inherits Rectangle {
+    in property <length> inset: Theme.space-4;
+    in property <bool> outlined: false;
+    in property <bool> tinted: false;
+    background: tinted ? Theme.accent-soft : Theme.surface;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: tinted ? Theme.accent-soft : Theme.border;
+    drop-shadow-blur: outlined ? 0px : 10px;
+    drop-shadow-offset-y: outlined ? 0px : 2px;
+    drop-shadow-color: outlined ? transparent : Theme.shadow;
+    VerticalLayout {
+        padding: root.inset;
+        spacing: Theme.space-3;
+        @children
+    }
+}
+
+export component SectionTitle inherits VerticalLayout {
+    in property <string> text;
+    in property <string> subtitle;
+    spacing: 2px;
+    Text {
+        text: root.text;
+        font-size: Theme.font-lg;
+        font-weight: 600;
+        color: Theme.text;
+    }
+    if root.subtitle != "" : Text {
+        text: root.subtitle;
+        font-size: Theme.font-sm;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+}
+
+export component Label inherits Text {
+    in property <bool> muted: false;
+    font-size: Theme.font-body;
+    color: muted ? Theme.text-muted : Theme.text;
+    wrap: word-wrap;
+}
+
+export component Hint inherits Text {
+    in property <bool> error: false;
+    font-size: Theme.font-sm;
+    color: error ? Theme.bad : Theme.text-muted;
+    wrap: word-wrap;
+}
+
+export component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.border;
+}
+
+// ---------- 按钮 ----------
+
+export component Btn inherits Rectangle {
+    in property <string> text;
+    // primary | secondary | ghost | danger
+    in property <string> kind: "secondary";
+    in property <bool> enabled: true;
+    in property <string> icon;
+    in property <bool> compact: false;
+    callback clicked();
+
+    property <bool> primary: kind == "primary";
+    property <bool> danger: kind == "danger";
+    property <bool> ghost: kind == "ghost";
+    property <color> fg: !enabled ? Theme.text-faint : primary ? Theme.on-accent : danger ? Theme.bad : ghost ? Theme.accent : Theme.text;
+    property <color> base: primary ? Theme.accent : ghost ? transparent : Theme.surface;
+
+    height: compact ? 28px : 34px;
+    min-width: compact ? 28px : 72px;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius;
+    border-width: (primary || ghost) ? 0px : 1px;
+    border-color: danger ? Theme.bad-soft : Theme.border-strong;
+    background: !enabled ? (ghost ? transparent : Theme.surface-alt)
+        : area.pressed ? (primary ? Theme.accent.darker(20%) : Theme.surface-hover.darker(5%))
+        : area.has-hover ? (primary ? Theme.accent.brighter(10%) : Theme.surface-hover)
+        : base;
+    opacity: enabled ? 1 : 0.7;
+    animate background { duration: Theme.motion-fast; }
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    forward-focus: focus;
+
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    Rectangle {
+        // 键盘焦点环
+        border-radius: Theme.radius;
+        border-width: focus.has-focus ? 2px : 0px;
+        border-color: Theme.accent;
+    }
+    HorizontalLayout {
+        padding-left: compact ? 6px : 14px;
+        padding-right: compact ? 6px : 14px;
+        spacing: 6px;
+        alignment: center;
+        if root.icon != "" : Icon { name: root.icon; tint: root.fg; size: 16px; y: (parent.height - self.height) / 2; }
+        if root.text != "" : Text {
+            text: root.text;
+            color: root.fg;
+            font-size: Theme.font-body;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+    area := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component IconBtn inherits Btn {
+    kind: "ghost";
+    compact: true;
+    min-width: 28px;
+}
+
+// ---------- 开关 ----------
+
+export component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    in property <string> label;
+    callback toggled(bool);
+
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: !enabled ? Theme.border : checked ? Theme.accent : Theme.border-strong;
+    animate background { duration: Theme.motion-fast; }
+    accessible-role: switch;
+    accessible-checked: checked;
+    accessible-label: label;
+    accessible-enabled: enabled;
+    accessible-action-default => { if (root.enabled) { root.checked = !root.checked; root.toggled(root.checked); } }
+    forward-focus: focus;
+
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.checked = !root.checked; root.toggled(root.checked); return accept;
+            }
+            return reject;
+        }
+    }
+    Rectangle {
+        border-radius: 11px;
+        border-width: focus.has-focus ? 2px : 0px;
+        border-color: Theme.accent.brighter(30%);
+    }
+    knob := Rectangle {
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        y: 3px;
+        x: root.checked ? root.width - self.width - 3px : 3px;
+        background: #FFFFFF;
+        drop-shadow-blur: 3px;
+        drop-shadow-color: Theme.shadow;
+        animate x { duration: Theme.motion-fast; easing: ease-out; }
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.checked = !root.checked; root.toggled(root.checked); }
+    }
+}
+
+export component SwitchRow inherits Rectangle {
+    in property <string> title;
+    in property <string> summary;
+    in-out property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    height: layout.preferred-height;
+    layout := HorizontalLayout {
+        spacing: Theme.space-4;
+        alignment: space-between;
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Label { text: root.title; }
+            if root.summary != "" : Hint { text: root.summary; }
+        }
+        Toggle {
+            y: (parent.height - self.height) / 2;
+            checked <=> root.checked;
+            enabled: root.enabled;
+            label: root.title;
+            toggled(v) => { root.toggled(v); }
+        }
+    }
+}
+
+// ---------- 输入 ----------
+
+export component Field inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text;
+    in property <string> hint;
+    in property <string> error;
+    in property <string> placeholder;
+    in property <bool> secret: false;
+    in property <bool> enabled: true;
+    in property <bool> multiline: false;
+    in property <int> lines: 3;
+    callback edited(string);
+    spacing: 4px;
+    property <bool> reveal: false;
+
+    if root.label != "" : Text {
+        text: root.label;
+        font-size: Theme.font-sm;
+        font-weight: 500;
+        color: Theme.text-muted;
+    }
+    if !root.multiline : HorizontalLayout {
+        spacing: Theme.space-2;
+        edit := LineEdit {
+            text <=> root.text;
+            enabled: root.enabled;
+            placeholder-text: root.placeholder;
+            input-type: (root.secret && !root.reveal) ? InputType.password : InputType.text;
+            font-size: Theme.font-body;
+            edited(t) => { root.edited(t); }
+        }
+        if root.secret : Btn {
+            text: root.reveal ? "隐藏" : "显示";
+            kind: "ghost";
+            compact: true;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.reveal = !root.reveal; }
+        }
+    }
+    if root.multiline : TextEdit {
+        text <=> root.text;
+        enabled: root.enabled;
+        placeholder-text: root.placeholder;
+        font-size: Theme.font-body;
+        height: 22px * root.lines + 16px;
+        wrap: word-wrap;
+        edited(t) => { root.edited(t); }
+    }
+    if root.error != "" : Hint { text: root.error; error: true; }
+    if root.error == "" && root.hint != "" : Hint { text: root.hint; }
+}
+
+// 分段单选：values 与 labels 等长。
+export component Choice inherits Rectangle {
+    in property <[string]> values;
+    in property <[string]> labels;
+    in-out property <string> selected;
+    in property <bool> enabled: true;
+    callback changed(string);
+    height: 32px;
+    border-radius: Theme.radius;
+    background: Theme.surface-alt;
+    border-width: 1px;
+    border-color: Theme.border;
+    HorizontalLayout {
+        padding: 3px;
+        spacing: 2px;
+        for value[i] in root.values : Rectangle {
+            property <bool> active: value == root.selected;
+            border-radius: Theme.radius-sm;
+            background: active ? Theme.surface : ta.has-hover ? Theme.surface-hover : transparent;
+            drop-shadow-blur: active ? 4px : 0px;
+            drop-shadow-color: active ? Theme.shadow : transparent;
+            animate background { duration: Theme.motion-fast; }
+            horizontal-stretch: 1;
+            min-width: 64px;
+            accessible-role: tab;
+            accessible-label: root.labels[i];
+            accessible-checked: active;
+            Text {
+                text: root.labels[i];
+                font-size: Theme.font-body;
+                font-weight: active ? 600 : 400;
+                color: !root.enabled ? Theme.text-faint : active ? Theme.text : Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            ta := TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: pointer;
+                clicked => { root.selected = value; root.changed(value); }
+            }
+        }
+    }
+}
+
+// ---------- 状态与数据展示 ----------
+
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "idle";
+    in property <bool> dot: true;
+    height: 22px;
+    width: layout.preferred-width;
+    border-radius: 11px;
+    background: Theme.kind-soft(kind);
+    layout := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 10px;
+        spacing: 6px;
+        alignment: center;
+        if root.dot : Rectangle {
+            width: 7px; height: 7px; border-radius: 3.5px;
+            y: (parent.height - self.height) / 2;
+            background: Theme.kind-color(root.kind);
+        }
+        Text {
+            text: root.text;
+            font-size: Theme.font-xs;
+            font-weight: 600;
+            color: Theme.kind-color(root.kind);
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component StatTile inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <string> caption;
+    in property <string> kind: "idle";
+    min-width: 140px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-lg;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    VerticalLayout {
+        padding: Theme.space-4;
+        spacing: 4px;
+        HorizontalLayout {
+            spacing: 6px;
+            Rectangle {
+                width: 8px; height: 8px; border-radius: 4px;
+                y: (parent.height - self.height) / 2;
+                background: Theme.kind-color(root.kind);
+            }
+            Text { text: root.label; font-size: Theme.font-sm; color: Theme.text-muted; }
+        }
+        Text {
+            text: root.value;
+            font-size: Theme.font-xl;
+            font-weight: 600;
+            color: Theme.text;
+            overflow: elide;
+        }
+        if root.caption != "" : Text { text: root.caption; font-size: Theme.font-xs; color: Theme.text-faint; overflow: elide; }
+    }
+}
+
+export component KVRow inherits HorizontalLayout {
+    in property <string> key;
+    in property <string> value;
+    in property <bool> selectable: false;
+    spacing: Theme.space-4;
+    Text {
+        text: root.key;
+        font-size: Theme.font-sm;
+        color: Theme.text-muted;
+        min-width: 96px;
+        max-width: 160px;
+        horizontal-stretch: 0;
+        vertical-alignment: top;
+    }
+    Text {
+        text: root.value;
+        font-size: Theme.font-body;
+        color: Theme.text;
+        horizontal-stretch: 1;
+        horizontal-alignment: right;
+        wrap: word-wrap;
+    }
+}
+
+export component KVList inherits VerticalLayout {
+    in property <[KV]> items;
+    spacing: 6px;
+    for item in root.items : KVRow { key: item.key; value: item.value; }
+}
+
+export component Disclosure inherits VerticalLayout {
+    in property <string> open-label: "展开详情";
+    in property <string> close-label: "收起详情";
+    in-out property <bool> expanded: false;
+    spacing: Theme.space-2;
+    HorizontalLayout {
+        alignment: start;
+        Btn {
+            kind: "ghost";
+            compact: true;
+            text: root.expanded ? root.close-label : root.open-label;
+            icon: root.expanded ? Icons.chevron-up : Icons.chevron-down;
+            clicked => { root.expanded = !root.expanded; }
+        }
+    }
+    Rectangle {
+        clip: true;
+        height: root.expanded ? body.preferred-height : 0px;
+        body := VerticalLayout {
+            spacing: Theme.space-2;
+            visible: root.expanded;
+            @children
+        }
+    }
+}
+
+// 两条趋势线的火花图；命令字符串由 Rust 按 viewbox 100x32 生成。
+export component Sparkline inherits Rectangle {
+    in property <string> up;
+    in property <string> down;
+    height: 64px;
+    clip: true;
+    for i in [0, 1, 2] : Rectangle {
+        y: root.height * (0.25 + i * 0.25);
+        height: 1px;
+        background: Theme.grid;
+    }
+    Path {
+        commands: root.down;
+        viewbox-width: 100; viewbox-height: 32;
+        stroke: Theme.series-down; stroke-width: 2px; fill: transparent;
+        stroke-line-cap: LineCap.round;
+    }
+    Path {
+        commands: root.up;
+        viewbox-width: 100; viewbox-height: 32;
+        stroke: Theme.series-up; stroke-width: 2px; fill: transparent;
+        stroke-line-cap: LineCap.round;
+    }
+}
+
+export component LegendDot inherits HorizontalLayout {
+    in property <color> color;
+    in property <string> text;
+    spacing: 6px;
+    Rectangle { width: 10px; height: 3px; border-radius: 1.5px; background: root.color; y: (parent.height - self.height) / 2; }
+    Text { text: root.text; font-size: Theme.font-xs; color: Theme.text-muted; }
+}
+
+export component EmptyState inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    border-radius: Theme.radius-lg;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: transparent;
+    VerticalLayout {
+        padding: Theme.space-5;
+        spacing: 4px;
+        alignment: center;
+        Text { text: root.title; font-size: Theme.font-md; font-weight: 500; color: Theme.text; horizontal-alignment: center; }
+        Text { text: root.description; font-size: Theme.font-sm; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
+    }
+}
+
+export component Notice inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "info";
+    border-radius: Theme.radius;
+    background: Theme.kind-soft(kind);
+    height: layout.preferred-height;
+    layout := HorizontalLayout {
+        padding: Theme.space-3;
+        spacing: Theme.space-2;
+        Icon {
+            name: root.kind == "bad" ? Icons.warning : root.kind == "warn" ? Icons.warning : Icons.info;
+            tint: Theme.kind-color(root.kind);
+            size: 16px;
+            y: 1px;
+        }
+        Text {
+            text: root.text;
+            font-size: Theme.font-body;
+            color: Theme.kind-color(root.kind);
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+// ---------- 页面骨架 ----------
+
+// 页面由头部动作区与可滚动内容区两个组件组成。
+export component PageHeader inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> subtitle;
+    padding-left: Theme.space-6;
+    padding-right: Theme.space-6;
+    padding-top: Theme.space-5;
+    padding-bottom: Theme.space-3;
+    spacing: Theme.space-3;
+    alignment: space-between;
+    VerticalLayout {
+        spacing: 2px;
+        horizontal-stretch: 1;
+        Text { text: root.title; font-size: Theme.font-display; font-weight: 600; color: Theme.text; }
+        if root.subtitle != "" : Text { text: root.subtitle; font-size: Theme.font-body; color: Theme.text-muted; wrap: word-wrap; }
+    }
+    HorizontalLayout {
+        spacing: Theme.space-2;
+        alignment: end;
+        horizontal-stretch: 0;
+        @children
+    }
+}
+
+export component PageBody inherits ScrollView {
+    vertical-stretch: 1;
+    VerticalLayout {
+        padding-left: Theme.space-6;
+        padding-right: Theme.space-6;
+        padding-bottom: Theme.space-6;
+        padding-top: Theme.space-2;
+        spacing: Theme.space-4;
+        alignment: start;
+        @children
+    }
+}
+
+// ---------- 对话框与提示 ----------
+
+export component Dialog inherits Rectangle {
+    in property <string> title;
+    in property <length> dialog-width: 460px;
+    callback dismissed();
+    background: Theme.scrim;
+    TouchArea { clicked => { root.dismissed(); } }
+    Rectangle {
+        width: min(root.dialog-width, root.width - 48px);
+        height: min(inner.preferred-height, root.height - 48px);
+        border-radius: Theme.radius-lg;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.shadow;
+        TouchArea { }
+        inner := VerticalLayout {
+            padding: Theme.space-5;
+            spacing: Theme.space-4;
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: root.title; font-size: Theme.font-lg; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+                IconBtn { icon: Icons.close; clicked => { root.dismissed(); } }
+            }
+            @children
+        }
+    }
+}
+
+export component Toast inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "info";
+    in property <bool> undo: false;
+    callback undo-clicked();
+    callback closed();
+    width: layout.preferred-width;
+    height: layout.preferred-height;
+    border-radius: Theme.radius;
+    background: Theme.dark ? #2A2F39 : #1B1F24;
+    drop-shadow-blur: 16px;
+    drop-shadow-color: Theme.shadow;
+    layout := HorizontalLayout {
+        padding-left: Theme.space-4;
+        padding-right: Theme.space-2;
+        padding-top: Theme.space-2;
+        padding-bottom: Theme.space-2;
+        spacing: Theme.space-3;
+        Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.kind-color(root.kind).brighter(30%); y: (parent.height - self.height) / 2; }
+        Text { text: root.text; color: #F3F4F6; font-size: Theme.font-body; vertical-alignment: center; max-width: 420px; wrap: word-wrap; }
+        if root.undo : Rectangle {
+            width: t.preferred-width + 16px; height: 26px; border-radius: 6px;
+            background: ua.has-hover ? #FFFFFF22 : transparent;
+            y: (parent.height - self.height) / 2;
+            t := Text { text: "撤销"; color: #93C5FD; font-size: Theme.font-body; font-weight: 600; vertical-alignment: center; horizontal-alignment: center; }
+            ua := TouchArea { mouse-cursor: pointer; clicked => { root.undo-clicked(); } }
+        }
+        Rectangle {
+            width: 26px; height: 26px; border-radius: 6px;
+            background: ca.has-hover ? #FFFFFF22 : transparent;
+            y: (parent.height - self.height) / 2;
+            Icon { name: Icons.close; tint: #D1D5DB; size: 14px; }
+            ca := TouchArea { mouse-cursor: pointer; clicked => { root.closed(); } }
+        }
+    }
+}

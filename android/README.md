@@ -11,7 +11,7 @@ Kotlin / Jetpack Compose 原生客户端，与 CLI 共用 `core/` 中的传输�
 | [wear](wear/README.md) | 共用手机源码的 Wear OS 安装包，独立设备声明和 ABI 选择 |
 | `corebridge` | Go AAR 构建、Kotlin 接口、Android Network / DNS / socket 适配 |
 
-当前手机版本为 **0.3.5 / versionCode 8**，包名 `dev.hole.app`，仅打包 `arm64-v8a`。
+当前手机版本为 **0.3.6 / versionCode 8**，包名 `dev.hole.app`，仅打包 `arm64-v8a`。
 最低 Android 8.0（API 26），compileSdk 37，targetSdk 36；版本以 [app/build.gradle.kts](app/build.gradle.kts) 为准。
 
 ## 构建

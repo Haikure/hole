@@ -21,7 +21,7 @@ import (
 
 func actualWorkerFixture(t *testing.T) (string, func()) {
 	t.Helper()
-	path, _ := filepath.Abs("../worker_fixture.test.mjs")
+	path, _ := filepath.Abs("../worker/worker_fixture.test.mjs")
 	command := exec.Command("node", path)
 	in, e := command.StdinPipe()
 	if e != nil {

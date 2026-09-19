@@ -1,0 +1,89 @@
+// 桌面设计系统 token：中性现代桌面风格，跟随 std-widgets Palette 的明暗模式。
+// 页面与控件只引用这里的 token，不直接写颜色字面量。
+import { Palette } from "std-widgets.slint";
+
+export global Theme {
+    // 由 Palette.color-scheme 派生；MainWindow 的 apply-theme-mode 负责改写 Palette。
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+
+    // 强调色：系统未提供时回落默认蓝色；Rust 侧可按用户偏好覆盖。
+    in-out property <color> accent-light: #2563EB;
+    in-out property <color> accent-dark: #60A5FA;
+    out property <color> accent: dark ? accent-dark : accent-light;
+    out property <color> accent-soft: dark ? #1E3A5F : #DBEAFE;
+    out property <color> on-accent: #FFFFFF;
+
+    // 表面层级
+    out property <color> bg: dark ? #16181D : #F4F5F7;
+    out property <color> sidebar: dark ? #1B1E24 : #FAFBFC;
+    out property <color> surface: dark ? #1F2229 : #FFFFFF;
+    out property <color> surface-alt: dark ? #262A33 : #F1F3F6;
+    out property <color> surface-hover: dark ? #2A2F39 : #EEF1F5;
+    out property <color> border: dark ? #2F343D : #E2E5EA;
+    out property <color> border-strong: dark ? #3E4450 : #CBD1D9;
+    out property <color> shadow: dark ? #00000066 : #0F172A14;
+    out property <color> scrim: dark ? #000000A6 : #0F172A73;
+
+    // 文字
+    out property <color> text: dark ? #E8EAED : #1B1F24;
+    out property <color> text-muted: dark ? #9AA3AF : #5F6B7A;
+    out property <color> text-faint: dark ? #6B7280 : #94A0AE;
+
+    // 状态色：只用于状态，不作为序列色；总是配合文字或图标。
+    out property <color> good: dark ? #4ADE80 : #15803D;
+    out property <color> good-soft: dark ? #14532D80 : #DCFCE7;
+    out property <color> warn: dark ? #FBBF24 : #B45309;
+    out property <color> warn-soft: dark ? #78350F80 : #FEF3C7;
+    out property <color> bad: dark ? #F87171 : #B91C1C;
+    out property <color> bad-soft: dark ? #7F1D1D80 : #FEE2E2;
+    out property <color> info: accent;
+    out property <color> info-soft: accent-soft;
+    out property <color> idle: text-faint;
+    out property <color> idle-soft: surface-alt;
+
+    // 数据图形（流量曲线）使用两种不同明度的同一色相，不占用状态色。
+    out property <color> series-up: dark ? #93C5FD : #1D4ED8;
+    out property <color> series-down: dark ? #5EEAD4 : #0F766E;
+    out property <color> grid: dark ? #2F343D : #E8EBEF;
+
+    // 尺寸
+    out property <length> radius-sm: 6px;
+    out property <length> radius: 8px;
+    out property <length> radius-lg: 12px;
+    out property <length> space-1: 4px;
+    out property <length> space-2: 8px;
+    out property <length> space-3: 12px;
+    out property <length> space-4: 16px;
+    out property <length> space-5: 24px;
+    out property <length> space-6: 32px;
+    out property <length> sidebar-width: 224px;
+
+    // 字号
+    out property <length> font-xs: 11px;
+    out property <length> font-sm: 12px;
+    out property <length> font-body: 13px;
+    out property <length> font-md: 14px;
+    out property <length> font-lg: 16px;
+    out property <length> font-xl: 20px;
+    out property <length> font-display: 26px;
+
+    // 动效
+    in-out property <bool> reduce-motion: false;
+    out property <duration> motion-fast: reduce-motion ? 0ms : 120ms;
+    out property <duration> motion: reduce-motion ? 0ms : 200ms;
+
+    pure public function kind-color(kind: string) -> color {
+        if kind == "good" { return good; }
+        if kind == "warn" { return warn; }
+        if kind == "bad" { return bad; }
+        if kind == "info" { return info; }
+        return idle;
+    }
+    pure public function kind-soft(kind: string) -> color {
+        if kind == "good" { return good-soft; }
+        if kind == "warn" { return warn-soft; }
+        if kind == "bad" { return bad-soft; }
+        if kind == "info" { return info-soft; }
+        return idle-soft;
+    }
+}

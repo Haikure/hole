@@ -1,0 +1,113 @@
+import { Theme } from "../theme.slint";
+import { App } from "../state.slint";
+import { Icon, Icons } from "../icons.slint";
+import { Card, SectionTitle, Label, Hint, Btn, Field, Choice, SwitchRow, Notice, PageHeader, PageBody, Dialog, Divider, KVRow } from "../controls.slint";
+import { ConnectionForm, Prefs } from "../models.slint";
+
+export component SettingsPage inherits VerticalLayout {
+    spacing: 0px;
+    callback open-page(string);
+
+    // 草稿与已保存值分离；dirty 时离开页面由 MainWindow 询问。
+    in-out property <ConnectionForm> form: App.connection;
+    property <string> save-error;
+    out property <bool> dirty:
+        form.server-url != App.connection.server-url || form.password != App.connection.password ||
+        form.room != App.connection.room || form.token != App.connection.token ||
+        form.device-name != App.connection.device-name || form.session-timeout != App.connection.session-timeout ||
+        form.candidate-interfaces != App.connection.candidate-interfaces || form.candidate-addresses != App.connection.candidate-addresses;
+
+    public function reset() { form = App.connection; save-error = ""; }
+
+    PageHeader {
+        title: "设置";
+        subtitle: "房间、服务器与身份凭据；外观与桌面行为。连接方式与导入导出在各自页面。";
+        Btn { text: "连接方式"; icon: Icons.transport; clicked => { root.open-page("transport"); } }
+        Btn { text: "导入导出"; icon: Icons.exchange; clicked => { root.open-page("exchange"); } }
+    }
+    PageBody {
+        HorizontalLayout {
+            spacing: Theme.space-4;
+            // ---- 连接 ----
+            Card {
+                horizontal-stretch: 3;
+                SectionTitle { text: "连接"; subtitle: "两端使用相同的服务器、房间号、信令密码和房间密码，设备名各不相同。"; }
+                Field { label: "信令服务器"; text: root.form.server-url; placeholder: "wss://HOST/ws"; hint: "完整 WebSocket URL；明文 ws:// 仅用于开发，需在连接方式中显式允许"; edited(t) => { root.form.server-url = t; } }
+                Field { label: "信令密码"; text: root.form.password; secret: true; hint: "Worker 部署密码，经 Authorization: Bearer 发送"; edited(t) => { root.form.password = t; } }
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+                    Field { label: "房间号"; text: root.form.room; edited(t) => { root.form.room = t; } }
+                    Field { label: "设备名"; text: root.form.device-name; hint: "在房间内展示的成员名称，房间内唯一"; edited(t) => { root.form.device-name = t; } }
+                }
+                Field { label: "房间密码"; text: root.form.token; secret: true; hint: "加入房间使用的共享 token，与信令密码是两个凭据"; edited(t) => { root.form.token = t; } }
+                Field { label: "会话保留期限"; text: root.form.session-timeout; hint: "例如 10m；网络中断后 TCP 在此期限内恢复，UDP 为空闲期限"; edited(t) => { root.form.session-timeout = t; } }
+                Divider { }
+                SectionTitle { text: "高级 · 仅 IPv6 模式"; }
+                Field { label: "候选网卡"; text: root.form.candidate-interfaces; hint: "逗号分隔的网卡名，留空表示不限制"; edited(t) => { root.form.candidate-interfaces = t; } }
+                Field { label: "候选地址"; text: root.form.candidate-addresses; hint: "逗号分隔的公网 IPv6 字面地址，留空表示不使用；与 ICE 模式互斥"; edited(t) => { root.form.candidate-addresses = t; } }
+                if root.save-error != "" : Notice { text: root.save-error; kind: "bad"; }
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    alignment: end;
+                    Btn { text: "还原"; enabled: root.dirty; clicked => { root.reset(); } }
+                    Btn { text: "保存连接设置"; kind: "primary"; enabled: App.config-loaded && root.dirty; clicked => {
+                        root.save-error = App.save-connection(root.form);
+                        if (root.save-error == "") { root.form = App.connection; }
+                    } }
+                }
+                Hint { text: "凭据以本机系统权限保护的独立文件保存，不进入配置文件、备份或诊断报告；运行中保存会立即重配核心。"; }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 2;
+                spacing: Theme.space-4;
+                // ---- 外观 ----
+                Card {
+                    SectionTitle { text: "外观"; subtitle: "中性桌面主题；跟随系统时使用系统明暗设置。"; }
+                    Choice {
+                        values: ["system", "light", "dark"];
+                        labels: ["跟随系统", "浅色", "深色"];
+                        selected: App.prefs.theme-mode;
+                        changed(v) => { App.save-prefs({ theme-mode: v, accent: App.prefs.accent, close-to-tray: App.prefs.close-to-tray, resume-at-login: App.prefs.resume-at-login, start-hidden: App.prefs.start-hidden, reduce-motion: App.prefs.reduce-motion }); }
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "强调色"; font-size: Theme.font-sm; font-weight: 500; color: Theme.text-muted; }
+                        HorizontalLayout {
+                            spacing: Theme.space-2;
+                            alignment: start;
+                            for c in ["blue", "teal", "violet", "amber", "rose"] : Rectangle {
+                                width: 28px; height: 28px; border-radius: 14px;
+                                background: c == "blue" ? #2563EB : c == "teal" ? #0F766E : c == "violet" ? #7C3AED : c == "amber" ? #B45309 : #BE123C;
+                                border-width: App.prefs.accent == c ? 3px : 0px;
+                                border-color: Theme.surface;
+                                drop-shadow-blur: App.prefs.accent == c ? 0px : 0px;
+                                Rectangle { width: 34px; height: 34px; border-radius: 17px; border-width: App.prefs.accent == c ? 2px : 0px; border-color: parent.background; }
+                                TouchArea { mouse-cursor: pointer; clicked => { App.save-prefs({ theme-mode: App.prefs.theme-mode, accent: c, close-to-tray: App.prefs.close-to-tray, resume-at-login: App.prefs.resume-at-login, start-hidden: App.prefs.start-hidden, reduce-motion: App.prefs.reduce-motion }); } }
+                            }
+                        }
+                    }
+                    SwitchRow { title: "减少动画"; summary: "关闭过渡动效"; checked: App.prefs.reduce-motion; toggled(v) => { App.save-prefs({ theme-mode: App.prefs.theme-mode, accent: App.prefs.accent, close-to-tray: App.prefs.close-to-tray, resume-at-login: App.prefs.resume-at-login, start-hidden: App.prefs.start-hidden, reduce-motion: v }); } }
+                }
+                // ---- 桌面行为 ----
+                Card {
+                    SectionTitle { text: "后台保持与自动恢复"; subtitle: "桌面没有前台服务；隐藏窗口时由常驻进程与托盘保持转发。"; }
+                    SwitchRow { title: "关闭窗口时最小化到托盘"; summary: "关闭窗口不停止转发；从托盘“退出并停止”才结束核心"; checked: App.prefs.close-to-tray; toggled(v) => { App.save-prefs({ theme-mode: App.prefs.theme-mode, accent: App.prefs.accent, close-to-tray: v, resume-at-login: App.prefs.resume-at-login, start-hidden: App.prefs.start-hidden, reduce-motion: App.prefs.reduce-motion }); } }
+                    SwitchRow { title: "登录后恢复连接"; summary: "仅恢复上次仍为“请求运行”的配置；手动停止后保持停止。首次启动默认关闭。"; checked: App.prefs.resume-at-login; toggled(v) => { App.save-prefs({ theme-mode: App.prefs.theme-mode, accent: App.prefs.accent, close-to-tray: App.prefs.close-to-tray, resume-at-login: v, start-hidden: App.prefs.start-hidden, reduce-motion: App.prefs.reduce-motion }); } }
+                    SwitchRow { title: "启动时隐藏窗口"; summary: "登录恢复时直接进入托盘"; checked: App.prefs.start-hidden; toggled(v) => { App.save-prefs({ theme-mode: App.prefs.theme-mode, accent: App.prefs.accent, close-to-tray: App.prefs.close-to-tray, resume-at-login: App.prefs.resume-at-login, start-hidden: v, reduce-motion: App.prefs.reduce-motion }); } }
+                    KVRow { key: "托盘"; value: App.host.tray-note; }
+                    KVRow { key: "开机自启"; value: App.host.autostart-note; }
+                    if App.host.last-resume-error != "" : Notice { text: App.host.last-resume-error; kind: "warn"; }
+                    Hint { text: "网络切换后自动重新加入信令并恢复有效会话。进程被结束后再次启动创建新运行实例，原 TCP socket 不跨进程恢复。"; }
+                }
+                Card {
+                    SectionTitle { text: "本机与文件"; }
+                    KVRow { key: "系统"; value: App.host.os-label; }
+                    KVRow { key: "GUI 版本"; value: App.host.gui-version; }
+                    KVRow { key: "核心宿主"; value: App.host.bridge-path; }
+                    KVRow { key: "配置目录"; value: App.host.config-path; }
+                }
+            }
+        }
+    }
+}

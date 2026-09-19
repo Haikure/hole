@@ -1,0 +1,3 @@
+# 构建产物进入仓库根 .cache/，与 Go / Gradle 缓存约定一致；registry 仍使用用户级 CARGO_HOME。
+[build]
+target-dir = "../../.cache/cargo-target"

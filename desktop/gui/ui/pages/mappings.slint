@@ -1,0 +1,148 @@
+import { Theme } from "../theme.slint";
+import { App } from "../state.slint";
+import { Icon, Icons } from "../icons.slint";
+import { Card, SectionTitle, Label, Hint, Btn, IconBtn, Toggle, Badge, Field, Choice, SwitchRow, EmptyState, Notice, PageHeader, PageBody, Dialog, Divider } from "../controls.slint";
+import { MappingRow, MappingForm } from "../models.slint";
+
+component MappingItem inherits Rectangle {
+    in property <MappingRow> item;
+    in property <bool> first;
+    in property <bool> last;
+    callback edit();
+    height: 60px;
+    border-radius: Theme.radius;
+    background: ta.has-hover ? Theme.surface-hover : transparent;
+    animate background { duration: Theme.motion-fast; }
+    opacity: item.enabled ? 1 : 0.65;
+    ta := TouchArea { double-clicked => { root.edit(); } }
+    HorizontalLayout {
+        padding-left: Theme.space-2;
+        padding-right: Theme.space-2;
+        spacing: Theme.space-3;
+        Rectangle {
+            width: 36px; height: 36px; border-radius: 9px;
+            y: (parent.height - self.height) / 2;
+            background: item.role == "provide" ? Theme.accent-soft : Theme.surface-alt;
+            Text {
+                text: item.protocol == "" ? "?" : item.protocol;
+                font-size: Theme.font-xs; font-weight: 700;
+                color: item.role == "provide" ? Theme.accent : Theme.text-muted;
+            }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 2px; horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                alignment: start;
+                Text { text: item.id == "" ? "（未命名）" : item.id; font-size: Theme.font-md; font-weight: 600; color: Theme.text; overflow: elide; }
+                Badge { text: item.state-label; kind: item.kind; y: (parent.height - self.height) / 2; }
+            }
+            Text { text: item.endpoint + (item.sessions != "" ? "  ·  " + item.sessions : ""); font-size: Theme.font-sm; color: Theme.text-muted; overflow: elide; }
+        }
+        HorizontalLayout {
+            spacing: 2px;
+            alignment: end;
+            IconBtn { icon: Icons.up; enabled: !root.first; y: (parent.height - self.height) / 2; clicked => { App.move-mapping(item.role, item.entry-id, -1); } }
+            IconBtn { icon: Icons.down; enabled: !root.last; y: (parent.height - self.height) / 2; clicked => { App.move-mapping(item.role, item.entry-id, 1); } }
+            IconBtn { icon: Icons.edit; y: (parent.height - self.height) / 2; clicked => { root.edit(); } }
+            IconBtn { icon: Icons.trash; y: (parent.height - self.height) / 2; clicked => { App.delete-mapping(item.role, item.entry-id); } }
+        }
+        Toggle {
+            y: (parent.height - self.height) / 2;
+            checked: item.enabled;
+            label: "启用 " + item.id;
+            toggled(v) => { App.toggle-mapping(item.role, item.entry-id, v); }
+        }
+    }
+}
+
+export component MappingsPage inherits VerticalLayout {
+    spacing: 0px;
+    property <bool> editing: false;
+    property <MappingForm> form;
+    property <string> form-error;
+    property <bool> is-new: true;
+
+    public function new-entry(role: string) {
+        is-new = true;
+        form = { entry-id: "", role: role, id: "", protocol: "tcp", host: role == "consume" ? "127.0.0.1" : "", port: "", enabled: true };
+        form-error = "";
+        editing = true;
+    }
+    public function edit-entry(role: string, row: MappingRow) {
+        is-new = false;
+        form = { entry-id: row.entry-id, role: role, id: row.id, protocol: row.protocol == "" ? "tcp" : row.protocol,
+            host: row.details.length > 0 ? row.details[0].value : "", port: row.details.length > 1 ? row.details[1].value : "", enabled: row.enabled };
+        form-error = "";
+        editing = true;
+    }
+
+    PageHeader {
+        title: "映射";
+        subtitle: "提供服务把本机可达的 TCP / UDP 服务共享给房间；使用服务把远端服务映射到本地端口。";
+        Btn { text: "新增提供"; icon: Icons.plus; clicked => { root.new-entry("provide"); } }
+        Btn { text: "新增使用"; icon: Icons.plus; kind: "primary"; clicked => { root.new-entry("consume"); } }
+    }
+
+    PageBody {
+        if App.status.config-error != "" : Notice { text: App.status.config-error; kind: "warn"; }
+        Card {
+            SectionTitle { text: "提供服务 · provide"; subtitle: "把本机或本机可达的服务提供给房间内的设备；服务地址允许域名、IPv4、IPv6。"; }
+            if App.provides.length == 0 : EmptyState { title: "暂无 provide 配置"; description: "点击右上角“新增提供”，向远端提供 TCP 或 UDP 服务。"; }
+            for row[i] in App.provides : MappingItem {
+                item: row; first: i == 0; last: i == App.provides.length - 1;
+                edit => { root.edit-entry("provide", row); }
+            }
+        }
+        Card {
+            SectionTitle { text: "使用服务 · consume"; subtitle: "把远端服务映射到本地端口；监听地址必须是字面 IP，协议由远端 provide 决定。"; }
+            if App.consumes.length == 0 : EmptyState { title: "暂无 consume 配置"; description: "点击右上角“新增使用”，通过本地端口使用远端服务。"; }
+            for row[i] in App.consumes : MappingItem {
+                item: row; first: i == 0; last: i == App.consumes.length - 1;
+                edit => { root.edit-entry("consume", row); }
+            }
+        }
+        Hint { text: "停用的条目保留全部字段，只有启用项进入有效配置。运行中修改映射会直接重配核心，不重启整个连接；删除服务会结束对应会话。"; }
+    }
+
+    if root.editing : Dialog {
+        title: (root.is-new ? "新增 " : "编辑 ") + (root.form.role == "provide" ? "提供服务" : "使用服务");
+        dismissed => { root.editing = false; }
+        Field {
+            label: "映射 ID";
+            text: root.form.id;
+            hint: root.form.role == "provide" ? "与远端 consume 配置配对的标识，同类内不重复" : "匹配远端 provide 的映射 ID，同类内不重复";
+            edited(t) => { root.form.id = t; }
+        }
+        if root.form.role == "provide" : VerticalLayout {
+            spacing: 4px;
+            Text { text: "协议"; font-size: Theme.font-sm; font-weight: 500; color: Theme.text-muted; }
+            Choice { values: ["tcp", "udp"]; labels: ["TCP", "UDP"]; selected: root.form.protocol; changed(v) => { root.form.protocol = v; } }
+        }
+        Field {
+            label: root.form.role == "provide" ? "服务地址" : "本地监听地址";
+            text: root.form.host;
+            hint: root.form.role == "provide" ? "允许域名、IPv4、IPv6；例如 127.0.0.1 或 ssh.example.com" : "必须是字面 IP；127.0.0.1 仅本机可访问，0.0.0.0 或 :: 表示所有接口";
+            edited(t) => { root.form.host = t; }
+        }
+        Field {
+            label: root.form.role == "provide" ? "服务端口" : "本地监听端口";
+            text: root.form.port;
+            hint: root.form.role == "provide" ? "1–65535" : "1–65535；建议使用高位端口";
+            edited(t) => { root.form.port = t; }
+        }
+        if root.form.role == "consume" : Hint { text: "协议由匹配到的远端 provide 决定；尚未匹配时显示“等待对端”。"; }
+        SwitchRow { title: "保存后启用"; summary: "停用时保留配置，不加入运行集合"; checked: root.form.enabled; toggled(v) => { root.form.enabled = v; } }
+        if root.form-error != "" : Notice { text: root.form-error; kind: "bad"; }
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            alignment: end;
+            if !root.is-new : Btn { text: "删除"; kind: "danger"; clicked => { App.delete-mapping(root.form.role, root.form.entry-id); root.editing = false; } }
+            Btn { text: "取消"; clicked => { root.editing = false; } }
+            Btn { text: "保存"; kind: "primary"; clicked => {
+                root.form-error = App.save-mapping(root.form);
+                if (root.form-error == "") { root.editing = false; }
+            } }
+        }
+    }
+}

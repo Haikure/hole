@@ -32,6 +32,7 @@ type liveICETransport struct {
 	connection *ice.Conn
 	packet     *icePacketConn
 	quic       *quic.Transport
+	session    *quic.Conn
 	cancel     context.CancelFunc
 	expires    int64
 	once       sync.Once
@@ -135,6 +136,8 @@ func (p *icePeer) update(m iceSignalMessage) {
 		p.stats.LocalRelayProtocol = ""
 		p.stats.RelayProtocol = ""
 		p.stats.RemoteRelayProtocol = ""
+		p.stats.DatagramLimit = 0
+		p.stats.CandidatePairs = nil
 		p.workers.Add(1)
 		go func() { defer p.workers.Done(); p.attempt(a) }()
 	}
@@ -400,6 +403,8 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	logger.DefaultLogLevel = logging.LogLevelDisabled
 	logger.Writer = io.Discard
 	allow := stringSet(cfg.ICE.InterfaceAllowlist)
+	controlling := a.ready.InitiatorID == p.coordinator.deviceID()
+	relayPhase := a.ready.Phase != "direct"
 	options := []ice.AgentOption{ice.WithNet(network), ice.WithUrls(urls), ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6}), ice.WithCandidateTypes(kinds), ice.WithMulticastDNSMode(ice.MulticastDNSModeDisabled), ice.WithLoggerFactory(logger), ice.WithSTUNGatherTimeout(cfg.ICE.GatherTimeout.Duration()), ice.WithKeepaliveInterval(10 * time.Second), ice.WithDisconnectedTimeout(20 * time.Second), ice.WithFailedTimeout(20 * time.Second), ice.WithInterfaceFilter(func(name string) bool {
 		if len(allow) > 0 {
 			return allow[name]
@@ -408,6 +413,11 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	}), ice.WithIPFilter(func(ip net.IP) bool {
 		return !ip.IsUnspecified() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast() && (cfg.ICE.IncludeLoopback || !ip.IsLoopback())
 	})}
+	if relayPhase {
+		// Give single-leg (asymmetric) pairs time to succeed before any
+		// relay-involving pair may be nominated; see relayNominationWait.
+		options = append(options, ice.WithRelayAcceptanceMinWait(relayNominationWait))
+	}
 	if cfg.ICE.IncludeLoopback {
 		options = append(options, ice.WithIncludeLoopback())
 	}
@@ -439,6 +449,8 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	})
 	var localCount int
 	var localMu sync.Mutex
+	localGathered := make(chan struct{})
+	var gatheredOnce sync.Once
 	_ = agent.OnCandidate(func(candidate ice.Candidate) {
 		m := signalMessage("ice_candidate")
 		m.TransportID = a.ready.TransportID
@@ -446,6 +458,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		m.ToPeerID = a.ready.PeerDevice
 		if candidate == nil {
 			m.EndOfCandidates = true
+			gatheredOnce.Do(func() { close(localGathered) })
 		} else {
 			localMu.Lock()
 			localCount++
@@ -501,6 +514,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	eventCtx, stopEvents := context.WithCancel(a.ctx)
 	defer stopEvents()
 	eventsDone := make(chan struct{})
+	remoteGathered := make(chan struct{})
 	go func() {
 		defer close(eventsDone)
 		described := false
@@ -533,7 +547,13 @@ func (p *icePeer) attempt(a *iceAttempt) {
 						}
 					}
 					early = nil
-				} else if m.Type == "ice_candidate" && !m.EndOfCandidates {
+				} else if m.Type == "ice_candidate" && m.EndOfCandidates {
+					select {
+					case <-remoteGathered:
+					default:
+						close(remoteGathered)
+					}
+				} else if m.Type == "ice_candidate" {
 					if seen[m.ICECandidate] {
 						continue
 					}
@@ -582,17 +602,65 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	case remote = <-remoteCredentials:
 	}
 	var conn *ice.Conn
-	if a.ready.InitiatorID == p.coordinator.deviceID() {
-		conn, err = agent.Dial(checkCtx, remote.Ufrag, remote.Pwd)
+	if controlling {
+		conn, err = agent.StartDial(remote.Ufrag, remote.Pwd)
 	} else {
-		conn, err = agent.Accept(checkCtx, remote.Ufrag, remote.Pwd)
+		conn, err = agent.StartAccept(remote.Ufrag, remote.Pwd)
 	}
 	if err != nil {
 		p.failed(a, err)
 		return
 	}
+	// Once both sides have announced end-of-candidates, every pair the two
+	// sets can form is already on the checklist. If all of them fail, the
+	// remaining phase budget buys nothing; move to the next path. The verdict
+	// travels on its own channel: a late one must not outlive a connection
+	// that a revived pair completed in the meantime.
+	exhausted := make(chan error, 1)
+	exhaustionCtx, stopExhaustion := context.WithCancel(checkCtx)
+	defer stopExhaustion()
+	go func() {
+		select {
+		case <-exhaustionCtx.Done():
+			return
+		case <-localGathered:
+		}
+		select {
+		case <-exhaustionCtx.Done():
+			return
+		case <-remoteGathered:
+		}
+		watchICEExhaustion(exhaustionCtx, agent, func(err error) {
+			select {
+			case exhausted <- err:
+			default:
+			}
+		})
+	}()
+	connected := make(chan error, 1)
+	go func() { connected <- agent.AwaitConnect(checkCtx) }()
+	select {
+	case err = <-connected:
+	case err = <-a.failed:
+	case err = <-exhausted:
+	}
+	stopExhaustion()
+	if err != nil {
+		p.failed(a, err)
+		return
+	}
 	packet := newICEPacketConn(conn)
-	quicTransport := &quic.Transport{Conn: packet}
+	var packetConn net.PacketConn = packet
+	if !relayPhase {
+		base := ""
+		if pair, e := agent.GetSelectedCandidatePair(); e == nil && pair != nil {
+			base = candidateSocket(pair.Local)
+		}
+		if sockets := network.socketsFor(base); len(sockets) > 0 {
+			packetConn = &mtuProbingConn{icePacketConn: packet, sockets: sockets}
+		}
+	}
+	quicTransport := &quic.Transport{Conn: packetConn}
 	defer func() {
 		if !owned {
 			_ = quicTransport.Close()
@@ -616,11 +684,11 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 		return nil
 	}
-	qc := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 15 * time.Second, MaxIdleTimeout: 45 * time.Second, InitialPacketSize: 1200, DisablePathMTUDiscovery: true, MaxIncomingStreams: 128}
+	qc := iceQUICConfig(a.ready.Phase)
 	handshakeCtx, stopHandshake := context.WithTimeout(a.ctx, 10*time.Second)
 	defer stopHandshake()
 	var connection *quic.Conn
-	if a.ready.InitiatorID == p.coordinator.deviceID() {
+	if controlling {
 		connection, err = quicTransport.Dial(handshakeCtx, packet.remote, tlsConfig, qc)
 	} else {
 		var listener *quic.Listener
@@ -662,7 +730,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	if pair, e := agent.GetSelectedCandidatePair(); e == nil && pair != nil && pair.Local.Type() == ice.CandidateTypeRelay {
 		usedExpires = expires
 	}
-	live := &liveICETransport{ready: a.ready, mux: mux, agent: agent, connection: conn, packet: packet, quic: quicTransport, cancel: a.cancel, expires: usedExpires}
+	live := &liveICETransport{ready: a.ready, mux: mux, agent: agent, connection: conn, packet: packet, quic: quicTransport, session: connection, cancel: a.cancel, expires: usedExpires}
 	p.mu.Lock()
 	if p.pending != a || p.closed {
 		p.mu.Unlock()
@@ -771,6 +839,10 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 		}
 		if pair, ok := active.agent.GetSelectedCandidatePairStats(); ok {
 			s.RTTMS = int64(pair.CurrentRoundTripTime * 1000)
+		}
+		s.CandidatePairs = candidatePairSnapshots(active.agent)
+		if active.session != nil {
+			s.DatagramLimit = datagramLimit(active.session)
 		}
 		s.BytesSent = active.connection.BytesSent()
 		s.BytesReceived = active.connection.BytesReceived()
