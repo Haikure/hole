@@ -1,5 +1,6 @@
 import QtQuick 2.12
 import QtQuick.Layouts 1.12
+import "qrc:/qml/commons"
 import "components"
 
 Item {
@@ -10,6 +11,8 @@ Item {
     height: parent ? parent.height : 170
     implicitWidth: 320
     implicitHeight: 170
+
+    signal backButtonClicked()
 
     // Connection settings
     property string serverUrl: ""
@@ -902,11 +905,22 @@ Item {
 
     VirtualKeyboard { id: keyboard }
 
+    YVerticalTitleBar {
+        z: 100
+        onCallBack: page.backButtonClicked()
+    }
+
     Flickable {
         id: scroll
 
-        anchors.fill: parent
-        anchors.margins: Theme.pageMargin
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: 54
+        anchors.rightMargin: Theme.pageMargin
+        anchors.topMargin: Theme.pageMargin
+        anchors.bottomMargin: Theme.pageMargin
         clip: true
         contentWidth: width
         contentHeight: content.implicitHeight + Theme.spacing
@@ -923,25 +937,6 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
-
-                Rectangle {
-                    Layout.preferredWidth: 30
-                    Layout.preferredHeight: 30
-                    Layout.alignment: Qt.AlignVCenter
-                    radius: 9
-                    color: Theme.surfaceRaised
-                    border.width: 1
-                    border.color: Theme.borderHeader
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "H"
-                        color: Theme.accent
-                        font.family: Theme.fontFamily
-                        font.pixelSize: 17
-                        font.bold: true
-                    }
-                }
 
                 ColumnLayout {
                     Layout.fillWidth: true
