@@ -5,5 +5,6 @@
   "author": "hole",
   "description": "通过房间连接设备并映射 TCP / UDP 服务",
   "main_qml": "Main.qml",
-  "main_so": "libhole_plugin.so"
+  "main_so": "libhole_plugin.so",
+  "icon": "file://userdisk/PenMods/hole_plugin/icon.png"
 }
