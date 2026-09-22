@@ -1,7 +1,8 @@
 // ICE signaling is scoped by an authenticated socket and a persisted device pair.
 export const ICE_PROFILE = "ice-quic-mux-v1";
 export const LEGACY_PROFILE = "legacy-ipv6-quic-v2";
-const LEASE_MS = 90_000;
+// Renewals arrive every five minutes; keep a full five-minute grace window.
+const LEASE_MS = 10 * 60_000;
 const OFFLINE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_CANDIDATES = 64;
 const send = (ws, value) => { try { ws.send(JSON.stringify(value)); } catch {} };

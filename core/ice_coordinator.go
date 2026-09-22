@@ -270,7 +270,7 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 		defer workers.Done()
 		ticker := time.NewTicker(25 * time.Second)
 		defer ticker.Stop()
-		leases := time.NewTicker(60 * time.Second)
+		leases := time.NewTicker(5 * time.Minute)
 		defer leases.Stop()
 		for {
 			select {

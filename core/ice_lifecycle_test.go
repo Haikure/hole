@@ -23,7 +23,7 @@ func lifecycleCoordinator(t *testing.T) (*iceCoordinator, *icePeer) {
 	c.online, c.serverV2, c.leaseRenewal = true, true, true
 	c.sink = &iceSignalSink{ctx: ctx, messages: make(chan iceSignalMessage, 16)}
 	p := &icePeer{coordinator: c, ctx: ctx, cancel: func() {}, online: true,
-		ready: iceSignalMessage{SignalMessage: SignalMessage{PeerDevice: "peer"}, TransportID: "pair", TransportGeneration: 1, Phase: "direct", LeaseUntil: time.Now().Add(90 * time.Second).UnixMilli(), Mappings: []peerMappingRecord{{ID: "test"}}}}
+		ready: iceSignalMessage{SignalMessage: SignalMessage{PeerDevice: "peer"}, TransportID: "pair", TransportGeneration: 1, Phase: "direct", LeaseUntil: time.Now().Add(10 * time.Minute).UnixMilli(), Mappings: []peerMappingRecord{{ID: "test"}}}}
 	c.peers["pair"] = p
 	return c, p
 }
