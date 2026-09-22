@@ -31,6 +31,8 @@ pub struct Mapping {
     pub path: String,
     pub tcp_read_bytes: String,
     pub tcp_written_bytes: String,
+    pub read_bytes: String,
+    pub written_bytes: String,
     pub replay_bytes: String,
     pub profile: String,
 }
@@ -188,6 +190,8 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
                     path: s(m, "path"),
                     tcp_read_bytes: s_or(m, "tcp_read_bytes", "0"),
                     tcp_written_bytes: s_or(m, "tcp_written_bytes", "0"),
+                    read_bytes: s_or(m, "read_bytes", "0"),
+                    written_bytes: s_or(m, "written_bytes", "0"),
                     replay_bytes: s_or(m, "replay_bytes", "0"),
                     profile: s(m, "profile"),
                 })

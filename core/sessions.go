@@ -322,17 +322,19 @@ type clientTunnel struct {
 	tcpListener *net.TCPListener
 	udpListener *net.UDPConn
 
-	mu         sync.Mutex
-	changed    chan struct{}
-	transport  *clientTransport
-	tcp        map[sessionID]*tcpSession
-	udpByAddr  map[string]*clientUDPSession
-	udpByID    map[sessionID]*clientUDPSession
-	udpLink    *udpLink
-	generation uint64
-	tcpBudget  *atomic.Int32
-	udpBudget  *atomic.Int32
-	emit       func(Event)
+	mu              sync.Mutex
+	changed         chan struct{}
+	transport       *clientTransport
+	tcp             map[sessionID]*tcpSession
+	udpByAddr       map[string]*clientUDPSession
+	udpByID         map[sessionID]*clientUDPSession
+	udpLink         *udpLink
+	udpReadBytes    atomic.Uint64
+	udpWrittenBytes atomic.Uint64
+	generation      uint64
+	tcpBudget       *atomic.Int32
+	udpBudget       *atomic.Int32
+	emit            func(Event)
 }
 
 func newClientTunnel(ctx context.Context, t tunnel, fingerprint string, logf logFunc, budgets ...*atomic.Int32) (*clientTunnel, error) {

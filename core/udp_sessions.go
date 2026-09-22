@@ -52,6 +52,7 @@ func (c *clientTunnel) readUDP() {
 		c.mu.Unlock()
 		// UDP stays unreliable. During an outage packets may drop, but the
 		// listening socket, association ID and upstream source port survive.
+		c.udpReadBytes.Add(uint64(n))
 		if link != nil {
 			if err := link.send(session.id, buffer[:n]); err != nil && link.ctx.Err() == nil {
 				c.logf("映射 %s UDP session_id=%s 丢弃数据报：%v", c.t.id, session.id, err)
@@ -125,8 +126,10 @@ func (c *clientTunnel) serveUDP(transport *clientTransport) {
 		}
 		session.lastSeen = time.Now()
 		c.mu.Unlock()
-		if _, err := c.udpListener.WriteToUDP(packet, session.addr); err != nil && ctx.Err() == nil {
+		if n, err := c.udpListener.WriteToUDP(packet, session.addr); err != nil && ctx.Err() == nil {
 			c.logf("映射 %s UDP session_id=%s 回包失败：%v", c.t.id, session.id, err)
+		} else if err == nil {
+			c.udpWrittenBytes.Add(uint64(n))
 		}
 	})
 }
@@ -183,18 +186,20 @@ type providerUDPSession struct {
 }
 
 type providerUDPGroup struct {
-	platform   Platform
-	logf       logFunc
-	ctx        context.Context
-	key        providerSessionKey
-	endpoint   *net.UDPAddr
-	budget     *atomic.Int32
-	mu         sync.Mutex
-	closed     bool
-	link       *udpLink
-	generation uint64
-	lastSeen   time.Time
-	sessions   map[sessionID]*providerUDPSession
+	platform        Platform
+	logf            logFunc
+	ctx             context.Context
+	key             providerSessionKey
+	endpoint        *net.UDPAddr
+	budget          *atomic.Int32
+	mu              sync.Mutex
+	closed          bool
+	link            *udpLink
+	generation      uint64
+	lastSeen        time.Time
+	sessions        map[sessionID]*providerUDPSession
+	udpReadBytes    atomic.Uint64
+	udpWrittenBytes atomic.Uint64
 }
 
 func (m *sessionManager) providerUDP(key providerSessionKey, endpoint ServiceEndpoint) (*providerUDPGroup, error) {
@@ -314,8 +319,10 @@ func (g *providerUDPGroup) deliver(link *udpLink, id sessionID, packet []byte) {
 	g.lastSeen = session.lastSeen
 	g.mu.Unlock()
 	_ = session.socket.SetWriteDeadline(time.Now().Add(time.Second))
-	if _, err := session.socket.Write(packet); err != nil && link.ctx.Err() == nil {
+	if n, err := session.socket.Write(packet); err != nil && link.ctx.Err() == nil {
 		g.logf("映射 %s UDP session_id=%s 写入服务失败：%v", g.key.mapping, id, err)
+	} else if err == nil {
+		g.udpWrittenBytes.Add(uint64(n))
 	}
 }
 
@@ -344,6 +351,7 @@ func (g *providerUDPGroup) readReplies(session *providerUDPSession) {
 		g.lastSeen = session.lastSeen
 		link := g.link
 		g.mu.Unlock()
+		g.udpReadBytes.Add(uint64(n))
 		if link != nil {
 			if err := link.send(session.id, buffer[:n]); err != nil && link.ctx.Err() == nil {
 				g.logf("映射 %s UDP session_id=%s 丢弃回包：%v", g.key.mapping, session.id, err)

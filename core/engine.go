@@ -457,7 +457,8 @@ func (e *Engine) Snapshot() Snapshot {
 	for i := range s.Mappings {
 		mapping := &s.Mappings[i]
 		mapping.TCPSessions, mapping.UDPSessions = stats[mapping.ID].tcp, stats[mapping.ID].udp
-		mapping.TCPReadBytes, mapping.TCPWrittenBytes, mapping.ReplayBytes = stats[mapping.ID].read, stats[mapping.ID].written, stats[mapping.ID].buffered
+		mapping.TCPReadBytes, mapping.TCPWrittenBytes, mapping.ReplayBytes = stats[mapping.ID].tcpRead, stats[mapping.ID].tcpWritten, stats[mapping.ID].buffered
+		mapping.ReadBytes, mapping.WrittenBytes = stats[mapping.ID].read, stats[mapping.ID].written
 		if activeMappings[mapping.ID] || (stats[mapping.ID].active && s.SignalState == "joined") {
 			mapping.State = "active"
 			if !isSessionFault(mapping.Error) {

@@ -6,7 +6,8 @@ data class MappingSnapshot(
     val id: String, val role: String, val protocol: String, val state: String,
     val endpoint: String = "", val peer: String = "", val path: String = "",
     val tcpSessions: Long = 0, val udpSessions: Long = 0,
-    val tcpReadBytes: String = "0", val tcpWrittenBytes: String = "0", val replayBytes: String = "0",
+    val tcpReadBytes: String = "0", val tcpWrittenBytes: String = "0",
+    val readBytes: String = "0", val writtenBytes: String = "0", val replayBytes: String = "0",
     val error: String? = null,
     val profile: String = "",
 )
@@ -94,6 +95,8 @@ data class CoreSnapshot(
                     udpSessions = item.optString("udp_sessions", "0").toLongOrNull() ?: 0,
                     tcpReadBytes = item.optString("tcp_read_bytes", "0"),
                     tcpWrittenBytes = item.optString("tcp_written_bytes", "0"),
+                    readBytes = item.optString("read_bytes", item.optString("tcp_read_bytes", "0")),
+                    writtenBytes = item.optString("written_bytes", item.optString("tcp_written_bytes", "0")),
                     replayBytes = item.optString("replay_bytes", "0"),
                     error = item.optJSONObject("error")?.optString("message"),
                     profile = item.optString("profile"),

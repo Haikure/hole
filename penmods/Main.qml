@@ -691,9 +691,16 @@ Item {
         if (asString(mapping.protocol).length > 0) parts.push(asString(mapping.protocol).toUpperCase())
         if (asString(mapping.endpoint).length > 0) parts.push(asString(mapping.endpoint))
         if (asString(mapping.peer).length > 0) parts.push("对端 " + asString(mapping.peer))
-        parts.push("TCP " + asString(mapping.tcp_sessions || "0") + " 个会话")
-        parts.push("UDP " + asString(mapping.udp_sessions || "0") + " 个会话")
-        parts.push("收 " + bytesText(mapping.tcp_read_bytes) + " / 发 " + bytesText(mapping.tcp_written_bytes))
+        var protocol = asString(mapping.protocol).toLowerCase()
+        if (protocol === "tcp")
+            parts.push("TCP " + asString(mapping.tcp_sessions || "0") + " 个会话")
+        else if (protocol === "udp")
+            parts.push("UDP " + asString(mapping.udp_sessions || "0") + " 个会话")
+        else
+            parts.push("会话 " + asString((mapping.tcp_sessions || 0) + (mapping.udp_sessions || 0)) + " 个")
+        var readBytes = mapping.read_bytes !== undefined ? mapping.read_bytes : mapping.tcp_read_bytes
+        var writtenBytes = mapping.written_bytes !== undefined ? mapping.written_bytes : mapping.tcp_written_bytes
+        parts.push("收 " + bytesText(readBytes) + " / 发 " + bytesText(writtenBytes))
         if (mapping.error && asString(mapping.error.message).length > 0)
             parts.push("错误：" + asString(mapping.error.message))
         return parts.join(" · ")

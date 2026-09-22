@@ -60,8 +60,12 @@ type MappingSnapshot struct {
 	Path            string `json:"path,omitempty"`
 	TCPReadBytes    uint64 `json:"tcp_read_bytes,string"`
 	TCPWrittenBytes uint64 `json:"tcp_written_bytes,string"`
-	ReplayBytes     uint64 `json:"replay_bytes,string"`
-	Profile         string `json:"profile,omitempty"`
+	// ReadBytes/WrittenBytes are protocol-agnostic mapping totals. The legacy
+	// TCP fields remain for clients that show TCP replay details.
+	ReadBytes    uint64 `json:"read_bytes,string"`
+	WrittenBytes uint64 `json:"written_bytes,string"`
+	ReplayBytes  uint64 `json:"replay_bytes,string"`
+	Profile      string `json:"profile,omitempty"`
 }
 
 type Capabilities struct {

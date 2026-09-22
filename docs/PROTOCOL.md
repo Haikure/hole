@@ -125,4 +125,9 @@ Worker 持久化传输 ID / generation，协调双端并发重启，并校验消
 回环应用监听与上游回环连接不绑定外部网络。Network 失效返回明确错误，恢复交给 supervisor。
 UI 快照刷新与协议保活分离，改变界面采样频率不改变传输保活或会话语义。
 
+映射快照中的 `protocol` 表示该隧道实际使用的应用协议，同一映射只会产生 TCP 或 UDP
+其中一种会话计数；`tcp_sessions` / `udp_sessions` 仅保留兼容字段，展示端应按 `protocol`
+选择对应字段。`read_bytes` 与 `written_bytes` 是该映射本地端点的累计收发字节，适用于 TCP
+和 UDP；`tcp_read_bytes` / `tcp_written_bytes` 仍用于 TCP 重放细节兼容展示。
+
 平台适配约定见 [mobile API](../mobile/README.md)，Go 兼容层见 [anet README](../core/compat/anet/README.md)。

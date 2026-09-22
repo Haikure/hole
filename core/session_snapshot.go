@@ -1,12 +1,14 @@
 package core
 
 type mappingStats struct {
-	tcp      uint64
-	udp      uint64
-	active   bool
-	read     uint64
-	written  uint64
-	buffered uint64
+	tcp        uint64
+	udp        uint64
+	active     bool
+	read       uint64
+	written    uint64
+	tcpRead    uint64
+	tcpWritten uint64
+	buffered   uint64
 }
 
 func (m *sessionManager) snapshot() map[string]mappingStats {
@@ -23,13 +25,19 @@ func (m *sessionManager) snapshot() map[string]mappingStats {
 			session.mu.Lock()
 			if !session.closed {
 				stats.tcp++
-				stats.read += session.txBase + uint64(len(session.tx))
-				stats.written += session.rxNext
+				read := session.txBase + uint64(len(session.tx))
+				written := session.rxNext
+				stats.read += read
+				stats.written += written
+				stats.tcpRead += read
+				stats.tcpWritten += written
 				stats.buffered += uint64(len(session.tx))
 			}
 			session.mu.Unlock()
 		}
 		stats.udp += uint64(len(client.udpByID))
+		stats.read += client.udpReadBytes.Load()
+		stats.written += client.udpWrittenBytes.Load()
 		if client.t.protocol == "udp" {
 			stats.active = client.udpLink != nil && client.udpLink.ctx.Err() == nil
 		} else {
@@ -47,8 +55,12 @@ func (m *sessionManager) snapshot() map[string]mappingStats {
 				session.mu.Lock()
 				if !session.closed {
 					stats.tcp++
-					stats.read += session.txBase + uint64(len(session.tx))
-					stats.written += session.rxNext
+					read := session.txBase + uint64(len(session.tx))
+					written := session.rxNext
+					stats.read += read
+					stats.written += written
+					stats.tcpRead += read
+					stats.tcpWritten += written
 					stats.buffered += uint64(len(session.tx))
 					stats.active = stats.active || (session.link != nil && session.link.ctx.Err() == nil)
 				}
@@ -62,6 +74,8 @@ func (m *sessionManager) snapshot() map[string]mappingStats {
 		stats := result[key.mapping]
 		group.mu.Lock()
 		stats.udp += uint64(len(group.sessions))
+		stats.read += group.udpReadBytes.Load()
+		stats.written += group.udpWrittenBytes.Load()
 		stats.active = stats.active || (group.link != nil && group.link.ctx.Err() == nil)
 		group.mu.Unlock()
 		result[key.mapping] = stats
