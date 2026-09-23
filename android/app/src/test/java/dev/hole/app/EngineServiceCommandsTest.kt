@@ -68,7 +68,7 @@ class RecordingCore : CoreController {
         snapshots.value = snapshots.value.copy(runRequested = false, engineState = "stopped", signalState = "disconnected")
     }
     override suspend fun networkChanged(eventJSON: String) { networks.incrementAndGet() }
-    override fun reconnect() { networks.incrementAndGet() }
+    override suspend fun renominateTransports() { networks.incrementAndGet() }
     override fun setTelemetryActive(active: Boolean) { telemetry += active }
     override fun close() { closed.set(true) }
 }
@@ -172,6 +172,21 @@ class EngineServiceCommandsTest {
             val text = shadowOf(service).lastForegroundNotification.extras.toString()
             assertFalse(text.contains("test-password"))
             assertFalse(text.contains("test-token"))
+        } finally { controller.destroy() }
+    }
+
+    @Test fun manualRenominateUsesTransportPathWithoutNetworkRefresh() = runBlocking {
+        FixtureEngineService.gate.complete(Unit)
+        val controller = Robolectric.buildService(FixtureEngineService::class.java).create()
+        val service = controller.get()
+        val core = FixtureEngineService.core
+        try {
+            service.onStartCommand(Intent().setAction(EngineService.ACTION_START_RUN), 0, 1)
+            until { core.starts.size == 1 && service.state.value.signalState == "joined" }
+            service.onStartCommand(Intent().setAction(EngineService.ACTION_RENOMINATE), 0, 2)
+            until { core.networks.get() == 1 }
+            assertEquals(1, core.starts.size)
+            assertEquals(null, service.commandError.value)
         } finally { controller.destroy() }
     }
 

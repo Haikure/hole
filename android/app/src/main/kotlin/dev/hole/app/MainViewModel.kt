@@ -252,7 +252,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopRun() = EngineService.stopRun(getApplication())
 
-    fun reconnect() = EngineService.reconnect(getApplication())
+    fun renominateTransports() = EngineService.renominate(getApplication())
 
     suspend fun importConfig(preview: ImportPreview) {
         val engineService = requireNotNull(serviceReference.get()) { "正在等待核心服务" }

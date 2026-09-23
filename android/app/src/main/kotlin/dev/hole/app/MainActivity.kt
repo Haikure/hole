@@ -229,7 +229,7 @@ private fun AppRoot(
         page == "transfer" -> ConfigTransferScreen(configState, onImport = model::importConfig, onBack = { goBack() })
         page == "details" -> RuntimeDetailsScreen(
             snapshot, configState, commandError,
-            onBack = { goBack() }, onReconnect = { model.reconnect() },
+            onBack = { goBack() }, onReconnect = { model.renominateTransports() },
             onExport = {
                 report = diagnosticReport(snapshot, configState, readBackgroundInfo(context))
                 exportReport.launch("hole-diagnostics.txt")

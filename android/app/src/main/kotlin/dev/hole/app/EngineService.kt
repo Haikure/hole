@@ -75,7 +75,7 @@ open class EngineService : Service() {
         data class Apply(val epoch: Long) : Command
         data class Network(val epoch: Long, val event: String) : Command
         data class Stop(val completion: CompletableDeferred<Unit>? = null) : Command
-        data object Reconnect : Command
+        data object Renominate : Command
     }
     inner class LocalBinder : Binder() { val service: EngineService get() = this@EngineService }
     protected open suspend fun createCore(): CoreController = CoreClient(applicationContext)
@@ -136,7 +136,7 @@ open class EngineService : Service() {
                         is Command.Start -> cancellableCommand { applyLatest(command.epoch) }
                         is Command.Apply -> cancellableCommand { applyLatest(command.epoch) }
                         is Command.Network -> cancellableCommand { if (isCurrent(command.epoch)) ready.await().networkChanged(command.event) }
-                        Command.Reconnect -> if (requested) ready.await().reconnect()
+                        Command.Renominate -> if (requested) ready.await().renominateTransports()
                         is Command.Stop -> {
                             try { stopInternal(); command.completion?.complete(Unit) }
                             catch (failure: Throwable) { command.completion?.completeExceptionally(failure); throw failure }
@@ -176,7 +176,7 @@ open class EngineService : Service() {
                 recoveryLock.update(false)
                 commands.trySend(Command.Stop())
             }
-            ACTION_RECONNECT -> if (requested) commands.trySend(Command.Reconnect)
+            ACTION_RENOMINATE -> if (requested) commands.trySend(Command.Renominate)
             else -> if (runStore.isRequested()) { if (!requested) requestStart() } else stopSelf()
         }
         return if (requested) START_STICKY else START_NOT_STICKY
@@ -308,7 +308,7 @@ open class EngineService : Service() {
     companion object {
         const val ACTION_START_RUN = "dev.hole.app.action.START_RUN"
         const val ACTION_STOP_RUN = "dev.hole.app.action.STOP_RUN"
-        const val ACTION_RECONNECT = "dev.hole.app.action.RECONNECT"
+        const val ACTION_RENOMINATE = "dev.hole.app.action.RENOMINATE"
         private const val CHANNEL_ID = "connection"
         private const val NOTIFICATION_ID = 1
         fun startRun(context: android.content.Context) {
@@ -317,8 +317,8 @@ open class EngineService : Service() {
         fun stopRun(context: android.content.Context) {
             context.startService(Intent(context, EngineService::class.java).setAction(ACTION_STOP_RUN))
         }
-        fun reconnect(context: android.content.Context) {
-            context.startService(Intent(context, EngineService::class.java).setAction(ACTION_RECONNECT))
+        fun renominate(context: android.content.Context) {
+            context.startService(Intent(context, EngineService::class.java).setAction(ACTION_RENOMINATE))
         }
     }
 }

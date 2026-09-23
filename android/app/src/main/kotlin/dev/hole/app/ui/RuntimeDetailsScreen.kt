@@ -67,7 +67,7 @@ fun RuntimeDetailsScreen(
                         snapshot.errorCode?.let { Text(connectionIssue(it), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
                         commandError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            HoleButton("重新连接", onReconnect, enabled = snapshot.runRequested, secondary = true)
+                            HoleButton("重选路径", onReconnect, enabled = snapshot.runRequested, secondary = true)
                             HoleTextButton("连接方式", onTransportSettings)
                         }
                     }

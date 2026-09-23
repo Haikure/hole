@@ -61,7 +61,9 @@ class CoreClient(context: Context) : CoreController {
         withContext(Dispatchers.IO) { try { engine.networkChanged(eventJSON) } finally { sampler.wake() } }
     }
 
-    override fun reconnect() { network.refresh(force = true) }
+    override suspend fun renominateTransports(): Unit = lifecycle.withLock {
+        withContext(Dispatchers.IO) { try { engine.renominateTransports() } finally { sampler.wake() } }
+    }
 
     override fun close() {
         network.close()
