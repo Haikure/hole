@@ -38,6 +38,7 @@ type sessionManager struct {
 	closed          bool
 	clients         map[string]*clientTunnel
 	tcp             map[providerSessionKey]*providerTCPEntry
+	tcpBytes        map[string]*tcpTraffic
 	udp             map[providerSessionKey]*providerUDPGroup
 	udpSockets      atomic.Int32
 	owners          map[peerMapping]string
@@ -72,10 +73,11 @@ func newSessionManager(timeout time.Duration, options ...sessionOptions) *sessio
 		emit:     option.emit,
 		platform: option.platform, logf: option.logf,
 		ctx: ctx, cancel: cancel, timeout: timeout,
-		clients: make(map[string]*clientTunnel),
-		tcp:     make(map[providerSessionKey]*providerTCPEntry),
-		udp:     make(map[providerSessionKey]*providerUDPGroup),
-		owners:  make(map[peerMapping]string),
+		clients:  make(map[string]*clientTunnel),
+		tcp:      make(map[providerSessionKey]*providerTCPEntry),
+		tcpBytes: make(map[string]*tcpTraffic),
+		udp:      make(map[providerSessionKey]*providerUDPGroup),
+		owners:   make(map[peerMapping]string),
 	}
 	go m.reap()
 	if option.shared {
@@ -128,7 +130,7 @@ func (m *sessionManager) consumer(t tunnel, fingerprint string) (*clientTunnel, 
 		existing.close()
 		delete(m.clients, t.id)
 	}
-	client, err := newClientTunnel(m.ctx, t, fingerprint, m.logf, m.clientTCPBudget, m.clientUDPBudget)
+	client, err := newClientTunnel(m.ctx, t, fingerprint, m.logf, m.tcpTrafficLocked(t.id), m.clientTCPBudget, m.clientUDPBudget)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +200,7 @@ func (m *sessionManager) providerTCP(ctx context.Context, key providerSessionKey
 		}
 		entry.err = err
 		if err == nil {
-			entry.session = newTCPSession(m.ctx, key.id, conn)
+			entry.session = newTCPSession(m.ctx, key.id, conn, m.tcpTrafficLocked(key.mapping))
 			if m.ctx.Err() != nil {
 				entry.session.close()
 			}
@@ -326,6 +328,7 @@ type clientTunnel struct {
 	changed         chan struct{}
 	transport       *clientTransport
 	tcp             map[sessionID]*tcpSession
+	tcpTraffic      *tcpTraffic
 	udpByAddr       map[string]*clientUDPSession
 	udpByID         map[sessionID]*clientUDPSession
 	udpLink         *udpLink
@@ -337,7 +340,7 @@ type clientTunnel struct {
 	emit            func(Event)
 }
 
-func newClientTunnel(ctx context.Context, t tunnel, fingerprint string, logf logFunc, budgets ...*atomic.Int32) (*clientTunnel, error) {
+func newClientTunnel(ctx context.Context, t tunnel, fingerprint string, logf logFunc, traffic *tcpTraffic, budgets ...*atomic.Int32) (*clientTunnel, error) {
 	id, err := newSessionID()
 	if err != nil {
 		return nil, err
@@ -346,7 +349,7 @@ func newClientTunnel(ctx context.Context, t tunnel, fingerprint string, logf log
 	c := &clientTunnel{
 		logf: logf,
 		t:    t, fingerprint: fingerprint, id: id, ctx: ctx, cancel: cancel,
-		changed: make(chan struct{}), tcp: make(map[sessionID]*tcpSession),
+		changed: make(chan struct{}), tcp: make(map[sessionID]*tcpSession), tcpTraffic: traffic,
 		udpByAddr: make(map[string]*clientUDPSession), udpByID: make(map[sessionID]*clientUDPSession),
 	}
 	if len(budgets) == 2 {
@@ -448,7 +451,7 @@ func (c *clientTunnel) acceptTCP() {
 			_ = socket.Close()
 			continue
 		}
-		session := newTCPSession(c.ctx, id, socket)
+		session := newTCPSession(c.ctx, id, socket, c.tcpTraffic)
 		c.tcp[id] = session
 		c.mu.Unlock()
 		go c.runTCP(session)

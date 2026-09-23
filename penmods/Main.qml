@@ -706,7 +706,9 @@ Item {
             parts.push("会话 " + asString((mapping.tcp_sessions || 0) + (mapping.udp_sessions || 0)) + " 个")
         var readBytes = mapping.read_bytes !== undefined ? mapping.read_bytes : mapping.tcp_read_bytes
         var writtenBytes = mapping.written_bytes !== undefined ? mapping.written_bytes : mapping.tcp_written_bytes
-        parts.push("收 " + bytesText(readBytes) + " / 发 " + bytesText(writtenBytes))
+        // read_bytes is data read from the local endpoint and sent to the peer;
+        // written_bytes is data received from the peer and written locally.
+        parts.push("收 " + bytesText(writtenBytes) + " / 发 " + bytesText(readBytes))
         if (mapping.error && asString(mapping.error.message).length > 0)
             parts.push("错误：" + asString(mapping.error.message))
         return parts.join(" · ")
@@ -808,7 +810,7 @@ Item {
         }
         appendSnapshotLine(lines, "  探测阶段", page.peerPhaseText(peer))
         if (Number(peer.rtt_ms) > 0) appendSnapshotLine(lines, "  延迟", asString(peer.rtt_ms) + " ms")
-        appendSnapshotLine(lines, "  流量", "收 " + bytesText(peer.bytes_received) + " / 发 " + bytesText(peer.bytes_sent))
+        appendSnapshotLine(lines, "  线路流量", "收 " + bytesText(peer.bytes_received) + " / 发 " + bytesText(peer.bytes_sent))
         if (Number(peer.active_channels) > 0)
             appendSnapshotLine(lines, "  活动通道", asString(peer.active_channels) + " 个")
         if (peer.error && asString(peer.error.message).length > 0)
@@ -1078,13 +1080,6 @@ Item {
                         consumeModel: consumes
                     })
                 }
-
-                ActionButton {
-                    Layout.fillWidth: true
-                    text: "重选路径"
-                    enabled: page.connectionEstablished && holePlugin.state !== "stopping"
-                    onClicked: page.renominateTransports()
-                }
             }
 
             Rectangle {
@@ -1143,9 +1138,10 @@ Item {
                     ActionButton {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 36
-                        text: "重新探测网络路径"
-                        enabled: holePlugin.running
-                        onClicked: holePlugin.networkChanged()
+                        text: "重提名路径"
+                        variant: "primary"
+                        enabled: page.connectionEstablished && holePlugin.state !== "stopping"
+                        onClicked: page.renominateTransports()
                     }
                 }
 

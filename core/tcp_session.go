@@ -37,6 +37,7 @@ type tcpSession struct {
 	generation     uint64
 	nextGeneration uint64
 	link           *tcpSessionLink
+	traffic        *tcpTraffic
 
 	// A canceled old stream may still be finishing a socket write. Serialize
 	// delivery across generations, and use short write deadlines to interrupt it.
@@ -62,11 +63,15 @@ type tcpSessionStream interface {
 	CancelWrite(quic.StreamErrorCode)
 }
 
-func newTCPSession(ctx context.Context, id sessionID, socket tcpSocket) *tcpSession {
+func newTCPSession(ctx context.Context, id sessionID, socket tcpSocket, traffic ...*tcpTraffic) *tcpSession {
+	var counters *tcpTraffic
+	if len(traffic) > 0 {
+		counters = traffic[0]
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	s := &tcpSession{
 		id: id, socket: socket, ctx: ctx, cancel: cancel,
-		changed: make(chan struct{}), detached: time.Now(),
+		changed: make(chan struct{}), detached: time.Now(), traffic: counters,
 	}
 	go s.readSocket()
 	return s
@@ -144,6 +149,9 @@ func (s *tcpSession) readSocket() {
 		}
 		if n > 0 {
 			s.tx = append(s.tx, buffer[:n]...)
+			if s.traffic != nil {
+				s.traffic.read.Add(uint64(n))
+			}
 		}
 		if errors.Is(err, io.EOF) {
 			s.txEOF = true
@@ -385,6 +393,9 @@ func (s *tcpSession) deliver(link *tcpSessionLink, frame tcpFrame) error {
 		n, err := s.socket.Write(data)
 		s.mu.Lock()
 		s.rxNext += uint64(n)
+		if n > 0 && s.traffic != nil {
+			s.traffic.written.Add(uint64(n))
+		}
 		s.notifyLocked()
 		s.mu.Unlock()
 		if err != nil {

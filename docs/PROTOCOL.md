@@ -132,7 +132,11 @@ UI 快照刷新与协议保活分离，改变界面采样频率不改变传输�
 
 映射快照中的 `protocol` 表示该隧道实际使用的应用协议，同一映射只会产生 TCP 或 UDP
 其中一种会话计数；`tcp_sessions` / `udp_sessions` 仅保留兼容字段，展示端应按 `protocol`
-选择对应字段。`read_bytes` 与 `written_bytes` 是该映射本地端点的累计收发字节，适用于 TCP
-和 UDP；`tcp_read_bytes` / `tcp_written_bytes` 仍用于 TCP 重放细节兼容展示。
+选择对应字段。`read_bytes` 与 `written_bytes` 是该映射应用数据的方向计数，适用于 TCP 和
+UDP：`read_bytes` 是从本地端点读入并转发给对端的字节（本机发送），`written_bytes` 是从
+对端接收并写入本地端点的字节（本机接收）；两者按当前运行中的映射累计，TCP 会话关闭后
+不会归零，展示端不要按字段名反推方向。`tcp_read_bytes` / `tcp_written_bytes` 仍用于 TCP
+重放细节兼容展示。对端传输快照中的 `bytes_sent` / `bytes_received` 是 ICE 线路累计字节，
+包含协议开销，用于展示线路流量，不与映射的 `read_bytes` / `written_bytes` 对账。
 
 平台适配约定见 [mobile API](../mobile/README.md)，Go 兼容层见 [anet README](../core/compat/anet/README.md)。

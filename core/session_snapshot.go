@@ -1,5 +1,12 @@
 package core
 
+import "sync/atomic"
+
+type tcpTraffic struct {
+	read    atomic.Uint64
+	written atomic.Uint64
+}
+
 type mappingStats struct {
 	tcp        uint64
 	udp        uint64
@@ -11,12 +18,30 @@ type mappingStats struct {
 	buffered   uint64
 }
 
+// tcpTraffic is owned by the mapping rather than an individual session, so a
+// completed TCP connection cannot make the mapping's application totals drop
+// back to zero.
+func (m *sessionManager) tcpTrafficLocked(mapping string) *tcpTraffic {
+	traffic := m.tcpBytes[mapping]
+	if traffic == nil {
+		traffic = &tcpTraffic{}
+		m.tcpBytes[mapping] = traffic
+	}
+	return traffic
+}
+
 func (m *sessionManager) snapshot() map[string]mappingStats {
 	result := make(map[string]mappingStats)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return result
+	}
+	for id, traffic := range m.tcpBytes {
+		stats := result[id]
+		stats.read += traffic.read.Load()
+		stats.written += traffic.written.Load()
+		result[id] = stats
 	}
 	for id, client := range m.clients {
 		stats := result[id]
@@ -27,8 +52,6 @@ func (m *sessionManager) snapshot() map[string]mappingStats {
 				stats.tcp++
 				read := session.txBase + uint64(len(session.tx))
 				written := session.rxNext
-				stats.read += read
-				stats.written += written
 				stats.tcpRead += read
 				stats.tcpWritten += written
 				stats.buffered += uint64(len(session.tx))
@@ -57,8 +80,6 @@ func (m *sessionManager) snapshot() map[string]mappingStats {
 					stats.tcp++
 					read := session.txBase + uint64(len(session.tx))
 					written := session.rxNext
-					stats.read += read
-					stats.written += written
 					stats.tcpRead += read
 					stats.tcpWritten += written
 					stats.buffered += uint64(len(session.tx))
