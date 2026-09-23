@@ -104,8 +104,10 @@ func TestICEPacketConnBoundariesDeadlinesAndConcurrentClose(t *testing.T) {
 func TestICETURNRelayUsesRealAllocation(t *testing.T)    { runRelayFixture(t, "udp") }
 func TestICETURNPlainTCPRelayUsesActualTCP(t *testing.T) { runRelayFixture(t, "tcp") }
 
-func runRelayFixture(t *testing.T, protocol string) {
-	server, _ := actualWorkerFixture(t)
+// startTURNRelay runs a real TURN server for the given access protocol and
+// returns the URL both ends are expected to use.
+func startTURNRelay(t *testing.T, protocol string) (string, func()) {
+	t.Helper()
 	socket, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +154,13 @@ func runRelayFixture(t *testing.T, protocol string) {
 		socket.Close()
 		t.Fatal(err)
 	}
-	defer relay.Close()
+	return relayURL, func() { relay.Close() }
+}
+
+func runRelayFixture(t *testing.T, protocol string) {
+	server, _ := actualWorkerFixture(t)
+	relayURL, stopRelay := startTURNRelay(t, protocol)
+	defer stopRelay()
 	echo, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -202,6 +210,57 @@ func runRelayFixture(t *testing.T, protocol string) {
 	got := make([]byte, 12)
 	if _, err = io.ReadFull(conn, got); err != nil || string(got) != "through-turn" {
 		t.Fatal("TURN did not carry QUIC/TCP", err, string(got))
+	}
+}
+
+// One end may hold the only TURN allocation of a relay phase: the peer without
+// a server for that phase contributes host/srflx candidates and pairs them with
+// that allocation (single-leg relay). Ending the generation as soon as the
+// local URL list is empty cancelled the peer's attempt in the phase and left
+// two ends with different TURN servers unable to relay at all.
+func TestICERelayPhaseWaitsForPeerRelayWithoutLocalServer(t *testing.T) {
+	server, _ := actualWorkerFixture(t)
+	relayURL, stopRelay := startTURNRelay(t, "udp")
+	defer stopRelay()
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echo.Close()
+	go func() {
+		for {
+			conn, e := echo.Accept()
+			if e != nil {
+				return
+			}
+			go func() { defer conn.Close(); _, _ = io.Copy(conn, conn) }()
+		}
+	}()
+	a, b := NewEngine(Options{RetryNetwork: true}), NewEngine(Options{RetryNetwork: true})
+	defer a.Close()
+	defer b.Close()
+	ra, rb := iceFixtureRequest(server, "alpha"), iceFixtureRequest(server, "beta")
+	ra.Config.ICE.RelayOnly = true
+	ra.Config.TURN = TURNConfig{Mode: "manual", URLs: []string{relayURL}, Username: "user", Credential: "secret"}
+	port := unusedTCPPort(t)
+	ra.Config.Provide = []Provide{{ID: "relay", Service: ServiceEndpoint{"tcp", "127.0.0.1", echo.Addr().(*net.TCPAddr).Port}}}
+	rb.Config.Consume = []Consume{{ID: "relay", Expose: HostPort{"127.0.0.1", port}}}
+	if err = a.Start(ra); err != nil {
+		t.Fatal(err)
+	}
+	if err = b.Start(rb); err != nil {
+		t.Fatal(err)
+	}
+	active := func(s Snapshot) bool {
+		return len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].PathType == "relay" && s.PeerTransports[0].ActiveChannels == 1
+	}
+	s := waitSnapshotWithin(t, b, 30*time.Second, active)
+	if s.PeerTransports[0].RelaySide != "remote" || s.PeerTransports[0].LocalRelayProtocol != "" || s.PeerTransports[0].RemoteRelayProtocol != "udp" || s.PeerTransports[0].Phase != "relay_udp" {
+		t.Fatal(s.PeerTransports)
+	}
+	s = waitSnapshotWithin(t, a, 30*time.Second, active)
+	if s.PeerTransports[0].RelaySide != "local" || s.PeerTransports[0].LocalRelayProtocol != "udp" || s.PeerTransports[0].Phase != "relay_udp" {
+		t.Fatal(s.PeerTransports)
 	}
 }
 

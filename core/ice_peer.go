@@ -408,15 +408,18 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	if relayCount > 0 {
 		kinds = append(kinds, ice.CandidateTypeRelay)
 	}
-	if a.ready.Phase != "direct" && relayCount == 0 {
-		p.failed(a, &Fault{Code: "relay_unavailable", Message: "此阶段没有可用的中继地址，继续下一条路径"})
+	if relayCount == 0 && cfg.ICE.RelayOnly {
+		p.failed(a, &Fault{Code: "relay_unavailable", Message: "此阶段没有可用的中继服务器"})
 		return
 	}
+	// A relay phase is shared by both ends and one TURN leg is enough: the
+	// peer's allocation pairs with our direct candidates. Without a local URL
+	// for this phase, join with host/srflx candidates and keep the generation
+	// open for the peer's relay candidate. The phase ends early only once the
+	// peer's gathered set proves it holds no relay candidate either, so an end
+	// that cannot use a phase never cancels the peer's attempt in it.
+	waitForPeerRelay := a.ready.Phase != "direct" && relayCount == 0
 	if cfg.ICE.RelayOnly {
-		if relayCount == 0 {
-			p.failed(a, &Fault{Code: "relay_unavailable", Message: "此阶段没有可用的中继服务器"})
-			return
-		}
 		kinds = []ice.CandidateType{ice.CandidateTypeRelay}
 	}
 	// Credentials have their own wait budget. Announce checking and measure
@@ -544,6 +547,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	defer stopEvents()
 	eventsDone := make(chan struct{})
 	remoteGathered := make(chan struct{})
+	var remoteRelay atomic.Bool
 	go func() {
 		defer close(eventsDone)
 		described := false
@@ -596,6 +600,9 @@ func (p *icePeer) attempt(a *iceAttempt) {
 					if e != nil || candidate.Component() != 1 {
 						fail(errors.New("invalid ICE candidate"))
 						return
+					}
+					if candidate.Type() == ice.CandidateTypeRelay {
+						remoteRelay.Store(true)
 					}
 					if described {
 						if e = agent.AddRemoteCandidate(candidate); e != nil {
@@ -666,6 +673,21 @@ func (p *icePeer) attempt(a *iceAttempt) {
 			}
 		})
 	}()
+	if waitForPeerRelay {
+		// The peer's announced set is authoritative for this generation: with
+		// no relay candidate on either side the phase can only rebuild the
+		// direct attempt, so skip it instead of spending the relay budget.
+		go func() {
+			select {
+			case <-exhaustionCtx.Done():
+				return
+			case <-remoteGathered:
+			}
+			if !remoteRelay.Load() && exhaustionCtx.Err() == nil {
+				fail(&Fault{Code: "relay_unavailable", Message: "对端在本阶段也没有中继候选，继续下一条路径"})
+			}
+		}()
+	}
 	connected := make(chan error, 1)
 	go func() { connected <- agent.AwaitConnect(checkCtx) }()
 	select {

@@ -15,7 +15,14 @@ import (
 
 func waitSnapshot(t *testing.T, e *Engine, predicate func(Snapshot) bool) Snapshot {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	return waitSnapshotWithin(t, e, 5*time.Second, predicate)
+}
+
+// waitSnapshotWithin is waitSnapshot with a caller-chosen budget for phases
+// whose relay nomination wait pushes the connect time past the default.
+func waitSnapshotWithin(t *testing.T, e *Engine, limit time.Duration, predicate func(Snapshot) bool) Snapshot {
+	t.Helper()
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		s := e.Snapshot()
 		if predicate(s) {
