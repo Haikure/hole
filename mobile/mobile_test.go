@@ -47,6 +47,20 @@ func TestFacadeStoppedLifecycle(t *testing.T) {
 	}
 }
 
+func TestFacadeRenominateTransportsIsIdempotentWhileStopped(t *testing.T) {
+	e := NewEngine(nil)
+	defer e.Close()
+	if err := e.RenominateTransports(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.RenominateTransports(); err == nil {
+		t.Fatal("closed facade accepted renomination")
+	}
+}
+
 type heldPlatform struct{ core.DefaultPlatform }
 
 func (heldPlatform) Candidates(ctx context.Context, _ core.Config, _ int) ([]core.Candidate, error) {

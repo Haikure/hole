@@ -13,6 +13,7 @@ engine.start(requestJSON);
 engine.applyConfig(requestJSON);
 engine.snapshotJSON();
 engine.networkChanged(eventJSON);
+engine.renominateTransports();
 engine.stop();
 engine.close();
 ```
@@ -46,6 +47,8 @@ Android 使用带 `NetworkBinding` 的构造方法；旧 `newEngine` 和 `newEng
 - 错误以含 `code`、`message` 的 JSON 传出。状态快照与事件不包含凭据。
 - `EventSink.onEvent` 在 Go 后台线程执行，应及时返回；生命周期命令调度到其他线程。
 - Android 只接收结构化事件，桥接层过滤原始日志；`stop` 返回后不再交付旧回调。
+- `renominateTransports()` 只请求对已有 ICE active 路径建立新代次；系统网络变化仍用
+  `networkChanged()`。
 
 ## NetworkBinding
 

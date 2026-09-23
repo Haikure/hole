@@ -147,6 +147,12 @@ func (e *Engine) NetworkChanged(eventJSON string) error {
 	return bridgeError(e.engine.NetworkChanged())
 }
 
+func (e *Engine) RenominateTransports() error {
+	e.operations.Lock()
+	defer e.operations.Unlock()
+	return bridgeError(e.engine.RenominateTransports())
+}
+
 func Validate(requestJSON string) error {
 	request, err := parseRequest(requestJSON)
 	if err != nil {
