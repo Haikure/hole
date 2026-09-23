@@ -237,6 +237,10 @@ void HolePlugin::networkChanged() {
     if (m_process && m_process->state() != QProcess::NotRunning) sendRequest(QStringLiteral("network_changed"));
 }
 
+void HolePlugin::renominateTransports() {
+    if (m_process && m_process->state() != QProcess::NotRunning) sendRequest(QStringLiteral("renominate_transports"));
+}
+
 void HolePlugin::clearError() {
     setError({});
 }

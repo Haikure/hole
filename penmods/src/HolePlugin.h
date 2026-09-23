@@ -40,6 +40,7 @@ public:
     Q_INVOKABLE void applyConfig();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void networkChanged();
+    Q_INVOKABLE void renominateTransports();
     Q_INVOKABLE bool saveConfig();
     Q_INVOKABLE bool loadConfig();
     Q_INVOKABLE void clearError();

@@ -616,6 +616,12 @@ Item {
         holePlugin.stop()
     }
 
+    function renominateTransports() {
+        if (!page.connectionEstablished || holePlugin.state === "stopping") return
+        localError = ""
+        holePlugin.renominateTransports()
+    }
+
     function clearMessages() {
         localError = ""
         holePlugin.clearError()
@@ -1071,6 +1077,13 @@ Item {
                         provideModel: provides,
                         consumeModel: consumes
                     })
+                }
+
+                ActionButton {
+                    Layout.fillWidth: true
+                    text: "重选路径"
+                    enabled: page.connectionEstablished && holePlugin.state !== "stopping"
+                    onClicked: page.renominateTransports()
                 }
             }
 
