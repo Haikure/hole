@@ -236,6 +236,19 @@ func TestICEMuxActualWorkerMultipleMappingsAndRecovery(t *testing.T) {
 	udpTransfer(ua, "udp-a")
 	udpTransfer(ub, "udp-b")
 	before := a.Snapshot().PeerTransports[0].Generation
+	if e = a.RenominateTransports(); e != nil {
+		t.Fatal(e)
+	}
+	waitSnapshot(t, a, func(s Snapshot) bool {
+		return len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].Generation > before
+	})
+	waitSnapshot(t, b, func(s Snapshot) bool {
+		return len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].Generation > before
+	})
+	transfer(second, "renominate")
+	if accepted.Load() != 2 {
+		t.Fatalf("manual renomination replaced application sockets: %d", accepted.Load())
+	}
 	rb.Config.Consume = rb.Config.Consume[1:]
 	if e = b.ApplyConfig(rb); e != nil {
 		t.Fatal(e)
@@ -243,7 +256,7 @@ func TestICEMuxActualWorkerMultipleMappingsAndRecovery(t *testing.T) {
 	waitSnapshot(t, b, func(s Snapshot) bool {
 		return s.SignalState == "joined" && len(s.PeerTransports) == 1 && s.PeerTransports[0].ActiveChannels == 3
 	})
-	if a.Snapshot().PeerTransports[0].Generation != before {
+	if a.Snapshot().PeerTransports[0].Generation != before+1 {
 		t.Fatal("removing one mapping rebuilt the shared transport")
 	}
 	transfer(second, "kept")

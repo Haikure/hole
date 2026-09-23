@@ -35,6 +35,7 @@ func run(ctx context.Context, data []byte) error {
 | `Start` | 校验并复制请求，异步开始连接；请求已接受与网络已就绪分开 |
 | `ApplyConfig` | 停止态暂存，运行态由 supervisor 串行重配 |
 | `NetworkChanged` | 更换外部网络路径，保留符合恢复条件的应用会话 |
+| `RenominateTransports` | 对已有 ICE active 路径发起新代次；无可用路径时是幂等 no-op |
 | `Stop` | 取消网络活动并等待资源清理，实例可再次启动 |
 | `Close` | 最终关闭实例和事件通道 |
 

@@ -58,6 +58,11 @@ TURN/TCP / TLS 描述客户端连接 TURN 服务器的方式，数据面仍是 Q
 TURN 凭据到进入中继阶段时才申请；在途请求复用，失败采用退避。健康直连不随本机 TURN
 缓存刷新而重建；实际选中本机 relay 的路径才随对应凭据刷新。
 
+`RenominateTransports` 手动为每个已有 ICE active 路径发起同阶段 `transport_restart`。
+它会创建完整新 ICE 代次，但不断开信令、不重建平台网络绑定，也不做固定周期触发；
+旧路径保持到新路径通过 QUIC 身份检查后替换。没有 active 路径、已有 pending 或在途
+代次请求、信号离线时不发送请求。
+
 本机 relay 的接入协议来自真实选中 candidate 的 `RelayProtocol`，记录在
 `local_relay_protocol`；对端本机申请 TURN 时使用的接入协议通过已认证的 mux 握手
 交换，记录在 `remote_relay_protocol`。本机直连候选与对端 relay 候选配对时，`relay_side`

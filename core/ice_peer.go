@@ -246,7 +246,7 @@ func (p *icePeer) restart(phase, reason string) {
 		return
 	}
 	p.mu.Lock()
-	if p.closed || !p.online || p.ready.TransportGeneration == 0 || p.requestedGeneration == p.ready.TransportGeneration {
+	if p.closed || !p.online || p.pending != nil || p.ready.TransportGeneration == 0 || p.requestedGeneration == p.ready.TransportGeneration {
 		p.mu.Unlock()
 		return
 	}
@@ -259,6 +259,35 @@ func (p *icePeer) restart(phase, reason string) {
 	request.ExpectedGeneration = m.TransportGeneration
 	request.Phase = phase
 	request.Reason = reason
+	if err := p.coordinator.send(request); err != nil {
+		p.mu.Lock()
+		if p.requestedGeneration == m.TransportGeneration {
+			p.requestedGeneration = 0
+		}
+		p.mu.Unlock()
+	}
+}
+
+func (p *icePeer) renominate() {
+	if !p.coordinator.signalOnline() {
+		return
+	}
+
+	p.mu.Lock()
+	if p.closed || !p.online || p.terminal || p.pending != nil || p.active == nil || p.ready.TransportGeneration == 0 || p.requestedGeneration == p.ready.TransportGeneration {
+		p.mu.Unlock()
+		return
+	}
+	m := p.ready
+	phase := p.active.ready.Phase
+	p.requestedGeneration = m.TransportGeneration
+	p.stats.RetryCount++
+	request := signalMessage("transport_restart")
+	request.TransportID = m.TransportID
+	request.ExpectedGeneration = m.TransportGeneration
+	request.Phase = phase
+	request.Reason = "manual_renomination"
+	p.mu.Unlock()
 	if err := p.coordinator.send(request); err != nil {
 		p.mu.Lock()
 		if p.requestedGeneration == m.TransportGeneration {

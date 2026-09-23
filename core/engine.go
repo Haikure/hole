@@ -281,6 +281,18 @@ func (e *Engine) NetworkChanged() error {
 	return nil
 }
 
+func (e *Engine) RenominateTransports() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return ErrClosed
+	}
+	if e.run != nil && e.run.ctx.Err() == nil && e.run.ice != nil {
+		e.run.ice.renominate()
+	}
+	return nil
+}
+
 func (e *Engine) requestCycleLocked() {
 	e.run.epoch++
 	select {

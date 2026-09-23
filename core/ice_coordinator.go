@@ -523,6 +523,12 @@ func (c *iceCoordinator) peerList() []*icePeer {
 	}
 	return result
 }
+
+func (c *iceCoordinator) renominate() {
+	for _, p := range c.peerList() {
+		p.renominate()
+	}
+}
 func (c *iceCoordinator) snapshot() []PeerTransportSnapshot {
 	result := []PeerTransportSnapshot{}
 	for _, p := range c.peerList() {

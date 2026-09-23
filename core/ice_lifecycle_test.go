@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -193,5 +194,54 @@ func TestOnDemandTURNWaitIsCancelableAndUsesOneGeneration(t *testing.T) {
 	_, _, _, err := c.relayServers(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
+	}
+}
+
+func TestManualRenominationOnlyRequestsEligibleActiveTransport(t *testing.T) {
+	c, p := lifecycleCoordinator(t)
+	c.renominate()
+	select {
+	case m := <-c.sink.messages:
+		t.Fatalf("inactive transport requested restart: %+v", m)
+	default:
+	}
+
+	p.active = &liveICETransport{ready: iceSignalMessage{Phase: "direct"}}
+	var group sync.WaitGroup
+	group.Add(4)
+	for range 4 {
+		go func() {
+			defer group.Done()
+			c.renominate()
+		}()
+	}
+	group.Wait()
+	select {
+	case m := <-c.sink.messages:
+		if m.Type != "transport_restart" || m.TransportID != "pair" || m.ExpectedGeneration != 1 || m.Phase != "direct" || m.Reason != "manual_renomination" {
+			t.Fatalf("unexpected renomination request: %+v", m)
+		}
+	default:
+		t.Fatal("active transport did not request renomination")
+	}
+
+	c.renominate()
+	if len(c.sink.messages) != 0 {
+		t.Fatalf("duplicate request not suppressed: %+v", c.sink.messages)
+	}
+
+	p.requestedGeneration = 0
+	p.pending = &iceAttempt{}
+	c.renominate()
+	if len(c.sink.messages) != 0 {
+		t.Fatalf("pending transport requested restart: %+v", c.sink.messages)
+	}
+
+	p.pending = nil
+	c.renominate()
+	p.pending = &iceAttempt{}
+	c.renominate()
+	if len(c.sink.messages) != 1 {
+		t.Fatalf("pending arrival did not suppress a second request: %+v", c.sink.messages)
 	}
 }
