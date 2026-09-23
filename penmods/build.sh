@@ -21,7 +21,7 @@ source "$ROOT/scripts/build-env.sh"
 
 (
     cd "$HERE"
-    xmake f --qt="$QT" --arch=arm64-v8a --toolchain=zigcc --cross="$CROSS" -m release -vD
+    xmake f -c --qt="$QT" --arch=arm64-v8a --toolchain=zigcc --cross="$CROSS" -m release -vD
     xmake build hole_plugin
 )
 
