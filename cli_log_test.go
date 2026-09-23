@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -22,18 +23,48 @@ func testReporter(t *testing.T) (*cliReporter, *bytes.Buffer) {
 	r.Config.TURN.Username = "PRIVATE_TURN_USER"
 	r.Config.TURN.Credential = "PRIVATE_TURN_CREDENTIAL"
 	var output bytes.Buffer
-	return newCLIReporter(log.New(&output, "", 0), r), &output
+	return newCLIReporter(log.New(&output, "", log.Ltime), r), &output
+}
+
+func TestCLILogFormatAndCauseRules(t *testing.T) {
+	if logDuration(999) != "999ms" || logDuration(1000) != "1.0s" || logDuration(5100) != "5.1s" {
+		t.Fatal("duration formatting changed")
+	}
+	if logIdent("desktop") != "desktop" || logIdent("a b") != `"a b"` || logIdent("a:b") != `"a:b"` || logIdent("") != `""` {
+		t.Fatal("identifier formatting changed")
+	}
+	r, output := testReporter(t)
+	r.startup()
+	r.event(core.Event{Kind: "signal", State: "joined"})
+	r.event(core.Event{Kind: "mapping", MappingID: "ssh", State: "active", Peer: "laptop", Protocol: "tcp"})
+	r.event(core.Event{Kind: "session", MappingID: "ssh", Peer: "laptop", State: "error", Target: "127.0.0.1:22",
+		Error: &core.Fault{Code: "custom_code", Message: "raw\nfailure"}})
+	pattern := regexp.MustCompile(`^\d{2}:\d{2}:\d{2} (INFO |WARN |ERROR|DEBUG) `)
+	for _, line := range strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n") {
+		if !pattern.MatchString(line) {
+			t.Fatalf("invalid log line: %q", line)
+		}
+	}
+	text := output.String()
+	for _, forbidden := range []string{"\u3010", "\u300c", "\u00b7", "（", "）", "可加 " + "-debug"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("legacy presentation remains: %s", text)
+		}
+	}
+	if !strings.Contains(text, "custom_code: raw\\nfailure") {
+		t.Fatalf("unknown code and raw message missing: %s", text)
+	}
 }
 
 func TestCLIStartupExplainsEffectivePolicyWithoutCredentials(t *testing.T) {
 	r, output := testReporter(t)
 	r.startup()
-	for _, want := range []string{"【启动】hole", "设备「desktop」", "优先直连，必要时自动中继", "共享 0 项服务，访问 0 项服务"} {
+	for _, want := range []string{"hole development", "设备 desktop"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("missing %q in %s", want, output)
 		}
 	}
-	for _, hidden := range []string{"PRIVATE_", "STUN", "凭据", "无定时采样", "代次", "会话保留"} {
+	for _, hidden := range []string{"PRIVATE_", "STUN", "凭据", "无定时采样", "代次", "会话保留", "\u3010", "\u300c", "\u00b7", "DEBUG"} {
 		if strings.Contains(output.String(), hidden) {
 			t.Fatalf("default startup contains %q: %s", hidden, output)
 		}
@@ -41,7 +72,7 @@ func TestCLIStartupExplainsEffectivePolicyWithoutCredentials(t *testing.T) {
 	output.Reset()
 	r.debug = true
 	r.startup()
-	for _, want := range []string{"【调试】", "wss://fixture.invalid/ws", "stun.cloudflare.com:3478", "按需申请", "凭据有效期"} {
+	for _, want := range []string{"DEBUG config", "wss://fixture.invalid/ws", "stun.cloudflare.com:3478", "turn mode=worker", "urls=0"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("debug startup missing %q: %s", want, output)
 		}
@@ -56,7 +87,7 @@ func TestCLILogsActualPathChangesButNotStatisticsOrLeases(t *testing.T) {
 	p := core.PeerTransportSnapshot{PeerID: "peer", TransportID: "transport-1", Generation: 1, Profile: core.ProfileICE, State: "connecting", Phase: "direct", MappingCount: 2, RelayState: "requesting"}
 	s := core.Snapshot{Configured: true, EngineState: "running", SignalState: "joined", PeerTransports: []core.PeerTransportSnapshot{p}}
 	r.snapshot(s)
-	if !strings.Contains(output.String(), "正在尝试连接对端「peer」（直连）") {
+	if !strings.Contains(output.String(), "尝试直连") {
 		t.Fatal(output)
 	}
 	p.State, p.PathType, p.AddressFamily = "active", "direct", "IPv4"
@@ -65,7 +96,7 @@ func TestCLILogsActualPathChangesButNotStatisticsOrLeases(t *testing.T) {
 	p.ActiveChannels, p.ConnectMS, p.RelayState = 2, 100, "ready"
 	s.PeerTransports[0] = p
 	r.snapshot(s)
-	if !strings.Contains(output.String(), "连接成功（直连，IPv4，建连耗时 100 毫秒）") || strings.Contains(output.String(), "通道") {
+	if !strings.Contains(output.String(), "已连接 直连/IPv4 100ms") || strings.Contains(output.String(), "通道") {
 		t.Fatal(output)
 	}
 	output.Reset()
@@ -83,7 +114,7 @@ func TestCLILogsActualPathChangesButNotStatisticsOrLeases(t *testing.T) {
 	p.State, p.PendingPhase = "switching", "relay_tls"
 	s.PeerTransports[0] = p
 	r.snapshot(s)
-	if !strings.Contains(output.String(), "建立新连接（TLS 中继）") || !strings.Contains(output.String(), "当前连接继续使用（直连）") {
+	if !strings.Contains(output.String(), "尝试切换到 TLS 中继 (当前 直连/IPv4)") {
 		t.Fatal(output)
 	}
 	output.Reset()
@@ -91,14 +122,14 @@ func TestCLILogsActualPathChangesButNotStatisticsOrLeases(t *testing.T) {
 	p.Generation++
 	s.PeerTransports[0] = p
 	r.snapshot(s)
-	if !strings.Contains(output.String(), "连接已切换（TLS 中继") {
+	if !strings.Contains(output.String(), "已切换 TLS 中继") {
 		t.Fatal(output)
 	}
 	output.Reset()
 	p.State, p.Phase = "reconnecting", "direct"
 	s.PeerTransports[0] = p
 	r.snapshot(s)
-	if !strings.Contains(output.String(), "连接中断，正在重新连接") || strings.Contains(output.String(), "198.51.100.2") {
+	if !strings.Contains(output.String(), "连接中断，重连中") || strings.Contains(output.String(), "198.51.100.2") {
 		t.Fatal("lost path shown as connected", output)
 	}
 	output.Reset()
@@ -116,7 +147,7 @@ func TestCLIEventsKeepMappingContextAndRedactErrors(t *testing.T) {
 	first := output.String()
 	r.event(e)
 	r.event(core.Event{Kind: "mapping", MappingID: "ssh", State: "active"})
-	if first != output.String() || !strings.Contains(first, "「ssh」映射已就绪") || !strings.Contains(first, "对端「peer」") {
+	if first != output.String() || !strings.Contains(first, "ssh: 映射已就绪，对端 peer (tcp)") {
 		t.Fatal(output)
 	}
 	output.Reset()
@@ -124,17 +155,17 @@ func TestCLIEventsKeepMappingContextAndRedactErrors(t *testing.T) {
 	e.SessionID, e.Target, e.Stage = "session-fixture", "127.0.0.1:12345", "dial"
 	e.Error = &core.Fault{Code: "service_refused", Message: "PRIVATE_SIGNAL_PASSWORD PRIVATE_ROOM_TOKEN PRIVATE_TURN_USER PRIVATE_TURN_CREDENTIAL\nforged line"}
 	r.event(e)
-	if strings.Contains(output.String(), "PRIVATE_") || strings.Count(output.String(), "\n") != 1 || strings.Contains(output.String(), "service_refused") || !strings.Contains(output.String(), "目标 127.0.0.1:12345") || !strings.Contains(output.String(), "目标服务拒绝连接") {
+	if strings.Contains(output.String(), "PRIVATE_") || strings.Count(output.String(), "\n") != 1 || !strings.Contains(output.String(), "service_refused") || !strings.Contains(output.String(), "目标 127.0.0.1:12345") || !strings.Contains(output.String(), "拒绝连接") {
 		t.Fatal(output)
 	}
 	r.snapshot(core.Snapshot{Configured: true, EventsDropped: 3})
-	if !strings.Contains(output.String(), "省略了 3 条事件（累计 3）") {
+	if !strings.Contains(output.String(), "省略事件: 3/3") {
 		t.Fatal(output)
 	}
 	output.Reset()
 	e.State, e.Error = "active", nil
 	r.event(e)
-	if !strings.Contains(output.String(), "目标服务连接已成功") {
+	if !strings.Contains(output.String(), "目标服务已恢复") {
 		t.Fatal("service recovery missing", output)
 	}
 	output.Reset()
@@ -147,7 +178,7 @@ func TestCLIEventsKeepMappingContextAndRedactErrors(t *testing.T) {
 func TestCLITCPAndTLSPathsRemainDistinct(t *testing.T) {
 	r, output := testReporter(t)
 	r.peer(core.PeerTransportSnapshot{PeerID: "peer", State: "active", PathType: "relay", RelayProtocol: "tcp", RelaySide: "local", Phase: "relay_tcp_80", Generation: 5})
-	if !strings.Contains(output.String(), "连接成功（TCP 中继）") || strings.Contains(output.String(), "TLS 中继") || strings.Contains(output.String(), "代次") {
+	if !strings.Contains(output.String(), "已连接 TCP 中继") || strings.Contains(output.String(), "TLS 中继") || strings.Contains(output.String(), "代次") {
 		t.Fatal(output)
 	}
 	output.Reset()
@@ -158,7 +189,7 @@ func TestCLITCPAndTLSPathsRemainDistinct(t *testing.T) {
 	output.Reset()
 	r.debug = true
 	r.peer(core.PeerTransportSnapshot{PeerID: "peer", State: "active", PathType: "relay", RelaySide: "remote", Phase: "relay_tcp_80", Generation: 5})
-	if !strings.Contains(output.String(), "代次 5") || !strings.Contains(output.String(), "接入协议未上报") {
+	if !strings.Contains(output.String(), "gen=5") || !strings.Contains(output.String(), "remote_relay_proto=unreported") {
 		t.Fatal(output)
 	}
 }
@@ -168,13 +199,13 @@ func TestCLICredentialWaitIsDistinctFromConnectionAttempt(t *testing.T) {
 	p := core.PeerTransportSnapshot{PeerID: "peer", TransportID: "pair", Generation: 1, Phase: "relay_udp", State: "waiting_credentials"}
 	s := core.Snapshot{Configured: true, PeerTransports: []core.PeerTransportSnapshot{p}}
 	r.snapshot(s)
-	if !strings.Contains(output.String(), "准备中继连接（UDP 中继），等待中继连接信息") || strings.Contains(output.String(), "正在尝试") {
+	if !strings.Contains(output.String(), "等待中继凭据") || strings.Contains(output.String(), "尝试 ") {
 		t.Fatal(output)
 	}
 	output.Reset()
 	s.PeerTransports[0].State = "connecting"
 	r.snapshot(s)
-	if !strings.Contains(output.String(), "正在尝试连接对端「peer」（UDP 中继）") {
+	if !strings.Contains(output.String(), "尝试UDP 中继") {
 		t.Fatal("credential arrival did not update the same phase", output)
 	}
 }
@@ -208,7 +239,7 @@ func TestCLIFollowOnlyReadsSnapshotsOnEvents(t *testing.T) {
 	}
 	close(f.events)
 	<-done
-	if !strings.Contains(output.String(), "【连接】已加入房间") {
+	if !strings.Contains(output.String(), "已加入房间") {
 		t.Fatal(output)
 	}
 	data, err := os.ReadFile("cli_log.go")
@@ -225,7 +256,7 @@ func TestCLIStartupAndReadyDistinguishServiceRoles(t *testing.T) {
 	r.request.Config.Provide = []core.Provide{{ID: "共享服务", Service: core.ServiceEndpoint{Protocol: "tcp", Addr: "127.0.0.1", Port: 22}}}
 	r.request.Config.Consume = []core.Consume{{ID: "SSH", Expose: core.HostPort{Addr: "127.0.0.1", Port: 2222}}}
 	r.startup()
-	for _, want := range []string{"共享 1 项服务，访问 1 项服务", "【共享】「共享服务」目标服务 127.0.0.1:22（TCP）", "【访问】「SSH」本地入口 127.0.0.1:2222（等待映射就绪）"} {
+	for _, want := range []string{"共享服务: 共享 tcp://127.0.0.1:22", "SSH: 本地入口 127.0.0.1:2222"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("missing %q: %s", want, output)
 		}
@@ -236,13 +267,13 @@ func TestCLIStartupAndReadyDistinguishServiceRoles(t *testing.T) {
 	output.Reset()
 	r.event(core.Event{Kind: "mapping", MappingID: "共享服务", State: "waiting_peer"})
 	r.event(core.Event{Kind: "mapping", MappingID: "SSH", State: "waiting_peer"})
-	if !strings.Contains(output.String(), "等待访问方上线") || !strings.Contains(output.String(), "等待服务提供方上线") {
+	if !strings.Contains(output.String(), "等待提供方上线") || !strings.Contains(output.String(), "等待访问方上线") {
 		t.Fatal(output)
 	}
 	output.Reset()
 	e := core.Event{Kind: "mapping", MappingID: "SSH", Peer: "家里电脑", Protocol: "tcp", State: "active", Profile: core.ProfileICE}
 	r.event(e)
-	if !strings.Contains(output.String(), "本地入口 127.0.0.1:2222 → 「家里电脑」（TCP）") || strings.Contains(output.String(), "目标服务连接已成功") {
+	if !strings.Contains(output.String(), "SSH: 映射已就绪，对端 家里电脑 (tcp)") || strings.Contains(output.String(), "目标服务已恢复") {
 		t.Fatal("mapping readiness confused with a service health check", output)
 	}
 	for i := 0; i < 2; i++ {
@@ -257,35 +288,12 @@ func TestCLIStartupAndReadyDistinguishServiceRoles(t *testing.T) {
 	}
 }
 
-func TestCLIStartupUsesEffectiveConnectionPolicy(t *testing.T) {
-	for _, tc := range []struct {
-		preferred, turn, want string
-		relayOnly             bool
-	}{
-		{core.PreferredIPv6, "worker", "仅 IPv6 直连", false},
-		{core.PreferredICE, "off", "本机中继已关闭", false},
-		{core.PreferredICE, "manual", "必要时自动中继", false},
-		{core.PreferredICE, "manual", "仅使用中继", true},
-	} {
-		t.Run(tc.want, func(t *testing.T) {
-			r, output := testReporter(t)
-			r.request.Config.Transport.Preferred = tc.preferred
-			r.request.Config.TURN.Mode = tc.turn
-			r.request.Config.ICE.RelayOnly = tc.relayOnly
-			r.startup()
-			if !strings.Contains(output.String(), tc.want) {
-				t.Fatal(output)
-			}
-		})
-	}
-}
-
 func TestCLIDebugPreservesDiagnosticsAndEscapesAllInputs(t *testing.T) {
 	r, output := testReporter(t)
 	e := core.Event{Kind: "session", MappingID: "SSH\n伪造", Peer: "设备\x1b[31m", State: "error", Protocol: "tcp", SessionID: "session-fixture", Target: "127.0.0.1:22", Stage: "dial", Phase: "direct", TransportGeneration: 7,
 		Error: &core.Fault{Code: "service_refused", Message: "PRIVATE_SIGNAL_PASSWORD PRIVATE_ROOM_TOKEN PRIVATE_TURN_USER PRIVATE_TURN_CREDENTIAL\nforged line " + r.request.ServerURL + " " + url.QueryEscape(r.request.ServerURL)}}
 	r.event(e)
-	for _, hidden := range []string{"session-fixture", "service_refused", "代次", "forged line", "PRIVATE_", "\x1b"} {
+	for _, hidden := range []string{"session-fixture", "代次", "PRIVATE_", "\x1b", "\u3010", "\u300c", "\u00b7"} {
 		if strings.Contains(output.String(), hidden) {
 			t.Fatalf("default log contains %q: %s", hidden, output)
 		}
@@ -296,7 +304,7 @@ func TestCLIDebugPreservesDiagnosticsAndEscapesAllInputs(t *testing.T) {
 	output.Reset()
 	r.debug = true
 	r.debugEvent(e)
-	for _, want := range []string{"【调试】", "session-fixture", "service_refused", "代次 7", "forged line", "[redacted]", "127.0.0.1:22"} {
+	for _, want := range []string{"DEBUG session", "session-fixture", "service_refused", "gen=7", "forged line", "[redacted]", "target=127.0.0.1:22"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("debug log missing %q: %s", want, output)
 		}
@@ -312,13 +320,13 @@ func TestCLIDebugPreservesDiagnosticsAndEscapesAllInputs(t *testing.T) {
 	}
 	r.debug = true
 	r.event(core.Event{Kind: "log", Message: "底层实现细节"})
-	if !strings.Contains(output.String(), "【调试】底层实现细节") {
+	if !strings.Contains(output.String(), "DEBUG core 底层实现细节") {
 		t.Fatal(output)
 	}
 	output.Reset()
 	r.debugPeer(core.PeerTransportSnapshot{PeerID: "peer", State: "active", Phase: "relay_udp", PathType: "relay", RelaySide: "remote", AddressFamily: "IPv4", DatagramLimit: 1400,
 		CandidatePairs: []core.CandidatePairSnapshot{{LocalType: "srflx", RemoteType: "relay", LocalAddress: "203.0.113.1:20000", RemoteAddress: "198.51.100.9:41000", State: "succeeded", RelayLegs: 1, RTTMS: 30, Selected: true}, {LocalType: "relay", RemoteType: "relay", State: "failed", RelayLegs: 2}}})
-	for _, want := range []string{"数据报上限 1400 字节", "候选对：srflx 203.0.113.1:20000 ↔ relay 198.51.100.9:41000 · 已连通 · 中继跳数 1 · RTT 30 毫秒 · 当前选中", "未连通 · 中继跳数 2"} {
+	for _, want := range []string{"datagram_limit=1400", "pair srflx 203.0.113.1:20000 -> relay 198.51.100.9:41000 succeeded legs=1 rtt=30ms selected", "failed legs=2"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("debug peer line missing %q: %s", want, output)
 		}
@@ -332,26 +340,26 @@ func TestCLIRepeatedSessionFailuresAreSummarizedAndRecover(t *testing.T) {
 		e.SessionID = fmt.Sprintf("session-%d", i)
 		r.event(e)
 	}
-	if strings.Count(output.String(), "\n") != 3 || !strings.Contains(output.String(), "累计 5 次") || !strings.Contains(output.String(), "累计 10 次") {
+	if strings.Count(output.String(), "\n") != 3 || !strings.Contains(output.String(), " x5") || !strings.Contains(output.String(), " x10") {
 		t.Fatal("identical failures were not summarized", output)
 	}
 	output.Reset()
 	e.Error = &core.Fault{Code: "service_timeout", Message: "raw timeout"}
 	r.event(e)
-	if !strings.Contains(output.String(), "连接目标服务超时") {
+	if !strings.Contains(output.String(), "连接超时") {
 		t.Fatal("new cause was hidden by suppression", output)
 	}
 	output.Reset()
 	e.State, e.Error = "active", nil
 	r.event(e)
 	r.event(e)
-	if strings.Count(output.String(), "目标服务连接已成功") != 1 {
+	if strings.Count(output.String(), "目标服务已恢复") != 1 {
 		t.Fatal(output)
 	}
 	output.Reset()
 	e.State, e.Error = "error", &core.Fault{Code: "service_refused"}
 	r.event(e)
-	if strings.Count(output.String(), "\n") != 1 || strings.Contains(output.String(), "累计") {
+	if strings.Count(output.String(), "\n") != 1 || strings.Contains(output.String(), " x") {
 		t.Fatal("suppression was not reset by recovery", output)
 	}
 }
@@ -367,18 +375,18 @@ func TestCLISignalRetryDoesNotClaimBusinessDisconnection(t *testing.T) {
 		r.event(core.Event{Kind: "signal", State: "connecting"})
 		r.peer(p)
 	}
-	if strings.Count(output.String(), "\n") != 2 || !strings.Contains(output.String(), "协调服务器连接中断") || strings.Contains(output.String(), "与「设备」的连接中断") || strings.Contains(output.String(), "服务中断") {
+	if strings.Count(output.String(), "\n") != 2 || !strings.Contains(output.String(), "信令连接中断") || strings.Contains(output.String(), "服务中断") {
 		t.Fatal(output)
 	}
 	output.Reset()
 	r.event(core.Event{Kind: "signal", State: "joined"})
 	r.event(core.Event{Kind: "signal", State: "joined"})
-	if strings.Count(output.String(), "\n") != 1 || !strings.Contains(output.String(), "协调服务器连接已恢复") {
+	if strings.Count(output.String(), "\n") != 1 || !strings.Contains(output.String(), "信令已恢复") {
 		t.Fatal(output)
 	}
 	initial, initialOutput := testReporter(t)
 	initial.event(core.Event{Kind: "signal", State: "reconnecting", Error: &core.Fault{Code: "signal_auth_failed"}})
-	if strings.Contains(initialOutput.String(), "中断") || !strings.Contains(initialOutput.String(), "密码不匹配") {
+	if strings.Contains(initialOutput.String(), "中断") || !strings.Contains(initialOutput.String(), "signal_auth_failed") {
 		t.Fatal("first connection failure described as an outage", initialOutput)
 	}
 }
@@ -394,10 +402,10 @@ func TestCLIPathRetriesUseRetryCountNotGeneration(t *testing.T) {
 		p.State, p.Phase = "connecting", []string{"direct", "relay_udp", "relay_tcp_80", "relay_tls_443"}[i%4]
 		r.peer(p)
 	}
-	if strings.Count(output.String(), "\n") > 8 || !strings.Contains(output.String(), "发起 5 次重试") || !strings.Contains(output.String(), "发起 10 次重试") {
+	if strings.Count(output.String(), "\n") > 8 || !strings.Contains(output.String(), "累计 5") || !strings.Contains(output.String(), "累计 10") {
 		t.Fatal("retry loop still floods output", output)
 	}
-	for _, hidden := range []string{"代次", "连接中断", "【失败】", "raw", "900"} {
+	for _, hidden := range []string{"代次", "\u3010", "raw", "900"} {
 		if strings.Contains(output.String(), hidden) {
 			t.Fatalf("routine fallback contains %q: %s", hidden, output)
 		}
@@ -409,7 +417,7 @@ func TestCLIPathRetriesUseRetryCountNotGeneration(t *testing.T) {
 	r.peer(p)
 	p.State = "active"
 	r.peer(p)
-	if !strings.Contains(output.String(), "连接中断") || !strings.Contains(output.String(), "连接已恢复（TLS 中继）") {
+	if !strings.Contains(output.String(), "连接中断") || !strings.Contains(output.String(), "已恢复 TLS 中继") {
 		t.Fatal("actual outage or recovery missing", output)
 	}
 }
@@ -424,7 +432,7 @@ func TestCLIFailedSwitchDoesNotClaimSuccessfulSwitch(t *testing.T) {
 	p.State, p.PendingPhase = "active", ""
 	p.Error = &core.Fault{Code: "ice_path_failed"}
 	r.peer(p)
-	if !strings.Contains(output.String(), "继续使用原连接（直连）") || strings.Contains(output.String(), "切换完成") || strings.Contains(output.String(), "耗时") {
+	if !strings.Contains(output.String(), "继续使用 直连") || strings.Contains(output.String(), "切换完成") {
 		t.Fatal(output)
 	}
 	output.Reset()
@@ -454,11 +462,11 @@ func TestCLIFollowUsesCurrentMappingStateAndPrintsPathFirst(t *testing.T) {
 			close(f.events)
 			r.follow(f)
 			if state == "active" {
-				path, mapping := strings.Index(output.String(), "连接成功"), strings.Index(output.String(), "映射已就绪")
+				path, mapping := strings.Index(output.String(), "已连接"), strings.Index(output.String(), "映射已就绪")
 				if path < 0 || mapping < path {
 					t.Fatal("readiness appeared before the device connection", output)
 				}
-			} else if strings.Contains(output.String(), "已就绪") || strings.Contains(output.String(), "连接成功") {
+			} else if strings.Contains(output.String(), "已就绪") || strings.Contains(output.String(), "已连接") {
 				t.Fatal("stale queued event claimed readiness", output)
 			}
 		})
@@ -469,7 +477,7 @@ func TestCLIDroppedEventsReconcileMappingsWithoutClaimingServiceHealth(t *testin
 	r, output := testReporter(t)
 	s := core.Snapshot{Configured: true, SignalState: "joined", EventsDropped: 2, Mappings: []core.MappingSnapshot{{ID: "SSH", State: "active", Error: &core.Fault{Code: "service_refused"}}}}
 	r.snapshot(s)
-	for _, want := range []string{"映射已就绪", "目标服务拒绝连接", "省略了 2 条事件"} {
+	for _, want := range []string{"映射已就绪", "拒绝连接", "省略事件: 2/2"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("missing %q: %s", want, output)
 		}
@@ -482,7 +490,7 @@ func TestCLIDroppedEventsReconcileMappingsWithoutClaimingServiceHealth(t *testin
 	r.event(core.Event{Kind: "engine", State: "stopped"})
 	s.EngineState = "stopped"
 	r.snapshot(s)
-	if output.String() != "【停止】hole 已停止\n" {
+	if !strings.HasSuffix(output.String(), "INFO  hole 已停止\n") {
 		t.Fatal("shutdown produced misleading per-path failures", output)
 	}
 }
@@ -500,14 +508,14 @@ func TestCLILibraryLogsUseDebugChannelAndRestoreGlobalLogger(t *testing.T) {
 			t.Fatal("expected packet-adapter notice reached default logs", output)
 		}
 		log.Print("an unexpected library diagnostic")
-		log.Print("another diagnostic")
-		if strings.Count(output.String(), "\n") != 1 || !strings.Contains(output.String(), "【提示】网络库报告了运行诊断") || strings.Contains(output.String(), "unexpected") {
+		log.Print("an unexpected library diagnostic")
+		if strings.Count(output.String(), "\n") != 1 || !strings.Contains(output.String(), "WARN  网络库: an unexpected library diagnostic") {
 			t.Fatal(output)
 		}
 		output.Reset()
 		r.debug = true
 		log.Print("PRIVATE_ROOM_TOKEN\nraw library diagnostic")
-		if !strings.Contains(output.String(), "【调试】网络库：") || !strings.Contains(output.String(), "raw library diagnostic") || strings.Contains(output.String(), "PRIVATE_") || strings.Count(output.String(), "\n") != 1 {
+		if !strings.Contains(output.String(), "DEBUG lib ") || !strings.Contains(output.String(), "raw library diagnostic") || strings.Contains(output.String(), "PRIVATE_") || strings.Count(output.String(), "\n") != 1 {
 			t.Fatal(output)
 		}
 	}()

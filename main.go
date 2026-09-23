@@ -17,13 +17,13 @@ func main() {
 	log.SetOutput(os.Stdout)
 	log.SetFlags(log.Ltime)
 	log.SetPrefix("")
-	configPath := flag.String("config", "config.yaml", "配置文件路径")
-	transport := flag.String("transport", "", "覆盖连接方式：auto、ice、ipv6；留空使用配置文件")
-	allowLocalWS := flag.Bool("allow-insecure-signal", false, "显式允许本地 ICE 测试使用 ws:// 信令")
-	debug := flag.Bool("debug", false, "输出调试日志（连接阶段、内部编号和原始错误）")
+	configPath := flag.String("config", "config.yaml", "配置文件")
+	transport := flag.String("transport", "", "连接方式 auto、ice 或 ipv6, 覆盖配置文件")
+	allowLocalWS := flag.Bool("allow-insecure-signal", false, "允许 ws:// 信令, 仅本地测试")
+	debug := flag.Bool("debug", false, "输出调试日志")
 	version := flag.Bool("version", false, "显示共享核心版本")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "用法：%s -config config.yaml [选项]\n配置须包含 server_url: wss://HOST/ws；默认显示中文连接进展，排障可加 -debug。\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "用法：%s [-config config.yaml] [选项]\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -34,7 +34,7 @@ func main() {
 	if err := run(*configPath, cliOptions{transport: *transport, allowLocalWS: *allowLocalWS, debug: *debug}); err != nil && !errors.Is(err, context.Canceled) {
 		var reported *cliReportedError
 		if !errors.As(err, &reported) {
-			log.Printf("【失败】%s", logText(err.Error()))
+			log.Printf("ERROR %s", logText(err.Error()))
 		}
 		os.Exit(1)
 	}
@@ -61,7 +61,7 @@ func cliRequest(data []byte, options cliOptions) (core.Request, error) {
 	}
 	serverURL := strings.TrimSpace(cfg.ServerURL)
 	if serverURL == "" {
-		return core.Request{}, fmt.Errorf("配置缺少 server_url，请在 YAML 中填写 server_url: wss://HOST/ws")
+		return core.Request{}, fmt.Errorf("配置缺少 server_url, 在 YAML 中填写 server_url: wss://HOST/ws")
 	}
 	// The request envelope is the single authority inside the shared engine.
 	cfg.ServerURL = ""

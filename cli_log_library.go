@@ -3,20 +3,18 @@ package main
 import (
 	"log"
 	"strings"
-	"sync"
 )
 
 // Some dependencies use the process-wide logger instead of core events. The
 // reporter owns a separate logger so forwarding here cannot recurse or deadlock.
 type cliLibraryLog struct {
 	reporter *cliReporter
-	notice   sync.Once
 }
 
 func (w *cliLibraryLog) Write(data []byte) (int, error) {
 	message := strings.TrimSuffix(string(data), "\n")
 	if w.reporter.debug {
-		w.reporter.debugf("网络库：%s", logText(message))
+		w.reporter.debugf("lib %s", logText(message))
 		return len(data), nil
 	}
 	// ICE owns its sockets; quic-go sees a packet adapter, not a raw UDPConn.
@@ -26,9 +24,7 @@ func (w *cliLibraryLog) Write(data []byte) (int, error) {
 			return len(data), nil
 		}
 	}
-	w.notice.Do(func() {
-		w.reporter.printf("【提示】网络库报告了运行诊断，可加 -debug 查看详情")
-	})
+	w.reporter.problem("library", logLevelWarn, "网络库: "+logText(message))
 	return len(data), nil
 }
 

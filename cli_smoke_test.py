@@ -100,7 +100,7 @@ async def main():
                 readers.append(asyncio.create_task(collect(name, proc)))
 
             async def ready():
-                while not all(any("【就绪】「echo」映射已就绪" in line for line in lines) for lines in logs.values()):
+                while not all(any("映射已就绪" in line for line in lines) for lines in logs.values()):
                     assert all(p.returncode is None for p in clients), logs
                     await asyncio.sleep(0.1)
 
@@ -139,9 +139,9 @@ async def main():
                     assert all(p.returncode is None for p in clients), logs
                     await asyncio.sleep(0.02)
 
-            await asyncio.wait_for(wait_log("同类问题累计 5 次"), 5)
+            await asyncio.wait_for(wait_log(" x5"), 5)
             for name, lines in logs.items():
-                assert sum("【失败】" in line and "目标服务拒绝连接" in line for line in lines) == 2, logs
+                assert sum("ERROR" in line and "拒绝连接" in line for line in lines) == 2, logs
                 assert not any("的连接中断" in line or "映射未就绪" in line for line in lines), logs
 
             service = await asyncio.start_server(echo, "127.0.0.1", service_port)
@@ -149,7 +149,7 @@ async def main():
             writer.write(payload)
             await writer.drain()
             assert await asyncio.wait_for(reader.readexactly(len(payload)), 5) == payload
-            await asyncio.wait_for(wait_log("目标服务连接已成功"), 5)
+            await asyncio.wait_for(wait_log("目标服务已恢复"), 5)
             writer.close()
             await writer.wait_closed()
     finally:
@@ -178,21 +178,21 @@ async def main():
         text = "\n".join(lines) + "\n"
         (output / f"{name}.log").write_text(text)
         assert "PRIVATE_" not in text, text
-        assert all(re.match(r"^\d{2}:\d{2}:\d{2} 【[^】]+】", line) for line in lines), f"unformatted library output:\n{text}"
-        for expected in ["优先直连，必要时自动中继", "连接成功（直连，IPv4", "【就绪】「echo」映射已就绪", "【停止】hole 已停止"]:
+        assert all(re.match(r"^\d{2}:\d{2}:\d{2} (INFO |WARN |ERROR|DEBUG) ", line) for line in lines), f"unformatted library output:\n{text}"
+        for expected in ["已连接 直连/IPv4", "映射已就绪", "hole 已停止"]:
             assert expected in text, f"{name}: missing {expected}\n{text}"
         if DEBUG:
-            for expected in ["【调试】", "中继：按需申请", "代次", "实际路径 直连/IPv4"]:
+            for expected in ["DEBUG", "turn mode=worker", "gen=", "path=直连/IPv4"]:
                 assert expected in text, f"{name}: missing debug detail {expected}\n{text}"
         else:
-            for hidden in ["【调试】", "【详情】", "代次", "通道", "session_id", "STUN", "凭据有效期", "无定时采样"]:
+            for hidden in ["DEBUG", "gen=", "session=", "STUN", "turn mode=", "【", "「", "·"]:
                 assert hidden not in text, f"{name}: default log contains {hidden}\n{text}"
         assert "traffic peer=" not in text and "status engine=" not in text, "periodic sampling remains"
-        path_line = next(i for i, line in enumerate(lines) if "连接成功（直连，IPv4" in line)
-        mapping_line = next(i for i, line in enumerate(lines) if "【就绪】「echo」映射已就绪" in line)
+        path_line = next(i for i, line in enumerate(lines) if "已连接 直连/IPv4" in line)
+        mapping_line = next(i for i, line in enumerate(lines) if "映射已就绪" in line)
         assert path_line < mapping_line, f"{name}: mapping readiness appeared before connection"
     assert not turn_requests, "healthy direct path requested TURN"
-    assert sum("【就绪】「echo」映射已就绪" in line for line in logs["beta"]) == 1
+    assert sum("映射已就绪" in line for line in logs["beta"]) == 1
     assert any(f"本地入口 127.0.0.1:{local_port}" in line for line in logs["beta"])
     print(f"PASS ({'debug' if DEBUG else 'default'}): Worker/QUIC TCP echo, Chinese redacted logs, no idle noise/TURN requests, path before mapping, service failures summarized, recovery and clean stop")
     print("\n".join(logs["beta"]))

@@ -85,8 +85,19 @@ consume:
 | `-config FILE` | 配置文件，默认 `config.yaml`；必须包含 `server_url` |
 | `-transport auto` | 优先 ICE，允许与仅支持 IPv6 协议的对端互通 |
 | `-transport ice` / `ipv6` | 仅使用指定传输 |
-| `-debug` | 输出详细连接阶段和诊断信息 |
+| `-debug` | 输出调试日志 |
 | `-version` | 显示共享核心的提交标识与源码摘要 |
+
+启动后的日志类似：
+
+```text
+21:11:20 INFO  hole 01d65b1 设备 desktop
+21:11:21 INFO  已加入房间
+21:11:41 INFO  laptop: 已连接 直连/IPv4 320ms
+21:11:41 INFO  ssh: 映射已就绪，对端 laptop (tcp)
+21:15:13 WARN  laptop: 连接中断，重连中
+21:15:33 INFO  laptop: 已恢复 TCP 中继/IPv4 5.1s
+```
 
 配置中省略 `transport` 时保留 IPv6 模式；上面的示例显式开启 ICE。
 STUN 默认使用 Cloudflare，TURN 默认向 Worker 按需申请短期凭据。
