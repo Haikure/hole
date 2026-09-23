@@ -86,6 +86,7 @@ GUI 启动后主动发送 `hello`，核对协议与核心 API 版本后再发送
 | `stop` | 省略或 `{}` | 清理本次运行及应用 socket 后返回 `{"accepted":true}`；宿主保留 |
 | `snapshot` | 省略或 `{}` | 当前核心快照及桥接事件丢弃计数 |
 | `network_changed` | 省略或 `{}` | 通知已有核心重建网络路径；停止态不启动网络 |
+| `renominate_transports` | 省略或 `{}` | 对已有 ICE active 路径发起新代次；进行中或无可用路径时幂等 |
 | `decode_cli_config` | `{"text":"YAML 或 JSON 文本"}` | `{"config":规范化便携配置}`；纯转换/预览，不改变 Engine |
 | `encode_cli_config` | `{"config":便携配置对象,"include_secrets":false}` | `{"text":"CLI YAML"}`；默认脱敏，不改变 Engine |
 | `shutdown` | 省略或 `{}` | 关闭 Engine，写出 `{"accepted":true}` 后退出宿主 |
@@ -95,7 +96,8 @@ GUI 启动后主动发送 `hello`，核对协议与核心 API 版本后再发送
 
 `apply_config` 直接提交完整配置；核心按配置内容判定幂等或重配，不在桥接层维护修订号。
 重复 `stop` 可用，随后 `start` 创建新的运行代次；停止态已有配置不自动启动。
-GUI 的手动“重新连接”可使用 `network_changed`，沿用 Android 的路径重建语义。
+手动“重选路径”可使用 `renominate_transports`，沿用 Android 的新数据面语义；`network_changed`
+仅用于系统网络变化。
 
 ### 与 Android 对齐的配置交换
 

@@ -41,6 +41,7 @@ func (e *fakeEngine) Start(r core.Request) error       { return e.call("start", 
 func (e *fakeEngine) ApplyConfig(r core.Request) error { return e.call("apply_config", &r) }
 func (e *fakeEngine) Stop() error                      { return e.call("stop", nil) }
 func (e *fakeEngine) NetworkChanged() error            { return e.call("network_changed", nil) }
+func (e *fakeEngine) RenominateTransports() error      { return e.call("renominate_transports", nil) }
 func (e *fakeEngine) Events() <-chan core.Event        { return e.events }
 func (e *fakeEngine) Snapshot() core.Snapshot          { return e.state }
 func (e *fakeEngine) Close() error {
@@ -110,9 +111,10 @@ func TestLifecycleDispatchAndShutdownFlush(t *testing.T) {
 	input := wireRequest("1", "hello", "") + wireRequest("2", "validate", validParams()) +
 		wireRequest("3", "start", validParams()) + wireRequest("4", "apply_config", validParams()) +
 		wireRequest("5", "snapshot", "") + wireRequest("6", "network_changed", "{}") +
-		wireRequest("7", "stop", "") + wireRequest("8", "shutdown", "") + wireRequest("9", "start", validParams())
+		wireRequest("7", "renominate_transports", "{}") + wireRequest("8", "stop", "") +
+		wireRequest("9", "shutdown", "") + wireRequest("10", "start", validParams())
 	messages, err := exchange(t, input, e)
-	if err != nil || len(messages) != 8 {
+	if err != nil || len(messages) != 9 {
 		t.Fatalf("lost responses: %d %v", len(messages), err)
 	}
 	for i, m := range messages {
@@ -124,7 +126,7 @@ func TestLifecycleDispatchAndShutdownFlush(t *testing.T) {
 	if err := json.Unmarshal(messages[0].Result, &hello); err != nil || hello.BridgeVersion != ProtocolVersion || hello.APIVersion != core.APIVersion || hello.Limits.RequestBytes != MaxRequestBytes {
 		t.Fatalf("hello: %+v %v", hello, err)
 	}
-	if got := strings.Join(e.calls, ","); got != "start,apply_config,network_changed,stop,close" {
+	if got := strings.Join(e.calls, ","); got != "start,apply_config,network_changed,renominate_transports,stop,close" {
 		t.Fatalf("unexpected lifecycle calls: %s", got)
 	}
 	if len(e.requests) != 2 {

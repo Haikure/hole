@@ -30,6 +30,7 @@ type engine interface {
 	Stop() error
 	Close() error
 	NetworkChanged() error
+	RenominateTransports() error
 	Snapshot() core.Snapshot
 	Events() <-chan core.Event
 }
@@ -280,7 +281,7 @@ func (h *host) dispatch(r request) (any, *rpcError, bool) {
 	}
 	// Unknown methods are reported independently of their params schema.
 	switch r.Method {
-	case "hello", "snapshot", "stop", "network_changed", "shutdown":
+	case "hello", "snapshot", "stop", "network_changed", "renominate_transports", "shutdown":
 	default:
 		return nil, rpcFault(methodNotFound, "method_not_found", "方法不存在"), false
 	}
@@ -292,7 +293,7 @@ func (h *host) dispatch(r request) (any, *rpcError, bool) {
 	case "hello":
 		return helloResult{
 			BridgeVersion: ProtocolVersion, APIVersion: core.APIVersion, CoreVersion: core.CoreVersion,
-			Methods: []string{"hello", "validate", "start", "apply_config", "stop", "snapshot", "network_changed", "decode_cli_config", "encode_cli_config", "shutdown"},
+			Methods: []string{"hello", "validate", "start", "apply_config", "stop", "snapshot", "network_changed", "renominate_transports", "decode_cli_config", "encode_cli_config", "shutdown"},
 			Limits:  protocolLimits{MaxRequestBytes, MaxConfigBytes, MaxOutputBytes, eventCapacity, responseCapacity, int(writeTimeout / time.Millisecond)},
 		}, nil, false
 	case "snapshot":
@@ -301,6 +302,8 @@ func (h *host) dispatch(r request) (any, *rpcError, bool) {
 		err = h.engine.Stop()
 	case "network_changed":
 		err = h.engine.NetworkChanged()
+	case "renominate_transports":
+		err = h.engine.RenominateTransports()
 	case "shutdown":
 		err = h.engine.Close()
 	}
