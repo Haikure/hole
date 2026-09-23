@@ -19,7 +19,7 @@ DEBUG = os.environ.get("HOLE_CLI_DEBUG") == "1"
 
 
 async def main():
-    node = await asyncio.create_subprocess_exec("node", str(ROOT / "worker_fixture.test.mjs"), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    node = await asyncio.create_subprocess_exec("node", str(ROOT / "worker" / "worker_fixture.test.mjs"), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     peers, clients, readers, logs, turn_requests = {}, [], [], {}, []
     lock = asyncio.Lock()
 
