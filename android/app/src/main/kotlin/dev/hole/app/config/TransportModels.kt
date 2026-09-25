@@ -32,11 +32,12 @@ data class TurnSettings(
     val ttl: String = "6h",
     val urls: List<String> = emptyList(),
     val username: String = "",
+    val order: List<String> = emptyList(),
 )
 @Serializable
 data class CoreTurn(
     val mode: String = "worker", val ttl: String = "6h", val urls: List<String> = emptyList(),
-    val username: String = "", val credential: String = "",
+    val username: String = "", val credential: String = "", val order: List<String> = emptyList(),
 )
 
 fun ConnectionSettings.coreTransport() = CoreTransport(
@@ -44,8 +45,8 @@ fun ConnectionSettings.coreTransport() = CoreTransport(
     allowLegacy = connectionMode == "auto", allowInsecureSignal = allowInsecureSignal,
 )
 fun ConnectionSettings.coreTurn(credential: String) = if (turn.mode == "manual") {
-    CoreTurn(turn.mode, turn.ttl, turn.urls, turn.username, credential)
-} else CoreTurn(mode = turn.mode, ttl = turn.ttl)
+    CoreTurn(turn.mode, turn.ttl, turn.urls, turn.username, credential, turn.order)
+} else CoreTurn(mode = turn.mode, ttl = turn.ttl, order = turn.order)
 
 fun migrateStoredConfig(config: StoredConfig, version: Int): StoredConfig {
     require(version in 1..2) { "配置格式版本不受支持，保留原文件" }

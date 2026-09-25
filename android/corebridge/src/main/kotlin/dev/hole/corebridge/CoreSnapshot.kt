@@ -22,6 +22,8 @@ data class PeerSnapshot(
     val droppedDatagrams: String = "0", val retryCount: String = "0", val relayState: String = "",
     val leaseUntil: String = "0", val turnExpiresAt: String = "0", val errorCode: String? = null, val errorMessage: String? = null,
     val relaySide: String = "", val relayPolicy: String = "",
+    val relayOrder: List<String> = emptyList(), val peerRelayOrder: List<String> = emptyList(),
+    val relayRound: Int = 0, val relayOrderFallback: Boolean = false,
 ) {
     companion object {
         fun fromJson(j: JSONObject): PeerSnapshot = PeerSnapshot(
@@ -35,6 +37,9 @@ data class PeerSnapshot(
             leaseUntil = j.optString("lease_until", "0"), turnExpiresAt = j.optString("turn_expires_at", "0"),
             errorCode = j.optJSONObject("error")?.optString("code"), errorMessage = j.optJSONObject("error")?.optString("message"),
             relaySide = j.optString("relay_side"), relayPolicy = j.optString("relay_policy"),
+            relayOrder = j.optJSONArray("relay_order")?.let { array -> List(array.length()) { array.optString(it) } }.orEmpty(),
+            peerRelayOrder = j.optJSONArray("peer_relay_order")?.let { array -> List(array.length()) { array.optString(it) } }.orEmpty(),
+            relayRound = j.optInt("relay_round"), relayOrderFallback = j.optBoolean("relay_order_fallback"),
         )
     }
 }

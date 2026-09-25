@@ -25,4 +25,11 @@ class PeerSnapshotTest {
         assertEquals("", peer.relaySide)
         assertEquals("", peer.relayProtocol)
     }
+    @Test fun customRelayOrdersRoundAndFallbackSurviveTheBridge() {
+        val peer = PeerSnapshot.fromJson(JSONObject("""{"relay_order":["udp"],"peer_relay_order":["tls_443","udp"],"relay_round":2,"relay_order_fallback":true}"""))
+        assertEquals(listOf("udp"), peer.relayOrder)
+        assertEquals(listOf("tls_443", "udp"), peer.peerRelayOrder)
+        assertEquals(2, peer.relayRound)
+        assertEquals(true, peer.relayOrderFallback)
+    }
 }

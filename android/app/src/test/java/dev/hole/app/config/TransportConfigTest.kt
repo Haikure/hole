@@ -15,6 +15,13 @@ class TransportConfigTest {
         assertTrue(wireJson.encodeToString(request).contains("stun.cloudflare.com"))
         assertEquals(CoreTurn(mode = "worker", ttl = "6h", urls = emptyList(), username = "", credential = ""), request.config.turn)
     }
+    @Test fun customTurnOrderReachesTheCoreAndRejectsInvalidValues() {
+        val order = listOf("tls_443", "udp")
+        val custom = configured.copy(connection = configured.connection.copy(turn = TurnSettings(order = order)))
+        assertEquals(order, toStartRequest(custom, "password", "token").config.turn.order)
+        val duplicate = custom.copy(connection = custom.connection.copy(turn = TurnSettings(order = listOf("udp", "udp"))))
+        assertFailsWith<IllegalArgumentException> { toStartRequest(duplicate, "password", "token") }
+    }
     @Test fun migrationPreservesExplicitLegacySemanticsAndCredentials() {
         val pinned = configured.copy(schemaVersion = 1, connection = configured.connection.copy(candidateAddresses = listOf("2001:db8::1"), passwordCipher = "encrypted"))
         val migrated = migrateStoredConfig(pinned, 1)

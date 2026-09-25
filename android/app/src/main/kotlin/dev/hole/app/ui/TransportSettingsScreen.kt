@@ -37,6 +37,7 @@ fun TransportSettingsScreen(
     var mode by rememberSaveable { mutableStateOf(current.connectionMode) }
     var stun by rememberSaveable { mutableStateOf(current.ice.stunUrls.joinToString("\n")) }
     var relay by rememberSaveable { mutableStateOf(current.turn.mode) }
+    var relayOrderText by rememberSaveable { mutableStateOf(current.turn.order.joinToString(", ")) }
     var urls by rememberSaveable { mutableStateOf(current.turn.urls.joinToString("\n")) }
     var username by rememberSaveable { mutableStateOf(current.turn.username) }
     var credential by remember { mutableStateOf(configState.turnCredential) }
@@ -52,14 +53,16 @@ fun TransportSettingsScreen(
     var confirm by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var turnOrderDragging by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val ice = current.ice.copy(stunUrls = splitListField(stun), directProbeTimeout = probe.trim(), gatherTimeout = gather.trim(), connectivityTimeout = check.trim(), retryMaxDelay = retry.trim(), interfaceAllowlist = splitListField(interfaces), relayOnly = relayOnly)
-    val turn = TurnSettings(relay, ttl.trim(), splitListField(urls), username.trim())
+    val relayOrder = splitListField(relayOrderText)
+    val turn = TurnSettings(relay, ttl.trim(), splitListField(urls), username.trim(), relayOrder)
     val dirty = mode != current.connectionMode || ice != current.ice || turn != current.turn || credential != configState.turnCredential || insecure != current.allowInsecureSignal
     fun back() { if (busy) return; if (dirty) confirm = true else onBack() }
     BackHandler(handleBack) { back() }
     HoleScaffold(title = "连接方式", navigationIcon = { HoleBackButton { back() } }) { insets ->
-        Column(Modifier.fillMaxWidth().padding(insets).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column(Modifier.fillMaxWidth().padding(insets).verticalScroll(rememberScrollState(), enabled = !turnOrderDragging).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             HoleSettingsGroup("选择连接策略") {
                 HoleSingleChoice(listOf("auto", "ice", "legacy").map { it to connectionModeLabel(it) }, mode, { mode = it }, Modifier.fillMaxWidth())
                 Text(connectionModeDescription(mode), style = MaterialTheme.typography.bodyMedium)
@@ -85,8 +88,20 @@ fun TransportSettingsScreen(
                         HoleTextField(credential, { credential = it }, "TURN 凭据", modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
                     }
                 }
-                Text("尝试顺序：直连 → UDP 中继 → TCP 中继（80 → 3478）→ TLS 中继（443 → 5349）。同一对设备的服务共享连接。", style = MaterialTheme.typography.bodySmall)
+                Text("先尝试直连；直连失败后按下方本机顺序尝试 TURN。两端每轮可使用不同类型，连接服务仍通过加密 QUIC 传输。", style = MaterialTheme.typography.bodySmall)
                 Text("TLS 加密本机到 TURN 的接入；普通 TCP 接入不使用 TLS。业务数据始终由 QUIC 端到端加密。新顺序需双方客户端与 Worker 均支持。", style = MaterialTheme.typography.bodySmall)
+            }
+            HoleSettingsGroup("本机 TURN 类型顺序") {
+                Text("每台设备独立设置。留空使用默认顺序；未选中的类型会跳过。两端顺序不同也会在同一连接轮次中分别尝试。", style = MaterialTheme.typography.bodySmall)
+                TurnOrderBoard(
+                    order = relayOrder,
+                    onChange = { relayOrderText = it.joinToString(", ") },
+                    onDraggingChanged = { turnOrderDragging = it },
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    HoleTextButton("恢复默认顺序", { relayOrderText = "" })
+                }
+                relayOrderError(relayOrder)?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             }
             HoleTextButton(if (advanced) "收起高级参数" else "高级连接参数", { advanced = !advanced })
             AnimatedVisibility(advanced) {
@@ -109,6 +124,7 @@ fun TransportSettingsScreen(
                     ice.stunUrls.any { !it.startsWith("stun:") } -> "STUN 地址需以 stun: 开头。"
                     relay == "manual" && (turn.urls.isEmpty() || username.isBlank() || credential.isEmpty()) -> "请填齐 TURN 地址、用户名和凭据。"
                     relay == "manual" && turn.urls.any { !it.startsWith("turn:") && !it.startsWith("turns:") } -> "TURN 地址需以 turn: 或 turns: 开头。"
+                    relayOrderError(relayOrder) != null -> relayOrderError(relayOrder)
                     else -> null
                 }
                 if (error == null) scope.launch { busy = true; error = onSave(mode, ice, turn, credential, insecure); busy = false; if (error == null) onBack() }

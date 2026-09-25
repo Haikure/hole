@@ -157,7 +157,10 @@ private fun PeerDetail(peer: PeerSnapshot) {
         if (peer.errorCode != null && peer.state !in setOf("active", "switching")) Text(connectionIssue(peer.errorCode), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         Disclosure("查看线路细节", "收起线路细节") {
             CompactDetail("连接过程", peerPhaseLabel(peer))
-            CompactDetail("中继顺序", if (peer.relayPolicy == "udp-tcp-tls-v1") "UDP → TCP（80、3478）→ TLS（443、5349）" else "兼容阶段 · 对端或 Worker 尚未支持新顺序")
+            CompactDetail("本机 TURN 顺序", relayOrderLabel(peer.relayOrder))
+            CompactDetail("对端 TURN 顺序", relayOrderLabel(peer.peerRelayOrder))
+            if (peer.relayOrderFallback) Text("对端或协调服务不支持自定义顺序，当前使用默认顺序。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            else if (peer.relayRound > 0) CompactDetail("共享中继轮次", "第 ${peer.relayRound} 轮")
             if (peer.pathType == "relay") {
                 CompactDetail("中继使用方", when (peer.relaySide) { "both" -> "本机与对端"; "local" -> "本机"; "remote" -> "对端"; else -> "等待确认" })
                 CompactDetail("中继接入", relayPathLabel(peer))

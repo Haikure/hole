@@ -99,6 +99,14 @@ fun validateServerUrl(text: String): String? {
 fun splitListField(text: String): List<String> =
     text.split(Regex("[,，;；\\s]+")).map { it.trim() }.filter { it.isNotEmpty() }
 
+private val relayOrderTokens = setOf("udp", "tcp_80", "tcp", "tls_443", "tls")
+fun relayOrderError(order: List<String>): String? = when {
+    order.size > 5 -> "TURN 顺序最多选择 5 种类型。"
+    order.any { it !in relayOrderTokens } -> "TURN 顺序包含不支持的类型。"
+    order.distinct().size != order.size -> "TURN 顺序不能重复选择类型。"
+    else -> null
+}
+
 fun joinListField(values: List<String>): String = values.joinToString(", ")
 
 /** 同类列表内不重复；同一有效配置中 provide 与 consume 不得共用 id（只检查启用项）。 */
@@ -149,6 +157,7 @@ fun toStartRequest(
         require(!connection.serverUrl.startsWith("ws://") || connection.allowInsecureSignal) { "ICE 默认使用 wss://；本地 ws:// 测试需在连接方式中显式开启" }
     }
     require(connection.turn.mode in setOf("worker", "manual", "off")) { "中继来源无效" }
+    relayOrderError(connection.turn.order)?.let { throw IllegalArgumentException(it) }
     if (connection.turn.mode == "manual") require(connection.turn.urls.isNotEmpty() && connection.turn.username.isNotBlank() && turnCredential.isNotEmpty()) { "手动中继需要服务器、用户名和凭据" }
     for (address in stored.connection.candidateAddresses) {
         if (!isPublicIpv6(address)) throw IllegalArgumentException("候选地址 \"$address\" 需要公网 IPv6 字面地址")

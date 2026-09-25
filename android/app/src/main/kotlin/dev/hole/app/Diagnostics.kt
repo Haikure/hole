@@ -4,6 +4,7 @@ import android.os.Build
 import dev.hole.corebridge.CoreSnapshot
 import dev.hole.app.ui.peerPathLabel
 import dev.hole.app.ui.phaseLabel
+import dev.hole.app.ui.relayOrderLabel
 import java.net.URI
 import java.net.URLEncoder
 import java.time.Instant
@@ -43,7 +44,8 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
         appendLine("设备线路（结构化状态，不含原始日志或候选凭据）")
         for (peer in snapshot.peers) {
             appendLine("设备 ${peer.peerId}：${peer.state} / ${peerPathLabel(peer)}")
-            appendLine("  本机接入 ${peer.localRelayProtocol.ifBlank { peer.relayProtocol }.ifBlank { "非本机中继" }} · 对端接入 ${peer.remoteRelayProtocol.ifBlank { "未上报" }} · 中继使用方 ${peer.relaySide} · 策略 ${peer.relayPolicy.ifBlank { "兼容阶段" }}")
+            appendLine("  本机接入 ${peer.localRelayProtocol.ifBlank { peer.relayProtocol }.ifBlank { "非本机中继" }} · 对端接入 ${peer.remoteRelayProtocol.ifBlank { "未上报" }} · 中继使用方 ${peer.relaySide}")
+            appendLine("  本机 TURN 顺序 ${relayOrderLabel(peer.relayOrder)} · 对端 TURN 顺序 ${relayOrderLabel(peer.peerRelayOrder)} · 轮次 ${peer.relayRound}${if (peer.relayOrderFallback) " · 已回退默认顺序" else ""}")
             appendLine("  本地 ${peer.localAddress} (${peer.localType}) · 对端 ${peer.remoteAddress} (${peer.remoteType})")
             appendLine("  通道 ${peer.activeChannels}/${peer.mappingCount} · RTT ${peer.rttMs} ms · 建连 ${peer.connectMs} ms")
             appendLine("  线路发送 ${peer.bytesSent} / 接收 ${peer.bytesReceived} 字节 · UDP 丢弃 ${peer.droppedDatagrams}")

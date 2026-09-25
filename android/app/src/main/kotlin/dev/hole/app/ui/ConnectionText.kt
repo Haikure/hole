@@ -42,6 +42,7 @@ fun phaseLabel(phase: String): String = when (phase) {
     "relay_tls" -> "尝试 TLS 中继 · 5349 / 自定义端口"
     "relay_tcp_80" -> "尝试 TCP 中继 · 80 端口"
     "relay_tcp" -> "尝试 TCP 中继 · 3478 / 自定义端口"
+    "relay_wait" -> "等待对端的 TURN 中继"
     else -> "正在选择连接路径"
 }
 fun peerPhaseLabel(p: PeerSnapshot): String = if (p.state == "waiting_credentials")
@@ -82,6 +83,14 @@ fun peerStateLabel(p: PeerSnapshot): String = when (p.state) {
     "reconnecting" -> "正在重试"
     else -> "连接中"
 }
+fun relayOrderLabel(order: List<String>): String = if (order.isEmpty()) "默认：UDP → TCP 80 → TCP 3478 → TLS 443 → TLS 5349" else order.joinToString(" → ") { token -> when (token) {
+    "udp" -> "UDP"
+    "tcp_80" -> "TCP 80"
+    "tcp" -> "TCP 3478"
+    "tls_443" -> "TLS 443"
+    "tls" -> "TLS 5349"
+    else -> token
+} }
 fun candidateLabel(type: String): String = when (type) {
     "host" -> "设备本地地址"
     "srflx" -> "STUN 探测的公网映射"
