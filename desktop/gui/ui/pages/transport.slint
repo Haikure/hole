@@ -56,7 +56,8 @@ export component TransportPage inherits VerticalLayout {
                     Field { label: "TURN 用户名"; text: root.form.turn-username; edited(t) => { root.form.turn-username = t; } }
                     Field { label: "TURN 凭据"; text: root.form.turn-credential; secret: true; edited(t) => { root.form.turn-credential = t; } }
                 }
-                Hint { text: "尝试顺序：直连 → UDP 中继 → TCP 中继（80 → 3478）→ TLS 中继（443 → 5349）。TLS 加密本机到 TURN 的接入；业务数据始终由 QUIC 端到端加密。"; }
+                Field { label: "本机 TURN 类型顺序"; multiline: true; lines: 2; text: root.form.turn-order; hint: "每行一种，可选 udp、tcp_80、tcp、tls_443、tls；留空使用默认顺序。未选类型会跳过。"; edited(t) => { root.form.turn-order = t; } }
+                Hint { text: "默认顺序：直连 → UDP → TCP（80 → 3478）→ TLS（443 → 5349）。每台设备可独立选择顺序；TLS 只加密本机到 TURN 的接入，业务数据始终由 QUIC 端到端加密。"; }
             }
         }
         Card {

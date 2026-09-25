@@ -71,11 +71,12 @@ pub struct TurnSettings {
     pub ttl: String,
     pub urls: Vec<String>,
     pub username: String,
+    pub order: Vec<String>,
 }
 
 impl Default for TurnSettings {
     fn default() -> Self {
-        TurnSettings { mode: "worker".into(), ttl: "6h".into(), urls: vec![], username: String::new() }
+        TurnSettings { mode: "worker".into(), ttl: "6h".into(), urls: vec![], username: String::new(), order: vec![] }
     }
 }
 
@@ -394,6 +395,13 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
     if !matches!(c.turn.mode.as_str(), "worker" | "manual" | "off") {
         return Err("中继来源无效".into());
     }
+    let order_types = ["udp", "tcp_80", "tcp", "tls_443", "tls"];
+    if c.turn.order.len() > 5 || c.turn.order.iter().any(|item| !order_types.contains(&item.as_str())) {
+        return Err("TURN 顺序仅接受不超过 5 种 UDP、TCP 或 TLS 类型".into());
+    }
+    if c.turn.order.iter().collect::<std::collections::HashSet<_>>().len() != c.turn.order.len() {
+        return Err("TURN 类型顺序不能重复".into());
+    }
     if c.turn.mode == "manual" && (c.turn.urls.is_empty() || c.turn.username.trim().is_empty() || secrets.turn_credential.is_empty()) {
         return Err("手动中继需要服务器、用户名和凭据".into());
     }
@@ -442,9 +450,9 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
         "allow_insecure_signal": c.allow_insecure_signal,
     });
     let turn = if c.turn.mode == "manual" {
-        json!({ "mode": "manual", "ttl": c.turn.ttl, "urls": c.turn.urls, "username": c.turn.username, "credential": secrets.turn_credential })
+        json!({ "mode": "manual", "ttl": c.turn.ttl, "urls": c.turn.urls, "username": c.turn.username, "credential": secrets.turn_credential, "order": c.turn.order })
     } else {
-        json!({ "mode": c.turn.mode, "ttl": c.turn.ttl, "urls": [], "username": "", "credential": "" })
+        json!({ "mode": c.turn.mode, "ttl": c.turn.ttl, "urls": [], "username": "", "credential": "", "order": c.turn.order })
     };
     Ok(json!({
         "api_version": 1,
@@ -555,6 +563,7 @@ pub fn from_portable_document(doc: &Value, current: &StoredConfig) -> Result<(St
             ttl: dur(&turn["ttl"], "6h"),
             urls: list(&turn["urls"]),
             username: s(&turn["username"]),
+            order: list(&turn["order"]),
         },
     };
     let mut provide = Vec::new();
@@ -687,7 +696,7 @@ fn android_backup(config: &Value, version: i64, current: &StoredConfig) -> Resul
                 include_loopback: ice["include_loopback"].as_bool().unwrap_or(false),
                 relay_only: ice["relay_only"].as_bool().unwrap_or(false),
             },
-            turn: TurnSettings { mode: or(&turn["mode"], "worker"), ttl: or(&turn["ttl"], "6h"), urls: list(&turn["urls"]), username: s(&turn["username"]) },
+            turn: TurnSettings { mode: or(&turn["mode"], "worker"), ttl: or(&turn["ttl"], "6h"), urls: list(&turn["urls"]), username: s(&turn["username"]), order: list(&turn["order"]) },
         },
         provide: vec![],
         consume: vec![],
@@ -772,15 +781,18 @@ mod tests {
 
     #[test]
     fn portable_roundtrip() {
-        let (cfg, secrets) = sample();
+        let (mut cfg, secrets) = sample();
+        cfg.connection.turn.order = vec!["tls_443".into(), "udp".into()];
         let doc = to_portable_document(&cfg, &secrets, false).unwrap();
         assert_eq!(doc["password"], "");
         assert_eq!(doc["server_url"], "wss://host/ws");
+        assert_eq!(doc["turn"]["order"], json!(["tls_443", "udp"]));
         let (back, back_secrets) = from_portable_document(&doc, &StoredConfig::default()).unwrap();
         assert_eq!(back.provide.len(), 1);
         assert_eq!(back.provide[0].host, "::1");
         assert_eq!(back.consume[0].port, 8080);
         assert_eq!(back.connection.connection_mode, "auto");
+        assert_eq!(back.connection.turn.order, vec!["tls_443", "udp"]);
         assert_eq!(back_secrets.password, "");
     }
 

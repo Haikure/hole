@@ -89,6 +89,7 @@ pub fn push_config_forms(window: &Weak<MainWindow>, shared: &Arc<Mutex<Shared>>)
             stun_urls: c.ice.stun_urls.join("\n").into(),
             relay_mode: c.turn.mode.clone().into(),
             turn_urls: c.turn.urls.join("\n").into(),
+            turn_order: c.turn.order.join("\n").into(),
             turn_username: c.turn.username.clone().into(),
             turn_credential: secrets.turn_credential.clone().into(),
             direct_probe_timeout: c.ice.direct_probe_timeout.clone().into(),
@@ -262,6 +263,14 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
                 }
                 let relay = form.relay_mode.to_string();
                 let turn_urls = config::split_lines(&form.turn_urls);
+                let turn_order = config::split_list(&form.turn_order);
+                let order_types = ["udp", "tcp_80", "tcp", "tls_443", "tls"];
+                if turn_order.len() > 5 || turn_order.iter().any(|item| !order_types.contains(&item.as_str())) {
+                    return Err("TURN 顺序仅接受不超过 5 种 UDP、TCP 或 TLS 类型。".into());
+                }
+                if turn_order.iter().collect::<std::collections::HashSet<_>>().len() != turn_order.len() {
+                    return Err("TURN 类型顺序不能重复。".into());
+                }
                 if relay == "manual" {
                     if turn_urls.is_empty() || form.turn_username.trim().is_empty() || form.turn_credential.is_empty() {
                         return Err("请填齐 TURN 地址、用户名和凭据。".into());
@@ -283,6 +292,7 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
                 conn.turn.mode = relay;
                 conn.turn.ttl = form.turn_ttl.trim().into();
                 conn.turn.urls = turn_urls;
+                conn.turn.order = turn_order;
                 conn.turn.username = form.turn_username.trim().into();
                 secrets.turn_credential = form.turn_credential.to_string();
                 Ok(())

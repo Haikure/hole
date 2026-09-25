@@ -122,6 +122,7 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
         let remote = if p.remote_relay_protocol.is_empty() { "未上报" } else { &p.remote_relay_protocol };
         let policy = if p.relay_policy.is_empty() { "兼容阶段" } else { &p.relay_policy };
         line(&mut out, format!("  本机接入 {local} · 对端接入 {remote} · 中继使用方 {} · 策略 {policy}", p.relay_side));
+        line(&mut out, format!("  本机 TURN 顺序 {} · 对端 TURN 顺序 {} · 轮次 {}{}", super::snapshot::relay_order_label(&p.relay_order), super::snapshot::relay_order_label(&p.peer_relay_order), p.relay_round, if p.relay_order_fallback { " · 已回退默认顺序" } else { "" }));
         line(&mut out, format!("  本地 {} ({}) · 对端 {} ({})", p.local_address, p.local_type, p.remote_address, p.remote_type));
         line(&mut out, format!("  通道 {}/{} · RTT {} ms · 建连 {} ms", p.active_channels, p.mapping_count, p.rtt_ms, p.connect_ms));
         line(&mut out, format!("  线路发送 {} / 接收 {} 字节 · UDP 丢弃 {}", p.bytes_sent, p.bytes_received, p.dropped_datagrams));

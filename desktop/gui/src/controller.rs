@@ -839,8 +839,14 @@ impl Worker {
             .map(|p| {
                 let mut details = vec![
                     kv("连接过程", &snap::peer_phase_label(p)),
-                    kv("中继顺序", if p.relay_policy == "udp-tcp-tls-v1" { "UDP → TCP（80、3478）→ TLS（443、5349）" } else { "兼容阶段 · 对端或 Worker 尚未支持新顺序" }),
+                    kv("本机 TURN 顺序", &snap::relay_order_label(&p.relay_order)),
+                    kv("对端 TURN 顺序", &snap::relay_order_label(&p.peer_relay_order)),
                 ];
+                if p.relay_order_fallback {
+                    details.push(kv("顺序状态", "对端或协调服务不支持自定义顺序，已回退默认顺序"));
+                } else if p.relay_round > 0 {
+                    details.push(kv("共享中继轮次", &format!("第 {} 轮", p.relay_round)));
+                }
                 if p.path_type == "relay" {
                     details.push(kv("中继使用方", match p.relay_side.as_str() { "both" => "本机与对端", "local" => "本机", "remote" => "对端", _ => "等待确认" }));
                     details.push(kv("中继接入", &snap::relay_path_label(p)));

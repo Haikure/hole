@@ -52,6 +52,10 @@ pub struct Peer {
     pub remote_relay_protocol: String,
     pub relay_side: String,
     pub relay_policy: String,
+    pub relay_order: Vec<String>,
+    pub peer_relay_order: Vec<String>,
+    pub relay_round: i64,
+    pub relay_order_fallback: bool,
     pub local_address: String,
     pub remote_address: String,
     pub local_type: String,
@@ -216,6 +220,10 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
                     remote_relay_protocol: s(p, "remote_relay_protocol"),
                     relay_side: s(p, "relay_side"),
                     relay_policy: s(p, "relay_policy"),
+                    relay_order: list(p, "relay_order"),
+                    peer_relay_order: list(p, "peer_relay_order"),
+                    relay_round: i(p, "relay_round"),
+                    relay_order_fallback: p["relay_order_fallback"].as_bool().unwrap_or(false),
                     local_address: s(p, "local_address"),
                     remote_address: s(p, "remote_address"),
                     local_type: s(p, "local_type"),
@@ -395,8 +403,21 @@ pub fn phase_label(phase: &str) -> &'static str {
         "relay_tls" => "尝试 TLS 中继 · 5349 / 自定义端口",
         "relay_tcp_80" => "尝试 TCP 中继 · 80 端口",
         "relay_tcp" => "尝试 TCP 中继 · 3478 / 自定义端口",
+        "relay_wait" => "等待对端的 TURN 中继",
         _ => "正在选择连接路径",
     }
+}
+
+pub fn relay_order_label(order: &[String]) -> String {
+    if order.is_empty() { return "默认：UDP → TCP 80 → TCP 3478 → TLS 443 → TLS 5349".into(); }
+    order.iter().map(|token| match token.as_str() {
+        "udp" => "UDP",
+        "tcp_80" => "TCP 80",
+        "tcp" => "TCP 3478 / 自定义端口",
+        "tls_443" => "TLS 443",
+        "tls" => "TLS 5349 / 自定义端口",
+        other => other,
+    }).collect::<Vec<_>>().join(" → ")
 }
 
 pub fn peer_phase_label(p: &Peer) -> String {
