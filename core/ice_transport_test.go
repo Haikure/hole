@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -261,6 +262,68 @@ func TestICERelayPhaseWaitsForPeerRelayWithoutLocalServer(t *testing.T) {
 	s = waitSnapshotWithin(t, a, 30*time.Second, active)
 	if s.PeerTransports[0].RelaySide != "local" || s.PeerTransports[0].LocalRelayProtocol != "udp" || s.PeerTransports[0].Phase != "relay_udp" {
 		t.Fatal(s.PeerTransports)
+	}
+}
+
+func TestICECustomRelayOrdersConnectInTheSameRound(t *testing.T) {
+	server, _ := actualWorkerFixture(t)
+	udpURL, stopUDP := startTURNRelay(t, "udp")
+	defer stopUDP()
+	tcpURL, stopTCP := startTURNRelay(t, "tcp")
+	defer stopTCP()
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echo.Close()
+	go func() {
+		for {
+			conn, e := echo.Accept()
+			if e != nil {
+				return
+			}
+			go func() { defer conn.Close(); _, _ = io.Copy(conn, conn) }()
+		}
+	}()
+	a, b := NewEngine(Options{RetryNetwork: true}), NewEngine(Options{RetryNetwork: true})
+	defer a.Close()
+	defer b.Close()
+	ra, rb := iceFixtureRequest(server, "alpha"), iceFixtureRequest(server, "beta")
+	ra.Config.ICE.RelayOnly = true
+	ra.Config.TURN = TURNConfig{Mode: "manual", URLs: []string{udpURL}, Username: "user", Credential: "secret", Order: []string{"udp"}}
+	rb.Config.TURN = TURNConfig{Mode: "manual", URLs: []string{tcpURL}, Username: "user", Credential: "secret", Order: []string{"tcp", "udp"}}
+	port := unusedTCPPort(t)
+	ra.Config.Provide = []Provide{{ID: "relay", Service: ServiceEndpoint{"tcp", "127.0.0.1", echo.Addr().(*net.TCPAddr).Port}}}
+	rb.Config.Consume = []Consume{{ID: "relay", Expose: HostPort{"127.0.0.1", port}}}
+	if err = a.Start(ra); err != nil {
+		t.Fatal(err)
+	}
+	if err = b.Start(rb); err != nil {
+		t.Fatal(err)
+	}
+	active := func(s Snapshot) bool {
+		return len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].PathType == "relay" && s.PeerTransports[0].ActiveChannels == 1
+	}
+	left := waitSnapshotWithin(t, a, 35*time.Second, active).PeerTransports[0]
+	right := waitSnapshotWithin(t, b, 35*time.Second, active).PeerTransports[0]
+	if left.Generation != right.Generation || left.RelayRound != 1 || right.RelayRound != 1 || left.Phase != "relay_udp" || right.Phase != "relay_tcp" {
+		t.Fatalf("expected one shared relay round with per-end phases: left=%+v right=%+v", left, right)
+	}
+	if left.RelayOrderFallback || right.RelayOrderFallback || !slices.Equal(left.RelayOrder, []string{"udp"}) || !slices.Equal(right.RelayOrder, []string{"tcp", "udp"}) {
+		t.Fatalf("custom order did not reach snapshots: left=%+v right=%+v", left, right)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_, _ = conn.Write([]byte("different-turn-orders"))
+	got := make([]byte, len("different-turn-orders"))
+	if _, err = io.ReadFull(conn, got); err != nil || string(got) != "different-turn-orders" {
+		t.Fatal("custom TURN orders did not carry application traffic", err, string(got))
 	}
 }
 

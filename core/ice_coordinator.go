@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -234,8 +235,10 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 		profiles = append(profiles, ProfileLegacy)
 		candidates, _ = platform.Candidates(ctx, r.Config, holePort)
 	}
+	relayEnabled := r.Config.TURN.Mode != "off"
 	join := iceSignalMessage{SignalMessage: SignalMessage{Type: "join", Room: r.Config.Room, Token: r.Config.Token, DeviceID: r.Config.DeviceName, DeviceName: r.Config.DeviceName, Provide: r.Config.Provide, Consume: r.Config.Consume, Candidates: candidates, CertFingerprint: c.fingerprint},
-		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS}
+		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS,
+		RelayEnabled: &relayEnabled, RelayOrder: relayOrder(RelayPolicyUDPTCPTLS, r.Config.TURN.Order)}
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err = conn.WriteJSON(join); err != nil {
 		return err, false
@@ -344,8 +347,31 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			}
 		}
 	case "transport_ready":
-		if !validRelayPhase(m.RelayPolicy, m.Phase) {
+		cfg := c.request().Config
+		if m.RelayPolicy != "" && m.RelayPolicy != RelayPolicyUDPTCPTLS {
+			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不受支持的中继策略"}
+		}
+		if m.RelayRound != nil {
+			if !validRelayRound(*m.RelayRound, m.Phase, m.RelayOrder, m.PeerRelayOrder) {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继轮次或本机路径阶段无效"}
+			}
+		} else if !validRelayPhase(m.RelayPolicy, m.Phase) {
 			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继策略或路径阶段不受支持"}
+		}
+		if len(m.RelayOrder) > 5 || len(m.PeerRelayOrder) > 5 {
+			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继顺序超出限制"}
+		}
+		if m.RelayRound == nil {
+			// Old workers and clients communicate named phases. Their shared
+			// policy remains authoritative, so custom local orders are ignored.
+			fallbackOrder := relayOrder(m.RelayPolicy, nil)
+			m.RelayOrder = fallbackOrder
+			m.PeerRelayOrder = slices.Clone(fallbackOrder)
+		} else {
+			localOrder := relayOrderForConfig(m.RelayPolicy, cfg.TURN)
+			if !slices.Equal(localOrder, m.RelayOrder) {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的本机中继顺序与配置不一致"}
+			}
 		}
 		if m.Profile != ProfileICE || m.SessionVersion != sessionProtocol || m.TransportID == "" || m.TransportGeneration == 0 || m.PeerRuntimeID == "" || len(m.PeerFingerprint) != 64 || m.PeerDevice == "" || len(m.Mappings) > maxPeerChannels {
 			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的 ICE 能力或传输信息无效"}

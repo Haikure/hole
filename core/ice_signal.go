@@ -28,6 +28,10 @@ type iceSignalMessage struct {
 	InitiatorID         string              `json:"initiator_id,omitempty"`
 	Phase               string              `json:"phase,omitempty"`
 	RelayPolicy         string              `json:"relay_policy,omitempty"`
+	RelayEnabled        *bool               `json:"relay_enabled,omitempty"`
+	RelayOrder          []string            `json:"relay_order,omitempty"`
+	PeerRelayOrder      []string            `json:"peer_relay_order,omitempty"`
+	RelayRound          *int                `json:"relay_round,omitempty"`
 	ToPeerID            string              `json:"to_peer_id,omitempty"`
 	Ufrag               string              `json:"ufrag,omitempty"`
 	Pwd                 string              `json:"pwd,omitempty"`
@@ -60,29 +64,33 @@ type PeerTransportSnapshot struct {
 	RemoteType  string `json:"remote_type,omitempty"`
 	// LocalRelayProtocol is the TURN access protocol used by this process.
 	// RelayProtocol is kept as a compatibility alias for older hosts.
-	LocalRelayProtocol  string `json:"local_relay_protocol,omitempty"`
-	LocalAddress        string `json:"local_address,omitempty"`
-	RemoteAddress       string `json:"remote_address,omitempty"`
-	RelayProtocol       string `json:"relay_protocol,omitempty"`
-	RemoteRelayProtocol string `json:"remote_relay_protocol,omitempty"`
-	RelaySide           string `json:"relay_side,omitempty"`
-	RelayPolicy         string `json:"relay_policy,omitempty"`
-	AddressFamily       string `json:"address_family,omitempty"`
-	LocalCandidates     int    `json:"local_candidates"`
-	RemoteCandidates    int    `json:"remote_candidates"`
-	MappingCount        int    `json:"mapping_count"`
-	ActiveChannels      int    `json:"active_channels"`
-	ConnectMS           int64  `json:"connect_ms,string"`
-	BytesSent           uint64 `json:"bytes_sent,string"`
-	BytesReceived       uint64 `json:"bytes_received,string"`
-	DroppedDatagrams    uint64 `json:"dropped_datagrams,string"`
-	RetryCount          uint64 `json:"retry_count,string"`
-	LeaseUntil          int64  `json:"lease_until,string"`
-	TURNExpiresAt       int64  `json:"turn_expires_at,string"`
-	RelayState          string `json:"relay_state,omitempty"`
-	Error               *Fault `json:"error,omitempty"`
-	RTTMS               int64  `json:"rtt_ms,string"`
-	PendingPhase        string `json:"pending_phase,omitempty"`
+	LocalRelayProtocol  string   `json:"local_relay_protocol,omitempty"`
+	LocalAddress        string   `json:"local_address,omitempty"`
+	RemoteAddress       string   `json:"remote_address,omitempty"`
+	RelayProtocol       string   `json:"relay_protocol,omitempty"`
+	RemoteRelayProtocol string   `json:"remote_relay_protocol,omitempty"`
+	RelaySide           string   `json:"relay_side,omitempty"`
+	RelayPolicy         string   `json:"relay_policy,omitempty"`
+	RelayOrder          []string `json:"relay_order,omitempty"`
+	PeerRelayOrder      []string `json:"peer_relay_order,omitempty"`
+	RelayRound          int      `json:"relay_round,omitempty"`
+	RelayOrderFallback  bool     `json:"relay_order_fallback,omitempty"`
+	AddressFamily       string   `json:"address_family,omitempty"`
+	LocalCandidates     int      `json:"local_candidates"`
+	RemoteCandidates    int      `json:"remote_candidates"`
+	MappingCount        int      `json:"mapping_count"`
+	ActiveChannels      int      `json:"active_channels"`
+	ConnectMS           int64    `json:"connect_ms,string"`
+	BytesSent           uint64   `json:"bytes_sent,string"`
+	BytesReceived       uint64   `json:"bytes_received,string"`
+	DroppedDatagrams    uint64   `json:"dropped_datagrams,string"`
+	RetryCount          uint64   `json:"retry_count,string"`
+	LeaseUntil          int64    `json:"lease_until,string"`
+	TURNExpiresAt       int64    `json:"turn_expires_at,string"`
+	RelayState          string   `json:"relay_state,omitempty"`
+	Error               *Fault   `json:"error,omitempty"`
+	RTTMS               int64    `json:"rtt_ms,string"`
+	PendingPhase        string   `json:"pending_phase,omitempty"`
 	// DatagramLimit is the largest QUIC DATAGRAM payload the active connection
 	// accepts right now; it grows with path MTU discovery on direct paths.
 	DatagramLimit  int                     `json:"datagram_limit,omitempty"`

@@ -11,6 +11,103 @@ import (
 
 var orderedRelayPhases = []string{"direct", "relay_udp", "relay_tcp_80", "relay_tcp", "relay_tls_443", "relay_tls"}
 var compatibleRelayPhases = []string{"direct", "relay_udp", "relay_tls", "relay_tls_443"}
+var orderedRelayTypes = []string{"udp", "tcp_80", "tcp", "tls_443", "tls"}
+var compatibleRelayTypes = []string{"udp", "tls", "tls_443"}
+
+func relayOrder(policy string, custom []string) []string {
+	if len(custom) > 0 {
+		return slices.Clone(custom)
+	}
+	if policy == RelayPolicyUDPTCPTLS {
+		return slices.Clone(orderedRelayTypes)
+	}
+	return slices.Clone(compatibleRelayTypes)
+}
+
+func relayOrderForConfig(policy string, turn TURNConfig) []string {
+	if turn.Mode == "off" {
+		return []string{}
+	}
+	return relayOrder(policy, turn.Order)
+}
+
+func relayTypePhase(token string) string {
+	switch token {
+	case "udp":
+		return "relay_udp"
+	case "tcp_80":
+		return "relay_tcp_80"
+	case "tcp":
+		return "relay_tcp"
+	case "tls_443":
+		return "relay_tls_443"
+	case "tls":
+		return "relay_tls"
+	default:
+		return ""
+	}
+}
+
+func relayRoundPhase(round int, order []string) string {
+	if round == 0 {
+		return "direct"
+	}
+	if round < 0 || round > len(order) {
+		return ""
+	}
+	return relayTypePhase(order[round-1])
+}
+
+func relayRoundLimit(local, remote []string) int {
+	if len(remote) > len(local) {
+		return len(remote)
+	}
+	return len(local)
+}
+
+func validRelayOrder(order []string) bool {
+	if len(order) > 5 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, token := range order {
+		if !slices.Contains(orderedRelayTypes, token) || seen[token] {
+			return false
+		}
+		seen[token] = true
+	}
+	return true
+}
+
+func nextICERound(round, limit int) int {
+	if round < limit {
+		return round + 1
+	}
+	return 0
+}
+
+func nextRelayRound(round int, local, remote []string) (int, string) {
+	next := nextICERound(round, relayRoundLimit(local, remote))
+	if next > len(local) {
+		return next, "relay_wait"
+	}
+	return next, relayRoundPhase(next, local)
+}
+
+func validRelayRound(round int, phase string, local, remote []string) bool {
+	if !validRelayOrder(local) || !validRelayOrder(remote) {
+		return false
+	}
+	limit := relayRoundLimit(local, remote)
+	if round < 0 || round > limit {
+		return false
+	}
+	want := "relay_wait"
+	if round <= len(local) {
+		want = relayRoundPhase(round, local)
+	}
+	return phase == want
+}
 
 func relayPhases(policy string) []string {
 	if policy == RelayPolicyUDPTCPTLS {

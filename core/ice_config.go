@@ -64,6 +64,7 @@ type TURNConfig struct {
 	Mode       string         `yaml:"mode" json:"mode"`
 	TTL        ConfigDuration `yaml:"ttl" json:"ttl"`
 	URLs       []string       `yaml:"urls" json:"urls"`
+	Order      []string       `yaml:"order,omitempty" json:"order,omitempty"`
 	Username   string         `yaml:"username" json:"username"`
 	Credential string         `yaml:"credential" json:"credential"`
 }
@@ -99,6 +100,7 @@ func (c *Config) normalizeTransport() {
 		c.ICE.RetryMaxDelay = ConfigDuration(15 * time.Second)
 	}
 	c.TURN.URLs = append([]string{}, c.TURN.URLs...)
+	c.TURN.Order = append([]string(nil), c.TURN.Order...)
 	if c.TURN.Mode == "" {
 		c.TURN.Mode = "worker"
 	}
@@ -124,6 +126,21 @@ func (c Config) validateTransport() error {
 	}
 	if c.TURN.Mode != "worker" && c.TURN.Mode != "manual" && c.TURN.Mode != "off" {
 		return fmt.Errorf("turn.mode 需要 worker、manual 或 off")
+	}
+	if len(c.TURN.Order) > 5 {
+		return fmt.Errorf("turn.order 最多 5 项")
+	}
+	seenRelayTypes := map[string]bool{}
+	for _, token := range c.TURN.Order {
+		switch token {
+		case "udp", "tcp_80", "tcp", "tls_443", "tls":
+		default:
+			return fmt.Errorf("turn.order 仅接受 udp、tcp_80、tcp、tls_443、tls")
+		}
+		if seenRelayTypes[token] {
+			return fmt.Errorf("turn.order 不能包含重复类型")
+		}
+		seenRelayTypes[token] = true
 	}
 	if c.TURN.TTL.Duration() < time.Minute || c.TURN.TTL.Duration() > 6*time.Hour {
 		return fmt.Errorf("turn.ttl 需要 1m 到 6h")

@@ -5,7 +5,7 @@ CLI、Android 手机与 Wear OS 共用 Go 核心；Cloudflare Worker 负责信�
 
 ## 功能
 
-- ICE IPv4 / IPv6 直连，按需尝试 TURN UDP、TCP、TLS 中继；中继阶段优先选择单跳（非对称）候选对。
+- ICE IPv4 / IPv6 直连，按每端配置顺序尝试 TURN UDP、TCP、TLS 中继；中继阶段优先选择单跳（非对称）候选对。
 - 一对设备共享 QUIC 传输，支持双向、多条 TCP / UDP 映射。
 - 网络切换和传输重连时保留仍存活的应用会话，TCP 支持确认、重放和半关闭。
 - 原生 Android 客户端提供 Material 3 / Miuix 主题、前台服务、配置导入导出和连接报告。
@@ -44,13 +44,14 @@ ice:
   retry_max_delay: 15s    # 最大重试间隔
   interface_allowlist: []
 # turn 整段可以省略；以下就是缺省值。Worker 签发短期凭据，CLI 不必填账号。
-# 路径：直连 → UDP → TCP（80 → 3478）→ TLS（443 → 5349）。
+# 留空使用默认顺序；也可填写如 [tls_443, udp]，未列类型会跳过。
 turn:
   mode: worker
   ttl: 6h
   urls: []
   username: ""
   credential: ""
+  order: []
 
 # 提供方id必须唯一，使用id匹配服务
 provide:
@@ -100,7 +101,9 @@ consume:
 ```
 
 配置中省略 `transport` 时保留 IPv6 模式；上面的示例显式开启 ICE。
-STUN 默认使用 Cloudflare，TURN 默认向 Worker 按需申请短期凭据。
+STUN 默认使用 Cloudflare，TURN 默认向 Worker 按需申请短期凭据。每端可通过 `turn.order`
+独立配置 `udp`、`tcp_80`、`tcp`、`tls_443`、`tls` 顺序；两端顺序不同时仍共享连接轮次，
+本端已无类型时会等待对端中继候选。旧客户端或 Worker 不支持该协议时，本端可见回退提示。
 
 ## 桌面 GUI 前置桥接
 

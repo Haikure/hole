@@ -17,13 +17,14 @@ ice:
   retry_max_delay: 15s    # 最大重试间隔
   interface_allowlist: []
 # turn 整段可以省略；以下就是缺省值。Worker 签发短期凭据，CLI 不必填账号。
-# 路径：直连 → UDP → TCP（80 → 3478）→ TLS（443 → 5349）。
+# 留空使用默认顺序；也可填写自定义白名单，如 [tls_443, udp]。
 turn:
   mode: worker
   ttl: 6h
   urls: []
   username: ""
   credential: ""
+  order: []
 
 # 提供方id必须唯一，使用id匹配服务
 provide:
@@ -34,4 +35,3 @@ provide:
 consume:
   - id: remote_web
     expose: 127.0.0.1:8080
-  

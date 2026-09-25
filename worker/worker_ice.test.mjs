@@ -96,6 +96,67 @@ test('new relay policy rejects skipped protocol and port stages',async()=>{
  await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'relay_tcp'}));
  assert.equal(a.messages.at(-1).code,'invalid_phase');assert.equal(record.generation,'1');
 });
+test('per-member relay orders translate shared rounds and wrap after the longest list',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),relay_policy:RELAY_POLICY,relay_order:['udp']}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),relay_policy:RELAY_POLICY,relay_order:['tls_443','udp']}));
+ const record=[...r.ice.records.values()][0];
+ assert.equal(record.round_mode,true);assert.deepEqual(record.relay_orders,[['udp'],['tls_443','udp']]);
+ assert.equal(a.messages.at(-1).relay_round,0);assert.equal(a.messages.at(-1).phase,'direct');
+ const restart=async(round,phase)=>r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,relay_round:round,phase}));
+ await restart(1,'relay_udp');
+ assert.equal(record.round,1);assert.equal(a.messages.at(-1).phase,'relay_udp');assert.equal(b.messages.at(-1).phase,'relay_tls_443');
+ await restart(2,'relay_wait');
+ assert.equal(record.round,2);assert.equal(a.messages.at(-1).phase,'relay_wait');assert.equal(b.messages.at(-1).phase,'relay_udp');
+ await restart(3,'relay_wait');assert.equal(record.round,0);assert.equal(a.messages.at(-1).phase,'direct');
+ await restart(0,'direct');assert.equal(record.round,0);assert.equal(a.messages.at(-1).phase,'direct');
+});
+test('TURN-disabled peers wait for the enabled peer and two disabled peers skip relay rounds',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket(),all=['udp','tcp_80','tcp','tls_443','tls'];
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),relay_policy:RELAY_POLICY,relay_enabled:false,relay_order:all}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),relay_policy:RELAY_POLICY,relay_enabled:true,relay_order:['udp']}));
+ const record=[...r.ice.records.values()][0];
+ assert.deepEqual(record.relay_orders,[[],['udp']]);
+ await r.webSocketMessage(b,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,relay_round:1,phase:'relay_udp'}));
+ assert.equal(a.messages.at(-1).relay_round,1);assert.equal(a.messages.at(-1).phase,'relay_wait');
+ assert.equal(b.messages.at(-1).relay_round,1);assert.equal(b.messages.at(-1).phase,'relay_udp');
+
+ const both=fixture(),room=new Room(both.state,{}),left=both.socket(),right=both.socket();
+ await room.webSocketMessage(left,JSON.stringify({...join('alpha',['one']),relay_policy:RELAY_POLICY,relay_enabled:false,relay_order:all}));
+ await room.webSocketMessage(right,JSON.stringify({...join('beta',[],['one']),relay_policy:RELAY_POLICY,relay_enabled:false,relay_order:all}));
+ const directOnly=[...room.ice.records.values()][0];
+ assert.deepEqual(directOnly.relay_orders,[[],[]]);assert.equal(directOnly.round,0);
+ await room.webSocketMessage(left,JSON.stringify({type:'transport_restart',transport_id:directOnly.id,expected_generation:directOnly.generation,relay_round:0,phase:'direct'}));
+ assert.equal(directOnly.round,0);assert.equal(left.messages.at(-1).phase,'direct');
+});
+test('round overflow wraps after the maximum custom order',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const all=['udp','tcp_80','tcp','tls_443','tls'];
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),relay_policy:RELAY_POLICY,relay_order:all}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),relay_policy:RELAY_POLICY,relay_order:all}));
+ const record=[...r.ice.records.values()][0];
+ const phases=['relay_udp','relay_tcp_80','relay_tcp','relay_tls_443','relay_tls'];
+ for(let round=1;round<=phases.length;round++)
+  await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,relay_round:round,phase:phases[round-1]}));
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,relay_round:6,phase:'relay_wait'}));
+ assert.equal(record.round,0);assert.equal(a.messages.at(-1).phase,'direct');
+});
+test('relay order joins reject unknown, duplicate, and oversized lists',()=>{
+ for(const relay_order of [['direct'],['udp','udp'],['udp','tcp_80','tcp','tls_443','tls','udp']])
+  assert.equal(iceJoinFields({...join('alpha'),relay_order}),null);
+ assert.deepEqual(iceJoinFields({...join('alpha'),relay_order:['tls','udp']}).relay_order,['tls','udp']);
+ assert.deepEqual(iceJoinFields({...join('alpha'),relay_enabled:false,relay_order:['udp']}).relay_order,[]);
+ assert.equal(iceJoinFields({...join('alpha'),relay_enabled:false}),null);
+});
+test('changing a member relay order resets the shared generation',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),relay_policy:RELAY_POLICY,relay_order:['udp']}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),relay_policy:RELAY_POLICY,relay_order:['udp']}));
+ const record=[...r.ice.records.values()][0];
+ const replacement=f.socket();
+ await r.webSocketMessage(replacement,JSON.stringify({...join('alpha',['one']),relay_policy:RELAY_POLICY,relay_order:['tls']}));
+ assert.equal(record.generation,'2');assert.equal(record.round,0);assert.deepEqual(record.relay_orders,[['tls'],['udp']]);
+});
 test('TURN requests coalesce and cached credentials survive broker reconstruction',async()=>{
  const f=fixture(),env={TURN_KEY_ID:'key',TURN_KEY_API_TOKEN:'MASTER_ONLY'};let calls=0;const original=globalThis.fetch;
  globalThis.fetch=async(_url,options)=>{calls++;assert.equal(options.headers.Authorization,'Bearer MASTER_ONLY');await new Promise(r=>setTimeout(r,10));return Response.json(payload)};

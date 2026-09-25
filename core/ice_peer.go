@@ -95,6 +95,7 @@ func (p *icePeer) authorized(r peerMappingRecord) bool {
 	return !closed && ok && current == r && until > time.Now().UnixMilli()
 }
 func (p *icePeer) update(m iceSignalMessage) {
+	customOrderConfigured := len(p.coordinator.request().Config.TURN.Order) > 0
 	p.mu.Lock()
 	if p.closed || m.TransportGeneration < p.ready.TransportGeneration {
 		p.mu.Unlock()
@@ -107,6 +108,14 @@ func (p *icePeer) update(m iceSignalMessage) {
 	p.ready = m
 	p.stats.LeaseUntil = m.LeaseUntil
 	p.stats.RelayPolicy = m.RelayPolicy
+	p.stats.RelayRound = 0
+	if m.RelayRound != nil {
+		p.stats.RelayRound = *m.RelayRound
+	}
+	p.stats.RelayOrder = slices.Clone(m.RelayOrder)
+	p.stats.PeerRelayOrder = slices.Clone(m.PeerRelayOrder)
+	fallbackNotice := customOrderConfigured && m.RelayRound == nil && !p.stats.RelayOrderFallback
+	p.stats.RelayOrderFallback = customOrderConfigured && m.RelayRound == nil
 	p.stats.MappingCount = len(m.Mappings)
 	active := p.active
 	if identityChanged {
@@ -142,6 +151,11 @@ func (p *icePeer) update(m iceSignalMessage) {
 		go func() { defer p.workers.Done(); p.attempt(a) }()
 	}
 	p.mu.Unlock()
+	if fallbackNotice && p.coordinator.emit != nil {
+		p.coordinator.emit(Event{Kind: "transport", State: "relay_order_fallback", Peer: m.PeerDevice, Profile: ProfileICE,
+			Phase: m.Phase, TransportGeneration: m.TransportGeneration,
+			Error: &Fault{Code: "relay_order_unsupported", Message: "对端或协调服务不支持自定义 TURN 顺序，已回退默认顺序"}})
+	}
 	if need || !wasOnline || !slices.Equal(old.Mappings, m.Mappings) {
 		p.stateChanged()
 	}
@@ -242,6 +256,32 @@ func (p *icePeer) mappingError(id string, err error) {
 	p.coordinator.emit(Event{Kind: "mapping", MappingID: id, State: "error", Profile: ProfileICE, Error: classifyError(err)})
 }
 func (p *icePeer) restart(phase, reason string) {
+	p.mu.Lock()
+	current := p.ready
+	p.mu.Unlock()
+	if current.RelayRound != nil {
+		round := 0
+		if phase == "relay_wait" || reason == "turn_refresh" {
+			round = *current.RelayRound
+		} else if phase != "direct" {
+			for i, token := range current.RelayOrder {
+				if relayTypePhase(token) == phase {
+					round = i + 1
+					break
+				}
+			}
+		}
+		p.restartRound(round, phase, reason)
+		return
+	}
+	p.restartWithRound(nil, phase, reason)
+}
+
+func (p *icePeer) restartRound(round int, phase, reason string) {
+	p.restartWithRound(&round, phase, reason)
+}
+
+func (p *icePeer) restartWithRound(round *int, phase, reason string) {
 	if !p.coordinator.signalOnline() {
 		return
 	}
@@ -258,6 +298,7 @@ func (p *icePeer) restart(phase, reason string) {
 	request.TransportID = m.TransportID
 	request.ExpectedGeneration = m.TransportGeneration
 	request.Phase = phase
+	request.RelayRound = round
 	request.Reason = reason
 	if err := p.coordinator.send(request); err != nil {
 		p.mu.Lock()
@@ -286,6 +327,10 @@ func (p *icePeer) renominate() {
 	request.TransportID = m.TransportID
 	request.ExpectedGeneration = m.TransportGeneration
 	request.Phase = phase
+	if m.RelayRound != nil {
+		round := *m.RelayRound
+		request.RelayRound = &round
+	}
 	request.Reason = "manual_renomination"
 	p.mu.Unlock()
 	if err := p.coordinator.send(request); err != nil {
@@ -344,11 +389,13 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 		report.Code = fault.Code
 		_ = p.coordinator.send(report)
 	} else {
-		next := nextICEPhase(a.ready.Phase, a.ready.RelayPolicy)
-		if fault.Code == "relay_credentials_unavailable" {
-			next = "direct"
+		if a.ready.RelayRound != nil {
+			nextRound, nextPhase := nextRelayRound(*a.ready.RelayRound, a.ready.RelayOrder, a.ready.PeerRelayOrder)
+			p.restartRound(nextRound, nextPhase, "path_failed")
+		} else {
+			next := nextICEPhase(a.ready.Phase, a.ready.RelayPolicy)
+			p.restart(next, "path_failed")
 		}
-		p.restart(next, "path_failed")
 	}
 }
 func (p *icePeer) attempt(a *iceAttempt) {
@@ -398,8 +445,16 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 		servers, expires, relayState, err = p.coordinator.relayServers(a.ctx)
 		if err != nil {
-			p.failed(a, err)
-			return
+			var fault *Fault
+			if cfg.ICE.RelayOnly || !errors.As(err, &fault) || fault.Code != "relay_credentials_unavailable" {
+				p.failed(a, err)
+				return
+			}
+			// TURN credentials are local to this device. Keep collecting host
+			// and server-reflexive candidates so the peer can still nominate its
+			// relay candidate against them in this shared generation.
+			servers = nil
+			expires = 0
 		}
 	}
 	relayURLs := selectRelayURLs(servers, a.ready.Phase)
@@ -847,7 +902,11 @@ func (p *icePeer) maintain() {
 				active.mux.syncMappings()
 				_, expires, _ := p.coordinator.servers()
 				if active.expires > 0 && expires > active.expires && pending == nil {
-					p.restart(active.ready.Phase, "turn_refresh")
+					if active.ready.RelayRound != nil {
+						p.restartRound(*active.ready.RelayRound, active.ready.Phase, "turn_refresh")
+					} else {
+						p.restart(active.ready.Phase, "turn_refresh")
+					}
 				}
 			} else if pending == nil && !terminal {
 				p.restart("direct", "retry")

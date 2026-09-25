@@ -13,6 +13,16 @@ const pairKey = (a, b) => JSON.stringify([a, b].sort());
 export const RELAY_POLICY = "udp-tcp-tls-v1";
 const orderedPhases = ["direct", "relay_udp", "relay_tcp_80", "relay_tcp", "relay_tls_443", "relay_tls"];
 const compatiblePhases = ["direct", "relay_udp", "relay_tls", "relay_tls_443"];
+const relayTypes = new Set(["udp", "tcp_80", "tcp", "tls_443", "tls"]);
+
+function validRelayOrder(value) {
+  return Array.isArray(value) && value.length <= 5 && value.every((token, index) => relayTypes.has(token) && value.indexOf(token) === index);
+}
+function relayPhase(round, order) {
+  if (round === 0) return "direct";
+  if (round > order.length) return "relay_wait";
+  return ({udp:"relay_udp",tcp_80:"relay_tcp_80",tcp:"relay_tcp",tls_443:"relay_tls_443",tls:"relay_tls"})[order[round - 1]];
+}
 
 export function iceJoinFields(message) {
   if (message.signal_version === undefined) return { signal_version: 1, transport_profiles: [LEGACY_PROFILE], session_versions: [2], runtime_id: message.cert_fingerprint || "legacy", transport_epoch: "0" };
@@ -22,7 +32,11 @@ export function iceJoinFields(message) {
   if (!Array.isArray(message.session_versions) || message.session_versions.length > 4 || !message.session_versions.includes(2)) return null;
   if (!/^[a-f0-9]{64}$/.test(message.cert_fingerprint ?? "")) return null;
   if (message.relay_policy !== undefined && message.relay_policy !== RELAY_POLICY) return null;
-  return { signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], relay_policy: message.relay_policy ?? "" };
+  if (message.relay_enabled !== undefined && typeof message.relay_enabled !== "boolean") return null;
+  if (message.relay_enabled === false && message.relay_order === undefined) return null;
+  if (message.relay_order !== undefined && !validRelayOrder(message.relay_order)) return null;
+  const relayEnabled = message.relay_enabled ?? true;
+  return { signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], relay_policy: message.relay_policy ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : []}) };
 }
 export function negotiateProfile(left, right) {
   const a = left.transport_profiles ?? [LEGACY_PROFILE];
@@ -82,18 +96,23 @@ export class RoomICE {
     const fingerprints = [a.member.cert_fingerprint, b.member.cert_fingerprint];
     const epochs = [a.member.transport_epoch, b.member.transport_epoch];
     const relayPolicy = a.member.relay_policy === RELAY_POLICY && b.member.relay_policy === RELAY_POLICY ? RELAY_POLICY : "";
+    const roundMode = Array.isArray(a.member.relay_order) && Array.isArray(b.member.relay_order);
+    const relayOrders = roundMode ? [a.member.relay_order, b.member.relay_order] : null;
     let changed = false;
     if (!record) {
       if (this.records.size >= 128) { fault(a.ws, "transport_limit", "房间传输记录达到上限"); fault(b.ws, "transport_limit", "房间传输记录达到上限"); return; }
-      record = { id: crypto.randomUUID(), pair_key: key, a: a.member.device_name, b: b.member.device_name, generation: "1", phase: "direct", runtime, fingerprints, epochs, mappings, ice: {}, retry: 0 };
+      record = { id: crypto.randomUUID(), pair_key: key, a: a.member.device_name, b: b.member.device_name, generation: "1", phase: "direct", round: 0, round_mode: roundMode, relay_orders: relayOrders, runtime, fingerprints, epochs, mappings, ice: {}, retry: 0 };
       changed = true;
-    } else if (!same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || (record.relay_policy ?? "") !== relayPolicy) {
-      record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = "direct"; record.ice = {}; record.retry = 0;
+    } else if (!same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (roundMode && !same(record.relay_orders, relayOrders))) {
+      record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
       record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; changed = true;
     }
     if (!same(record.mappings, mappings)) changed = true;
     if (!record.online) changed = true;
     record.relay_policy = relayPolicy;
+    record.round_mode = roundMode;
+    record.round = roundMode ? (record.round ?? 0) : 0;
+    record.relay_orders = relayOrders;
     record.mappings = mappings; record.online = true; record.lease_until = Date.now() + LEASE_MS;
     this.records.set(key, record);
     if (changed) { record.expires_at = Date.now() + OFFLINE_RETENTION_MS; await this.persist(record); }
@@ -103,7 +122,10 @@ export class RoomICE {
     const own = this.member(name); if (!own) return;
     const index = name === record.a ? 0 : 1;
     const peerName = index === 0 ? record.b : record.a;
-    send(own.ws, { type: "transport_ready", transport_id: record.id, transport_generation: record.generation, profile: ICE_PROFILE, session_version: 2, phase: record.phase, relay_policy: record.relay_policy ?? "", peer_device: peerName, peer_runtime_id: record.runtime[1-index], peer_fingerprint: record.fingerprints[1-index], runtime_id: record.runtime[index], initiator_id: record.a, mappings: record.mappings, lease_until: String(record.lease_until), retry_after_ms: record.retry_after_ms ?? 0 });
+    const phase = record.round_mode ? relayPhase(record.round ?? 0, record.relay_orders[index]) : record.phase;
+    const ready = { type: "transport_ready", transport_id: record.id, transport_generation: record.generation, profile: ICE_PROFILE, session_version: 2, phase, relay_policy: record.relay_policy ?? "", peer_device: peerName, peer_runtime_id: record.runtime[1-index], peer_fingerprint: record.fingerprints[1-index], runtime_id: record.runtime[index], initiator_id: record.a, mappings: record.mappings, lease_until: String(record.lease_until), retry_after_ms: record.retry_after_ms ?? 0 };
+    if (record.round_mode) Object.assign(ready, {relay_round:record.round ?? 0,relay_order:record.relay_orders[index],peer_relay_order:record.relay_orders[1-index]});
+    send(own.ws, ready);
     if (replay) {
       const cached = record.ice[peerName]; if (!cached) return;
       const common = { transport_id: record.id, transport_generation: record.generation, peer_device: peerName };
@@ -174,13 +196,25 @@ export class RoomICE {
       if (record.blocked) { fault(ws,record.blocked,"传输校验失败，等待配置或运行实例更新",message); return true; }
       if (!decimal(message.expected_generation)) { fault(ws, "invalid_generation", "传输代次格式无效", message); return true; }
       if (message.expected_generation !== record.generation) { this.notify(record, name, true); return true; }
-      const phaseOrder = record.relay_policy === RELAY_POLICY ? orderedPhases : compatiblePhases;
-      if (!phaseOrder.includes(message.phase)) { fault(ws, "invalid_phase", "路径阶段无效", message); return true; }
-      const current = phaseOrder.indexOf(record.phase), requested = phaseOrder.indexOf(message.phase);
-      if (requested !== 0 && requested !== current && requested !== current + 1) { fault(ws, "invalid_phase", "路径阶段应按顺序推进", message); return true; }
-      record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = message.phase; record.ice = {};
+      if (record.round_mode) {
+        const ownOrder = record.relay_orders[record.a === name ? 0 : 1];
+        const peerOrder = record.relay_orders[record.a === name ? 1 : 0];
+        const maxRound = Math.max(ownOrder.length, peerOrder.length);
+        const requested = message.relay_round;
+        if (!Number.isSafeInteger(requested) || requested < 0 || requested > maxRound + 1 || message.phase !== relayPhase(requested, ownOrder)) { fault(ws, "invalid_phase", "路径轮次或本机阶段无效", message); return true; }
+        const current = record.round ?? 0;
+        if (requested !== 0 && requested !== current && requested !== current + 1) { fault(ws, "invalid_phase", "路径轮次应按顺序推进", message); return true; }
+        record.round = requested > maxRound ? 0 : requested;
+      } else {
+        const phaseOrder = record.relay_policy === RELAY_POLICY ? orderedPhases : compatiblePhases;
+        if (!phaseOrder.includes(message.phase)) { fault(ws, "invalid_phase", "路径阶段无效", message); return true; }
+        const current = phaseOrder.indexOf(record.phase), requested = phaseOrder.indexOf(message.phase);
+        if (requested !== 0 && requested !== current && requested !== current + 1) { fault(ws, "invalid_phase", "路径阶段应按顺序推进", message); return true; }
+        record.phase = message.phase;
+      }
+      record.generation = (BigInt(record.generation) + 1n).toString(); record.ice = {};
       record.retry = (record.retry ?? 0) + 1;
-      record.retry_after_ms = message.phase === "direct" && message.reason !== "turn_refresh" ? Math.min(15_000, 1000 * 2 ** Math.min(record.retry, 4)) : 0;
+      record.retry_after_ms = (record.round_mode ? record.round === 0 : message.phase === "direct") && message.reason !== "turn_refresh" ? Math.min(15_000, 1000 * 2 ** Math.min(record.retry, 4)) : 0;
       record.lease_until = Date.now() + LEASE_MS;
       await this.persist(record); this.notify(record, record.a); this.notify(record, record.b); return true;
     }
