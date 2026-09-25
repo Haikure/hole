@@ -80,6 +80,7 @@ xmake build hole_plugin
   "device_name": "pen",
   "session_timeout": "10m",
   "transport": {"preferred": "ice", "allow_legacy": true},
+  "turn": {"mode": "worker", "order": ["tls_443", "udp"]},
   "provide": [],
   "consume": [
     {"id": "ssh", "expose": "127.0.0.1:2222"}
@@ -92,6 +93,10 @@ xmake build hole_plugin
 `HOST:PORT`；IPv6 地址使用方括号，例如 `tcp://[::1]:22` 和
 `[::1]:2222`。页面内部仍把协议、地址和端口拆成独立控件，保存时会合并为
 上述字符串，避免发送核心不接受的旧版嵌套对象格式。
+
+高级连接参数中的“本机 TURN 类型顺序”提供推荐默认、仅 UDP、TLS 优先预设，并可逐项添加、
+移除和上下移动 `udp`、`tcp_80`、`tcp`、`tls_443`、`tls`。留空采用默认顺序，未列出的类型
+不会尝试。运行快照显示本机和对端顺序、当前共享轮次，以及旧端不支持时的回退提示。
 
 页面采用与宿主 `YColors` 接近的深色、可滚动布局：首页只放连接状态、启动开关、运行快照以及打开入口；点击“设置”或“配置”会打开独立的 `YBackButtonPage`，设置页放置房间、信令、连接策略和高级 ICE/TURN 参数，配置页放置提供/使用映射。启动使用右侧开关统一控制启动和停止；连接成功后“重选路径”会请求核心为 active 路径建立新 ICE 代次，进行中重复请求会被核心忽略。核心仍在探测、加入房间或重建连接时显示进行中，只有核心收到信令服务的 `joined` 并发布 `engine=running` 后才显示连接成功。输入区域使用宿主注入的 `qmlCreateComponent("YInputPage")` 异步创建输入页，复用 `YPagePopHelper.containerItem`、`placeHolderText`、`enterText()`、`show()` 和 `inputFinished`，不在插件中复制输入页，也不回退到系统键盘。点击后输入区域至少高亮 150ms；点击处理不抢占拖动手势，因此可在输入区域直接滑动页面。
 

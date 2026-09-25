@@ -166,6 +166,167 @@ Section {
         }
     }
 
+    function currentRelayOrder() {
+        return settings.form ? settings.form.parseRelayOrder(settings.form.turnOrder) : []
+    }
+
+    function writeRelayOrder(order) {
+        if (!settings.form) return
+        settings.form.turnOrder = order.join(", ")
+        settings.form.syncConfig()
+    }
+
+    function relayTypeLabel(token) {
+        var labels = {udp: "UDP", tcp_80: "TCP 80", tcp: "TCP 3478 / 自定义端口", tls_443: "TLS 443", tls: "TLS 5349 / 自定义端口"}
+        return labels[token] || token
+    }
+
+    ColumnLayout {
+        Layout.fillWidth: true
+        Layout.preferredHeight: visible ? implicitHeight : 0
+        visible: settings.form && settings.form.preferred === "ice"
+        spacing: Theme.cardSpacing
+
+        Text {
+            Layout.fillWidth: true
+            text: "本机 TURN 类型顺序"
+            color: Theme.textPrimary
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontLabel
+            font.bold: true
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: "每台设备独立设置。直连优先；未列出的 TURN 类型会跳过。"
+            color: Theme.textMuted
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontCaption
+            wrapMode: Text.WordWrap
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 6
+
+            ActionButton {
+                Layout.fillWidth: true
+                text: "推荐默认"
+                variant: "link"
+                onClicked: settings.writeRelayOrder([])
+            }
+            ActionButton {
+                Layout.fillWidth: true
+                text: "仅 UDP"
+                variant: "link"
+                onClicked: settings.writeRelayOrder(["udp"])
+            }
+            ActionButton {
+                Layout.fillWidth: true
+                text: "TLS 优先"
+                variant: "link"
+                onClicked: settings.writeRelayOrder(["tls_443", "tls", "udp"])
+            }
+        }
+
+        Text {
+            Layout.fillWidth: true
+            text: settings.currentRelayOrder().length === 0
+                  ? "当前：默认 · UDP → TCP 80 → TCP 3478 → TLS 443 → TLS 5349"
+                  : "当前：" + settings.currentRelayOrder().map(function(token) { return settings.relayTypeLabel(token) }).join(" → ")
+            color: Theme.accent
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontCaption
+            wrapMode: Text.WordWrap
+        }
+
+        Repeater {
+            model: settings.currentRelayOrder()
+
+            delegate: RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
+
+                Text {
+                    Layout.fillWidth: true
+                    text: (index + 1) + ". " + settings.relayTypeLabel(modelData)
+                    color: Theme.textPrimary
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontLabel
+                    elide: Text.ElideRight
+                }
+
+                ActionButton {
+                    Layout.preferredWidth: 62
+                    text: "上移"
+                    variant: "link"
+                    opacity: index === 0 ? 0.4 : 1
+                    onClicked: {
+                        if (index === 0) return
+                        var order = settings.currentRelayOrder()
+                        var item = order.splice(index, 1)[0]
+                        order.splice(index - 1, 0, item)
+                        settings.writeRelayOrder(order)
+                    }
+                }
+                ActionButton {
+                    Layout.preferredWidth: 62
+                    text: "下移"
+                    variant: "link"
+                    opacity: index === settings.currentRelayOrder().length - 1 ? 0.4 : 1
+                    onClicked: {
+                        var order = settings.currentRelayOrder()
+                        if (index >= order.length - 1) return
+                        var item = order.splice(index, 1)[0]
+                        order.splice(index + 1, 0, item)
+                        settings.writeRelayOrder(order)
+                    }
+                }
+                ActionButton {
+                    Layout.preferredWidth: 62
+                    text: "移除"
+                    variant: "link"
+                    onClicked: {
+                        var order = settings.currentRelayOrder()
+                        order.splice(index, 1)
+                        settings.writeRelayOrder(order)
+                    }
+                }
+            }
+        }
+
+        Text {
+            Layout.fillWidth: true
+            visible: settings.currentRelayOrder().length < 5
+            text: "添加类型"
+            color: Theme.textMuted
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontCaption
+        }
+
+        GridLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: visible ? implicitHeight : 0
+            visible: settings.currentRelayOrder().length < 5
+            columns: width >= 302 ? 2 : 1
+            rowSpacing: 6
+            columnSpacing: 6
+
+            Repeater {
+                model: ["udp", "tcp_80", "tcp", "tls_443", "tls"].filter(function(token) { return settings.currentRelayOrder().indexOf(token) < 0 })
+
+                delegate: ActionButton {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.preferredWidth: 148
+                    text: "+ " + settings.relayTypeLabel(modelData)
+                    variant: "secondary"
+                    onClicked: settings.writeRelayOrder(settings.currentRelayOrder().concat([modelData]))
+                }
+            }
+        }
+    }
+
     Field {
         Layout.fillWidth: true
         Layout.preferredHeight: visible ? implicitHeight : 0

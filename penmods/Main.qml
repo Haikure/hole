@@ -26,6 +26,7 @@ Item {
     property bool allowInsecureSignal: false
     property string stunUrls: ""
     property string turnMode: "worker"
+    property string turnOrder: ""
     property string turnUrls: ""
     property string turnUsername: ""
     property string turnCredential: ""
@@ -103,6 +104,16 @@ Item {
             if (item.length > 0) parts.push(item)
         }
         return parts.join(", ")
+    }
+
+    function parseRelayOrder(text) {
+        return String(text).split(/[\s,，;；]+/).map(function (part) { return part.trim() }).filter(function (part) { return part.length > 0 })
+    }
+
+    function snapshotRelayOrder(order) {
+        if (!Array.isArray(order) || order.length === 0) return "默认：UDP → TCP 80 → TCP 3478 → TLS 443 → TLS 5349"
+        var labels = {udp: "UDP", tcp_80: "TCP 80", tcp: "TCP 3478", tls_443: "TLS 443", tls: "TLS 5349"}
+        return order.map(function (token) { return labels[token] || token }).join(" → ")
     }
 
     // The core configuration deliberately uses compact endpoint strings:
@@ -247,6 +258,13 @@ Item {
             if (!isDurationBetween(connectivityTimeout, 100, 120000)) return "连通性检查时间需在 100ms 到 2m 之间"
             if (!isDurationBetween(retryMaxDelay, 100, 120000)) return "最大重试间隔需在 100ms 到 2m 之间"
             if (turnMode !== "off" && !isDurationBetween(turnTtl, 60000, 21600000)) return "TURN 凭据期限需在 1m 到 6h 之间"
+            var order = parseRelayOrder(turnOrder)
+            var allowedOrder = ["udp", "tcp_80", "tcp", "tls_443", "tls"]
+            if (order.length > 5) return "TURN 类型顺序最多 5 项"
+            for (var oi = 0; oi < order.length; ++oi) {
+                if (allowedOrder.indexOf(order[oi]) < 0) return "TURN 类型仅接受 udp、tcp_80、tcp、tls_443、tls"
+                if (order.indexOf(order[oi]) !== oi) return "TURN 类型顺序不能重复"
+            }
             if (turnMode === "manual") {
                 if (parseList(turnUrls).length === 0) return "TURN 模式为手动时需要填写 TURN 地址"
                 if (turnUsername.trim().length === 0) return "手动 TURN 需要填写用户名"
@@ -370,6 +388,7 @@ Item {
 
         var turn = config.turn && typeof config.turn === "object" ? config.turn : {}
         turnMode = asString(turn.mode) || "worker"
+        turnOrder = formatList(turn.order)
         turnTtl = asString(turn.ttl) || "6h"
         turnUrls = formatList(turn.urls)
         turnUsername = asString(turn.username)
@@ -457,7 +476,8 @@ Item {
                 ttl: turnActive ? turnTtl : "6h",
                 urls: manualTurn ? parseList(turnUrls) : [],
                 username: manualTurn ? turnUsername : "",
-                credential: manualTurn ? turnCredential : ""
+                credential: manualTurn ? turnCredential : "",
+                order: iceActive ? parseRelayOrder(turnOrder) : []
             },
             provide: page.collectMappings(provides, false),
             consume: page.collectMappings(consumes, true)
@@ -721,7 +741,8 @@ Item {
             relay_tls_443: "尝试 TLS 中继 · 443 端口",
             relay_tls: "尝试 TLS 中继 · 5349 / 自定义端口",
             relay_tcp_80: "尝试 TCP 中继 · 80 端口",
-            relay_tcp: "尝试 TCP 中继 · 3478 / 自定义端口"
+            relay_tcp: "尝试 TCP 中继 · 3478 / 自定义端口",
+            relay_wait: "等待对端的 TURN 中继"
         }
         var text = asString(phase)
         return labels[text] || (text.length > 0 ? text : "正在选择连接路径")
@@ -809,6 +830,12 @@ Item {
             appendSnapshotLine(lines, "  中继使用方", page.relaySideText(peer.relay_side))
         }
         appendSnapshotLine(lines, "  探测阶段", page.peerPhaseText(peer))
+        if (Array.isArray(peer.relay_order) || Array.isArray(peer.peer_relay_order)) {
+            appendSnapshotLine(lines, "  本机 TURN 顺序", page.snapshotRelayOrder(peer.relay_order))
+            appendSnapshotLine(lines, "  对端 TURN 顺序", page.snapshotRelayOrder(peer.peer_relay_order))
+            if (asBool(peer.relay_order_fallback, false)) appendSnapshotLine(lines, "  顺序状态", "不支持自定义顺序，已回退默认顺序")
+            else if (Number(peer.relay_round) > 0) appendSnapshotLine(lines, "  共享中继轮次", "第 " + asString(peer.relay_round) + " 轮")
+        }
         if (Number(peer.rtt_ms) > 0) appendSnapshotLine(lines, "  延迟", asString(peer.rtt_ms) + " ms")
         appendSnapshotLine(lines, "  线路流量", "收 " + bytesText(peer.bytes_received) + " / 发 " + bytesText(peer.bytes_sent))
         if (Number(peer.active_channels) > 0)
