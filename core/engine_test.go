@@ -68,6 +68,68 @@ func TestEngineConstructionAndOfflineConfig(t *testing.T) {
 	}
 }
 
+func TestApplyConfigPreservesUnchangedMappingRuntimeDetails(t *testing.T) {
+	e := NewEngine(Options{})
+	defer e.Close()
+	r := engineRequest()
+	if err := e.ApplyConfig(r); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	e.state, e.signal = "running", "joined"
+	provide := e.mappings["ssh"]
+	provide.State, provide.Peer, provide.Path, provide.Profile = "active", "peer-a", "direct", ProfileICE
+	e.mappings["ssh"] = provide
+	consume := e.mappings["ssh_taotao"]
+	consume.Protocol, consume.State = "udp", "active"
+	consume.Peer, consume.Path, consume.Profile = "peer-b", "relay", ProfileICE
+	e.mappings["ssh_taotao"] = consume
+	e.mu.Unlock()
+
+	r.Config.Consume = append(r.Config.Consume, Consume{
+		ID: "new", Expose: HostPort{Addr: "127.0.0.1", Port: 18080},
+	})
+	if err := e.ApplyConfig(r); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := e.Snapshot()
+	byID := make(map[string]MappingSnapshot, len(snapshot.Mappings))
+	for _, mapping := range snapshot.Mappings {
+		byID[mapping.ID] = mapping
+	}
+	if old := byID["ssh_taotao"]; old.Protocol != "udp" || old.Peer != "peer-b" || old.Path != "relay" || old.Profile != ProfileICE {
+		t.Fatalf("unchanged consume mapping lost runtime details after adding a mapping: %+v", old)
+	}
+	if added := byID["new"]; added.Protocol != "" || added.State != "waiting_peer" || added.Peer != "" {
+		t.Fatalf("new mapping did not start in its initial state: %+v", added)
+	}
+
+	r.Config.Consume[0].Expose.Port++
+	if err := e.ApplyConfig(r); err != nil {
+		t.Fatal(err)
+	}
+	for _, mapping := range e.Snapshot().Mappings {
+		if mapping.ID == "ssh_taotao" && (mapping.Protocol != "" || mapping.State != "waiting_peer" || mapping.Peer != "") {
+			t.Fatalf("changed mapping retained stale runtime details: %+v", mapping)
+		}
+	}
+
+	e.mu.Lock()
+	consume = e.mappings["ssh_taotao"]
+	consume.Protocol, consume.State, consume.Peer = "udp", "active", "peer-b"
+	e.mappings["ssh_taotao"] = consume
+	e.mu.Unlock()
+	r.Config.Token = "ROTATED_ROOM_TOKEN"
+	if err := e.ApplyConfig(r); err != nil {
+		t.Fatal(err)
+	}
+	for _, mapping := range e.Snapshot().Mappings {
+		if mapping.ID == "ssh_taotao" && (mapping.Protocol != "" || mapping.State != "waiting_peer" || mapping.Peer != "") {
+			t.Fatalf("mapping details survived a signaling scope change: %+v", mapping)
+		}
+	}
+}
+
 func TestEngineSignalReconnectIsNotReportedAsRunning(t *testing.T) {
 	e := NewEngine(Options{})
 	defer e.Close()

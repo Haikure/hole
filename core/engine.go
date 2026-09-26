@@ -126,7 +126,7 @@ func (e *Engine) Start(request Request) error {
 			return ErrRunning
 		}
 	}
-	e.setRequestLocked(request)
+	e.setRequestLocked(request, false)
 	e.generation++
 	ctx, cancel := context.WithCancel(context.Background())
 	id, _ := newSessionID()
@@ -244,7 +244,7 @@ func (e *Engine) ApplyConfig(request Request) error {
 		}
 	}
 	previous := e.request
-	e.setRequestLocked(request)
+	e.setRequestLocked(request, true)
 	e.lastError = nil
 	if e.requested && e.run != nil {
 		e.state, e.signal = "reconfiguring", "reconnecting"
@@ -305,14 +305,32 @@ func sameEffective(a, b Request) bool {
 	return a.ServerURL == b.ServerURL && reflect.DeepEqual(a.Config, b.Config)
 }
 
-func (e *Engine) setRequestLocked(request Request) {
+func (e *Engine) setRequestLocked(request Request, preserveMappings bool) {
+	previousRequest, previousMappings := e.request, e.mappings
 	e.request = &request
 	e.mappings = make(map[string]MappingSnapshot)
+	canPreserve := preserveMappings && previousRequest != nil && sameScope(*previousRequest, request)
+	initial := func(id, role, protocol, endpoint string) MappingSnapshot {
+		mapping := MappingSnapshot{ID: id, Role: role, Protocol: protocol, State: "waiting_peer", Endpoint: endpoint}
+		previous, ok := previousMappings[id]
+		if canPreserve && ok && previous.Role == role && previous.Endpoint == endpoint &&
+			(role != "provide" || previous.Protocol == protocol) {
+			mapping.State = previous.State
+			mapping.Error = previous.Error
+			mapping.Peer = previous.Peer
+			mapping.Path = previous.Path
+			mapping.Profile = previous.Profile
+			if role == "consume" {
+				mapping.Protocol = previous.Protocol
+			}
+		}
+		return mapping
+	}
 	for _, item := range request.Config.Provide {
-		e.mappings[item.ID] = MappingSnapshot{ID: item.ID, Role: "provide", Protocol: item.Service.Protocol, State: "waiting_peer", Endpoint: endpointString(item.Service.Addr, item.Service.Port)}
+		e.mappings[item.ID] = initial(item.ID, "provide", item.Service.Protocol, endpointString(item.Service.Addr, item.Service.Port))
 	}
 	for _, item := range request.Config.Consume {
-		e.mappings[item.ID] = MappingSnapshot{ID: item.ID, Role: "consume", State: "waiting_peer", Endpoint: endpointString(item.Expose.Addr, item.Expose.Port)}
+		e.mappings[item.ID] = initial(item.ID, "consume", "", endpointString(item.Expose.Addr, item.Expose.Port))
 	}
 }
 
