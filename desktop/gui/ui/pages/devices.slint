@@ -58,11 +58,12 @@ export component DevicesPage inherits VerticalLayout {
     spacing: 0px;
     PageHeader {
         title: "设备与线路";
-        subtitle: "每台对端设备实际使用的直连或中继路径、延迟与流量；同一对设备的服务共享一条 QUIC 传输。";
+        subtitle: "查看对端设备、连接质量和可用服务。";
         Btn { text: "重新连接"; icon: Icons.transport; enabled: App.status.run-requested; clicked => { App.reconnect(); } }
     }
     PageBody {
         if App.peers.length == 0 : EmptyState {
+            icon: Icons.devices;
             title: App.status.run-requested ? "暂无已配对的设备" : "连接尚未开启";
             description: App.status.run-requested ? "双方使用相同房间，并启用匹配的提供 / 使用服务后，这里会显示直连或中继、延迟与流量。" : "连接开启后显示每台对端设备实际使用的线路。";
         }

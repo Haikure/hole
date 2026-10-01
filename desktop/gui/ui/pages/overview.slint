@@ -6,6 +6,19 @@ import { MappingRow, PeerRow, EventRow } from "../models.slint";
 
 component MiniMapping inherits Rectangle {
     in property <MappingRow> item;
+    callback activated();
+    accessible-role: button;
+    accessible-label: "管理服务 " + item.id;
+    accessible-action-default => { root.activated(); }
+    forward-focus: focus;
+    focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") { root.activated(); return accept; }
+            return reject;
+        }
+    }
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Theme.accent;
     height: 44px;
     border-radius: Theme.radius;
     background: ta.has-hover ? Theme.surface-hover : transparent;
@@ -19,7 +32,9 @@ component MiniMapping inherits Rectangle {
             y: (parent.height - self.height) / 2;
             background: item.role == "provide" ? Theme.accent-soft : Theme.surface-alt;
             Text {
-                text: item.role == "provide" ? "P" : "C";
+                text: item.role == "provide" ? "供" : "用";
+                horizontal-alignment: center;
+                vertical-alignment: center;
                 font-size: Theme.font-sm; font-weight: 700;
                 color: item.role == "provide" ? Theme.accent : Theme.text-muted;
             }
@@ -33,7 +48,7 @@ component MiniMapping inherits Rectangle {
         }
         Badge { text: item.state-label; kind: item.kind; y: (parent.height - self.height) / 2; }
     }
-    ta := TouchArea { }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.activated(); } }
 }
 
 component MiniPeer inherits Rectangle {
@@ -76,73 +91,93 @@ export component OverviewPage inherits VerticalLayout {
     spacing: 0px;
 
     PageHeader {
-        title: "总览";
-        subtitle: App.status.subtitle;
-        Btn { text: "刷新"; icon: Icons.refresh; clicked => { App.refresh(); } }
-        Btn { text: "重新连接"; icon: Icons.transport; enabled: App.status.run-requested; clicked => { App.reconnect(); } }
+        title: "连接";
+        subtitle: "";
+        Btn { text: "连接设置"; clicked => { root.open-page("settings"); } }
+        if App.status.run-requested : Btn { text: "重新连接"; icon: Icons.transport; clicked => { App.reconnect(); } }
     }
 
     PageBody {
-        // ---- 主状态卡 ----
-        Card {
-            tinted: App.status.kind == "good";
-            inset: Theme.space-5;
+        VerticalLayout {
+            spacing: Theme.space-3;
             HorizontalLayout {
-                spacing: Theme.space-5;
-                VerticalLayout {
-                    spacing: Theme.space-2;
-                    horizontal-stretch: 1;
-                    HorizontalLayout {
-                        spacing: Theme.space-2;
-                        alignment: start;
-                        Badge { text: App.status.engine-label; kind: App.status.kind; }
-                        Badge { text: "信令 · " + App.status.signal-label; kind: App.status.signal-state == "joined" ? "good" : App.status.signal-state == "error" ? "bad" : "idle"; }
-                        if !App.status.bridge-ready : Badge { text: "桥接未就绪"; kind: "bad"; }
-                    }
-                    Text { text: App.status.title; font-size: Theme.font-display; font-weight: 600; color: Theme.text; }
-                    Label { text: App.status.run-requested ? "映射由桌面宿主保持；关闭窗口后可从托盘恢复。" : "开启后启动共享核心并加入房间；配置、映射与凭据在本机保存。"; muted: true; }
-                    if App.status.error != "" : Notice { text: App.status.error; kind: "bad"; }
-                    if App.status.command-error != "" : Notice { text: App.status.command-error; kind: "warn"; }
-                    if App.status.config-error != "" : Notice { text: App.status.config-error; kind: "warn"; }
-                    if App.status.bridge-error != "" : Notice { text: App.status.bridge-error; kind: "bad"; }
+                spacing: Theme.space-3;
+                Rectangle {
+                    width: 10px; height: 10px; border-radius: 5px;
+                    y: (parent.height - self.height) / 2;
+                    background: Theme.kind-color(App.status.kind);
                 }
-                VerticalLayout {
-                    alignment: start;
-                    spacing: Theme.space-2;
-                    horizontal-stretch: 0;
-                    HorizontalLayout {
-                        spacing: Theme.space-3;
-                        alignment: end;
-                        Text { text: App.status.run-requested ? "运行中" : "已停止"; font-size: Theme.font-body; font-weight: 500; color: Theme.text-muted; vertical-alignment: center; }
-                        Toggle {
-                            checked: App.status.run-requested;
-                            enabled: App.config-loaded && App.status.bridge-ready && !App.status.busy;
-                            label: "运行转发";
-                            toggled(v) => { App.toggle-run(v); }
-                        }
-                    }
-                    Text { text: App.status.busy ? "正在处理…" : App.status.uptime; font-size: Theme.font-sm; color: Theme.text-faint; horizontal-alignment: right; }
+                Text { text: App.status.title; font-size: 30px; font-weight: 600; color: Theme.text; horizontal-stretch: 1; }
+                Btn { text: "刷新"; kind: "ghost"; icon: Icons.refresh; enabled: !App.status.busy; clicked => { App.refresh(); } }
+            }
+            Label {
+                text: App.connection.room == "" ? "填写房间信息，让两台设备连接到一起。" : "房间 " + App.connection.room + " · " + App.status.signal-label;
+                muted: true;
+            }
+            if App.status.run-requested : Hint {
+                text: "已连接 " + App.status.peers-active + " 台设备 · " + App.status.active-channels + " 个可用服务 · " + App.status.uptime;
+            }
+            if App.status.error != "" : Notice { text: App.status.error; kind: "bad"; }
+            if App.status.command-error != "" : Notice { text: App.status.command-error; kind: "warn"; }
+            if App.status.config-error != "" : Notice { text: App.status.config-error; kind: "warn"; }
+            if App.status.bridge-error != "" : Notice { text: App.status.bridge-error; kind: "bad"; }
+            if App.connection.room == "" : HorizontalLayout {
+                alignment: start;
+                Btn { text: "设置连接"; kind: "primary"; clicked => { root.open-page("settings"); } }
+            }
+        }
+        Rectangle { height: Theme.space-3; }
+        Divider { }
+
+
+        // ---- 设备与映射 ----
+        VerticalLayout {
+            spacing: Theme.space-5;
+            VerticalLayout {
+                horizontal-stretch: 2;
+                spacing: Theme.space-3;
+                HorizontalLayout {
+                    alignment: space-between;
+                    SectionTitle { text: "我的服务"; }
+                    Btn { kind: "ghost"; compact: true; text: "管理 ›"; clicked => { root.open-page("mappings"); } }
                 }
+                if App.provides.length == 0 && App.consumes.length == 0 : EmptyState {
+                    icon: Icons.mappings;
+                    title: "添加第一个服务";
+                    description: "提供本机服务，或将远端服务接到本地端口。";
+                }
+                if App.provides.length == 0 && App.consumes.length == 0 : Btn {
+                    text: "添加服务"; kind: "primary";
+                    clicked => { root.open-page("mappings"); }
+                }
+                for row in App.provides : MiniMapping { item: row; activated => { root.open-page("mappings"); } }
+                for row in App.consumes : MiniMapping { item: row; activated => { root.open-page("mappings"); } }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: Theme.space-3;
+                HorizontalLayout {
+                    alignment: space-between;
+                    SectionTitle { text: "对端设备"; }
+                    Btn { kind: "ghost"; compact: true; text: "全部 ›"; clicked => { root.open-page("devices"); } }
+                }
+                if App.peers.length == 0 : EmptyState {
+                    icon: Icons.devices;
+                    title: App.status.run-requested ? "等待对端设备" : "连接尚未开启";
+                    description: App.status.run-requested ? "让另一台设备加入同一个房间。" : "开启侧栏连接开关后，这里会显示同房间的设备。";
+                }
+                for peer in App.peers : MiniPeer { item: peer; }
             }
         }
 
-        // ---- 指标 ----
-        HorizontalLayout {
-            spacing: Theme.space-3;
-            StatTile { label: "服务通道"; value: App.status.active-channels + " / " + App.status.total-channels; caption: "可用 / 已启用"; kind: App.status.active-channels == "0" ? "idle" : "good"; }
-            StatTile { label: "对端设备"; value: App.status.peers-active + " / " + App.status.peers-total; caption: "已连接 / 已发现"; kind: App.status.peers-active == "0" ? "idle" : "good"; }
-            StatTile { label: "应用会话"; value: App.status.tcp-sessions + " TCP · " + App.status.udp-sessions + " UDP"; caption: "当前存活"; kind: "info"; }
-            StatTile { label: "配置"; value: "提供 " + App.status.provide-enabled + " · 使用 " + App.status.consume-enabled; caption: App.status.run-requested ? "运行中 提供 " + App.status.runtime-provide + " · 使用 " + App.status.runtime-consume : "已保存的启用项"; kind: "idle"; }
-        }
-
         // ---- 流量与网络 ----
-        HorizontalLayout {
+        if App.status.run-requested : HorizontalLayout {
             spacing: Theme.space-4;
             Card {
                 horizontal-stretch: 3;
                 HorizontalLayout {
                     alignment: space-between;
-                    SectionTitle { text: "线路流量"; subtitle: "所有对端合计，含协议开销"; }
+                    SectionTitle { text: "线路流量"; subtitle: "所有对端合计，包含协议开销"; }
                     VerticalLayout {
                         alignment: start; spacing: 2px;
                         Text { text: "↑ " + App.status.traffic-rate-up; font-size: Theme.font-md; font-weight: 600; color: Theme.series-up; horizontal-alignment: right; }
@@ -167,43 +202,12 @@ export component OverviewPage inherits VerticalLayout {
             }
         }
 
-        // ---- 设备与映射 ----
-        HorizontalLayout {
-            spacing: Theme.space-4;
-            Card {
-                horizontal-stretch: 1;
-                HorizontalLayout {
-                    alignment: space-between;
-                    SectionTitle { text: "对端设备"; }
-                    Btn { kind: "ghost"; compact: true; text: "全部 ›"; clicked => { root.open-page("devices"); } }
-                }
-                if App.peers.length == 0 : EmptyState {
-                    title: App.status.run-requested ? "等待对端设备" : "连接尚未开启";
-                    description: App.status.run-requested ? "双方使用相同房间并启用匹配服务后显示线路、延迟与流量。" : "开启总开关后显示每台对端实际使用的线路。";
-                }
-                for peer in App.peers : MiniPeer { item: peer; }
-            }
-            Card {
-                horizontal-stretch: 1;
-                HorizontalLayout {
-                    alignment: space-between;
-                    SectionTitle { text: "映射"; }
-                    Btn { kind: "ghost"; compact: true; text: "管理 ›"; clicked => { root.open-page("mappings"); } }
-                }
-                if App.provides.length == 0 && App.consumes.length == 0 : EmptyState {
-                    title: "暂无映射";
-                    description: "在“映射”页新增提供服务或使用服务。";
-                }
-                for row in App.provides : MiniMapping { item: row; }
-                for row in App.consumes : MiniMapping { item: row; }
-            }
-        }
-
         // ---- 最近事件 ----
-        Card {
+        if App.events.length > 0 : VerticalLayout {
+            spacing: Theme.space-3;
             HorizontalLayout {
                 alignment: space-between;
-                SectionTitle { text: "最近事件"; subtitle: "结构化状态记录，不含原始 Go 日志"; }
+                SectionTitle { text: "最近活动"; }
                 Btn { kind: "ghost"; compact: true; text: "全部 ›"; clicked => { root.open-page("diagnostics"); } }
             }
             if App.events.length == 0 : Hint { text: "尚无事件。"; }

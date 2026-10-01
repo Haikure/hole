@@ -1,9 +1,9 @@
-// 应用窗口：侧边栏 + 内容区的桌面布局，页面路由与全局对话框。
+// 应用窗口：侧边栏 + 顶栏面包屑 + 内容区的桌面布局，页面路由与全局对话框。
 import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { App } from "state.slint";
 import { Icon, Icons } from "icons.slint";
-import { Btn, Toggle, Badge, Dialog, Toast, Label, Hint } from "controls.slint";
+import { Btn, Toggle, Badge, Dialog, Toast, Label, Hint, IconBtn } from "controls.slint";
 import { OverviewPage } from "pages/overview.slint";
 import { MappingsPage } from "pages/mappings.slint";
 import { DevicesPage } from "pages/devices.slint";
@@ -20,25 +20,38 @@ component NavItem inherits Rectangle {
     in property <string> icon;
     in property <bool> active;
     callback clicked();
-    height: 36px;
-    border-radius: Theme.radius;
+    height: 40px;
+    border-radius: Theme.radius-lg;
     background: active ? Theme.accent-soft : ta.has-hover ? Theme.surface-hover : transparent;
     animate background { duration: Theme.motion-fast; }
     accessible-role: tab;
     accessible-label: label;
     accessible-checked: active;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
     HorizontalLayout {
         padding-left: 12px;
-        padding-right: 12px;
+        padding-right: 10px;
         spacing: 10px;
-        Icon { name: root.icon; tint: root.active ? Theme.accent : Theme.text-muted; size: 18px; y: (parent.height - self.height) / 2; }
+        Icon { name: root.icon; tint: root.active ? Theme.accent : Theme.text-muted; size: 17px; y: (parent.height - self.height) / 2; }
         Text {
             text: root.label;
-            font-size: Theme.font-md;
+            font-size: Theme.font-body;
             font-weight: root.active ? 600 : 500;
             color: root.active ? Theme.accent : Theme.text;
             vertical-alignment: center;
         }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    Rectangle {
+        border-radius: Theme.radius-lg;
+        border-width: focus.has-focus ? 2px : 0px;
+        border-color: Theme.accent;
     }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
@@ -76,6 +89,17 @@ export component MainWindow inherits Window {
     }
     callback hide-to-tray();
 
+    pure public function page-title(p: string) -> string {
+        if p == "overview" { return "连接"; }
+        if p == "mappings" { return "映射"; }
+        if p == "devices" { return "设备"; }
+        if p == "diagnostics" { return "诊断"; }
+        if p == "settings" { return "设置"; }
+        if p == "transport" { return "连接方式"; }
+        if p == "exchange" { return "导入导出"; }
+        return "";
+    }
+
     function page-dirty() -> bool {
         if (page == "settings") { return settings.dirty; }
         if (page == "transport") { return transport.dirty; }
@@ -100,29 +124,39 @@ export component MainWindow inherits Window {
             background: Theme.sidebar;
             Rectangle { x: parent.width - 1px; width: 1px; background: Theme.border; }
             VerticalLayout {
-                padding: Theme.space-3;
-                spacing: 4px;
+                padding: 14px;
+                spacing: 3px;
                 HorizontalLayout {
-                    padding: Theme.space-2;
-                    padding-bottom: Theme.space-4;
-                    spacing: 10px;
+                    padding-left: 4px;
+                    padding-right: 4px;
+                    padding-top: 4px;
+                    padding-bottom: 22px;
+                    spacing: 11px;
                     Rectangle {
-                        width: 30px; height: 30px; border-radius: 9px;
-                        background: Theme.accent;
+                        width: 36px; height: 36px;
+                        clip: true;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: Theme.border;
                         y: (parent.height - self.height) / 2;
-                        Icon { name: Icons.mappings; tint: Theme.on-accent; size: 18px; }
+                        Image {
+                            source: @image-url("assets/app-icon.png");
+                            width: parent.width;
+                            height: parent.height;
+                        }
                     }
                     VerticalLayout {
                         alignment: center;
-                        Text { text: "hole"; font-size: Theme.font-lg; font-weight: 700; color: Theme.text; }
-                        Text { text: "桌面客户端"; font-size: Theme.font-xs; color: Theme.text-muted; }
+                        spacing: 1px;
+                        Text { text: "hole"; font-size: 18px; font-weight: 700; color: Theme.text; }
+                        Text { text: App.connection.device-name == "" ? "本机" : App.connection.device-name; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
                     }
                 }
-                NavItem { label: "总览"; icon: Icons.overview; active: root.page == "overview"; clicked => { root.navigate("overview"); } }
-                NavItem { label: "映射"; icon: Icons.mappings; active: root.page == "mappings"; clicked => { root.navigate("mappings"); } }
+                NavItem { label: "连接"; icon: Icons.overview; active: root.page == "overview"; clicked => { root.navigate("overview"); } }
+                NavItem { label: "服务"; icon: Icons.mappings; active: root.page == "mappings"; clicked => { root.navigate("mappings"); } }
                 NavItem { label: "设备"; icon: Icons.devices; active: root.page == "devices"; clicked => { root.navigate("devices"); } }
                 NavItem { label: "诊断"; icon: Icons.diagnostics; active: root.page == "diagnostics"; clicked => { root.navigate("diagnostics"); } }
-                Rectangle { height: Theme.space-3; }
+                Rectangle { height: 14px; }
                 Text { text: "配置"; font-size: Theme.font-xs; font-weight: 600; color: Theme.text-faint; x: 12px; }
                 NavItem { label: "设置"; icon: Icons.settings; active: root.page == "settings"; clicked => { root.navigate("settings"); } }
                 NavItem { label: "连接方式"; icon: Icons.transport; active: root.page == "transport"; clicked => { root.navigate("transport"); } }
@@ -130,19 +164,16 @@ export component MainWindow inherits Window {
                 Rectangle { vertical-stretch: 1; }
                 // 侧栏底部：运行状态与总开关
                 Rectangle {
-                    border-radius: Theme.radius-lg;
-                    background: Theme.surface;
-                    border-width: 1px;
-                    border-color: Theme.border;
+                    background: transparent;
                     VerticalLayout {
-                        padding: Theme.space-3;
-                        spacing: Theme.space-2;
+                        padding: 6px;
+                        spacing: 10px;
                         HorizontalLayout {
                             alignment: space-between;
-                            VerticalLayout {
-                                spacing: 2px;
-                                Text { text: App.status.run-requested ? "转发运行中" : "转发已停止"; font-size: Theme.font-body; font-weight: 600; color: Theme.text; }
-                                Text { text: App.status.engine-label; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.kind-color(App.status.kind); y: (parent.height - self.height) / 2; }
+                                Text { text: App.status.run-requested ? "正在转发" : "已停止"; font-size: Theme.font-body; font-weight: 600; color: Theme.text; vertical-alignment: center; }
                             }
                             Toggle {
                                 y: (parent.height - self.height) / 2;
@@ -152,10 +183,15 @@ export component MainWindow inherits Window {
                                 toggled(v) => { App.toggle-run(v); }
                             }
                         }
-                        HorizontalLayout {
-                            spacing: 6px;
-                            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.kind-color(App.status.kind); y: (parent.height - self.height) / 2; }
-                            Text { text: App.status.title; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
+                        Text {
+                            text: App.status.busy ? "正在处理…"
+                                : App.status.run-requested ? App.status.uptime
+                                : !App.status.bridge-ready ? "核心桥接未就绪"
+                                : !App.config-loaded ? "先完成连接设置"
+                                : "随时可以开启连接";
+                            font-size: Theme.font-xs;
+                            color: Theme.text-faint;
+                            overflow: elide;
                         }
                     }
                 }
@@ -163,17 +199,21 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ---- 内容区 ----
-        Rectangle {
-            horizontal-stretch: 1;
-            clip: true;
-            if root.page == "overview" : OverviewPage { open-page(p) => { root.navigate(p); } }
-            if root.page == "mappings" : MappingsPage { }
-            if root.page == "devices" : DevicesPage { }
-            if root.page == "diagnostics" : DiagnosticsPage { }
-            settings := SettingsPage { visible: root.page == "settings"; open-page(p) => { root.navigate(p); } }
-            transport := TransportPage { visible: root.page == "transport"; open-page(p) => { root.navigate(p); } }
-            if root.page == "exchange" : ExchangePage { open-page(p) => { root.navigate(p); } }
+        // ---- 顶栏 + 内容区 ----
+        VerticalLayout {
+
+            Rectangle {
+                horizontal-stretch: 1;
+                clip: true;
+                background: Theme.bg;
+                if root.page == "overview" : OverviewPage { open-page(p) => { root.navigate(p); } }
+                if root.page == "mappings" : MappingsPage { }
+                if root.page == "devices" : DevicesPage { }
+                if root.page == "diagnostics" : DiagnosticsPage { }
+                settings := SettingsPage { visible: root.page == "settings"; open-page(p) => { root.navigate(p); } }
+                transport := TransportPage { visible: root.page == "transport"; open-page(p) => { root.navigate(p); } }
+                if root.page == "exchange" : ExchangePage { open-page(p) => { root.navigate(p); } }
+            }
         }
     }
 

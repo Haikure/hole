@@ -3,6 +3,7 @@ import { App } from "../state.slint";
 import { Icon, Icons } from "../icons.slint";
 import { Card, SectionTitle, Label, Hint, Btn, Field, Choice, SwitchRow, Notice, PageHeader, PageBody, Disclosure, Divider } from "../controls.slint";
 import { TransportForm } from "../models.slint";
+import { TurnOrderBoard } from "../turn_order.slint";
 
 export component TransportPage inherits VerticalLayout {
     spacing: 0px;
@@ -12,13 +13,22 @@ export component TransportPage inherits VerticalLayout {
     property <bool> advanced: false;
     out property <bool> dirty:
         form.mode != App.transport.mode || form.stun-urls != App.transport.stun-urls || form.relay-mode != App.transport.relay-mode ||
-        form.turn-urls != App.transport.turn-urls || form.turn-username != App.transport.turn-username || form.turn-credential != App.transport.turn-credential ||
+        form.turn-urls != App.transport.turn-urls || !same-turn-order(form.turn-order, App.transport.turn-order) || form.turn-username != App.transport.turn-username || form.turn-credential != App.transport.turn-credential ||
         form.direct-probe-timeout != App.transport.direct-probe-timeout || form.gather-timeout != App.transport.gather-timeout ||
         form.connectivity-timeout != App.transport.connectivity-timeout || form.retry-max-delay != App.transport.retry-max-delay ||
         form.turn-ttl != App.transport.turn-ttl || form.interface-allowlist != App.transport.interface-allowlist ||
         form.relay-only != App.transport.relay-only || form.allow-insecure-signal != App.transport.allow-insecure-signal;
 
     public function reset() { form = App.transport; save-error = ""; }
+
+    pure function same-turn-order(a: [string], b: [string]) -> bool {
+        return a.length == b.length &&
+            (a.length < 1 || a[0] == b[0]) &&
+            (a.length < 2 || a[1] == b[1]) &&
+            (a.length < 3 || a[2] == b[2]) &&
+            (a.length < 4 || a[3] == b[3]) &&
+            (a.length < 5 || a[4] == b[4]);
+    }
 
     PageHeader {
         title: "连接方式";
@@ -56,7 +66,10 @@ export component TransportPage inherits VerticalLayout {
                     Field { label: "TURN 用户名"; text: root.form.turn-username; edited(t) => { root.form.turn-username = t; } }
                     Field { label: "TURN 凭据"; text: root.form.turn-credential; secret: true; edited(t) => { root.form.turn-credential = t; } }
                 }
-                Field { label: "本机 TURN 类型顺序"; multiline: true; lines: 2; text: root.form.turn-order; hint: "每行一种，可选 udp、tcp_80、tcp、tls_443、tls；留空使用默认顺序。未选类型会跳过。"; edited(t) => { root.form.turn-order = t; } }
+                TurnOrderBoard {
+                    selected <=> root.form.turn-order;
+                    available <=> root.form.turn-order-available;
+                }
                 Hint { text: "默认顺序：直连 → UDP → TCP（80 → 3478）→ TLS（443 → 5349）。每台设备可独立选择顺序；TLS 只加密本机到 TURN 的接入，业务数据始终由 QUIC 端到端加密。"; }
             }
         }
@@ -88,7 +101,7 @@ export component TransportPage inherits VerticalLayout {
             Btn { text: "还原"; enabled: root.dirty; clicked => { root.reset(); } }
             Btn { text: "保存连接方式"; kind: "primary"; enabled: App.config-loaded && root.dirty; clicked => {
                 root.save-error = App.save-transport(root.form);
-                if (root.save-error == "") { root.form = App.transport; }
+                if (root.save-error == "") { App.transport = root.form; }
             } }
         }
     }

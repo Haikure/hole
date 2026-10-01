@@ -9,12 +9,19 @@ component MappingItem inherits Rectangle {
     in property <bool> first;
     in property <bool> last;
     callback edit();
-    height: 60px;
+    height: 68px;
     border-radius: Theme.radius;
     background: ta.has-hover ? Theme.surface-hover : transparent;
     animate background { duration: Theme.motion-fast; }
-    opacity: item.enabled ? 1 : 0.65;
+    opacity: item.enabled ? 1 : 0.82;
     ta := TouchArea { double-clicked => { root.edit(); } }
+    if !root.last : Rectangle {
+        x: 52px;
+        y: parent.height - 1px;
+        width: parent.width - 64px;
+        height: 1px;
+        background: Theme.border;
+    }
     HorizontalLayout {
         padding-left: Theme.space-2;
         padding-right: Theme.space-2;
@@ -25,6 +32,8 @@ component MappingItem inherits Rectangle {
             background: item.role == "provide" ? Theme.accent-soft : Theme.surface-alt;
             Text {
                 text: item.protocol == "" ? "?" : item.protocol;
+                horizontal-alignment: center;
+                vertical-alignment: center;
                 font-size: Theme.font-xs; font-weight: 700;
                 color: item.role == "provide" ? Theme.accent : Theme.text-muted;
             }
@@ -42,10 +51,10 @@ component MappingItem inherits Rectangle {
         HorizontalLayout {
             spacing: 2px;
             alignment: end;
-            IconBtn { icon: Icons.up; enabled: !root.first; y: (parent.height - self.height) / 2; clicked => { App.move-mapping(item.role, item.entry-id, -1); } }
-            IconBtn { icon: Icons.down; enabled: !root.last; y: (parent.height - self.height) / 2; clicked => { App.move-mapping(item.role, item.entry-id, 1); } }
-            IconBtn { icon: Icons.edit; y: (parent.height - self.height) / 2; clicked => { root.edit(); } }
-            IconBtn { icon: Icons.trash; y: (parent.height - self.height) / 2; clicked => { App.delete-mapping(item.role, item.entry-id); } }
+            IconBtn { icon: Icons.up; label: "上移 " + item.id; enabled: !root.first; y: (parent.height - self.height) / 2; clicked => { App.move-mapping(item.role, item.entry-id, -1); } }
+            IconBtn { icon: Icons.down; label: "下移 " + item.id; enabled: !root.last; y: (parent.height - self.height) / 2; clicked => { App.move-mapping(item.role, item.entry-id, 1); } }
+            IconBtn { icon: Icons.edit; label: "编辑 " + item.id; y: (parent.height - self.height) / 2; clicked => { root.edit(); } }
+            IconBtn { icon: Icons.trash; label: "删除 " + item.id; y: (parent.height - self.height) / 2; clicked => { App.delete-mapping(item.role, item.entry-id); } }
         }
         Toggle {
             y: (parent.height - self.height) / 2;
@@ -78,31 +87,42 @@ export component MappingsPage inherits VerticalLayout {
     }
 
     PageHeader {
-        title: "映射";
-        subtitle: "提供服务把本机可达的 TCP / UDP 服务共享给房间；使用服务把远端服务映射到本地端口。";
-        Btn { text: "新增提供"; icon: Icons.plus; clicked => { root.new-entry("provide"); } }
-        Btn { text: "新增使用"; icon: Icons.plus; kind: "primary"; clicked => { root.new-entry("consume"); } }
+        title: "服务";
+        subtitle: "把服务共享出去，或接到这台设备上。";
     }
 
     PageBody {
         if App.status.config-error != "" : Notice { text: App.status.config-error; kind: "warn"; }
-        Card {
-            SectionTitle { text: "提供服务 · provide"; subtitle: "把本机或本机可达的服务提供给房间内的设备；服务地址允许域名、IPv4、IPv6。"; }
-            if App.provides.length == 0 : EmptyState { title: "暂无 provide 配置"; description: "点击右上角“新增提供”，向远端提供 TCP 或 UDP 服务。"; }
+        VerticalLayout {
+            spacing: Theme.space-3;
+            HorizontalLayout {
+                alignment: space-between;
+                SectionTitle { text: "提供给其他设备"; subtitle: App.provides.length + " 项服务"; }
+                Btn { text: "提供服务"; icon: Icons.plus; clicked => { root.new-entry("provide"); } }
+            }
+            Divider { }
+            if App.provides.length == 0 : EmptyState { title: "还没有共享服务"; description: "例如，把本机的 SSH 或网页服务提供给另一台设备。"; }
             for row[i] in App.provides : MappingItem {
                 item: row; first: i == 0; last: i == App.provides.length - 1;
                 edit => { root.edit-entry("provide", row); }
             }
         }
-        Card {
-            SectionTitle { text: "使用服务 · consume"; subtitle: "把远端服务映射到本地端口；监听地址必须是字面 IP，协议由远端 provide 决定。"; }
-            if App.consumes.length == 0 : EmptyState { title: "暂无 consume 配置"; description: "点击右上角“新增使用”，通过本地端口使用远端服务。"; }
+        Rectangle { height: Theme.space-4; }
+        VerticalLayout {
+            spacing: Theme.space-3;
+            HorizontalLayout {
+                alignment: space-between;
+                SectionTitle { text: "在本机使用"; subtitle: App.consumes.length + " 项服务"; }
+                Btn { text: "使用服务"; icon: Icons.plus; clicked => { root.new-entry("consume"); } }
+            }
+            Divider { }
+            if App.consumes.length == 0 : EmptyState { title: "还没有接入服务"; description: "填写对方的服务 ID，通过本地端口访问。"; }
             for row[i] in App.consumes : MappingItem {
                 item: row; first: i == 0; last: i == App.consumes.length - 1;
                 edit => { root.edit-entry("consume", row); }
             }
         }
-        Hint { text: "停用的条目保留全部字段，只有启用项进入有效配置。运行中修改映射会直接重配核心，不重启整个连接；删除服务会结束对应会话。"; }
+        Hint { text: "关闭开关可暂停服务并保留配置；删除会结束对应连接。"; }
     }
 
     if root.editing : Dialog {

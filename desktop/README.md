@@ -106,8 +106,7 @@ GUI 启动后主动发送 `hello`，核对协议与核心 API 版本后再发送
 生产代码只依赖核心解析器；测试直接与 `mobile.DecodeCLIConfig` / `EncodeCLIConfig` 比较规范化结果，
 保持现有 mobile 源码、接口与构建输入不变。
 
-连接设置中的 `turn.order` 可独立配置本机 TURN 白名单和优先顺序，支持 `udp`、`tcp_80`、
-`tcp`、`tls_443`、`tls`；留空采用默认顺序。运行详情与诊断报告显示本机、对端顺序和旧协议回退状态。
+连接设置中的 `turn.order` 可独立配置本机 TURN 白名单和优先顺序，支持 `udp`、`tcp`、`tls`；留空采用默认顺序。运行详情与诊断报告显示本机、对端顺序和旧协议回退状态。
 
 - `decode_cli_config` 的文档允许缺少服务器/凭据，适合停止态草稿；其他格式与传输约束仍校验。
   缺少的值保留为空，校验用的临时值不会出现在返回配置中。
@@ -217,6 +216,24 @@ GUI 启动后主动发送 `hello`，核对协议与核心 API 版本后再发送
 后台常驻服务模式、磁盘文件操作和配置持久化留在桌面宿主层；当前桥接提供纯文本配置转换。
 
 ## 回归验证
+
+Slint 界面在 `desktop/gui/`。本地开发检查使用项目缓存：
+
+```bash
+source scripts/build-env.sh
+cd desktop/gui
+cargo build --offline
+cargo test --offline
+```
+
+界面截图模式通过 `HOLE_DESKTOP_SCREENSHOT_DIR` 指定输出目录，依次保存七个页面的 PPM 图片后退出。
+可用 `HOLE_DESKTOP_SCREENSHOT_SIZE=860x560` 检查最小窗口；尺寸有效范围为 860–3840 × 560–2160，格式错误时保留默认窗口尺寸。
+截图时应将 `HOLE_DESKTOP_CONFIG_DIR` 指向单独的演示配置目录并保持连接关闭；深浅色由该目录中配置的 `prefs.theme_mode` 决定。
+Linux 无显示环境可用 `xvfb-run` 配合 `SLINT_BACKEND=winit-software`。截图验证布局，不代表真实联网或 Windows 桌面验收。
+
+TURN 排序使用自动换行的小块，支持点按添加／移除和拖动排序；保存后继续调整基于刚保存的顺序。
+Linux 上可用 `xvfb-run -a python3 desktop/gui/tests/turn_order_x11.py .cache/cargo-target/debug/hole-desktop` 验证真实拖动与连续保存（需要 X11 / Xtst，使用隔离的临时配置）。
+密码与 TURN 凭据使用眼睛图标切换显示，保留键盘操作和无障碍标签。
 
 ```bash
 source scripts/build-env.sh

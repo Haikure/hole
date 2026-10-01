@@ -1,4 +1,4 @@
-// 中性现代桌面风格的基础控件。所有控件只引用 Theme token。
+// 中性现代仪表盘风格的基础控件。所有控件只引用 Theme token。
 import { LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icons.slint";
@@ -8,14 +8,14 @@ import { KV } from "models.slint";
 
 export component Card inherits Rectangle {
     in property <length> inset: Theme.space-4;
-    in property <bool> outlined: false;
+    in property <bool> outlined: true;
     in property <bool> tinted: false;
     background: tinted ? Theme.accent-soft : Theme.surface;
     border-radius: Theme.radius-lg;
     border-width: 1px;
     border-color: tinted ? Theme.accent-soft : Theme.border;
-    drop-shadow-blur: outlined ? 0px : 10px;
-    drop-shadow-offset-y: outlined ? 0px : 2px;
+    drop-shadow-blur: outlined ? 0px : 6px;
+    drop-shadow-offset-y: outlined ? 0px : 1px;
     drop-shadow-color: outlined ? transparent : Theme.shadow;
     VerticalLayout {
         padding: root.inset;
@@ -27,7 +27,7 @@ export component Card inherits Rectangle {
 export component SectionTitle inherits VerticalLayout {
     in property <string> text;
     in property <string> subtitle;
-    spacing: 2px;
+    spacing: 4px;
     Text {
         text: root.text;
         font-size: Theme.font-lg;
@@ -75,20 +75,21 @@ export component Btn inherits Rectangle {
     property <bool> primary: kind == "primary";
     property <bool> danger: kind == "danger";
     property <bool> ghost: kind == "ghost";
-    property <color> fg: !enabled ? Theme.text-faint : primary ? Theme.on-accent : danger ? Theme.bad : ghost ? Theme.accent : Theme.text;
-    property <color> base: primary ? Theme.accent : ghost ? transparent : Theme.surface;
+    property <color> fg: !enabled ? Theme.text-faint
+        : primary ? Theme.on-accent
+        : danger ? #FFFFFF
+        : ghost ? Theme.text-muted : Theme.text;
 
-    height: compact ? 28px : 34px;
-    min-width: compact ? 28px : 72px;
+    height: compact ? 32px : 38px;
+    min-width: compact ? 32px : 84px;
     horizontal-stretch: 0;
-    border-radius: Theme.radius;
-    border-width: (primary || ghost) ? 0px : 1px;
-    border-color: danger ? Theme.bad-soft : Theme.border-strong;
+    border-radius: Theme.radius-lg;
+    border-width: primary || ghost ? 0px : 1px;
+    border-color: !enabled ? Theme.border : danger ? Theme.bad-solid : Theme.border-strong;
     background: !enabled ? (ghost ? transparent : Theme.surface-alt)
-        : area.pressed ? (primary ? Theme.accent.darker(20%) : Theme.surface-hover.darker(5%))
-        : area.has-hover ? (primary ? Theme.accent.brighter(10%) : Theme.surface-hover)
-        : base;
-    opacity: enabled ? 1 : 0.7;
+        : area.pressed ? (primary ? Theme.accent.darker(18%) : danger ? Theme.bad-solid.darker(12%) : Theme.surface-hover.darker(4%))
+        : area.has-hover ? (primary ? Theme.accent.brighter(8%) : danger ? Theme.bad-solid.brighter(6%) : Theme.surface-hover)
+        : primary ? Theme.accent : danger ? Theme.bad-solid : ghost ? transparent : Theme.surface;
     animate background { duration: Theme.motion-fast; }
     accessible-role: button;
     accessible-label: text;
@@ -105,7 +106,7 @@ export component Btn inherits Rectangle {
     }
     Rectangle {
         // 键盘焦点环
-        border-radius: Theme.radius;
+        border-radius: Theme.radius-lg;
         border-width: focus.has-focus ? 2px : 0px;
         border-color: Theme.accent;
     }
@@ -131,9 +132,11 @@ export component Btn inherits Rectangle {
 }
 
 export component IconBtn inherits Btn {
+    in property <string> label;
     kind: "ghost";
     compact: true;
-    min-width: 28px;
+    min-width: 32px;
+    accessible-label: label;
 }
 
 // ---------- 开关 ----------
@@ -144,9 +147,9 @@ export component Toggle inherits Rectangle {
     in property <string> label;
     callback toggled(bool);
 
-    width: 40px;
-    height: 22px;
-    border-radius: 11px;
+    width: 42px;
+    height: 24px;
+    border-radius: 12px;
     background: !enabled ? Theme.border : checked ? Theme.accent : Theme.border-strong;
     animate background { duration: Theme.motion-fast; }
     accessible-role: switch;
@@ -166,14 +169,14 @@ export component Toggle inherits Rectangle {
         }
     }
     Rectangle {
-        border-radius: 11px;
+        border-radius: 12px;
         border-width: focus.has-focus ? 2px : 0px;
         border-color: Theme.accent.brighter(30%);
     }
     knob := Rectangle {
-        width: 16px;
-        height: 16px;
-        border-radius: 8px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
         y: 3px;
         x: root.checked ? root.width - self.width - 3px : 3px;
         background: #FFFFFF;
@@ -217,6 +220,7 @@ export component SwitchRow inherits Rectangle {
 // ---------- 输入 ----------
 
 export component Field inherits VerticalLayout {
+    alignment: start;
     in property <string> label;
     in-out property <string> text;
     in property <string> hint;
@@ -237,19 +241,21 @@ export component Field inherits VerticalLayout {
         color: Theme.text-muted;
     }
     if !root.multiline : HorizontalLayout {
+        height: 36px;
         spacing: Theme.space-2;
         edit := LineEdit {
             text <=> root.text;
             enabled: root.enabled;
+            accessible-label: root.label;
             placeholder-text: root.placeholder;
             input-type: (root.secret && !root.reveal) ? InputType.password : InputType.text;
             font-size: Theme.font-body;
             edited(t) => { root.edited(t); }
         }
-        if root.secret : Btn {
-            text: root.reveal ? "隐藏" : "显示";
-            kind: "ghost";
-            compact: true;
+        if root.secret : IconBtn {
+            icon: root.reveal ? Icons.eye-off : Icons.eye;
+            label: root.reveal ? "隐藏密码" : "显示密码";
+            enabled: root.enabled;
             y: (parent.height - self.height) / 2;
             clicked => { root.reveal = !root.reveal; }
         }
@@ -257,6 +263,7 @@ export component Field inherits VerticalLayout {
     if root.multiline : TextEdit {
         text <=> root.text;
         enabled: root.enabled;
+        accessible-label: root.label;
         placeholder-text: root.placeholder;
         font-size: Theme.font-body;
         height: 22px * root.lines + 16px;
@@ -274,8 +281,9 @@ export component Choice inherits Rectangle {
     in-out property <string> selected;
     in property <bool> enabled: true;
     callback changed(string);
-    height: 32px;
-    border-radius: Theme.radius;
+    function choose(value: string) { selected = value; changed(value); }
+    height: 36px;
+    border-radius: Theme.radius-lg;
     background: Theme.surface-alt;
     border-width: 1px;
     border-color: Theme.border;
@@ -286,14 +294,34 @@ export component Choice inherits Rectangle {
             property <bool> active: value == root.selected;
             border-radius: Theme.radius-sm;
             background: active ? Theme.surface : ta.has-hover ? Theme.surface-hover : transparent;
-            drop-shadow-blur: active ? 4px : 0px;
-            drop-shadow-color: active ? Theme.shadow : transparent;
+            border-width: active ? 1px : 0px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: active ? 3px : 0px;
+            drop-shadow-offset-y: active ? 1px : 0px;
+            drop-shadow-color: Theme.shadow;
             animate background { duration: Theme.motion-fast; }
             horizontal-stretch: 1;
-            min-width: 64px;
+            min-width: 68px;
             accessible-role: tab;
             accessible-label: root.labels[i];
             accessible-checked: active;
+            accessible-enabled: root.enabled;
+            accessible-action-default => { if (root.enabled) { root.choose(value); } }
+            forward-focus: focus;
+            focus := FocusScope {
+                enabled: root.enabled;
+                key-pressed(event) => {
+                    if (event.text == Key.Return || event.text == " ") { root.choose(value); return accept; }
+                    if (event.text == Key.RightArrow && i + 1 < root.values.length) { root.choose(root.values[i + 1]); return accept; }
+                    if (event.text == Key.LeftArrow && i > 0) { root.choose(root.values[i - 1]); return accept; }
+                    return reject;
+                }
+            }
+            Rectangle {
+                border-radius: Theme.radius-sm;
+                border-width: focus.has-focus ? 2px : 0px;
+                border-color: Theme.accent;
+            }
             Text {
                 text: root.labels[i];
                 font-size: Theme.font-body;
@@ -305,7 +333,7 @@ export component Choice inherits Rectangle {
             ta := TouchArea {
                 enabled: root.enabled;
                 mouse-cursor: pointer;
-                clicked => { root.selected = value; root.changed(value); }
+                clicked => { root.choose(value); }
             }
         }
     }
@@ -341,20 +369,21 @@ export component Badge inherits Rectangle {
     }
 }
 
+// 指标卡：小标签 + 大数值 + 说明，仪表盘风格的数字看板。
 export component StatTile inherits Rectangle {
     in property <string> label;
     in property <string> value;
     in property <string> caption;
     in property <string> kind: "idle";
-    min-width: 140px;
+    min-width: 122px;
     horizontal-stretch: 1;
     border-radius: Theme.radius-lg;
     background: Theme.surface;
     border-width: 1px;
     border-color: Theme.border;
     VerticalLayout {
-        padding: Theme.space-4;
-        spacing: 4px;
+        padding: 14px;
+        spacing: 5px;
         HorizontalLayout {
             spacing: 6px;
             Rectangle {
@@ -362,7 +391,7 @@ export component StatTile inherits Rectangle {
                 y: (parent.height - self.height) / 2;
                 background: Theme.kind-color(root.kind);
             }
-            Text { text: root.label; font-size: Theme.font-sm; color: Theme.text-muted; }
+            Text { text: root.label; font-size: Theme.font-sm; color: Theme.text-muted; overflow: elide; }
         }
         Text {
             text: root.value;
@@ -384,8 +413,8 @@ export component KVRow inherits HorizontalLayout {
         text: root.key;
         font-size: Theme.font-sm;
         color: Theme.text-muted;
-        min-width: 96px;
-        max-width: 160px;
+        min-width: 104px;
+        max-width: 168px;
         horizontal-stretch: 0;
         vertical-alignment: top;
     }
@@ -423,6 +452,7 @@ export component Disclosure inherits VerticalLayout {
     Rectangle {
         clip: true;
         height: root.expanded ? body.preferred-height : 0px;
+        animate height { duration: Theme.motion; easing: ease-out; }
         body := VerticalLayout {
             spacing: Theme.space-2;
             visible: root.expanded;
@@ -467,15 +497,15 @@ export component LegendDot inherits HorizontalLayout {
 export component EmptyState inherits Rectangle {
     in property <string> title;
     in property <string> description;
+    in property <string> icon: "";
+    min-height: 112px;
     border-radius: Theme.radius-lg;
-    border-width: 1px;
-    border-color: Theme.border;
     background: transparent;
     VerticalLayout {
-        padding: Theme.space-5;
-        spacing: 4px;
+        padding: Theme.space-4;
+        spacing: Theme.space-2;
         alignment: center;
-        Text { text: root.title; font-size: Theme.font-md; font-weight: 500; color: Theme.text; horizontal-alignment: center; }
+        Text { text: root.title; font-size: Theme.font-md; font-weight: 600; color: Theme.text; horizontal-alignment: center; }
         Text { text: root.description; font-size: Theme.font-sm; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
     }
 }
@@ -507,14 +537,14 @@ export component Notice inherits Rectangle {
 
 // ---------- 页面骨架 ----------
 
-// 页面由头部动作区与可滚动内容区两个组件组成。
+// 页面由头部动作区与可滚动内容区两个组件组成；面包屑等全局信息在主窗口顶栏。
 export component PageHeader inherits HorizontalLayout {
     in property <string> title;
     in property <string> subtitle;
-    padding-left: Theme.space-6;
-    padding-right: Theme.space-6;
-    padding-top: Theme.space-5;
-    padding-bottom: Theme.space-3;
+    padding-left: 28px;
+    padding-right: 28px;
+    padding-top: 28px;
+    padding-bottom: Theme.space-5;
     spacing: Theme.space-3;
     alignment: space-between;
     VerticalLayout {
@@ -534,9 +564,9 @@ export component PageHeader inherits HorizontalLayout {
 export component PageBody inherits ScrollView {
     vertical-stretch: 1;
     VerticalLayout {
-        padding-left: Theme.space-6;
-        padding-right: Theme.space-6;
-        padding-bottom: Theme.space-6;
+        padding-left: 28px;
+        padding-right: 28px;
+        padding-bottom: 28px;
         padding-top: Theme.space-2;
         spacing: Theme.space-4;
         alignment: start;
@@ -559,7 +589,7 @@ export component Dialog inherits Rectangle {
         background: Theme.surface;
         border-width: 1px;
         border-color: Theme.border;
-        drop-shadow-blur: 24px;
+        drop-shadow-blur: 28px;
         drop-shadow-color: Theme.shadow;
         TouchArea { }
         inner := VerticalLayout {
@@ -568,7 +598,7 @@ export component Dialog inherits Rectangle {
             HorizontalLayout {
                 alignment: space-between;
                 Text { text: root.title; font-size: Theme.font-lg; font-weight: 600; color: Theme.text; vertical-alignment: center; }
-                IconBtn { icon: Icons.close; clicked => { root.dismissed(); } }
+                IconBtn { icon: Icons.close; label: "关闭对话框"; clicked => { root.dismissed(); } }
             }
             @children
         }
@@ -583,8 +613,8 @@ export component Toast inherits Rectangle {
     callback closed();
     width: layout.preferred-width;
     height: layout.preferred-height;
-    border-radius: Theme.radius;
-    background: Theme.dark ? #2A2F39 : #1B1F24;
+    border-radius: Theme.radius-lg;
+    background: Theme.dark ? #2A2F39 : #1F242B;
     drop-shadow-blur: 16px;
     drop-shadow-color: Theme.shadow;
     layout := HorizontalLayout {

@@ -1,0 +1,378 @@
+import { Theme } from "theme.slint";
+import { Icon, Icons } from "icons.slint";
+
+component TurnTypeRow inherits Rectangle {
+    in property <string> token;
+    in property <string> label;
+    in property <int> position;
+    in property <int> item-index;
+    in property <bool> active;
+    in property <bool> drag-source;
+    callback activated();
+    callback pointer-down(string, bool, int, length, length);
+    callback pointer-move(string, length, length);
+    callback pointer-up(string);
+    callback pointer-cancel(string);
+
+    height: 32px;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : Theme.border;
+    background: root.active ? Theme.accent-soft : area.has-hover ? Theme.surface-hover : Theme.surface-alt;
+    animate background { duration: Theme.motion-fast; }
+    opacity: root.drag-source ? 0.3 : 1;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.activated(); }
+    forward-focus: focus;
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") { root.activated(); return accept; }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 6px;
+        Rectangle {
+            width: 16px;
+            height: 16px;
+            y: (parent.height - self.height) / 2;
+            if root.active : Text {
+                text: root.position;
+                color: Theme.accent;
+                font-size: Theme.font-xs;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            if !root.active : Icon { name: Icons.plus; size: 14px; x: 1px; y: 1px; }
+        }
+        Text {
+            text: root.label;
+            color: Theme.text;
+            font-size: Theme.font-sm;
+            font-weight: root.active ? 600 : 400;
+            vertical-alignment: center;
+        }
+    }
+
+    Rectangle {
+        border-radius: Theme.radius;
+        border-width: focus.has-focus ? 2px : 0px;
+        border-color: Theme.accent;
+    }
+    area := TouchArea {
+        property <bool> pointer-travelled: false;
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                self.pointer-travelled = false;
+                root.pointer-down(root.token, root.active, root.item-index, self.pressed-x, self.pressed-y);
+            } else if (event.kind == PointerEventKind.move) {
+                if (abs(self.mouse-x - self.pressed-x) > 4px || abs(self.mouse-y - self.pressed-y) > 4px) { self.pointer-travelled = true; }
+                root.pointer-move(root.token, self.mouse-x, self.mouse-y);
+            } else if (event.kind == PointerEventKind.up) {
+                root.pointer-up(root.token);
+            } else if (event.kind == PointerEventKind.cancel) {
+                root.pointer-cancel(root.token);
+            }
+        }
+        clicked => { if (!self.pointer-travelled) { root.activated(); } }
+    }
+}
+
+export component TurnOrderBoard inherits Rectangle {
+    in-out property <[string]> selected;
+    in-out property <[string]> available;
+    property <string> candidate-token;
+    property <bool> candidate-active: false;
+    property <int> candidate-index: -1;
+    property <length> candidate-start-x;
+    property <length> candidate-start-y;
+    property <bool> dragging: false;
+    property <[string]> drag-order: [];
+    property <length> drag-pointer-y;
+    property <length> drag-pointer-x;
+    property <bool> drop-active: true;
+    property <int> drop-index: 0;
+
+    property <length> row-height: 32px;
+    property <length> row-gap: 8px;
+    property <length> row-pitch: root.row-height + root.row-gap;
+    property <length> chip-width: 110px;
+    property <length> column-pitch: root.chip-width + root.row-gap;
+    property <int> columns: max(1, floor((root.width + root.row-gap) / root.column-pitch));
+    height: layout.preferred-height;
+
+    pure function chip-x(index: int) -> length {
+        return (index - floor(index / root.columns) * root.columns) * root.column-pitch;
+    }
+    pure function chip-y(index: int) -> length {
+        return floor(index / root.columns) * root.row-pitch;
+    }
+    pure function section-height(count: int) -> length {
+        return count == 0 ? 0px : ceil(count / root.columns) * root.row-pitch - root.row-gap;
+    }
+
+    pure function label-for(token: string) -> string {
+        if (token == "udp") { return "UDP"; }
+        if (token == "tcp_80") { return "TCP"; }
+        if (token == "tcp") { return "TCP"; }
+        if (token == "tls_443") { return "TLS"; }
+        if (token == "tls") { return "TLS"; }
+        return token;
+    }
+
+    function contains(source: [string], token: string) -> bool {
+        return (source.length > 0 && source[0] == token) ||
+            (source.length > 1 && source[1] == token) ||
+            (source.length > 2 && source[2] == token) ||
+            (source.length > 3 && source[3] == token) ||
+            (source.length > 4 && source[4] == token);
+    }
+
+    function copy-order(source: [string]) -> [string] {
+        let result: [string] = [];
+        if (source.length > 0) { result.push(source[0]); }
+        if (source.length > 1) { result.push(source[1]); }
+        if (source.length > 2) { result.push(source[2]); }
+        if (source.length > 3) { result.push(source[3]); }
+        if (source.length > 4) { result.push(source[4]); }
+        return result;
+    }
+
+    function without-token(source: [string], token: string) -> [string] {
+        let result: [string] = [];
+        if (source.length > 0 && source[0] != token) { result.push(source[0]); }
+        if (source.length > 1 && source[1] != token) { result.push(source[1]); }
+        if (source.length > 2 && source[2] != token) { result.push(source[2]); }
+        if (source.length > 3 && source[3] != token) { result.push(source[3]); }
+        if (source.length > 4 && source[4] != token) { result.push(source[4]); }
+        return result;
+    }
+
+    function make-available(source: [string]) -> [string] {
+        let result: [string] = [];
+        if (!root.contains(source, "udp")) { result.push("udp"); }
+        if (!root.contains(source, "tcp")) { result.push("tcp"); }
+        if (!root.contains(source, "tls")) { result.push("tls"); }
+        return result;
+    }
+
+    function apply-order(next: [string]) {
+        root.selected = next;
+        root.available = root.make-available(next);
+    }
+
+    function toggle-token(token: string) {
+        if (root.contains(root.selected, token)) {
+            root.apply-order(root.without-token(root.selected, token));
+        } else {
+            let next = root.copy-order(root.selected);
+            next.push(token);
+            root.apply-order(next);
+        }
+    }
+
+    function section-origin(active: bool) -> length {
+        if (active) { return selected-list.y; }
+        return available-list.y;
+    }
+
+    function begin-drag(token: string, active: bool, index: int, x: length, y: length) {
+        root.candidate-token = token;
+        root.candidate-active = active;
+        root.candidate-index = index;
+        root.candidate-start-x = root.chip-x(index) + x;
+        root.candidate-start-y = root.section-origin(active) + root.chip-y(index) + y;
+        root.drag-order = root.copy-order(root.selected);
+        root.drag-pointer-y = root.candidate-start-y;
+        root.drag-pointer-x = root.candidate-start-x;
+        root.dragging = false;
+    }
+
+    function update-drag(token: string, x: length, y: length) {
+        if (token != root.candidate-token) { return; }
+        let pointer-y = root.section-origin(root.candidate-active) + root.chip-y(root.candidate-index) + y;
+        let pointer-x = root.chip-x(root.candidate-index) + x;
+        if (!root.dragging && (pointer-x > root.candidate-start-x + 4px || pointer-x < root.candidate-start-x - 4px ||
+            pointer-y > root.candidate-start-y + 4px || pointer-y < root.candidate-start-y - 4px)) {
+            root.dragging = true;
+        }
+        if (root.dragging) {
+            root.drag-pointer-y = pointer-y;
+            root.drag-pointer-x = pointer-x;
+            root.drop-active = pointer-y < divider.y + divider.height / 2;
+            let row = max(0, floor((pointer-y - selected-list.y) / root.row-pitch));
+            let column = max(0, min(root.columns, floor((pointer-x + root.chip-width / 2) / root.column-pitch)));
+            let slot = min(root.drag-order.length, row * root.columns + column);
+            root.drop-index = root.candidate-active && slot > root.candidate-index ? slot - 1 : slot;
+        }
+    }
+
+    function finish-drag(token: string) {
+        if (token != root.candidate-token) { return; }
+        if (root.dragging && (root.drop-active || root.candidate-active)) {
+            let next = root.without-token(root.drag-order, token);
+            if (root.drop-active) {
+                next.insert(min(root.drop-index, next.length), token);
+            }
+            root.apply-order(next);
+        }
+        root.clear-drag();
+    }
+
+    function clear-drag() {
+        root.candidate-token = "";
+        root.candidate-index = -1;
+        root.dragging = false;
+        root.drop-active = true;
+        root.drop-index = 0;
+    }
+
+    pure function marker-y() -> length {
+        let target-index = root.candidate-active && root.drop-index >= root.candidate-index ? root.drop-index + 1 : root.drop-index;
+        if (target-index > 0 && target-index == root.drag-order.length && root.chip-x(target-index) == 0px) {
+            return selected-list.y + root.chip-y(target-index - 1);
+        }
+        return selected-list.y + root.chip-y(target-index);
+    }
+
+    pure function marker-x() -> length {
+        let target-index = root.candidate-active && root.drop-index >= root.candidate-index ? root.drop-index + 1 : root.drop-index;
+        if (target-index > 0 && target-index == root.drag-order.length && root.chip-x(target-index) == 0px) {
+            return root.chip-x(target-index - 1) + root.chip-width + 4px;
+        }
+        return root.chip-x(target-index) - 4px;
+    }
+
+    layout := VerticalLayout {
+        spacing: 8px;
+        HorizontalLayout {
+            Text { text: "尝试顺序"; color: Theme.text; font-size: Theme.font-sm; font-weight: 600; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: root.selected.length == 0 ? "使用默认顺序" : "拖动调整"; color: Theme.text-faint; font-size: Theme.font-xs; }
+        }
+
+        selected-list := Rectangle {
+            height: root.section-height(root.selected.length);
+            for token[index] in root.selected : TurnTypeRow {
+                x: root.chip-x(index); y: root.chip-y(index); width: root.chip-width;
+                token: token;
+                label: root.label-for(token);
+                position: index + 1;
+                item-index: index;
+                active: true;
+                drag-source: root.dragging && root.candidate-token == token;
+                pointer-down(token, active, index, x, y) => { root.begin-drag(token, active, index, x, y); }
+                pointer-move(token, x, y) => { root.update-drag(token, x, y); }
+                pointer-up(token) => { root.finish-drag(token); }
+                pointer-cancel(token) => { if (root.candidate-token == token) { root.clear-drag(); } }
+                activated => { if (!root.dragging) { root.toggle-token(token); } }
+            }
+        }
+        if (root.selected.length == 0) : Text {
+            text: "留空时依次使用默认类型；点按下方类型可加入。";
+            color: Theme.text-muted;
+            font-size: Theme.font-xs;
+            wrap: word-wrap;
+        }
+
+        divider := Rectangle { height: 1px; background: Theme.border; }
+
+        HorizontalLayout {
+            Text { text: "可添加"; color: Theme.text; font-size: Theme.font-sm; font-weight: 600; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: "点按启用 · 拖到上方"; color: Theme.text-faint; font-size: Theme.font-xs; }
+        }
+
+        available-list := Rectangle {
+            height: root.section-height(root.available.length);
+            for token[index] in root.available : TurnTypeRow {
+                x: root.chip-x(index); y: root.chip-y(index); width: root.chip-width;
+                token: token;
+                label: root.label-for(token);
+                position: 0;
+                item-index: index;
+                active: false;
+                drag-source: root.dragging && root.candidate-token == token;
+                pointer-down(token, active, index, x, y) => { root.begin-drag(token, active, index, x, y); }
+                pointer-move(token, x, y) => { root.update-drag(token, x, y); }
+                pointer-up(token) => { root.finish-drag(token); }
+                pointer-cancel(token) => { if (root.candidate-token == token) { root.clear-drag(); } }
+                activated => { if (!root.dragging) { root.toggle-token(token); } }
+            }
+        }
+    }
+
+    if (root.dragging) : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: divider.y + divider.height / 2;
+        border-radius: Theme.radius;
+        border-width: root.drop-active ? 1px : 0px;
+        border-color: Theme.accent;
+    }
+    if (root.dragging) : Rectangle {
+        x: 0px;
+        y: divider.y + divider.height / 2;
+        width: root.width;
+        height: root.height - self.y;
+        border-radius: Theme.radius;
+        border-width: root.drop-active ? 0px : 1px;
+        border-color: Theme.accent;
+    }
+    if (root.dragging && root.drop-active) : Rectangle {
+        x: root.marker-x();
+        y: root.marker-y();
+        width: 3px;
+        height: root.row-height;
+        border-radius: 2px;
+        background: Theme.accent;
+    }
+    if (root.dragging) : Rectangle {
+        x: root.drag-pointer-x - root.chip-width / 2;
+        y: root.drag-pointer-y - root.row-height / 2;
+        width: root.chip-width;
+        height: root.row-height;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.accent;
+        background: Theme.surface;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: Theme.shadow;
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 6px;
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 11px;
+                background: root.drop-active ? Theme.accent : Theme.border-strong;
+                Text {
+                    text: root.drop-active ? root.drop-index + 1 : "+";
+                    color: root.drop-active ? Theme.on-accent : Theme.text-muted;
+                    font-size: Theme.font-xs;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                text: root.label-for(root.candidate-token);
+                color: Theme.text;
+                font-size: Theme.font-sm;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

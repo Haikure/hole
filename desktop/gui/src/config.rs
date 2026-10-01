@@ -71,7 +71,22 @@ pub struct TurnSettings {
     pub ttl: String,
     pub urls: Vec<String>,
     pub username: String,
+    #[serde(deserialize_with = "deserialize_turn_order")]
     pub order: Vec<String>,
+}
+
+pub fn normalize_turn_order(order: &[String]) -> Vec<String> {
+    if !order.iter().any(|s| s == "tcp_80" || s == "tls_443") { return order.to_vec(); }
+    let mut result = Vec::new();
+    for item in order {
+        let token = match item.as_str() { "tcp_80" => "tcp", "tls_443" => "tls", value => value }.to_string();
+        if !result.contains(&token) { result.push(token); }
+    }
+    result
+}
+
+fn deserialize_turn_order<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(normalize_turn_order(&Vec::<String>::deserialize(d)?))
 }
 
 impl Default for TurnSettings {
@@ -395,9 +410,9 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
     if !matches!(c.turn.mode.as_str(), "worker" | "manual" | "off") {
         return Err("中继来源无效".into());
     }
-    let order_types = ["udp", "tcp_80", "tcp", "tls_443", "tls"];
-    if c.turn.order.len() > 5 || c.turn.order.iter().any(|item| !order_types.contains(&item.as_str())) {
-        return Err("TURN 顺序仅接受不超过 5 种 UDP、TCP 或 TLS 类型".into());
+    let order_types = ["udp", "tcp", "tls"];
+    if c.turn.order.len() > 3 || c.turn.order.iter().any(|item| !order_types.contains(&item.as_str())) {
+        return Err("TURN 顺序仅接受不超过 3 种 UDP、TCP 或 TLS 类型".into());
     }
     if c.turn.order.iter().collect::<std::collections::HashSet<_>>().len() != c.turn.order.len() {
         return Err("TURN 类型顺序不能重复".into());
@@ -563,7 +578,7 @@ pub fn from_portable_document(doc: &Value, current: &StoredConfig) -> Result<(St
             ttl: dur(&turn["ttl"], "6h"),
             urls: list(&turn["urls"]),
             username: s(&turn["username"]),
-            order: list(&turn["order"]),
+            order: normalize_turn_order(&list(&turn["order"])),
         },
     };
     let mut provide = Vec::new();
@@ -696,7 +711,7 @@ fn android_backup(config: &Value, version: i64, current: &StoredConfig) -> Resul
                 include_loopback: ice["include_loopback"].as_bool().unwrap_or(false),
                 relay_only: ice["relay_only"].as_bool().unwrap_or(false),
             },
-            turn: TurnSettings { mode: or(&turn["mode"], "worker"), ttl: or(&turn["ttl"], "6h"), urls: list(&turn["urls"]), username: s(&turn["username"]), order: list(&turn["order"]) },
+            turn: TurnSettings { mode: or(&turn["mode"], "worker"), ttl: or(&turn["ttl"], "6h"), urls: list(&turn["urls"]), username: s(&turn["username"]), order: normalize_turn_order(&list(&turn["order"])) },
         },
         provide: vec![],
         consume: vec![],
@@ -782,17 +797,17 @@ mod tests {
     #[test]
     fn portable_roundtrip() {
         let (mut cfg, secrets) = sample();
-        cfg.connection.turn.order = vec!["tls_443".into(), "udp".into()];
+        cfg.connection.turn.order = vec!["tls".into(), "udp".into()];
         let doc = to_portable_document(&cfg, &secrets, false).unwrap();
         assert_eq!(doc["password"], "");
         assert_eq!(doc["server_url"], "wss://host/ws");
-        assert_eq!(doc["turn"]["order"], json!(["tls_443", "udp"]));
+        assert_eq!(doc["turn"]["order"], json!(["tls", "udp"]));
         let (back, back_secrets) = from_portable_document(&doc, &StoredConfig::default()).unwrap();
         assert_eq!(back.provide.len(), 1);
         assert_eq!(back.provide[0].host, "::1");
         assert_eq!(back.consume[0].port, 8080);
         assert_eq!(back.connection.connection_mode, "auto");
-        assert_eq!(back.connection.turn.order, vec!["tls_443", "udp"]);
+        assert_eq!(back.connection.turn.order, vec!["tls", "udp"]);
         assert_eq!(back_secrets.password, "");
     }
 

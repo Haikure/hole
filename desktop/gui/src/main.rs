@@ -13,7 +13,7 @@ slint::include_modules!();
 
 use config::{ConsumeEntry, ProvideEntry, Secrets, StoredConfig};
 use controller::{Command, Controller, Shared};
-use slint::{ComponentHandle, Timer, TimerMode, Weak};
+use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, Weak};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -74,6 +74,17 @@ pub fn push_config_forms(window: &Weak<MainWindow>, shared: &Arc<Mutex<Shared>>)
     let _ = window.upgrade_in_event_loop(move |w| {
         let app = w.global::<App>();
         let c = &cfg.connection;
+        let turn_order_available = ["udp", "tcp", "tls"]
+            .into_iter()
+            .filter(|item| !c.turn.order.iter().any(|configured| configured == *item))
+            .map(slint::SharedString::from)
+            .collect::<Vec<_>>();
+        let turn_order = c
+            .turn
+            .order
+            .iter()
+            .map(|item| slint::SharedString::from(item.as_str()))
+            .collect::<Vec<_>>();
         app.set_connection(ConnectionForm {
             server_url: c.server_url.clone().into(),
             password: secrets.password.clone().into(),
@@ -89,7 +100,8 @@ pub fn push_config_forms(window: &Weak<MainWindow>, shared: &Arc<Mutex<Shared>>)
             stun_urls: c.ice.stun_urls.join("\n").into(),
             relay_mode: c.turn.mode.clone().into(),
             turn_urls: c.turn.urls.join("\n").into(),
-            turn_order: c.turn.order.join("\n").into(),
+            turn_order: ModelRc::new(VecModel::from(turn_order)),
+            turn_order_available: ModelRc::new(VecModel::from(turn_order_available)),
             turn_username: c.turn.username.clone().into(),
             turn_credential: secrets.turn_credential.clone().into(),
             direct_probe_timeout: c.ice.direct_probe_timeout.clone().into(),
@@ -263,10 +275,10 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
                 }
                 let relay = form.relay_mode.to_string();
                 let turn_urls = config::split_lines(&form.turn_urls);
-                let turn_order = config::split_list(&form.turn_order);
-                let order_types = ["udp", "tcp_80", "tcp", "tls_443", "tls"];
-                if turn_order.len() > 5 || turn_order.iter().any(|item| !order_types.contains(&item.as_str())) {
-                    return Err("TURN 顺序仅接受不超过 5 种 UDP、TCP 或 TLS 类型。".into());
+                let turn_order = form.turn_order.iter().map(|item| item.to_string()).collect::<Vec<_>>();
+                let order_types = ["udp", "tcp", "tls"];
+                if turn_order.len() > 3 || turn_order.iter().any(|item| !order_types.contains(&item.as_str())) {
+                    return Err("TURN 顺序仅接受不超过 3 种 UDP、TCP 或 TLS 类型。".into());
                 }
                 if turn_order.iter().collect::<std::collections::HashSet<_>>().len() != turn_order.len() {
                     return Err("TURN 类型顺序不能重复。".into());
@@ -601,6 +613,11 @@ thread_local! {
 
 /// 开发验证：按页面切换并用渲染器快照写出 PPM；`HOLE_DESKTOP_SCREENSHOT_DIR` 指定输出目录。
 fn screenshot_mode(window: &MainWindow) {
+    if let Ok(size) = std::env::var("HOLE_DESKTOP_SCREENSHOT_SIZE") {
+        if let Some((width, height)) = screenshot_size(&size) {
+            window.window().set_size(slint::LogicalSize::new(width as f32, height as f32));
+        }
+    }
     let pages = ["overview", "mappings", "devices", "diagnostics", "settings", "transport", "exchange"];
     let dir = std::env::var("HOLE_DESKTOP_SCREENSHOT_DIR").unwrap_or_default();
     let weak = window.as_weak();
@@ -633,4 +650,23 @@ fn screenshot_mode(window: &MainWindow) {
         index.set(i + 1);
     });
     std::mem::forget(timer);
+}
+
+fn screenshot_size(value: &str) -> Option<(u32, u32)> {
+    let (width, height) = value.split_once('x')?;
+    let width = width.parse().ok()?;
+    let height = height.parse().ok()?;
+    ((860..=3840).contains(&width) && (560..=2160).contains(&height)).then_some((width, height))
+}
+
+#[cfg(test)]
+mod screenshot_tests {
+    #[test]
+    fn sizes_respect_window_minimum_and_reject_invalid_input() {
+        assert_eq!(super::screenshot_size("860x560"), Some((860, 560)));
+        assert_eq!(super::screenshot_size("1180x780"), Some((1180, 780)));
+        for invalid in ["800x560", "860x0", "-1x600", "4000x3000", "1180", "bad"] {
+            assert_eq!(super::screenshot_size(invalid), None);
+        }
+    }
 }

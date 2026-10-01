@@ -36,12 +36,10 @@ export component DiagnosticsPage inherits VerticalLayout {
     PageHeader {
         title: "诊断";
         subtitle: "运行时间、恢复记录、结构化事件与脱敏连接报告。";
-        Btn { text: "刷新快照"; icon: Icons.refresh; clicked => { App.refresh(); } }
         Btn { text: "重新连接"; icon: Icons.transport; enabled: App.status.run-requested; clicked => { App.reconnect(); } }
     }
     PageBody {
         Card {
-            tinted: true;
             Text { text: App.status.title; font-size: Theme.font-xl; font-weight: 600; color: Theme.text; }
             Label { text: App.status.run-requested ? "当前 " + App.status.active-channels + " / " + App.status.total-channels + " 个服务通道可用。关闭窗口不会停止转发。" : "设置与服务条目仍保留，开启总览页开关后重新连接。"; }
             HorizontalLayout {
