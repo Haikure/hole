@@ -1,4 +1,5 @@
 """Offline black-box tests of build.sh; compilers are deterministic fixtures."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -30,6 +31,12 @@ if name == "go":
         path.chmod(0o755)
 elif name == "javac":
     print("javac 17.0.0")
+elif name == "xmake":
+    if os.environ.get("FAIL_XMAKE"): sys.exit(7)
+    if args == ["build", "hole_plugin"]:
+        path = pathlib.Path("build/linux/arm64-v8a/release/libhole_plugin.so")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("release-plugin-fixture")
 elif name == "gradlew":
     if os.environ.get("FAIL_GRADLE"): sys.exit(8)
     for module in ("app", "wear"):
@@ -99,6 +106,67 @@ class BuildTests(unittest.TestCase):
     def calls(self, tool=None):
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         return [call for call in calls if tool is None or call["tool"] == tool]
+
+    def prepare_penmods(self):
+        shutil.copytree(ROOT / "penmods", self.root / "penmods", ignore=shutil.ignore_patterns("build", ".xmake"))
+        xmake = self.root / "tools/xmake"
+        xmake.write_text(TOOL)
+        xmake.chmod(0o755)
+
+    def invoke_penmods(self, success=True, **env):
+        result = subprocess.run(["bash", str(self.root / "penmods/build.sh")], cwd=self.temporary.name,
+                                env={**self.env, **env}, capture_output=True, text=True)
+        if success:
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        else:
+            self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        return result
+
+    def test_penmods_packages_current_core_and_qml(self):
+        self.prepare_penmods()
+        output = self.root / "dist/penmods/hole_plugin"
+        self.invoke_penmods(GOOS="windows", GOARCH="amd64", CGO_ENABLED="1")
+        build = next(call for call in self.calls("go") if call["args"][0] == "build")
+        self.assertEqual("linux", build["env"]["GOOS"])
+        self.assertEqual("arm64", build["env"]["GOARCH"])
+        self.assertEqual("0", build["env"]["CGO_ENABLED"])
+        self.assertEqual(str(self.root / ".cache/go-build"), build["env"]["GOCACHE"])
+        self.assertIn("-mod=readonly", build["args"])
+        self.assertIn("-trimpath", build["args"])
+        version_flag = next(arg for arg in build["args"] if arg.startswith("-ldflags="))
+        self.assertTrue(version_flag.startswith("-ldflags=-s -w -X hole/core.CoreVersion="))
+        self.assertEqual("./cmd/hole-desktop-core", build["args"][-1])
+        for relative in ("Main.qml", "SettingsPage.qml", "ConfigPage.qml", "metadata.json", "icon.png",
+                         *[str(p.relative_to(ROOT / "penmods")) for p in (ROOT / "penmods/components").glob("*") if p.is_file()]):
+            self.assertEqual((self.root / "penmods" / relative).read_bytes(), (output / relative).read_bytes())
+        self.assertEqual("release-plugin-fixture", (output / "libhole_plugin.so").read_text())
+        self.assertTrue(os.access(output / "hole-desktop-core", os.X_OK))
+        checksum = (output / "hole-desktop-core.sha256").read_text().split()
+        self.assertEqual([hashlib.sha256((output / "hole-desktop-core").read_bytes()).hexdigest(), "hole-desktop-core"], checksum)
+
+        (self.root / "core/core.go").write_text("updated core fixture\n")
+        (self.root / "penmods/Main.qml").write_text("updated QML fixture\n")
+        self.invoke_penmods()
+        builds = [call for call in self.calls("go") if call["args"][0] == "build"]
+        self.assertEqual(2, len(builds))
+        self.assertNotIn(version_flag, builds[-1]["args"])
+        self.assertEqual("updated QML fixture\n", (output / "Main.qml").read_text())
+        configurations = [call for call in self.calls("xmake") if call["args"][0] == "f"]
+        self.assertEqual(2, len(configurations))
+        for call in configurations:
+            self.assertIn("-c", call["args"])
+            self.assertIn("release", call["args"])
+
+    def test_failed_penmods_build_preserves_existing_package(self):
+        self.prepare_penmods()
+        output = self.root / "dist/penmods/hole_plugin"
+        output.mkdir(parents=True)
+        core = output / "hole-desktop-core"
+        core.write_text("previous-release")
+        for failure in ("FAIL_GO", "FAIL_XMAKE"):
+            with self.subTest(failure=failure):
+                self.invoke_penmods(success=False, **{failure: "1"})
+                self.assertEqual("previous-release", core.read_text())
 
     def test_help_and_empty_invocation_do_not_create_caches_or_run_tools(self):
         self.invoke("--help")

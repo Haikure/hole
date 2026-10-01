@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Source this file before invoking Go/Gradle tools directly.
+# Source this file before invoking Go/Gradle/Cargo tools directly.
 if [[ -n "${BASH_VERSION:-}" ]]; then
   _hole_env_source="${BASH_SOURCE[0]}"
 elif [[ -n "${ZSH_VERSION:-}" ]]; then
@@ -22,9 +22,12 @@ hole_use_project_cache() {
   export GOTMPDIR="$TMPDIR"
   export GOTOOLCHAIN=local GOWORK=off
   export PYTHONPYCACHEPREFIX="$HOLE_CACHE_ROOT/python"
+  # Cargo registry 与下载缓存也进项目缓存；target 目录由 desktop/gui/.cargo/config.toml 指向同一根。
+  export CARGO_HOME="$HOLE_CACHE_ROOT/cargo-home"
   if [[ "${HOLE_BUILD_OFFLINE:-0}" == 1 ]]; then export GOPROXY=off; fi
   mkdir -p "$GOCACHE" "$GOMODCACHE" "$GRADLE_USER_HOME" \
-    "$XDG_CACHE_HOME" "$TMPDIR" "$HOLE_CACHE_ROOT/gradle-project" "$HOLE_CACHE_ROOT/kotlin"
+    "$XDG_CACHE_HOME" "$TMPDIR" "$HOLE_CACHE_ROOT/gradle-project" "$HOLE_CACHE_ROOT/kotlin" \
+    "$CARGO_HOME"
 }
 
 hole_load_android_toolchain() {

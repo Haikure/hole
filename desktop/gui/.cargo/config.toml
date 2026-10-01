@@ -1,3 +1,4 @@
-# 构建产物进入仓库根 .cache/，与 Go / Gradle 缓存约定一致；registry 仍使用用户级 CARGO_HOME。
+# 构建产物与 registry 缓存都进入仓库根 .cache/，与 Go / Gradle 缓存约定一致：
+# target 目录见下方 [build]；CARGO_HOME 由根 scripts/build-env.sh 设置为 .cache/cargo-home。
 [build]
 target-dir = "../../.cache/cargo-target"

@@ -11,13 +11,9 @@ mkdir -p "$OUT"
 
 source "$ROOT/scripts/build-env.sh"
 
-(
-    cd "$ROOT"
-    GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
-        -trimpath -ldflags='-s -w' \
-        -o "$HERE/build/hole-desktop-core" \
-        ./cmd/hole-desktop-core
-)
+# Keep the packaged core on the same release flags and source identity as CLI
+# and Android. Explicit targets override any inherited desktop build settings.
+"$ROOT/build.sh" desktop-core --os linux --arch arm64 --output "$HERE/build"
 
 (
     cd "$HERE"
@@ -34,7 +30,7 @@ fi
 rm -rf "$OUT"
 mkdir -p "$OUT"
 cp "$PLUGIN_SO" "$OUT/libhole_plugin.so"
-cp "$HERE/build/hole-desktop-core" "$OUT/hole-desktop-core"
+cp "$HERE/build/desktop-core/hole-desktop-core-linux-arm64" "$OUT/hole-desktop-core"
 cp "$HERE/metadata.json" "$OUT/metadata.json"
 cp "$HERE/icon.png" "$OUT/icon.png"
 cp "$HERE/Main.qml" "$OUT/Main.qml"
@@ -43,5 +39,6 @@ cp "$HERE/ConfigPage.qml" "$OUT/ConfigPage.qml"
 rm -rf "$OUT/components"
 cp -R "$HERE/components" "$OUT/components"
 chmod 0755 "$OUT/libhole_plugin.so" "$OUT/hole-desktop-core"
+python3 "$ROOT/scripts/build_meta.py" checksum "$OUT/hole-desktop-core"
 
 printf 'Plugin package: %s\n' "$OUT"

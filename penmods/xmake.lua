@@ -1,7 +1,7 @@
 add_rules('mode.release', 'mode.debug')
 
 set_project('hole_plugin')
-set_version('0.1.0')
+set_version('0.1.1')
 set_languages('cxx17')
 set_warnings('all')
 set_allowedarchs('linux|arm64-v8a')
