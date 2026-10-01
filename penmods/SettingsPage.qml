@@ -33,7 +33,7 @@ YBackButtonPage {
         clip: true
         contentWidth: width
         contentHeight: settingsColumn.implicitHeight + Theme.spacing
-        interactive: true
+        interactive: !advancedSettings.turnOrderDragging
         pressDelay: 0
         boundsBehavior: Flickable.StopAtBounds
 
@@ -146,27 +146,9 @@ YBackButtonPage {
                 title: "连接策略"
                 subtitle: "优先路径"
 
-                ChoiceRow {
+                ConnectionModeRow {
                     Layout.fillWidth: true
-                    title: "连接方式"
-                    summary: "ICE 支持直连和按需 TURN；IPv6 要求双方都有公网地址"
-                    options: [{value: "ice", label: "ICE"}, {value: "ipv6", label: "仅 IPv6"}]
-                    selected: settingsPage.form ? settingsPage.form.preferred : "ice"
-                    onChosen: function(nextValue) {
-                        settingsPage.form.preferred = nextValue
-                        settingsPage.form.syncConfig()
-                    }
-                }
-
-                SwitchRow {
-                    Layout.fillWidth: true
-                    title: "允许旧版传输"
-                    summary: "保留兼容路径，通常保持开启"
-                    checked: settingsPage.form && settingsPage.form.allowLegacy
-                    onToggled: function(nextValue) {
-                        settingsPage.form.allowLegacy = nextValue
-                        settingsPage.form.syncConfig()
-                    }
+                    form: settingsPage.form
                 }
 
                 SwitchRow {
@@ -182,8 +164,10 @@ YBackButtonPage {
             }
 
             AdvancedSettings {
+                id: advancedSettings
                 Layout.fillWidth: true
                 form: settingsPage.form
+                scrollView: scroll
                 hostKeyboard: settingsPage.hostKeyboard
                 expanded: settingsPage.form ? settingsPage.form.advancedOpen : false
                 onHeaderTapped: {

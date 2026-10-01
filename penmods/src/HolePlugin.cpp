@@ -53,6 +53,12 @@ void HolePlugin::setMappingStateJson(const QString& value) {
     emit configChanged();
 }
 
+void HolePlugin::setTurnStateJson(const QString& value) {
+    if (m_turnStateJson == value) return;
+    m_turnStateJson = value;
+    emit configChanged();
+}
+
 void HolePlugin::setState(const QString& value) {
     if (m_state == value) return;
     m_state = value;
@@ -89,6 +95,15 @@ bool HolePlugin::saveConfig() {
         }
         root.insert(QStringLiteral("mapping_state"), mappingState.object());
     }
+    if (!m_turnStateJson.trimmed().isEmpty()) {
+        QJsonParseError turnError{};
+        const QJsonDocument turnState = QJsonDocument::fromJson(m_turnStateJson.toUtf8(), &turnError);
+        if (turnError.error != QJsonParseError::NoError || !turnState.isObject()) {
+            setError(QStringLiteral("TURN 编辑状态无效，无法保存"));
+            return false;
+        }
+        root.insert(QStringLiteral("turn_state"), turnState.object());
+    }
     QSaveFile file(configPath());
     if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(root).toJson(QJsonDocument::Compact)) < 0 || !file.commit()) {
         setError(QStringLiteral("无法保存插件配置"));
@@ -123,6 +138,10 @@ bool HolePlugin::loadConfig() {
     const QJsonValue mappingState = root.value(QStringLiteral("mapping_state"));
     m_mappingStateJson = mappingState.isObject()
         ? QString::fromUtf8(QJsonDocument(mappingState.toObject()).toJson(QJsonDocument::Compact))
+        : QString();
+    const QJsonValue turnState = root.value(QStringLiteral("turn_state"));
+    m_turnStateJson = turnState.isObject()
+        ? QString::fromUtf8(QJsonDocument(turnState.toObject()).toJson(QJsonDocument::Compact))
         : QString();
     emit configChanged();
     return true;

@@ -14,6 +14,7 @@ class HolePlugin final : public QObject {
     Q_PROPERTY(QString serverUrl READ serverUrl WRITE setServerUrl NOTIFY configChanged)
     Q_PROPERTY(QString configJson READ configJson WRITE setConfigJson NOTIFY configChanged)
     Q_PROPERTY(QString mappingStateJson READ mappingStateJson WRITE setMappingStateJson NOTIFY configChanged)
+    Q_PROPERTY(QString turnStateJson READ turnStateJson WRITE setTurnStateJson NOTIFY configChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(QString snapshotJson READ snapshotJson NOTIFY snapshotChanged)
     Q_PROPERTY(QString pluginDirectory READ pluginDirectory CONSTANT)
@@ -27,6 +28,7 @@ public:
     QString serverUrl() const { return m_serverUrl; }
     QString configJson() const { return m_configJson; }
     QString mappingStateJson() const { return m_mappingStateJson; }
+    QString turnStateJson() const { return m_turnStateJson; }
     QString lastError() const { return m_lastError; }
     QString snapshotJson() const { return m_snapshotJson; }
     QString pluginDirectory() const { return m_pluginDirectory; }
@@ -34,6 +36,7 @@ public:
     void setServerUrl(const QString& value);
     void setConfigJson(const QString& value);
     void setMappingStateJson(const QString& value);
+    void setTurnStateJson(const QString& value);
 
     Q_INVOKABLE void start();
     Q_INVOKABLE void stop();
@@ -76,6 +79,7 @@ private:
     QString m_serverUrl;
     QString m_configJson = QStringLiteral("{\"room\":\"\",\"password\":\"\",\"token\":\"\",\"device_name\":\"pen\",\"session_timeout\":\"10m\",\"transport\":{\"preferred\":\"ice\",\"allow_legacy\":true},\"provide\":[],\"consume\":[]}");
     QString m_mappingStateJson;
+    QString m_turnStateJson;
     QString m_lastError;
     QString m_snapshotJson;
     QByteArray m_outputBuffer;

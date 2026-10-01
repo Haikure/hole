@@ -107,11 +107,13 @@ Item {
     }
 
     function parseRelayOrder(text) {
-        return String(text).split(/[\s,，;；]+/).map(function (part) { return part.trim() }).filter(function (part) { return part.length > 0 })
+        var order = String(text).split(/[\s,，;；]+/).map(function (part) { return part.trim() }).filter(function (part) { return part.length > 0 })
+        if (order.indexOf("tcp_80") < 0 && order.indexOf("tls_443") < 0) return order
+        return order.map(function(token) { return token === "tcp_80" ? "tcp" : token === "tls_443" ? "tls" : token }).filter(function(token,index,all) { return all.indexOf(token) === index })
     }
 
     function snapshotRelayOrder(order) {
-        if (!Array.isArray(order) || order.length === 0) return "默认：UDP → TCP 80 → TCP 3478 → TLS 443 → TLS 5349"
+        if (!Array.isArray(order) || order.length === 0) return "默认：UDP → TCP → TLS"
         var labels = {udp: "UDP", tcp_80: "TCP 80", tcp: "TCP 3478", tls_443: "TLS 443", tls: "TLS 5349"}
         return order.map(function (token) { return labels[token] || token }).join(" → ")
     }
@@ -259,10 +261,10 @@ Item {
             if (!isDurationBetween(retryMaxDelay, 100, 120000)) return "最大重试间隔需在 100ms 到 2m 之间"
             if (turnMode !== "off" && !isDurationBetween(turnTtl, 60000, 21600000)) return "TURN 凭据期限需在 1m 到 6h 之间"
             var order = parseRelayOrder(turnOrder)
-            var allowedOrder = ["udp", "tcp_80", "tcp", "tls_443", "tls"]
-            if (order.length > 5) return "TURN 类型顺序最多 5 项"
+            var allowedOrder = ["udp", "tcp", "tls"]
+            if (order.length > 3) return "TURN 类型顺序最多 3 项"
             for (var oi = 0; oi < order.length; ++oi) {
-                if (allowedOrder.indexOf(order[oi]) < 0) return "TURN 类型仅接受 udp、tcp_80、tcp、tls_443、tls"
+                if (allowedOrder.indexOf(order[oi]) < 0) return "TURN 类型仅接受 udp、tcp、tls"
                 if (order.indexOf(order[oi]) !== oi) return "TURN 类型顺序不能重复"
             }
             if (turnMode === "manual") {
@@ -387,8 +389,17 @@ Item {
         relayOnly = ice ? asBool(ice.relay_only, false) : false
 
         var turn = config.turn && typeof config.turn === "object" ? config.turn : {}
+        // 运行配置会清空未启用的 TURN 字段，表单优先恢复本地编辑状态。
+        if (holePlugin.turnStateJson && holePlugin.turnStateJson.length > 0) {
+            try {
+                var savedTurn = JSON.parse(holePlugin.turnStateJson)
+                if (savedTurn && typeof savedTurn === "object" && !Array.isArray(savedTurn)) turn = savedTurn
+            } catch (error) {
+                console.warn("hole_plugin: TURN 编辑状态不是合法 JSON：" + error)
+            }
+        }
         turnMode = asString(turn.mode) || "worker"
-        turnOrder = formatList(turn.order)
+        turnOrder = formatList(parseRelayOrder(formatList(turn.order)))
         turnTtl = asString(turn.ttl) || "6h"
         turnUrls = formatList(turn.urls)
         turnUsername = asString(turn.username)
@@ -446,6 +457,15 @@ Item {
         var turnActive = iceActive && turnMode !== "off"
         var manualTurn = turnActive && turnMode === "manual"
         holePlugin.mappingStateJson = JSON.stringify(page.mappingState())
+        var turnState = {
+            mode: turnMode,
+            ttl: turnTtl,
+            urls: parseList(turnUrls),
+            username: turnUsername,
+            credential: turnCredential,
+            order: parseRelayOrder(turnOrder)
+        }
+        holePlugin.turnStateJson = JSON.stringify(turnState)
         var payload = {
             room: room,
             password: password,
@@ -474,10 +494,10 @@ Item {
             turn: {
                 mode: iceActive ? turnMode : "off",
                 ttl: turnActive ? turnTtl : "6h",
-                urls: manualTurn ? parseList(turnUrls) : [],
-                username: manualTurn ? turnUsername : "",
-                credential: manualTurn ? turnCredential : "",
-                order: iceActive ? parseRelayOrder(turnOrder) : []
+                urls: manualTurn ? turnState.urls : [],
+                username: manualTurn ? turnState.username : "",
+                credential: manualTurn ? turnState.credential : "",
+                order: iceActive ? turnState.order : []
             },
             provide: page.collectMappings(provides, false),
             consume: page.collectMappings(consumes, true)
