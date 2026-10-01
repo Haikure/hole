@@ -22,6 +22,14 @@ class ThemePreferencesTest {
 
     @Test
     fun themeValuesAreStableAndCaseInsensitive() {
+        ThemePalette.entries.forEach { palette ->
+            val config = StoredConfig(materialPalette = palette.value, dynamicColor = false)
+            val restored = Json.decodeFromString<StoredConfig>(Json.encodeToString(StoredConfig.serializer(), config))
+            assertEquals(palette, ThemePalette.fromValue(restored.materialPalette))
+            assertEquals(false, restored.dynamicColor)
+        }
+        assertEquals(ThemePalette.BLUE, ThemePalette.fromValue("future-palette"))
+        assertEquals(ThemePalette.BLUE, Json.decodeFromString<StoredConfig>("{}").let { ThemePalette.fromValue(it.materialPalette) })
         ThemeStyle.entries.forEach { assertEquals(it, ThemeStyle.fromValue(it.value)) }
         ThemeMode.entries.forEach { assertEquals(it, ThemeMode.fromValue(it.value)) }
         assertEquals(ThemeStyle.MIUIX, ThemeStyle.fromValue("MIUIX"))

@@ -1,7 +1,6 @@
 package dev.hole.app.ui
 
 import android.os.Build
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,6 +34,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.unit.dp
 import dev.hole.app.config.ThemeMode
+import dev.hole.app.config.ThemePalette
 import dev.hole.app.config.ThemeStyle
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
@@ -51,6 +51,8 @@ fun ThemeSection(
     onStyleChange: (ThemeStyle) -> Unit,
     onModeChange: (ThemeMode) -> Unit,
     onDynamicColorChange: (Boolean) -> Unit,
+    palette: ThemePalette = ThemePalette.BLUE,
+    onPaletteChange: (ThemePalette) -> Unit = {},
 ) {
     if (themeStyle == ThemeStyle.MIUIX) {
         MiuixThemeSection(themeStyle, themeMode, dynamicColor, onStyleChange, onModeChange, onDynamicColorChange)
@@ -58,9 +60,9 @@ fun ThemeSection(
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("主题风格", style = MaterialTheme.typography.bodyMedium)
-        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            ThemeStyle.entries.forEach { style ->
-                ThemeOption(style, selected = themeStyle == style, onSelect = { onStyleChange(style) })
+        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            ThemeStyle.entries.forEachIndexed { index, style ->
+                ThemeOption(style, selected = themeStyle == style, first = index == 0, onSelect = { onStyleChange(style) })
             }
         }
         Text(
@@ -80,8 +82,8 @@ fun ThemeSection(
             Column(Modifier.weight(1f).padding(end = 12.dp)) {
                 Text("动态配色")
                 Text(
-                    if (supportsDynamic) "两种主题均可使用系统壁纸配色；关闭后使用各自的默认配色。"
-                    else "Android 12 及以上支持壁纸配色，当前系统使用所选主题的默认配色。",
+                    if (supportsDynamic) "使用壁纸颜色，也可以选择下方配色。"
+                    else "当前系统不支持壁纸配色，可以选择下方配色。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -92,6 +94,51 @@ fun ThemeSection(
                 label = "动态配色",
                 enabled = supportsDynamic,
             )
+        }
+        Text("配色", style = MaterialTheme.typography.titleMedium)
+        Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainer) {
+            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("你的配色", style = MaterialTheme.typography.titleMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.tertiaryContainer).forEach { color ->
+                        Box(Modifier.weight(1f).height(44.dp).background(color, MaterialTheme.shapes.medium))
+                    }
+                }
+                Text(
+                    if (dynamicColor && supportsDynamic) "跟随壁纸" else palette.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        androidx.compose.foundation.layout.FlowRow(
+            modifier = Modifier.fillMaxWidth().selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ThemePalette.entries.forEach { choice ->
+                val selected = palette == choice && !(dynamicColor && supportsDynamic)
+                val swatch = materialPalette(choice, false)
+                Surface(
+                    shape = CircleShape,
+                    color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.clip(CircleShape).selectable(
+                        selected = selected, role = Role.RadioButton,
+                        onClick = { onPaletteChange(choice) },
+                    ),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.size(24.dp).background(swatch.primary, CircleShape), contentAlignment = Alignment.Center) {
+                            if (selected) Icon(Icons.Filled.Check, null, Modifier.size(16.dp), tint = swatch.onPrimary)
+                        }
+                        Text(choice.label, style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
         }
     }
 }
@@ -149,9 +196,12 @@ private fun MiuixThemeSection(
 }
 
 @Composable
-private fun ThemeOption(style: ThemeStyle, selected: Boolean, onSelect: () -> Unit) {
+private fun ThemeOption(style: ThemeStyle, selected: Boolean, first: Boolean, onSelect: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    val shape = MaterialTheme.shapes.medium
+    val shape = RoundedCornerShape(
+        topStart = if (first) 28.dp else 6.dp, topEnd = if (first) 28.dp else 6.dp,
+        bottomStart = if (first) 6.dp else 28.dp, bottomEnd = if (first) 6.dp else 28.dp,
+    )
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -160,7 +210,6 @@ private fun ThemeOption(style: ThemeStyle, selected: Boolean, onSelect: () -> Un
         shape = shape,
         color = if (selected) colors.primaryContainer else colors.surfaceContainerLow,
         contentColor = if (selected) colors.onPrimaryContainer else colors.onSurface,
-        border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) colors.primary else colors.outlineVariant),
     ) {
         Row(
             Modifier.padding(16.dp),

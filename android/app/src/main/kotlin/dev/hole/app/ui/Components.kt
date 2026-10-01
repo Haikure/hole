@@ -57,7 +57,7 @@ fun SwipeDismissRow(
             Row(
                 Modifier
                     .fillMaxSize()
-                    .clip(MaterialTheme.shapes.medium)
+                    .clip(if (LocalThemeStyle.current == ThemeStyle.MIUIX) MaterialTheme.shapes.medium else MaterialTheme.shapes.large)
                     .background(MaterialTheme.colorScheme.errorContainer)
                     .padding(end = 24.dp),
                 horizontalArrangement = Arrangement.End,

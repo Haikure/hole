@@ -56,6 +56,7 @@ data class StoredConfig(
     // "system" | "light" | "dark"
     val themeMode: String = "system",
     val dynamicColor: Boolean = true,
+    val materialPalette: String = ThemePalette.BLUE.value,
     // Miuix 默认使用官方 HyperOS 蓝色；壁纸配色独立保存，不继承 Material 的 Monet 开关。
     val miuixDynamicColor: Boolean = false,
     val connection: ConnectionSettings = ConnectionSettings(),

@@ -3,6 +3,11 @@
 Kotlin / Jetpack Compose 原生客户端，与 CLI 共用 `core/` 中的传输和会话实现。
 支持 Material 3 与 Miuix 主题、TCP / UDP 映射、运行中重配、配置导入导出和结构化连接报告。
 
+Material 3 使用 Expressive 动效、大圆角卡片、分组选择列表和可折叠大标题。设置 → 外观提供海蓝、苔绿、鸢紫、玫瑰、琥珀五种配色及色面预览，兼容浅色和深色模式。选择配色会关闭 Material 壁纸动态色并立即保存；重新开启动态色后使用系统壁纸颜色，手选配色仍保留。Miuix 的动态配色偏好独立保存。
+
+Material 3 单独固定为 `1.5.0-alpha29`，以使用公开的 Expressive API；该组件仍属预发布版本，升级时需验证两种主题的表单、弹层、手势和无障碍交互。
+外观参考 [InstallerX Revived](https://github.com/wxxsfxyzm/InstallerX-Revived) 的 Expressive 层级与分组方式，页面和业务组件由本项目实现。
+
 ## 模块
 
 | 模块 | 内容 |
@@ -11,7 +16,7 @@ Kotlin / Jetpack Compose 原生客户端，与 CLI 共用 `core/` 中的传输�
 | [wear](wear/README.md) | 共用手机源码的 Wear OS 安装包，独立设备声明和 ABI 选择 |
 | `corebridge` | Go AAR 构建、Kotlin 接口、Android Network / DNS / socket 适配 |
 
-当前手机版本为 **0.3.6 / versionCode 8**，包名 `dev.hole.app`，仅打包 `arm64-v8a`。
+当前手机版本为 **0.3.7 / versionCode 9**，包名 `dev.hole.app`，仅打包 `arm64-v8a`。
 最低 Android 8.0（API 26），compileSdk 37，targetSdk 36；版本以 [app/build.gradle.kts](app/build.gradle.kts) 为准。
 
 ## 构建

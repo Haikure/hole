@@ -58,6 +58,7 @@ fun SettingsScreen(
     onOpenTransfer: () -> Unit = {},
     onOpenTransport: () -> Unit = {},
     handleBack: Boolean = true,
+    onPaletteChange: (dev.hole.app.config.ThemePalette) -> Unit = {},
 ) {
     val connection = configState.config.connection
     var serverUrl by rememberSaveable { mutableStateOf(connection.serverUrl) }
@@ -122,6 +123,8 @@ fun SettingsScreen(
                     onStyleChange = { keyboard?.hide(); onThemeStyleChange(it) },
                     onModeChange = onThemeModeChange,
                     onDynamicColorChange = onDynamicColorChange,
+                    palette = dev.hole.app.config.ThemePalette.fromValue(configState.config.materialPalette),
+                    onPaletteChange = onPaletteChange,
                 )
             } else {
                 Text("正在读取外观设置…", style = MaterialTheme.typography.bodySmall)

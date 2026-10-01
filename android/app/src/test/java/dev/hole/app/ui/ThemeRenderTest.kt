@@ -20,6 +20,7 @@ import dev.hole.app.config.ConsumeEntry
 import dev.hole.app.config.ProvideEntry
 import dev.hole.app.config.StoredConfig
 import dev.hole.app.config.ThemeMode
+import dev.hole.app.config.ThemePalette
 import dev.hole.app.config.ThemeStyle
 import dev.hole.corebridge.CoreSnapshot
 import dev.hole.corebridge.PeerSnapshot
@@ -51,17 +52,18 @@ class ThemeRenderTest {
         var mode by mutableStateOf(ThemeMode.LIGHT)
         var screen by mutableStateOf("settings")
         var fontScale by mutableStateOf(1f)
+        var palette by mutableStateOf(ThemePalette.BLUE)
         val base = StoredConfig(
             connection = ConnectionSettings(serverUrl = "wss://example.test/ws", deviceName = "android-preview"),
             provide = listOf(ProvideEntry("provide-preview", "ssh", "tcp", "127.0.0.1", 22)),
             consume = listOf(ConsumeEntry("consume-preview", "web", "127.0.0.1", 8080)),
         )
         compose.setContent {
-            HoleTheme(mode, dynamic = false, style = style) {
+            HoleTheme(mode, dynamic = false, style = style, palette = palette) {
                 CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale)) {
                     val configState = ConfigUiState(
                         loaded = true,
-                        config = base.copy(themeStyle = style.value, themeMode = mode.value, dynamicColor = false),
+                        config = base.copy(themeStyle = style.value, themeMode = mode.value, dynamicColor = false, materialPalette = palette.value),
                     )
                     when (screen) {
                         "home" -> HomeScreen(
@@ -92,6 +94,7 @@ class ThemeRenderTest {
                             configState = configState, onSave = { _, _, _, _, _, _, _, _ -> null },
                             onThemeStyleChange = { style = it }, onThemeModeChange = { mode = it },
                             onDynamicColorChange = {}, onBack = {},
+                            onPaletteChange = { palette = it },
                         )
                     }
                 }
@@ -134,6 +137,14 @@ class ThemeRenderTest {
                 }
             }
         }
+        for (color in ThemePalette.entries) {
+            for (appearance in listOf(ThemeMode.LIGHT, ThemeMode.DARK)) {
+                compose.runOnIdle { style = ThemeStyle.MATERIAL; mode = appearance; screen = "home"; palette = color }
+                capture("material-${appearance.value}-${color.value}-home.png")
+            }
+        }
+        compose.runOnIdle { style = ThemeStyle.MATERIAL; mode = ThemeMode.LIGHT; screen = "settings"; fontScale = 2f }
+        capture("material-large-font-settings.png")
         compose.runOnIdle { style = ThemeStyle.MIUIX; mode = ThemeMode.LIGHT; screen = "settings"; fontScale = 2f }
         compose.waitForIdle()
         capture("miuix-large-font-settings.png")

@@ -73,6 +73,7 @@ class MainActivity : ComponentActivity() {
                 style = ThemeStyle.fromValue(configState.config.themeStyle),
                 mode = ThemeMode.fromValue(configState.config.themeMode),
                 dynamic = configState.config.usesDynamicColor(),
+                palette = dev.hole.app.config.ThemePalette.fromValue(configState.config.materialPalette),
             ) {
                 AppRoot(model, snapshot, configState, commandError, detailRequest)
             }
@@ -217,6 +218,7 @@ private fun AppRoot(
             },
             onThemeStyleChange = model::setThemeStyle,
             onThemeModeChange = model::setThemeMode,
+            onPaletteChange = model::setMaterialPalette,
             onDynamicColorChange = { model.setDynamicColor(ThemeStyle.fromValue(configState.config.themeStyle), it) },
             onBack = { goBack() },
             onOpenBackground = { navigate("background") },

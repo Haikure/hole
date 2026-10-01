@@ -8,7 +8,9 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.LocalContentColor
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -21,12 +23,14 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import dev.hole.app.config.ThemeMode
+import dev.hole.app.config.ThemePalette
 import dev.hole.app.config.ThemeStyle
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.Colors
@@ -83,7 +87,46 @@ private val DarkColors = darkColorScheme(
 )
 
 private val MaterialTypography = Typography()
-private val MaterialShapes = Shapes()
+private val MaterialShapes = Shapes(
+    extraSmall = RoundedCornerShape(12.dp), small = RoundedCornerShape(16.dp),
+    medium = RoundedCornerShape(20.dp), large = RoundedCornerShape(28.dp),
+    extraLarge = RoundedCornerShape(32.dp),
+)
+
+internal fun materialPalette(palette: ThemePalette, dark: Boolean): ColorScheme {
+    val base = if (dark) DarkColors else LightColors
+    if (palette == ThemePalette.BLUE) return base
+    val tones = when (palette) {
+        ThemePalette.GREEN -> listOf(0xFF356A4B, 0xFFA0D4AE, 0xFFC3EFD0, 0xFF1D5134)
+        ThemePalette.PURPLE -> listOf(0xFF7055A0, 0xFFD4BBFF, 0xFFEBDDFF, 0xFF573D85)
+        ThemePalette.ROSE -> listOf(0xFF98445F, 0xFFFFB1C7, 0xFFFFD9E2, 0xFF7A2C47)
+        ThemePalette.AMBER -> listOf(0xFF805610, 0xFFF2BF6B, 0xFFFFDDA8, 0xFF624000)
+        ThemePalette.BLUE -> error("handled above")
+    }.map { Color(it) }
+    val accent = tones[if (dark) 1 else 0]
+    val container = tones[if (dark) 3 else 2]
+    val ink = if (dark) Color(0xFFF4F0F4) else Color(0xFF201B20)
+    val surface = lerp(if (dark) Color(0xFF121212) else Color(0xFFFCFAFC), accent, 0.025f)
+    return base.copy(
+        primary = accent, onPrimary = if (dark) Color(0xFF241C16) else Color.White,
+        primaryContainer = container, onPrimaryContainer = ink,
+        secondary = accent, onSecondary = if (dark) Color(0xFF241C16) else Color.White,
+        secondaryContainer = lerp(surface, container, 0.65f), onSecondaryContainer = ink,
+        tertiary = accent, onTertiary = if (dark) Color(0xFF241C16) else Color.White,
+        tertiaryContainer = container, onTertiaryContainer = ink,
+        background = surface, surface = surface, surfaceTint = accent,
+        surfaceVariant = lerp(surface, accent, 0.12f),
+        surfaceDim = lerp(surface, Color.Black, 0.08f),
+        surfaceBright = lerp(surface, Color.White, if (dark) 0.12f else 0.02f),
+        surfaceContainerLowest = if (dark) Color(0xFF0D0D0D) else Color.White,
+        surfaceContainerLow = lerp(surface, accent, 0.035f),
+        surfaceContainer = lerp(surface, accent, 0.06f),
+        surfaceContainerHigh = lerp(surface, accent, 0.09f),
+        surfaceContainerHighest = lerp(surface, accent, 0.12f),
+        outlineVariant = lerp(surface, accent, 0.28f),
+        inversePrimary = tones[if (dark) 0 else 1],
+    )
+}
 private val MiuixTypography = defaultTextStyles().let { text ->
     Typography(
         displayLarge = text.title1, displayMedium = text.title1, displaySmall = text.title1,
@@ -100,11 +143,13 @@ private val MiuixShapes = Shapes(
     extraLarge = RoundedCornerShape(28.dp),
 )
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun HoleTheme(
     mode: ThemeMode,
     dynamic: Boolean,
     style: ThemeStyle = ThemeStyle.MATERIAL,
+    palette: ThemePalette = ThemePalette.BLUE,
     content: @Composable () -> Unit,
 ) {
     val dark = when (mode) {
@@ -115,7 +160,7 @@ fun HoleTheme(
     val useDynamic = dynamic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val materialColors = if (useDynamic) {
         if (dark) dynamicDarkColorScheme(LocalContext.current) else dynamicLightColorScheme(LocalContext.current)
-    } else if (dark) DarkColors else LightColors
+    } else materialPalette(palette, dark)
     val controller = remember(dark, useDynamic) {
         ThemeController(
             colorSchemeMode = when {
@@ -143,8 +188,9 @@ fun HoleTheme(
         val colors = if (miuix) MiuixTheme.colorScheme.toMaterialColorScheme(dark) else materialColors
         val miuixIndication = LocalIndication.current
         val miuixOverscroll = LocalOverscrollFactory.current
-        MaterialTheme(
+        MaterialExpressiveTheme(
             colorScheme = colors,
+            motionScheme = if (miuix) MotionScheme.standard() else MotionScheme.expressive(),
             typography = if (miuix) MiuixTypography else MaterialTypography,
             shapes = if (miuix) MiuixShapes else MaterialShapes,
         ) {

@@ -27,6 +27,7 @@ import dev.hole.app.ConfigUiState
 import dev.hole.app.config.ConnectionSettings
 import dev.hole.app.config.StoredConfig
 import dev.hole.app.config.ThemeMode
+import dev.hole.app.config.ThemePalette
 import dev.hole.app.config.ThemeStyle
 import dev.hole.app.config.usesDynamicColor
 import dev.hole.app.config.withDynamicColor
@@ -53,7 +54,7 @@ class ThemeSwitchTest {
 
     private fun showSettings() {
         compose.setContent {
-            HoleTheme(ThemeMode.fromValue(config.themeMode), config.usesDynamicColor(), ThemeStyle.fromValue(config.themeStyle)) {
+            HoleTheme(ThemeMode.fromValue(config.themeMode), config.usesDynamicColor(), ThemeStyle.fromValue(config.themeStyle), ThemePalette.fromValue(config.materialPalette)) {
                 SettingsScreen(
                     configState = ConfigUiState(loaded = true, config = config),
                     onSave = { _, _, _, _, _, _, _, _ -> null },
@@ -61,9 +62,27 @@ class ThemeSwitchTest {
                     onThemeModeChange = { config = config.copy(themeMode = it.value) },
                     onDynamicColorChange = { config = config.withDynamicColor(ThemeStyle.fromValue(config.themeStyle), it) },
                     onBack = {},
+                    onPaletteChange = { config = config.copy(materialPalette = it.value, dynamicColor = false) },
                 )
             }
         }
+    }
+
+    @Test
+    fun paletteSelectionKeepsDraftAndSurvivesStyleSwitch() {
+        showSettings()
+        val deviceField = hasSetTextAction() and hasText("设备名")
+        compose.onNode(deviceField).performScrollTo().performTextReplacement("unsaved-device")
+        compose.onNodeWithText("苔绿").performScrollTo().performClick()
+        compose.runOnIdle {
+            assertEquals("green", config.materialPalette)
+            assertFalse(config.dynamicColor)
+            assertFalse(config.miuixDynamicColor)
+        }
+        compose.onNodeWithText("Miuix").performScrollTo().performClick()
+        compose.onNodeWithText("Material 3").performScrollTo().performClick()
+        compose.onNode(deviceField).performScrollTo().assertTextContains("unsaved-device")
+        compose.runOnIdle { assertEquals("green", config.materialPalette) }
     }
 
     @Test
@@ -103,6 +122,31 @@ class ThemeSwitchTest {
         compose.runOnIdle {
             assertEquals(true, config.miuixDynamicColor)
             assertEquals(false, config.dynamicColor)
+        }
+    }
+
+    @Test
+    @Config(sdk = [26, 35])
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun materialLargeFontKeepsModeLabelsOnOneLine() {
+        var selected by mutableStateOf(ThemeMode.SYSTEM.value)
+        compose.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale = 2f)) {
+                HoleTheme(ThemeMode.LIGHT, dynamic = false) {
+                    HoleSingleChoice(
+                        options = ThemeMode.entries.map { it.value to it.label },
+                        selectedValue = selected,
+                        onSelect = { selected = it },
+                    )
+                }
+            }
+        }
+        for (mode in ThemeMode.entries) {
+            val layouts = mutableListOf<TextLayoutResult>()
+            compose.onNodeWithText(mode.label).performClick().assertIsSelected()
+                .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(layouts)) }
+            assertEquals(1, layouts.single().lineCount)
+            assertFalse(layouts.single().isLineEllipsized(0))
         }
     }
 

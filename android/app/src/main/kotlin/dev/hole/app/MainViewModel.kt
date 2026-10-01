@@ -218,6 +218,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         save { it.copy(themeStyle = style.value) }
     }
 
+    fun setMaterialPalette(palette: dev.hole.app.config.ThemePalette) = viewModelScope.launch {
+        save { it.copy(materialPalette = palette.value, dynamicColor = false) }
+    }
+
     fun setThemeMode(mode: ThemeMode) = viewModelScope.launch {
         save { it.copy(themeMode = mode.value) }
     }

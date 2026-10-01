@@ -1,6 +1,10 @@
 package dev.hole.app.ui
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -14,6 +18,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
@@ -34,6 +39,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.contentColorFor
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
@@ -118,9 +125,18 @@ fun HoleScaffold(
             content = content,
         )
     } else {
+        val materialScroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
         Scaffold(
-            modifier = modifier.imePadding(),
-            topBar = { TopAppBar(title = { Text(title) }, navigationIcon = navigationIcon, actions = actions) },
+            modifier = modifier.imePadding().then(
+                if (largeTitle) Modifier.nestedScroll(materialScroll.nestedScrollConnection) else Modifier,
+            ),
+            topBar = {
+                if (largeTitle) {
+                    LargeTopAppBar(title = { Text(title) }, navigationIcon = navigationIcon, actions = actions, scrollBehavior = materialScroll)
+                } else {
+                    TopAppBar(title = { Text(title) }, navigationIcon = navigationIcon, actions = actions)
+                }
+            },
             bottomBar = bottomBar,
             snackbarHost = snackbarHost,
             content = content,
@@ -213,7 +229,7 @@ fun HoleCard(
     containerColor: Color = if (LocalThemeStyle.current == ThemeStyle.MIUIX) {
         MiuixTheme.colorScheme.surfaceContainer
     } else {
-        MaterialTheme.colorScheme.surfaceContainerHighest
+        MaterialTheme.colorScheme.surfaceContainerLow
     },
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -226,9 +242,9 @@ fun HoleCard(
             CompositionLocalProvider(LocalContentColor provides contentColor) { content() }
         }
     } else if (outlined) {
-        OutlinedCard(modifier = modifier, content = content)
+        OutlinedCard(modifier = modifier, shape = MaterialTheme.shapes.large, content = content)
     } else {
-        Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = containerColor), content = content)
+        Card(modifier = modifier, shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = containerColor), content = content)
     }
 }
 
@@ -360,6 +376,7 @@ fun HoleTextField(
         }
     } else {
         OutlinedTextField(
+            shape = MaterialTheme.shapes.medium,
             value = value, onValueChange = onValueChange, label = { Text(label) },
             modifier = modifier, supportingText = supportingText, isError = isError,
             singleLine = singleLine, visualTransformation = visualTransformation,
@@ -396,13 +413,37 @@ fun HoleSingleChoice(
             maxWidth = minWidth.coerceAtLeast(98.dp),
         )
     } else {
-        SingleChoiceSegmentedButtonRow(modifier) {
-            options.forEachIndexed { index, (value, label) ->
-                SegmentedButton(
-                    selected = selectedValue == value,
-                    onClick = { onSelect(value) },
-                    shape = SegmentedButtonDefaults.itemShape(index, options.size),
-                ) { Text(label) }
+        val density = LocalDensity.current
+        val measurer = rememberTextMeasurer()
+        val widestLabel = options.maxOfOrNull {
+            measurer.measure(it.second, style = MaterialTheme.typography.labelLarge, softWrap = false).size.width
+        } ?: 0
+        val requiredWidth = (with(density) { widestLabel.toDp() } + 64.dp) * options.size
+        BoxWithConstraints(modifier) {
+            if (maxWidth < requiredWidth) {
+                FlowRow(
+                    modifier = Modifier.selectableGroup(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    options.forEach { (value, label) ->
+                        FilterChip(
+                            selected = selectedValue == value,
+                            onClick = { onSelect(value) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+            } else {
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    options.forEachIndexed { index, (value, label) ->
+                        SegmentedButton(
+                            selected = selectedValue == value,
+                            onClick = { onSelect(value) },
+                            shape = SegmentedButtonDefaults.itemShape(index, options.size),
+                        ) { Text(label) }
+                    }
+                }
             }
         }
     }
