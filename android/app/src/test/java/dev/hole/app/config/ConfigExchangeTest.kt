@@ -52,12 +52,12 @@ class ConfigExchangeTest {
         assertFalse(isValidDuration("1second"))
     }
     @Test fun cliExportAndImportCarryTheConfiguredServer() {
-        val order = listOf("tls_443", "udp")
+        val order = listOf("tls", "udp")
         val configured = original.copy(connection = original.connection.copy(turn = TurnSettings(order = order)))
         val text = ConfigExchange.cliJSON(configured, "PRIVATE_PASSWORD", "PRIVATE_TOKEN", false)
         assertFalse(text.contains("PRIVATE_"))
         assertTrue(text.contains("\"server_url\":\"wss://fixture.invalid/ws\""))
-        assertTrue(text.contains("\"order\":[\"tls_443\",\"udp\"]"))
+        assertTrue(text.contains("\"order\":[\"tls\",\"udp\"]"))
         val current = original.copy(connection = original.connection.copy(serverUrl = "wss://previous.invalid/ws"))
         val restored = ConfigExchange.readCLIJSON(text, current)
         assertEquals("wss://fixture.invalid/ws", restored.config.connection.serverUrl)

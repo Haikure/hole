@@ -37,7 +37,7 @@ fun TransportSettingsScreen(
     var mode by rememberSaveable { mutableStateOf(current.connectionMode) }
     var stun by rememberSaveable { mutableStateOf(current.ice.stunUrls.joinToString("\n")) }
     var relay by rememberSaveable { mutableStateOf(current.turn.mode) }
-    var relayOrderText by rememberSaveable { mutableStateOf(current.turn.order.joinToString(", ")) }
+    var relayOrderText by rememberSaveable { mutableStateOf(normalizedTurnOrder(current.turn.order).joinToString(", ")) }
     var urls by rememberSaveable { mutableStateOf(current.turn.urls.joinToString("\n")) }
     var username by rememberSaveable { mutableStateOf(current.turn.username) }
     var credential by remember { mutableStateOf(configState.turnCredential) }
@@ -83,7 +83,7 @@ fun TransportSettingsScreen(
                 }, style = MaterialTheme.typography.bodyMedium)
                 AnimatedVisibility(relay == "manual") {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        HoleTextField(urls, { urls = it }, "TURN 地址", modifier = Modifier.fillMaxWidth(), supportingText = { Text("每行一条：UDP 用 turn:HOST:3478?transport=udp；TCP 用 turn:HOST:80?transport=tcp；TLS 用 turns:HOST:443?transport=tcp。也支持 3478、5349 及自定义端口。") })
+                        HoleTextField(urls, { urls = it }, "TURN 地址", modifier = Modifier.fillMaxWidth(), supportingText = { Text("每行一条，必须填写端口。turn:HOST:PORT 未写 transport 时按顺序尝试 UDP/TCP；turns:HOST:PORT 仅使用 TLS。显式 transport 可限制接入类型。") })
                         HoleTextField(username, { username = it }, "TURN 用户名", modifier = Modifier.fillMaxWidth(), singleLine = true)
                         HoleTextField(credential, { credential = it }, "TURN 凭据", modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
                     }

@@ -71,7 +71,7 @@ object ConfigExchange {
                 deviceName = cli.deviceName.ifBlank { current.connection.deviceName },
                 sessionTimeout = cli.sessionTimeout, candidateInterfaces = cli.candidateInterfaces, candidateAddresses = cli.candidateAddresses,
                 connectionMode = if (cli.transport.preferred == PREFERRED_IPV6) "legacy" else if (cli.transport.allowLegacy) "auto" else "ice",
-                allowInsecureSignal = cli.transport.allowInsecureSignal, ice = cli.ice, turn = TurnSettings(cli.turn.mode, cli.turn.ttl, cli.turn.urls, cli.turn.username, cli.turn.order),
+                allowInsecureSignal = cli.transport.allowInsecureSignal, ice = cli.ice, turn = TurnSettings(cli.turn.mode, cli.turn.ttl, cli.turn.urls, cli.turn.username, normalizedTurnOrder(cli.turn.order)),
             ),
             provide = cli.provide.map {
                 val (host, port) = splitEndpoint(it.service.substringAfter("://"))

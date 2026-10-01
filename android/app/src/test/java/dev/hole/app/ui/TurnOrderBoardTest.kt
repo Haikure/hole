@@ -33,18 +33,18 @@ class TurnOrderBoardTest {
     @Test
     fun labelsMatchTokensWithoutCustomPortSuffix() {
         assertEquals("UDP", turnOrderTypeLabel("udp"))
-        assertEquals("TCP 80", turnOrderTypeLabel("tcp_80"))
-        assertEquals("TCP 3478", turnOrderTypeLabel("tcp"))
-        assertEquals("TLS 443", turnOrderTypeLabel("tls_443"))
-        assertEquals("TLS 5349", turnOrderTypeLabel("tls"))
+        assertEquals("TCP", turnOrderTypeLabel("tcp_80"))
+        assertEquals("TCP", turnOrderTypeLabel("tcp"))
+        assertEquals("TLS", turnOrderTypeLabel("tls_443"))
+        assertEquals("TLS", turnOrderTypeLabel("tls"))
         assertEquals("unknown", turnOrderTypeLabel("unknown"))
-        assertTrue(turnOrderTypes.toList() == listOf("udp", "tcp_80", "tcp", "tls_443", "tls"))
+        assertTrue(turnOrderTypes.toList() == listOf("udp", "tcp", "tls"))
     }
 
     @Test
     fun orderSummaryKeepsShortPortLabels() {
-        assertEquals("默认：UDP → TCP 80 → TCP 3478 → TLS 443 → TLS 5349", relayOrderLabel(emptyList()))
-        assertEquals("TLS 5349 → UDP", relayOrderLabel(listOf("tls", "udp")))
+        assertEquals("默认：UDP → TCP → TLS", relayOrderLabel(emptyList()))
+        assertEquals("TLS → UDP", relayOrderLabel(listOf("tls", "udp")))
     }
 
     @Test
@@ -94,30 +94,30 @@ class TurnOrderBoardInteractionTest {
         for (style in ThemeStyle.entries) {
             compose.runOnIdle { theme = style }
             compose.waitForIdle()
-            compose.onNodeWithText("TLS 5349").performClick()
+            compose.onNodeWithText("TLS").performClick()
             compose.runOnIdle { assertEquals(listOf("tls"), order.value) }
-            compose.onNodeWithText("TLS 5349").performClick()
+            compose.onNodeWithText("TLS").performClick()
             compose.runOnIdle { assertEquals(emptyList<String>(), order.value) }
         }
     }
 
     @Test
     fun longPressDragMovesPoolTypeAboveDivider() {
-        val order = mutableStateOf(listOf("udp", "tcp_80"))
+        val order = mutableStateOf(listOf("udp", "tcp"))
         compose.setContent {
             HoleTheme(mode = ThemeMode.LIGHT, dynamic = false) {
                 TurnOrderBoard(order = order.value, onChange = { order.value = it })
             }
         }
         compose.waitForIdle()
-        compose.onNodeWithText("TLS 5349").performTouchInput {
+        compose.onNodeWithText("TLS").performTouchInput {
             down(center)
             advanceEventTime(viewConfiguration.longPressTimeoutMillis + 100)
             moveBy(Offset(0f, -1200f), delayMillis = 80)
             up()
         }
         compose.waitForIdle()
-        assertEquals(listOf("tls", "udp", "tcp_80"), order.value)
+        assertEquals(listOf("tls", "udp", "tcp"), order.value)
     }
 
     @Test
@@ -129,7 +129,7 @@ class TurnOrderBoardInteractionTest {
             }
         }
         compose.waitForIdle()
-        compose.onNodeWithText("TLS 5349").performTouchInput {
+        compose.onNodeWithText("TLS").performTouchInput {
             down(center)
             advanceEventTime(viewConfiguration.longPressTimeoutMillis + 100)
             moveBy(Offset(0f, 1200f), delayMillis = 80)
@@ -178,7 +178,7 @@ class TurnOrderBoardInteractionTest {
             }
         }
         compose.waitForIdle()
-        compose.onNodeWithText("TLS 5349").performTouchInput {
+        compose.onNodeWithText("TLS").performTouchInput {
             down(center)
             advanceEventTime(viewConfiguration.longPressTimeoutMillis + 100)
             moveBy(Offset(0f, -180f), delayMillis = 80)

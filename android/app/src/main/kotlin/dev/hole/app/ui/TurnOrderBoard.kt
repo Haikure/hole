@@ -55,14 +55,14 @@ import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** token 顺序即默认顺序，与 core/ice_config.go 的 turn.order 校验保持一致。 */
-internal val turnOrderTypes = listOf("udp", "tcp_80", "tcp", "tls_443", "tls")
+internal val turnOrderTypes = listOf("udp", "tcp", "tls")
 
 internal fun turnOrderTypeLabel(token: String): String = when (token) {
     "udp" -> "UDP"
-    "tcp_80" -> "TCP 80"
-    "tcp" -> "TCP 3478"
-    "tls_443" -> "TLS 443"
-    "tls" -> "TLS 5349"
+    "tcp_80" -> "TCP"
+    "tcp" -> "TCP"
+    "tls_443" -> "TLS"
+    "tls" -> "TLS"
     else -> token
 }
 

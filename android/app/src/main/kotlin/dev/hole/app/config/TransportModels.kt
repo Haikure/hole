@@ -44,14 +44,21 @@ fun ConnectionSettings.coreTransport() = CoreTransport(
     preferred = if (connectionMode == "legacy") PREFERRED_IPV6 else PREFERRED_ICE,
     allowLegacy = connectionMode == "auto", allowInsecureSignal = allowInsecureSignal,
 )
+fun normalizedTurnOrder(order: List<String>): List<String> =
+    if (order.any { it == "tcp_80" || it == "tls_443" }) order.map { when (it) {
+        "tcp_80" -> "tcp"
+        "tls_443" -> "tls"
+        else -> it
+    } }.distinct() else order
+
 fun ConnectionSettings.coreTurn(credential: String) = if (turn.mode == "manual") {
-    CoreTurn(turn.mode, turn.ttl, turn.urls, turn.username, credential, turn.order)
-} else CoreTurn(mode = turn.mode, ttl = turn.ttl, order = turn.order)
+    CoreTurn(turn.mode, turn.ttl, turn.urls, turn.username, credential, normalizedTurnOrder(turn.order))
+} else CoreTurn(mode = turn.mode, ttl = turn.ttl, order = normalizedTurnOrder(turn.order))
 
 fun migrateStoredConfig(config: StoredConfig, version: Int): StoredConfig {
     require(version in 1..2) { "配置格式版本不受支持，保留原文件" }
-    if (version == 2) return config.copy(schemaVersion = 2)
-    val old = config.connection
+    val old = config.connection.copy(turn = config.connection.turn.copy(order = normalizedTurnOrder(config.connection.turn.order)))
+    if (version == 2) return config.copy(schemaVersion = 2, connection = old)
     // Existing explicit IPv6 addresses and local ws fixtures retain their old
     // semantics. Ordinary WSS configurations gain ICE with explicit fallback.
     val mode = if (old.candidateAddresses.isNotEmpty() || old.serverUrl.startsWith("ws://")) "legacy" else "auto"

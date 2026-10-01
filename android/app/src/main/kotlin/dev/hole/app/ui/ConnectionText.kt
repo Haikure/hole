@@ -83,12 +83,10 @@ fun peerStateLabel(p: PeerSnapshot): String = when (p.state) {
     "reconnecting" -> "正在重试"
     else -> "连接中"
 }
-fun relayOrderLabel(order: List<String>): String = if (order.isEmpty()) "默认：UDP → TCP 80 → TCP 3478 → TLS 443 → TLS 5349" else order.joinToString(" → ") { token -> when (token) {
+fun relayOrderLabel(order: List<String>): String = if (order.isEmpty()) "默认：UDP → TCP → TLS" else dev.hole.app.config.normalizedTurnOrder(order).joinToString(" → ") { token -> when (token) {
     "udp" -> "UDP"
-    "tcp_80" -> "TCP 80"
-    "tcp" -> "TCP 3478"
-    "tls_443" -> "TLS 443"
-    "tls" -> "TLS 5349"
+    "tcp" -> "TCP"
+    "tls" -> "TLS"
     else -> token
 } }
 fun candidateLabel(type: String): String = when (type) {
