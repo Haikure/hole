@@ -193,7 +193,7 @@ func runRelayFixture(t *testing.T, protocol string) {
 	if err = b.Start(rb); err != nil {
 		t.Fatal(err)
 	}
-	s := waitSnapshot(t, b, func(s Snapshot) bool {
+	s := waitSnapshotWithin(t, b, 30*time.Second, func(s Snapshot) bool {
 		return len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].PathType == "relay" && s.PeerTransports[0].ActiveChannels == 1
 	})
 	if s.PeerTransports[0].RelayProtocol != protocol || s.PeerTransports[0].RelayPolicy != RelayPolicyUDPTCPTLS {
@@ -256,7 +256,7 @@ func TestICERelayPhaseWaitsForPeerRelayWithoutLocalServer(t *testing.T) {
 		return len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].PathType == "relay" && s.PeerTransports[0].ActiveChannels == 1
 	}
 	s := waitSnapshotWithin(t, b, 30*time.Second, active)
-	if s.PeerTransports[0].RelaySide != "remote" || s.PeerTransports[0].LocalRelayProtocol != "" || s.PeerTransports[0].RemoteRelayProtocol != "udp" || s.PeerTransports[0].Phase != "relay_udp" {
+	if s.PeerTransports[0].RelaySide != "remote" || s.PeerTransports[0].LocalRelayProtocol != "" || s.PeerTransports[0].RemoteRelayProtocol != "udp" || s.PeerTransports[0].Phase != "relay_wait" {
 		t.Fatal(s.PeerTransports)
 	}
 	s = waitSnapshotWithin(t, a, 30*time.Second, active)
@@ -309,7 +309,7 @@ func TestICECustomRelayOrdersConnectInTheSameRound(t *testing.T) {
 	if left.Generation != right.Generation || left.RelayRound != 1 || right.RelayRound != 1 || left.Phase != "relay_udp" || right.Phase != "relay_tcp" {
 		t.Fatalf("expected one shared relay round with per-end phases: left=%+v right=%+v", left, right)
 	}
-	if left.RelayOrderFallback || right.RelayOrderFallback || !slices.Equal(left.RelayOrder, []string{"udp"}) || !slices.Equal(right.RelayOrder, []string{"tcp", "udp"}) {
+	if left.RelayOrderFallback || right.RelayOrderFallback || !slices.Equal(left.RelayOrder, []string{"udp"}) || !slices.Equal(right.RelayOrder, []string{"tcp"}) {
 		t.Fatalf("custom order did not reach snapshots: left=%+v right=%+v", left, right)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

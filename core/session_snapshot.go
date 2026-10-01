@@ -3,6 +3,7 @@ package core
 import "sync/atomic"
 
 type tcpTraffic struct {
+	budget  *replayBudget
 	read    atomic.Uint64
 	written atomic.Uint64
 }
@@ -24,7 +25,7 @@ type mappingStats struct {
 func (m *sessionManager) tcpTrafficLocked(mapping string) *tcpTraffic {
 	traffic := m.tcpBytes[mapping]
 	if traffic == nil {
-		traffic = &tcpTraffic{}
+		traffic = &tcpTraffic{budget: &m.replay}
 		m.tcpBytes[mapping] = traffic
 	}
 	return traffic
@@ -50,11 +51,11 @@ func (m *sessionManager) snapshot() map[string]mappingStats {
 			session.mu.Lock()
 			if !session.closed {
 				stats.tcp++
-				read := session.txBase + uint64(len(session.tx))
+				read := session.txBase + uint64(session.tx.size)
 				written := session.rxNext
 				stats.tcpRead += read
 				stats.tcpWritten += written
-				stats.buffered += uint64(len(session.tx))
+				stats.buffered += uint64(session.tx.size)
 			}
 			session.mu.Unlock()
 		}
@@ -78,11 +79,11 @@ func (m *sessionManager) snapshot() map[string]mappingStats {
 				session.mu.Lock()
 				if !session.closed {
 					stats.tcp++
-					read := session.txBase + uint64(len(session.tx))
+					read := session.txBase + uint64(session.tx.size)
 					written := session.rxNext
 					stats.tcpRead += read
 					stats.tcpWritten += written
-					stats.buffered += uint64(len(session.tx))
+					stats.buffered += uint64(session.tx.size)
 					stats.active = stats.active || (session.link != nil && session.link.ctx.Err() == nil)
 				}
 				session.mu.Unlock()

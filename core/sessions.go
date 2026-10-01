@@ -39,6 +39,7 @@ type sessionManager struct {
 	clients         map[string]*clientTunnel
 	tcp             map[providerSessionKey]*providerTCPEntry
 	tcpBytes        map[string]*tcpTraffic
+	replay          replayBudget
 	udp             map[providerSessionKey]*providerUDPGroup
 	udpSockets      atomic.Int32
 	owners          map[peerMapping]string
@@ -113,6 +114,7 @@ func (m *sessionManager) close() {
 	for _, group := range m.udp {
 		group.close()
 	}
+	m.replay.trim(time.Now().Add(tcpReplayCacheIdle))
 	m.mu.Unlock()
 }
 
@@ -276,6 +278,7 @@ func (m *sessionManager) reap() {
 			return
 		case now := <-ticker.C:
 			m.mu.Lock()
+			m.replay.trim(now)
 			for _, client := range m.clients {
 				client.reap(now, m.timeout)
 			}
@@ -543,8 +546,7 @@ func (c *clientTunnel) runTCPStream(session *tcpSession, transport *clientTransp
 	defer stream.CancelRead(0)
 	defer stream.CancelWrite(0)
 	stopStream := context.AfterFunc(ctx, func() {
-		stream.CancelRead(0)
-		stream.CancelWrite(0)
+		session.cancelStream(stream)
 	})
 	defer stopStream()
 	stopHandshake := context.AfterFunc(handshakeCtx, func() { stream.CancelRead(0); stream.CancelWrite(0) })
@@ -620,7 +622,7 @@ func (c *clientTunnel) reap(now time.Time, timeout time.Duration) {
 	}
 }
 
-func (a *Agent) handleProviderStream(ctx context.Context, conn sessionConnection, stream *quic.Stream) {
+func (a *Agent) handleProviderStream(ctx context.Context, conn sessionConnection, stream *quic.Stream, admitted ...func()) {
 	defer stream.Close()
 	defer stream.CancelRead(0)
 	_ = stream.SetDeadline(time.Now().Add(sessionHandshakeTimeout))
@@ -643,7 +645,7 @@ func (a *Agent) handleProviderStream(ctx context.Context, conn sessionConnection
 	}
 	key := providerSessionKey{mapping: hello.MappingID, fingerprint: connectionFingerprint(conn), id: id}
 	if hello.Protocol == "udp" {
-		a.handleProviderUDP(ctx, conn, stream, hello, key, provide.Service)
+		a.handleProviderUDP(ctx, conn, stream, hello, key, provide.Service, admitted...)
 		return
 	}
 	target := net.JoinHostPort(provide.Service.Addr, fmt.Sprint(provide.Service.Port))
@@ -682,6 +684,9 @@ func (a *Agent) handleProviderStream(ctx context.Context, conn sessionConnection
 		return
 	}
 	_ = stream.SetDeadline(time.Time{})
+	for _, release := range admitted {
+		release()
+	}
 	a.sessionEvent(conn, hello, target, "active", "", nil)
 	_ = session.runLink(ctx, link, hello.ReceiveOffset)
 }

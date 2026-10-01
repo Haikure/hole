@@ -360,7 +360,7 @@ func (g *providerUDPGroup) readReplies(session *providerUDPSession) {
 	}
 }
 
-func (a *Agent) handleProviderUDP(ctx context.Context, conn sessionConnection, stream *quic.Stream, hello sessionHello, key providerSessionKey, endpoint ServiceEndpoint) {
+func (a *Agent) handleProviderUDP(ctx context.Context, conn sessionConnection, stream *quic.Stream, hello sessionHello, key providerSessionKey, endpoint ServiceEndpoint, admitted ...func()) {
 	group, err := a.sessions.providerUDPContext(ctx, key, endpoint)
 	if err != nil {
 		_ = writeSessionJSON(stream, sessionReply{Version: sessionProtocol, Status: "UDP_session_unavailable"})
@@ -389,5 +389,8 @@ func (a *Agent) handleProviderUDP(ctx context.Context, conn sessionConnection, s
 		return
 	}
 	_ = stream.SetDeadline(time.Time{})
+	for _, release := range admitted {
+		release()
+	}
 	serveUDPLink(link, func(id sessionID, packet []byte) { group.deliver(link, id, packet) })
 }

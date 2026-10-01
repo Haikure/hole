@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	muxControl byte = 1
-	muxSession byte = 2
+	muxControl           byte = 1
+	muxSession           byte = 2
+	maxSessionHandshakes      = 64
+	maxSessionStreams         = maxTCPSessions + maxPeerChannels + maxSessionHandshakes + 1
 )
 
 var muxMagic = [4]byte{'H', 'M', 'X', 1}
@@ -98,7 +100,7 @@ func readMuxPrefix(stream *quic.Stream) (byte, uint32, error) {
 
 func newMuxPeer(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceSignalMessage) (*muxPeer, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	p := &muxPeer{owner: owner, conn: conn, ctx: ctx, cancel: cancel, channels: map[uint32]*muxChannel{}, byMapping: map[string]*muxChannel{}, streamSlots: make(chan struct{}, 64), ready: ready}
+	p := &muxPeer{owner: owner, conn: conn, ctx: ctx, cancel: cancel, channels: map[uint32]*muxChannel{}, byMapping: map[string]*muxChannel{}, streamSlots: make(chan struct{}, maxSessionHandshakes), ready: ready}
 	owner.mu.Lock()
 	localRelayProtocol := owner.stats.LocalRelayProtocol
 	if localRelayProtocol == "" {
@@ -372,14 +374,18 @@ func (p *muxPeer) readStreams() {
 		}
 		select {
 		case p.streamSlots <- struct{}{}:
-			p.spawn(func() { defer func() { <-p.streamSlots }(); p.serveStream(stream) })
+			p.spawn(func() {
+				release := sync.OnceFunc(func() { <-p.streamSlots })
+				defer release()
+				p.serveStream(stream, release)
+			})
 		default:
 			stream.CancelRead(1)
 			stream.CancelWrite(1)
 		}
 	}
 }
-func (p *muxPeer) serveStream(stream *quic.Stream) {
+func (p *muxPeer) serveStream(stream *quic.Stream, admitted func()) {
 	_ = stream.SetDeadline(time.Now().Add(sessionHandshakeTimeout))
 	stop := context.AfterFunc(p.ctx, func() { stream.CancelRead(0); stream.CancelWrite(0) })
 	defer stop()
@@ -402,7 +408,7 @@ func (p *muxPeer) serveStream(stream *quic.Stream) {
 	r := channel.mapping
 	facade := &Agent{provide: map[string]Provide{r.ID: {ID: r.ID, Service: r.Service}}, sessions: p.owner.coordinator.sessions, emit: p.owner.coordinator.emit,
 		peerFingerprints: map[peerMapping]string{{mappingID: r.ID, device: p.ready.PeerDevice}: p.ready.PeerFingerprint}}
-	facade.handleProviderStream(channel.ctx, channel, stream)
+	facade.handleProviderStream(channel.ctx, channel, stream, admitted)
 }
 func (p *muxPeer) readDatagrams() {
 	var assembler udpReassembler

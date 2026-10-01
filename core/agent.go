@@ -220,7 +220,7 @@ func newAgentWithState(ctx context.Context, cfg Config, platform Platform, emit 
 		publishedCandidates: candidates,
 		tlsConfig:           tlsConfig,
 		fingerprint:         certFingerprint(tlsConfig.Certificates[0]),
-		quicConfig:          &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 15 * time.Second, MaxIdleTimeout: 2 * time.Minute},
+		quicConfig:          &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 15 * time.Second, MaxIdleTimeout: 2 * time.Minute, MaxIncomingStreams: maxSessionStreams, InitialStreamReceiveWindow: 512 * 1024, MaxStreamReceiveWindow: tcpReplayBuffer, InitialConnectionReceiveWindow: 2 * 1024 * 1024, MaxConnectionReceiveWindow: 32 * 1024 * 1024},
 		quicTransport:       &quic.Transport{Conn: pc},
 		quicConns:           make(map[string]*quic.Conn),
 		peerFingerprints:    make(map[peerMapping]string),

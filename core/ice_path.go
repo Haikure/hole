@@ -149,5 +149,7 @@ func watchICEExhaustion(ctx context.Context, agent *ice.Agent, fail func(error))
 // real path MTU (RFC 8899). Relay-phase transports stay at QUIC's 1200-byte
 // floor: TURN adds its own encapsulation.
 func iceQUICConfig(phase string) *quic.Config {
-	return &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 15 * time.Second, MaxIdleTimeout: 45 * time.Second, InitialPacketSize: 1200, DisablePathMTUDiscovery: phase != "direct", MaxIncomingStreams: 128}
+	return &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 15 * time.Second, MaxIdleTimeout: 45 * time.Second, InitialPacketSize: 1200, DisablePathMTUDiscovery: phase != "direct", MaxIncomingStreams: maxSessionStreams,
+		InitialStreamReceiveWindow: 512 * 1024, MaxStreamReceiveWindow: tcpReplayBuffer,
+		InitialConnectionReceiveWindow: 2 * 1024 * 1024, MaxConnectionReceiveWindow: 32 * 1024 * 1024}
 }

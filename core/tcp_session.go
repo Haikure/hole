@@ -24,7 +24,7 @@ type tcpSession struct {
 
 	mu             sync.Mutex
 	changed        chan struct{}
-	tx             []byte
+	tx             tcpReplay
 	txBase         uint64
 	txEOF          bool
 	txFINACK       bool
@@ -32,6 +32,7 @@ type tcpSession struct {
 	rxFIN          bool
 	opened         bool
 	closed         bool
+	aborted        bool
 	closedAt       time.Time
 	detached       time.Time
 	generation     uint64
@@ -71,34 +72,80 @@ func newTCPSession(ctx context.Context, id sessionID, socket tcpSocket, traffic 
 	ctx, cancel := context.WithCancel(ctx)
 	s := &tcpSession{
 		id: id, socket: socket, ctx: ctx, cancel: cancel,
-		changed: make(chan struct{}), detached: time.Now(), traffic: counters,
+		detached: time.Now(), traffic: counters,
+	}
+	if counters != nil {
+		s.tx.budget = counters.budget
 	}
 	go s.readSocket()
 	return s
 }
 
 func (s *tcpSession) notifyLocked() {
-	close(s.changed)
-	s.changed = make(chan struct{})
+	if s.changed != nil {
+		close(s.changed)
+		s.changed = nil
+	}
 }
 
-func (s *tcpSession) close() {
+func (s *tcpSession) waitLocked() <-chan struct{} {
+	if s.changed == nil {
+		s.changed = make(chan struct{})
+	}
+	return s.changed
+}
+
+// A QUIC stream reset with this application code ends the application session.
+// Ordinary stream cancellation and path loss remain recoverable.
+const tcpSessionAborted quic.StreamErrorCode = 0x485302
+
+func (s *tcpSession) close() { s.closeWithCode(0) }
+func (s *tcpSession) abort() { s.closeWithCode(tcpSessionAborted) }
+
+func (s *tcpSession) closeWithCode(code quic.StreamErrorCode) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return
 	}
 	s.closed = true
+	s.aborted = code == tcpSessionAborted
 	s.closedAt = time.Now()
-	s.tx = nil
+	s.tx.clear()
 	link := s.link
+	// Publish the terminal reset before waking workers which would otherwise
+	// race to cancel the same stream with the recoverable code zero.
+	if code != 0 && link != nil && link.stream != nil {
+		link.stream.CancelWrite(code)
+		link.stream.CancelRead(code)
+	}
 	s.notifyLocked()
 	s.mu.Unlock()
-	s.cancel()
 	if link != nil {
+		if link.stream != nil {
+			link.stream.CancelWrite(code)
+			link.stream.CancelRead(code)
+		}
 		link.cancel()
 	}
+	s.cancel()
 	_ = s.socket.Close()
+}
+
+func (s *tcpSession) cancelStream(stream tcpSessionStream) {
+	s.mu.Lock()
+	code := quic.StreamErrorCode(0)
+	if s.aborted {
+		code = tcpSessionAborted
+	}
+	s.mu.Unlock()
+	stream.CancelWrite(code)
+	stream.CancelRead(code)
+}
+
+func remoteSessionAbort(err error) bool {
+	var reset *quic.StreamError
+	return errors.As(err, &reset) && reset.Remote && reset.ErrorCode == tcpSessionAborted
 }
 
 func (s *tcpSession) expired(now time.Time, timeout time.Duration) bool {
@@ -130,8 +177,11 @@ func (s *tcpSession) readSocket() {
 			s.mu.Unlock()
 			return
 		}
-		space := tcpReplayBuffer - len(s.tx)
-		changed := s.changed
+		space := tcpReplayBuffer - s.tx.size
+		var changed <-chan struct{}
+		if space == 0 {
+			changed = s.waitLocked()
+		}
 		s.mu.Unlock()
 		if space == 0 {
 			select {
@@ -143,12 +193,24 @@ func (s *tcpSession) readSocket() {
 		}
 		n, err := s.socket.Read(buffer[:min(space, len(buffer))])
 		s.mu.Lock()
+		for n > 0 && !s.closed {
+			ok, available := s.tx.append(buffer[:n])
+			if ok {
+				break
+			}
+			s.mu.Unlock()
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-available:
+			}
+			s.mu.Lock()
+		}
 		if s.closed {
 			s.mu.Unlock()
 			return
 		}
 		if n > 0 {
-			s.tx = append(s.tx, buffer[:n]...)
 			if s.traffic != nil {
 				s.traffic.read.Add(uint64(n))
 			}
@@ -160,7 +222,7 @@ func (s *tcpSession) readSocket() {
 		s.mu.Unlock()
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				s.close()
+				s.abort()
 			}
 			return
 		}
@@ -180,16 +242,13 @@ func (s *tcpSession) hello(mappingID string) sessionHello {
 
 // ackLocked is monotonic: delayed acknowledgements from an old path are benign.
 func (s *tcpSession) ackLocked(offset uint64, fin bool) error {
-	end := s.txBase + uint64(len(s.tx))
+	end := s.txBase + uint64(s.tx.size)
 	if offset > end || (fin && (!s.txEOF || offset != end)) {
 		return fmt.Errorf("%w: acknowledgement outside replay window", errSessionProtocol)
 	}
 	if offset > s.txBase {
-		s.tx = s.tx[int(offset-s.txBase):]
+		s.tx.discard(int(offset - s.txBase))
 		s.txBase = offset
-		if len(s.tx) == 0 {
-			s.tx = nil
-		}
 	}
 	if fin {
 		s.txFINACK = true
@@ -257,13 +316,16 @@ func (s *tcpSession) runLink(ctx context.Context, link *tcpSessionLink, offset u
 	link.stream.CancelRead(0)
 	link.stream.CancelWrite(0)
 	other := <-results
-	if errors.Is(err, errSessionProtocol) || errors.Is(other, errSessionProtocol) {
+	if remoteSessionAbort(err) || remoteSessionAbort(other) {
 		s.close()
+	} else if errors.Is(err, errSessionProtocol) || errors.Is(other, errSessionProtocol) {
+		s.abort()
 	}
 	return err
 }
 
 func (s *tcpSession) sendFrames(link *tcpSessionLink, next uint64) error {
+	buffer := make([]byte, 13+tcpFramePayload)
 	var lastACK uint64
 	var lastFIN, ackSent, finSent bool
 	for {
@@ -277,8 +339,7 @@ func (s *tcpSession) sendFrames(link *tcpSessionLink, next uint64) error {
 		}
 		ack, rxFIN := s.rxNext, s.rxFIN
 		next = max(next, s.txBase)
-		end := s.txBase + uint64(len(s.tx))
-		changed := s.changed
+		end := s.txBase + uint64(s.tx.size)
 		complete := s.txEOF && s.txFINACK && s.rxFIN
 		var frame tcpFrame
 		switch {
@@ -289,9 +350,14 @@ func (s *tcpSession) sendFrames(link *tcpSessionLink, next uint64) error {
 			}
 		case next < end:
 			start := int(next - s.txBase)
-			frame = tcpFrame{kind: tcpData, offset: next, data: append([]byte(nil), s.tx[start:min(start+tcpFramePayload, len(s.tx))]...)}
+			n := s.tx.copyAt(buffer[13:], start)
+			frame = tcpFrame{kind: tcpData, offset: next, data: buffer[13 : 13+n]}
 		case s.txEOF && !s.txFINACK && !finSent:
 			frame = tcpFrame{kind: tcpFIN, offset: end}
+		}
+		var changed <-chan struct{}
+		if frame.kind == 0 && !complete {
+			changed = s.waitLocked()
 		}
 		s.mu.Unlock()
 		if frame.kind == 0 {
@@ -306,7 +372,8 @@ func (s *tcpSession) sendFrames(link *tcpSessionLink, next uint64) error {
 				continue
 			}
 		}
-		if err := writeTCPFrame(link.stream, frame); err != nil {
+		encodeTCPFrameHeader(buffer[:13], frame)
+		if err := writeFull(link.stream, buffer[:13+len(frame.data)]); err != nil {
 			return err
 		}
 		switch frame.kind {
@@ -321,8 +388,9 @@ func (s *tcpSession) sendFrames(link *tcpSessionLink, next uint64) error {
 }
 
 func (s *tcpSession) receiveFrames(link *tcpSessionLink) error {
+	buffer := make([]byte, 13+tcpFramePayload)
 	for {
-		frame, err := readTCPFrame(link.stream)
+		frame, err := readTCPFrameInto(link.stream, buffer[:13], buffer[13:])
 		if err != nil {
 			return err
 		}
@@ -368,7 +436,7 @@ func (s *tcpSession) deliver(link *tcpSessionLink, frame tcpFrame) error {
 			}
 			if !fin {
 				if err := s.socket.CloseWrite(); err != nil {
-					s.close()
+					s.abort()
 					return err
 				}
 			}
@@ -403,12 +471,15 @@ func (s *tcpSession) deliver(link *tcpSessionLink, frame tcpFrame) error {
 			if errors.As(err, &timeout) && timeout.Timeout() {
 				continue
 			}
-			s.close()
+			s.abort()
 			return err
 		}
 		if n == 0 {
-			s.close()
+			s.abort()
 			return io.ErrShortWrite
+		}
+		if n == len(data) {
+			return nil
 		}
 	}
 }

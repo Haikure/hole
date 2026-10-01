@@ -18,7 +18,7 @@ const (
 	tcpInitialOpenTimeout   = 15 * time.Second
 	maxSessionHello         = 4096
 	maxTCPSessions          = 256
-	tcpReplayBuffer         = 256 * 1024
+	tcpReplayBuffer         = 16 * 1024 * 1024
 	tcpFramePayload         = 32 * 1024
 )
 
@@ -135,18 +135,26 @@ type tcpFrame struct {
 
 func writeTCPFrame(w io.Writer, frame tcpFrame) error {
 	var header [13]byte
-	header[0] = frame.kind
-	binary.BigEndian.PutUint64(header[1:9], frame.offset)
-	binary.BigEndian.PutUint32(header[9:13], uint32(len(frame.data)))
+	encodeTCPFrameHeader(header[:], frame)
 	if err := writeFull(w, header[:]); err != nil {
 		return err
 	}
 	return writeFull(w, frame.data)
 }
 
+func encodeTCPFrameHeader(header []byte, frame tcpFrame) {
+	header[0] = frame.kind
+	binary.BigEndian.PutUint64(header[1:9], frame.offset)
+	binary.BigEndian.PutUint32(header[9:13], uint32(len(frame.data)))
+}
+
 func readTCPFrame(r io.Reader) (tcpFrame, error) {
 	var header [13]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
+	return readTCPFrameInto(r, header[:], nil)
+}
+
+func readTCPFrameInto(r io.Reader, header, payload []byte) (tcpFrame, error) {
+	if _, err := io.ReadFull(r, header); err != nil {
 		return tcpFrame{}, err
 	}
 	f := tcpFrame{kind: header[0], offset: binary.BigEndian.Uint64(header[1:9])}
@@ -154,7 +162,10 @@ func readTCPFrame(r io.Reader) (tcpFrame, error) {
 	if f.kind < tcpData || f.kind > tcpReset || n > tcpFramePayload || (f.kind != tcpData && n != 0) || (f.kind == tcpData && n == 0) {
 		return f, fmt.Errorf("%w: frame header", errSessionProtocol)
 	}
-	f.data = make([]byte, int(n))
+	if int(n) > len(payload) {
+		payload = make([]byte, int(n))
+	}
+	f.data = payload[:int(n)]
 	_, err := io.ReadFull(r, f.data)
 	return f, err
 }

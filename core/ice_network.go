@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -260,36 +261,51 @@ func (l iceListenConfig) ListenPacket(ctx context.Context, network, address stri
 type icePacketConn struct {
 	conn          net.Conn
 	local, remote net.Addr
-	readMu        sync.Mutex
-	buffer        []byte
 	closed        atomic.Bool
 	closeOnce     sync.Once
 	closeErr      error
 }
 
 func newICEPacketConn(conn net.Conn) *icePacketConn {
-	return &icePacketConn{conn: conn, local: conn.LocalAddr(), remote: conn.RemoteAddr(), buffer: make([]byte, 65535)}
+	return &icePacketConn{conn: conn, local: conn.LocalAddr(), remote: conn.RemoteAddr()}
 }
 func (p *icePacketConn) ReadFrom(dst []byte) (int, net.Addr, error) {
-	p.readMu.Lock()
-	defer p.readMu.Unlock()
 	if p.closed.Load() {
 		return 0, nil, net.ErrClosed
 	}
-	n, e := p.conn.Read(p.buffer)
+	n, e := p.conn.Read(dst)
 	if p.closed.Load() {
 		return 0, nil, net.ErrClosed
 	}
-	return copy(dst, p.buffer[:n]), p.remote, e
+	// Pion's packet buffer already consumes and truncates an oversized packet.
+	// net.PacketConn reports that truncation as a successful short read.
+	if errors.Is(e, io.ErrShortBuffer) {
+		e = nil
+	}
+	return n, p.remote, e
 }
 func (p *icePacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	if p.closed.Load() {
 		return 0, net.ErrClosed
 	}
-	if addr == nil || addr.String() != p.remote.String() {
+	if !samePacketAddr(addr, p.remote) {
 		return 0, net.InvalidAddrError("ICE peer address mismatch")
 	}
 	return p.conn.Write(b)
+}
+
+// QUIC writes back to the stable ICE address. Compare UDP fields directly so
+// the hot path does not format and allocate two address strings per packet.
+func samePacketAddr(a, b net.Addr) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if left, ok := a.(*net.UDPAddr); ok {
+		if right, ok := b.(*net.UDPAddr); ok {
+			return left != nil && right != nil && left.Port == right.Port && left.Zone == right.Zone && left.IP.Equal(right.IP)
+		}
+	}
+	return a.String() == b.String()
 }
 func (p *icePacketConn) LocalAddr() net.Addr                { return p.local }
 func (p *icePacketConn) SetDeadline(t time.Time) error      { return p.conn.SetDeadline(t) }

@@ -169,9 +169,10 @@ type udpAssembly struct {
 // One reassembler belongs to one authenticated QUIC transport and has one
 // reader. Old-path fragments never combine with a new path's packet counters.
 type udpReassembler struct {
-	pending map[udpPacketKey]*udpAssembly
-	seen    map[udpPacketKey]time.Time
-	bytes   int
+	pending   map[udpPacketKey]*udpAssembly
+	seen      map[udpPacketKey]time.Time
+	bytes     int
+	nextPrune time.Time
 }
 
 func (r *udpReassembler) prune(now time.Time) {
@@ -193,11 +194,26 @@ func (r *udpReassembler) push(f udpFragment, now time.Time) ([]byte, bool, error
 		r.pending = make(map[udpPacketKey]*udpAssembly)
 		r.seen = make(map[udpPacketKey]time.Time)
 	}
-	r.prune(now)
+	if !now.Before(r.nextPrune) {
+		r.prune(now)
+		r.nextPrune = now.Add(250 * time.Millisecond)
+	}
 	if _, exists := r.seen[f.key]; exists {
-		return nil, false, nil
+		if now.Before(r.seen[f.key]) {
+			return nil, false, nil
+		}
+		delete(r.seen, f.key)
 	}
 	a := r.pending[f.key]
+	if a != nil && !now.Before(a.expires) {
+		r.bytes -= len(a.data) + len(a.bits)
+		delete(r.pending, f.key)
+		a = nil
+	}
+	if a == nil && f.offset == 0 && len(f.data) == f.total {
+		r.remember(f.key, now)
+		return append([]byte(nil), f.data...), true, nil
+	}
 	if a == nil {
 		cost := f.total + (f.total+7)/8
 		if len(r.pending) >= maxUDPAssemblies || r.bytes+cost > udpAssemblyBudget {
@@ -226,6 +242,11 @@ func (r *udpReassembler) push(f udpFragment, now time.Time) ([]byte, bool, error
 	}
 	delete(r.pending, f.key)
 	r.bytes -= len(a.data) + len(a.bits)
+	r.remember(f.key, now)
+	return a.data, true, nil
+}
+
+func (r *udpReassembler) remember(key udpPacketKey, now time.Time) {
 	if len(r.seen) >= 2048 {
 		// Bounded duplicate cache. QUIC already removes packet-level duplicates.
 		for key := range r.seen {
@@ -233,6 +254,5 @@ func (r *udpReassembler) push(f udpFragment, now time.Time) ([]byte, bool, error
 			break
 		}
 	}
-	r.seen[f.key] = now.Add(udpFragmentTimeout)
-	return a.data, true, nil
+	r.seen[key] = now.Add(udpFragmentTimeout)
 }

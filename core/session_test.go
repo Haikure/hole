@@ -52,11 +52,13 @@ func TestSessionWireAndConfig(t *testing.T) {
 }
 
 func TestSessionTCPAcknowledgements(t *testing.T) {
-	s := &tcpSession{tx: []byte("abcdef"), changed: make(chan struct{})}
-	if err := s.ackLocked(3, false); err != nil || string(s.tx) != "def" || s.txBase != 3 {
+	s := &tcpSession{changed: make(chan struct{})}
+	s.tx.append([]byte("abcdef"))
+	contents := func() string { data := make([]byte, s.tx.size); s.tx.copyAt(data, 0); return string(data) }
+	if err := s.ackLocked(3, false); err != nil || contents() != "def" || s.txBase != 3 {
 		t.Fatalf("ACK did not retain unacknowledged suffix: %v", err)
 	}
-	if err := s.ackLocked(2, false); err != nil || string(s.tx) != "def" {
+	if err := s.ackLocked(2, false); err != nil || contents() != "def" {
 		t.Fatal("delayed ACK moved the replay window backwards")
 	}
 	if err := s.ackLocked(7, false); !errors.Is(err, errSessionProtocol) {
@@ -66,7 +68,7 @@ func TestSessionTCPAcknowledgements(t *testing.T) {
 		t.Fatal("accepted FIN ACK before EOF")
 	}
 	s.txEOF = true
-	if err := s.ackLocked(6, true); err != nil || !s.txFINACK || len(s.tx) != 0 {
+	if err := s.ackLocked(6, true); err != nil || !s.txFINACK || s.tx.size != 0 {
 		t.Fatalf("FIN acknowledgement: %v", err)
 	}
 }
