@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { Room } from './worker.js';
-import { TurnBroker, ICE_PROFILE, LEGACY_PROFILE, RELAY_POLICY, negotiateProfile, iceJoinFields, validateTurnResponse } from './worker_ice.mjs';
+import { TurnBroker, ICE_PROFILE, LEGACY_PROFILE, RELAY_POLICY, negotiateProfile, iceJoinFields, validateTurnResponse, relayPairs } from './worker_ice.mjs';
 Object.defineProperty(globalThis,'crypto',{value:webcrypto});
 function fixture(){
  const values=new Map(),sockets=[];
@@ -23,6 +23,44 @@ test('version negotiation only falls back when both sides advertise legacy',()=>
  assert.equal(negotiateProfile({transport_profiles:[ICE_PROFILE,LEGACY_PROFILE]},{}),LEGACY_PROFILE);
  assert.equal(iceJoinFields({...join('alpha'),auth_mode:'device-proof'}),null);
  assert.equal(iceJoinFields({...join('alpha'),transport_epoch:1}),null);
+});
+test('complete relay pairing covers cross types, survives hibernation and coalesces restarts',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const capabilities={relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1'};
+ const left=['tcp_80','udp'],right=['udp','tcp_80','tcp','tls_443','tls'];
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...capabilities,relay_order:left}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...capabilities,relay_order:right}));
+ const record=[...r.ice.records.values()][0],pairs=relayPairs(left,right),seen=new Set();
+ assert.equal(pairs.length,10);
+ const phases={udp:'relay_udp',tcp_80:'relay_tcp_80',tcp:'relay_tcp',tls_443:'relay_tls_443',tls:'relay_tls'};
+ for(let round=1;round<=pairs.length;round++) {
+  const previous=record.generation, message={type:'transport_restart',transport_id:record.id,expected_generation:previous,relay_round:round};
+  await r.webSocketMessage(a,JSON.stringify(message));
+  await r.webSocketMessage(b,JSON.stringify(message));
+  assert.equal(record.generation,String(BigInt(previous)+1n));
+  assert.equal(a.messages.at(-1).relay_pairing,'all-pairs-v1');
+  const [i,j]=pairs[round-1];
+  assert.equal(a.messages.at(-1).phase,phases[left[i]]);
+  assert.equal(b.messages.at(-1).phase,phases[right[j]]);
+  seen.add(`${i}/${j}`);
+ }
+ assert.equal(seen.size,10);
+ const resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(a,JSON.stringify({type:'transport_sync'}));
+ assert.equal(a.messages.at(-1).relay_pairing,'all-pairs-v1');
+ assert.equal(a.messages.at(-1).relay_round,10);
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,relay_round:0}));
+ assert.equal(record.round,0);
+});
+test('relay pairing requires both endpoints and rejects unknown capabilities',async()=>{
+ assert.equal(iceJoinFields({...join('alpha'),relay_order:['udp'],relay_pairing:'unknown'}),null);
+ assert.equal(iceJoinFields({...join('alpha'),relay_pairing:'all-pairs-v1'}),null);
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),relay_order:['udp'],relay_pairing:'all-pairs-v1'}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),relay_order:['tcp']}));
+ const record=[...r.ice.records.values()][0];
+ assert.equal(record.relay_pairing,'');
+ assert.equal(a.messages.at(-1).relay_pairing,undefined);
 });
 test('one persisted pair carries multiple mappings and sorted initiator',async()=>{const{record}=await pair();assert.equal(record.mappings.length,2);assert.equal(record.a,'alpha');assert.equal(record.generation,'1')});
 test('concurrent restarts of one generation coalesce',async()=>{
@@ -59,7 +97,7 @@ test('Cloudflare response accepts documented object/array shapes and excludes no
  assert.equal(validateTurnResponse({iceServers:payload.iceServers[1]}).length,1);
  assert.throws(()=>validateTurnResponse({iceServers:[{urls:['turn:HOST:53'],username:'a',credential:'b'}]}));
  assert.throws(()=>validateTurnResponse({iceServers:[{urls:['turn:HOST:3478'],username:'a'}]}));
- assert.deepEqual(validateTurnResponse(payload)[0].urls, ['turn:turn.cloudflare.com:3478?transport=udp','turn:turn.cloudflare.com:80?transport=tcp','turn:turn.cloudflare.com:3478?transport=tcp','turns:turn.cloudflare.com:443?transport=tcp','turns:turn.cloudflare.com:5349?transport=tcp']);
+ assert.deepEqual(validateTurnResponse(payload)[0].urls, ['turn:turn.cloudflare.com:3478?transport=udp','turn:turn.cloudflare.com:3478?transport=tcp','turn:turn.cloudflare.com:80?transport=tcp','turns:turn.cloudflare.com:5349?transport=tcp','turns:turn.cloudflare.com:443?transport=tcp']);
  for(const url of ['turns:HOST:443?transport=udp','turn:HOST:80?transport=udp','turn:USER@HOST:3478?transport=tcp','turn:HOST:53?transport=udp']) assert.throws(()=>validateTurnResponse({iceServers:[{urls:[url],username:'a',credential:'b'}]}));
 });
 

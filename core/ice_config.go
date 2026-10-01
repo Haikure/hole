@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"github.com/pion/stun/v4"
 	"gopkg.in/yaml.v3"
+	"net"
+	"strings"
 	"time"
 )
 
@@ -100,7 +102,7 @@ func (c *Config) normalizeTransport() {
 		c.ICE.RetryMaxDelay = ConfigDuration(15 * time.Second)
 	}
 	c.TURN.URLs = append([]string{}, c.TURN.URLs...)
-	c.TURN.Order = append([]string(nil), c.TURN.Order...)
+	c.TURN.Order = normalizedRelayOrder(c.TURN.Order)
 	if c.TURN.Mode == "" {
 		c.TURN.Mode = "worker"
 	}
@@ -127,15 +129,15 @@ func (c Config) validateTransport() error {
 	if c.TURN.Mode != "worker" && c.TURN.Mode != "manual" && c.TURN.Mode != "off" {
 		return fmt.Errorf("turn.mode 需要 worker、manual 或 off")
 	}
-	if len(c.TURN.Order) > 5 {
-		return fmt.Errorf("turn.order 最多 5 项")
+	if len(c.TURN.Order) > 3 {
+		return fmt.Errorf("turn.order 最多 3 项")
 	}
 	seenRelayTypes := map[string]bool{}
 	for _, token := range c.TURN.Order {
 		switch token {
-		case "udp", "tcp_80", "tcp", "tls_443", "tls":
+		case "udp", "tcp", "tls":
 		default:
-			return fmt.Errorf("turn.order 仅接受 udp、tcp_80、tcp、tls_443、tls")
+			return fmt.Errorf("turn.order 仅接受 udp、tcp、tls")
 		}
 		if seenRelayTypes[token] {
 			return fmt.Errorf("turn.order 不能包含重复类型")
@@ -162,9 +164,20 @@ func (c Config) validateTransport() error {
 		if u.Scheme == stun.SchemeTypeTURNS && u.Proto != stun.ProtoTypeTCP {
 			return fmt.Errorf("本版本 turns 使用 TCP/TLS")
 		}
+		if c.TURN.Mode == "manual" {
+			_, address, _ := strings.Cut(raw, ":")
+			address, _, _ = strings.Cut(address, "?")
+			_, port, err := net.SplitHostPort(address)
+			if err != nil || port == "" || u.Port < 1 || u.Port > 65535 {
+				return fmt.Errorf("手动 TURN URL 必须显式填写有效端口")
+			}
+		}
 	}
 	if c.TURN.Mode == "manual" && (len(c.TURN.URLs) == 0 || c.TURN.Username == "" || c.TURN.Credential == "") {
 		return fmt.Errorf("手动 TURN 需要 URL、用户名和凭据")
+	}
+	if c.TURN.Mode == "manual" && len(relayOrderForConfig(RelayPolicyUDPTCPTLS, c.TURN)) == 0 {
+		return fmt.Errorf("手动 TURN URL 与 turn.order 没有匹配类型；turn 支持 UDP/TCP，turns 仅支持 TLS，显式 transport 会限制类型")
 	}
 	return nil
 }

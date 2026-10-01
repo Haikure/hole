@@ -42,6 +42,13 @@ func run(ctx context.Context, data []byte) error {
 配置应用按完整配置内容比较；相同配置幂等，变更配置由 supervisor 串行重配。
 快照复制内部对象且不包含配置凭据；事件通道有界，宿主通过快照核对最新状态。
 
+ICE / TURN 底层诊断复用 `kind=log` 事件，附带 `peer`、`phase`、`transport_generation` 和
+表示日志来源的 `stage`。Pion warning/error 使用 `state=warning/error` 与 `message`；
+尝试最终失败使用 `state=failed` 与保留原始原因的 `error`。普通快照及传输事件继续使用面向用户的错误提示，
+CLI 仅在 `-debug` 下展示这些诊断。每次尝试最多输出 64 条底层日志及一条省略提示，最终失败原因不占该额度。
+产生事件前按本次尝试的配置、动态 TURN 凭据和 ICE 凭据脱敏，再进入 Engine 的统一脱敏流程；
+不受 `PION_LOG_*` 环境变量影响，不启用 info/debug/trace 报文日志。
+
 ## 平台与恢复
 
 `Platform` 区分外部候选、信令、上游连接和本地监听。
@@ -51,6 +58,11 @@ func run(ctx context.Context, data []byte) error {
 网络路径重建保留未改变的监听器、应用 socket、重放窗口和进程证书。
 删除映射、修改目标或运行身份、用户停止、进程退出会结束对应作用域的会话。
 协议格式、重放和资源限额见 [协议说明](../docs/PROTOCOL.md)。
+
+TCP 重放数据按需分块分配，单方向上限 16 MiB，同一运行的所有映射共用 128 MiB 块容量预算。
+性能基准可执行 `go test ./core -run '^$' -bench 'Benchmark(ICETCP|TCPReplayRTT100ms|UDPReassembly)' -benchmem`。
+`BenchmarkICETCP` 使用真实本地 TCP → ICE / QUIC → TCP，两端共享本机 CPU，预热后测持续转发。
+TCP 基准使用有固定延迟的内存链路，仅衡量应用重放协议，不代表实际 TURN、QUIC 或设备网络带宽。
 
 ## 构建与测试
 

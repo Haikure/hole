@@ -44,7 +44,7 @@ ice:
   retry_max_delay: 15s    # 最大重试间隔
   interface_allowlist: []
 # turn 整段可以省略；以下就是缺省值。Worker 签发短期凭据，CLI 不必填账号。
-# 留空使用默认顺序；也可填写如 [tls_443, udp]，未列类型会跳过。
+# 留空使用默认顺序；也可填写如 [tls, udp]，未列类型会跳过。
 turn:
   mode: worker
   ttl: 6h
@@ -100,10 +100,25 @@ consume:
 21:15:33 INFO  laptop: 已恢复 TCP 中继/IPv4 5.1s
 ```
 
+排查中继失败时加上 `-debug`：
+
+```bash
+./dist/cli/hole-linux-amd64 -config config.yaml -debug
+```
+
+调试日志保留对端、`phase`、`gen` 和底层失败原因，包括 Pion ICE / TURN 的警告与错误，
+例如 DNS 解析失败、TCP 拒绝连接、TLS 证书错误或 TURN 分配失败；最终失败原因不再只剩“路径未连通”。
+普通模式仍保持简洁提示。日志会脱敏本次尝试的信令、房间、TURN 和 ICE 凭据，不启用报文级 trace；
+每次尝试最多输出 64 条底层日志，达到上限会提示省略，最终失败原因仍单独输出。
+调试日志可能包含服务器和候选地址，分享前请检查。
+
 配置中省略 `transport` 时保留 IPv6 模式；上面的示例显式开启 ICE。
 STUN 默认使用 Cloudflare，TURN 默认向 Worker 按需申请短期凭据。每端可通过 `turn.order`
-独立配置 `udp`、`tcp_80`、`tcp`、`tls_443`、`tls` 顺序；两端顺序不同时仍共享连接轮次，
-本端已无类型时会等待对端中继候选。旧客户端或 Worker 不支持该协议时，本端可见回退提示。
+独立配置 `udp`、`tcp`、`tls` 顺序。Worker 与两端均支持 `all-pairs-v1` 时，
+轮次覆盖两端白名单的跨类型组合；Cloudflare 的 TCP / TLS 先试标准端口，再试 80 / 443。
+manual URL 必须给端口；省略 `transport` 时，`turn:` 支持 UDP / TCP，`turns:` 仅支持 TLS。
+旧版本继续使用其支持的轮次或命名阶段。TCP 重放缓存按需增长，单方向最多 16 MiB，
+同一核心实例的重放块容量合计最多 128 MiB；恢复与限额细节见 [协议说明](docs/PROTOCOL.md)。
 
 ## 桌面 GUI 前置桥接
 

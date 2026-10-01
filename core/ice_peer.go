@@ -7,10 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"github.com/pion/ice/v4"
-	"github.com/pion/logging"
 	"github.com/pion/stun/v4"
 	"github.com/quic-go/quic-go"
-	"io"
 	"net"
 	"slices"
 	"sync"
@@ -19,11 +17,12 @@ import (
 )
 
 type iceAttempt struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	ready  iceSignalMessage
-	events chan iceSignalMessage
-	failed chan error
+	ctx         context.Context
+	cancel      context.CancelFunc
+	ready       iceSignalMessage
+	events      chan iceSignalMessage
+	failed      chan error
+	diagnostics *iceDiagnostics
 }
 type liveICETransport struct {
 	ready      iceSignalMessage
@@ -261,7 +260,11 @@ func (p *icePeer) restart(phase, reason string) {
 	p.mu.Unlock()
 	if current.RelayRound != nil {
 		round := 0
-		if phase == "relay_wait" || reason == "turn_refresh" {
+		if current.RelayPairing == relayPairingAll {
+			if phase != "direct" {
+				round = *current.RelayRound
+			}
+		} else if phase == "relay_wait" || reason == "turn_refresh" {
 			round = *current.RelayRound
 		} else if phase != "direct" {
 			for i, token := range current.RelayOrder {
@@ -298,6 +301,9 @@ func (p *icePeer) restartWithRound(round *int, phase, reason string) {
 	request.TransportID = m.TransportID
 	request.ExpectedGeneration = m.TransportGeneration
 	request.Phase = phase
+	if m.RelayPairing == relayPairingAll {
+		request.Phase = ""
+	}
 	request.RelayRound = round
 	request.Reason = reason
 	if err := p.coordinator.send(request); err != nil {
@@ -327,6 +333,9 @@ func (p *icePeer) renominate() {
 	request.TransportID = m.TransportID
 	request.ExpectedGeneration = m.TransportGeneration
 	request.Phase = phase
+	if m.RelayPairing == relayPairingAll {
+		request.Phase = ""
+	}
 	if m.RelayRound != nil {
 		round := *m.RelayRound
 		request.RelayRound = &round
@@ -381,6 +390,7 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 	if fatal {
 		state = "error"
 	}
+	a.diagnostics.failed(err)
 	p.transportEvent(a, state, fault)
 	if fatal {
 		report := signalMessage("transport_failed")
@@ -389,7 +399,10 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 		report.Code = fault.Code
 		_ = p.coordinator.send(report)
 	} else {
-		if a.ready.RelayRound != nil {
+		if a.ready.RelayPairing == relayPairingAll && a.ready.RelayRound != nil {
+			limit := len(relayPairs(a.ready.RelayOrder, a.ready.PeerRelayOrder, true))
+			p.restartRound(nextICERound(*a.ready.RelayRound, limit), "", "path_failed")
+		} else if a.ready.RelayRound != nil {
 			nextRound, nextPhase := nextRelayRound(*a.ready.RelayRound, a.ready.RelayOrder, a.ready.PeerRelayOrder)
 			p.restartRound(nextRound, nextPhase, "path_failed")
 		} else {
@@ -415,6 +428,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 	}
 	cfg := p.coordinator.request().Config
+	a.diagnostics = newICEDiagnostics(a.ctx, a.ready, cfg, p.coordinator.emit)
 	platform, err := p.coordinator.pin(a.ctx)
 	if err != nil {
 		p.failed(a, err)
@@ -457,6 +471,9 @@ func (p *icePeer) attempt(a *iceAttempt) {
 			expires = 0
 		}
 	}
+	for _, server := range servers {
+		a.diagnostics.addSecrets(server.Username, server.Credential)
+	}
 	relayURLs := selectRelayURLs(servers, a.ready.Phase)
 	relayCount := len(relayURLs)
 	urls = append(urls, relayURLs...)
@@ -486,9 +503,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	p.mu.Unlock()
 	started := time.Now()
 	p.transportEvent(a, "checking", nil)
-	logger := logging.NewDefaultLoggerFactory()
-	logger.DefaultLogLevel = logging.LogLevelDisabled
-	logger.Writer = io.Discard
+	logger := a.diagnostics
 	allow := stringSet(cfg.ICE.InterfaceAllowlist)
 	controlling := a.ready.InitiatorID == p.coordinator.deviceID()
 	relayPhase := a.ready.Phase != "direct"
@@ -583,6 +598,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		p.failed(a, err)
 		return
 	}
+	a.diagnostics.addSecrets(ufrag, pwd)
 	description := signalMessage("ice_description")
 	description.TransportID = a.ready.TransportID
 	description.TransportGeneration = a.ready.TransportGeneration
@@ -626,6 +642,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 						}
 						continue
 					}
+					a.diagnostics.addSecrets(m.Ufrag, m.Pwd)
 					described = true
 					oldUfrag, oldPwd = m.Ufrag, m.Pwd
 					remoteCredentials <- m

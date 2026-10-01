@@ -15,7 +15,10 @@ const storage = {
  async deleteAlarm() { alarm = null; },
 };
 const state = {storage,id:{toString:()=> 'fixture-room'},getWebSockets:()=>[...sockets.values()].filter(s=>!s.closed)};
-let room = new Room(state,{});
+// Local integration tests may supply real fixture TURN endpoints. No external
+// broker or credentials are used; hibernation retains the same test binding.
+const env = process.env.HOLE_FIXTURE_TURN ? {TURN_BROKER:{idFromName:()=> 'fixture',get:()=>({fetch:async()=>Response.json({ice_servers:JSON.parse(process.env.HOLE_FIXTURE_TURN),expire_at:Date.now()+3600000,refresh_at:Date.now()+3000000})})}} : {};
+let room = new Room(state,env);
 let chain = Promise.resolve();
 for await (const line of readline.createInterface({input:process.stdin,crlfDelay:Infinity})) {
  chain = chain.then(async()=>{
@@ -24,7 +27,7 @@ for await (const line of readline.createInterface({input:process.stdin,crlfDelay
    const ws={id:input.id,attachment:null,closed:false,serializeAttachment(a){this.attachment=structuredClone(a)},deserializeAttachment(){return structuredClone(this.attachment)},send(data){if(!this.closed)process.stdout.write(JSON.stringify({id:this.id,data})+'\n')},close(code,reason){this.closed=true;process.stdout.write(JSON.stringify({id:this.id,close:{code,reason}})+'\n')}};
    sockets.set(input.id,ws);await room.loadState();await room.ice.setRoomName(input.room);return;
   }
-  if(input.kind==='hibernate') {room=new Room(state,{});return;}
+  if(input.kind==='hibernate') {room=new Room(state,env);return;}
   const ws=sockets.get(input.id);if(!ws)return;
   if(input.kind==='close'){ws.closed=true;await room.webSocketClose(ws,1000,'',true);sockets.delete(input.id);}
   else await room.webSocketMessage(ws,input.data);

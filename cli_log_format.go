@@ -154,11 +154,15 @@ func (r *cliReporter) debugEvent(e core.Event) {
 	if !r.debug {
 		return
 	}
-	if e.Kind == "log" {
+	if e.Kind == "log" && e.State == "" && e.Stage == "" && e.Peer == "" && e.Phase == "" && e.TransportGeneration == 0 && e.Error == nil {
 		r.debugf("core %s", logText(e.Message))
 		return
 	}
-	line := logText(e.Kind) + " " + logValue(e.State)
+	kind := e.Kind
+	if kind == "log" {
+		kind = "core"
+	}
+	line := logText(kind) + " " + logValue(e.State)
 	line = logAppendField(line, "mapping", e.MappingID)
 	line = logAppendField(line, "proto", e.Protocol)
 	line = logAppendField(line, "peer", e.Peer)

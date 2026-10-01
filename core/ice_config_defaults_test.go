@@ -12,7 +12,7 @@ func TestParseTransportDefaultsAndExplicitOverrides(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := TURNConfig{Mode: "worker", TTL: ConfigDuration(6 * time.Hour), URLs: []string{}}
+		want := TURNConfig{Mode: "worker", TTL: ConfigDuration(6 * time.Hour), URLs: []string{}, Order: []string{}}
 		if !reflect.DeepEqual(cfg.TURN, want) {
 			t.Fatalf("%q has unexpected TURN defaults: %+v", text, cfg.TURN)
 		}

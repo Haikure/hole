@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -19,10 +20,17 @@ import (
 	"time"
 )
 
-func actualWorkerFixture(t *testing.T) (string, func()) {
+func actualWorkerFixture(t testing.TB, turnServers ...ICEServer) (string, func()) {
 	t.Helper()
 	path, _ := filepath.Abs("../worker/worker_fixture.test.mjs")
 	command := exec.Command("node", path)
+	if len(turnServers) > 0 {
+		data, err := json.Marshal(turnServers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command.Env = append(os.Environ(), "HOLE_FIXTURE_TURN="+string(data))
+	}
 	in, e := command.StdinPipe()
 	if e != nil {
 		t.Fatal(e)

@@ -333,6 +333,34 @@ func TestCLIDebugPreservesDiagnosticsAndEscapesAllInputs(t *testing.T) {
 	}
 }
 
+func TestCLIICEDiagnosticsAreDebugOnlyAndKeepAttemptContext(t *testing.T) {
+	r, output := testReporter(t)
+	events := []core.Event{
+		{Kind: "log", State: "warning", Stage: "ice", Peer: "peer\nforged", Phase: "relay_tcp", TransportGeneration: 7,
+			Message: "Failed to dial TCP address 127.0.0.1:3478: connection refused PRIVATE_TURN_CREDENTIAL\n\x1b[31m"},
+		{Kind: "log", State: "failed", Stage: "ice", Peer: "peer", Phase: "relay_tcp", TransportGeneration: 7,
+			Error: &core.Fault{Code: "network_error", Message: "context deadline exceeded PRIVATE_TURN_CREDENTIAL"}},
+	}
+	for _, e := range events {
+		r.event(e)
+	}
+	if output.Len() != 0 {
+		t.Fatal("底层中继诊断进入普通日志", output)
+	}
+	r.debug = true
+	for _, e := range events {
+		r.event(e)
+	}
+	for _, want := range []string{"DEBUG core warning", "DEBUG core failed", "stage=ice", "phase=relay_tcp", "gen=7", "peer=", "127.0.0.1:3478", "connection refused", "context deadline exceeded", "err=network_error", "[redacted]"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("debug 诊断缺少 %q：%s", want, output)
+		}
+	}
+	if strings.Contains(output.String(), "PRIVATE_") || strings.Contains(output.String(), "\x1b") || strings.Count(output.String(), "\n") != 2 {
+		t.Fatal("debug 诊断泄露凭据或允许终端注入", output)
+	}
+}
+
 func TestCLIRepeatedSessionFailuresAreSummarizedAndRecover(t *testing.T) {
 	r, output := testReporter(t)
 	e := core.Event{Kind: "session", MappingID: "SSH", Peer: "家里电脑", State: "error", Error: &core.Fault{Code: "service_refused", Message: "raw"}}

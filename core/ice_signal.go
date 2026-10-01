@@ -32,6 +32,7 @@ type iceSignalMessage struct {
 	RelayOrder          []string            `json:"relay_order,omitempty"`
 	PeerRelayOrder      []string            `json:"peer_relay_order,omitempty"`
 	RelayRound          *int                `json:"relay_round,omitempty"`
+	RelayPairing        string              `json:"relay_pairing,omitempty"`
 	ToPeerID            string              `json:"to_peer_id,omitempty"`
 	Ufrag               string              `json:"ufrag,omitempty"`
 	Pwd                 string              `json:"pwd,omitempty"`

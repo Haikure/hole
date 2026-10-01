@@ -3,7 +3,9 @@ package core
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/stun/v4"
@@ -13,6 +15,64 @@ var orderedRelayPhases = []string{"direct", "relay_udp", "relay_tcp_80", "relay_
 var compatibleRelayPhases = []string{"direct", "relay_udp", "relay_tls", "relay_tls_443"}
 var orderedRelayTypes = []string{"udp", "tcp_80", "tcp", "tls_443", "tls"}
 var compatibleRelayTypes = []string{"udp", "tls", "tls_443"}
+
+const relayPairingAll = "all-pairs-v1"
+
+// Expand by preference depth, trying each diagonal first, then its cross pairs.
+// Device-name order fixes orientation so both endpoints derive the same plan.
+// An endpoint with TURN disabled contributes host/srflx in every peer round.
+func relayPairs(local, remote []string, localFirst bool) [][2]int {
+	a, b := len(local), len(remote)
+	if !localFirst {
+		a, b = b, a
+	}
+	var pairs [][2]int
+	add := func(i, j int) {
+		if !localFirst {
+			i, j = j, i
+		}
+		pairs = append(pairs, [2]int{i, j})
+	}
+	if a == 0 || b == 0 {
+		for i := 0; i < max(a, b); i++ {
+			if a == 0 {
+				add(-1, i)
+			} else {
+				add(i, -1)
+			}
+		}
+		return pairs
+	}
+	for depth := 0; depth < max(a, b); depth++ {
+		if depth < a && depth < b {
+			add(depth, depth)
+		}
+		for i := 0; i < depth; i++ {
+			if i < a && depth < b {
+				add(i, depth)
+			}
+			if depth < a && i < b {
+				add(depth, i)
+			}
+		}
+	}
+	return pairs
+}
+
+func pairedRelayPhase(round int, local, remote []string, localFirst bool) string {
+	if round == 0 {
+		return "direct"
+	}
+	pairs := relayPairs(local, remote, localFirst)
+	if round < 1 || round > len(pairs) {
+		return ""
+	}
+	index := pairs[round-1][0]
+	if index < 0 {
+		return "relay_wait"
+	}
+	return relayTypePhase(local[index])
+}
 
 func relayOrder(policy string, custom []string) []string {
 	if len(custom) > 0 {
@@ -28,7 +88,49 @@ func relayOrderForConfig(policy string, turn TURNConfig) []string {
 	if turn.Mode == "off" {
 		return []string{}
 	}
-	return relayOrder(policy, turn.Order)
+	order := normalizedRelayOrder(turn.Order)
+	if len(order) == 0 {
+		order = []string{"udp", "tcp", "tls"}
+	}
+	available := []string{}
+	servers := []ICEServer{{URLs: turn.URLs}}
+	for _, token := range order {
+		stages := []string{token}
+		switch token {
+		case "tcp":
+			stages = []string{"tcp", "tcp_80"}
+		case "tls":
+			stages = []string{"tls", "tls_443"}
+		}
+		for _, stage := range stages {
+			if turn.Mode != "manual" || len(selectRelayURLs(servers, relayTypePhase(stage))) > 0 {
+				available = append(available, stage)
+			}
+		}
+	}
+	return available
+}
+
+// Port-specific tokens are only retained on the compatibility wire. Older
+// configuration documents migrate to protocol names while genuine duplicates
+// still fail validation.
+func normalizedRelayOrder(order []string) []string {
+	result := make([]string, 0, len(order))
+	seenRaw, seenType := map[string]bool{}, map[string]bool{}
+	for _, raw := range order {
+		token := raw
+		if token == "tcp_80" {
+			token = "tcp"
+		}
+		if token == "tls_443" {
+			token = "tls"
+		}
+		if !seenType[token] || seenRaw[raw] {
+			result = append(result, token)
+		}
+		seenRaw[raw], seenType[token] = true, true
+	}
+	return result
 }
 
 func relayTypePhase(token string) string {
@@ -153,6 +255,13 @@ func selectRelayURLs(servers []ICEServer, phase string) []*stun.URI {
 	for _, server := range servers {
 		for _, raw := range server.URLs {
 			u, err := stun.ParseURI(raw)
+			if err == nil && u.Scheme == stun.SchemeTypeTURN {
+				_, query, _ := strings.Cut(raw, "?")
+				values, _ := url.ParseQuery(query)
+				if !values.Has("transport") && (phase == "relay_tcp" || phase == "relay_tcp_80") {
+					u.Proto = stun.ProtoTypeTCP
+				}
+			}
 			if err == nil && relayURLMatches(phase, u) {
 				u.Username, u.Password = server.Username, server.Credential
 				urls = append(urls, u)

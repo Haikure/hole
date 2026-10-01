@@ -48,7 +48,7 @@ func TestCustomRelayRoundOrderAndRelayWait(t *testing.T) {
 	if round, phase := nextRelayRound(0, disabled, disabled); round != 0 || phase != "direct" {
 		t.Fatalf("two disabled TURN endpoints must retry direct, got round=%d phase=%q", round, phase)
 	}
-	if got := relayOrderForConfig(RelayPolicyUDPTCPTLS, TURNConfig{Mode: "worker"}); !reflect.DeepEqual(got, orderedRelayTypes) {
+	if got := relayOrderForConfig(RelayPolicyUDPTCPTLS, TURNConfig{Mode: "worker"}); !reflect.DeepEqual(got, []string{"udp", "tcp", "tcp_80", "tls", "tls_443"}) {
 		t.Fatalf("enabled TURN must retain the default order, got %v", got)
 	}
 }

@@ -14,6 +14,30 @@ export const RELAY_POLICY = "udp-tcp-tls-v1";
 const orderedPhases = ["direct", "relay_udp", "relay_tcp_80", "relay_tcp", "relay_tls_443", "relay_tls"];
 const compatiblePhases = ["direct", "relay_udp", "relay_tls", "relay_tls_443"];
 const relayTypes = new Set(["udp", "tcp_80", "tcp", "tls_443", "tls"]);
+const ALL_PAIRS = "all-pairs-v1";
+
+export function relayPairs(a, b) {
+  const pairs = [];
+  if (!a.length || !b.length) {
+    for (let i = 0; i < Math.max(a.length,b.length); i++) pairs.push(a.length ? [i,-1] : [-1,i]);
+    return pairs;
+  }
+  for (let depth = 0; depth < Math.max(a.length,b.length); depth++) {
+    if (depth < a.length && depth < b.length) pairs.push([depth,depth]);
+    for (let i = 0; i < depth; i++) {
+      if (i < a.length && depth < b.length) pairs.push([i,depth]);
+      if (depth < a.length && i < b.length) pairs.push([depth,i]);
+    }
+  }
+  return pairs;
+}
+function recordPhase(record, round, index) {
+  if (!round) return "direct";
+  if (record.relay_pairing !== ALL_PAIRS) return relayPhase(round,record.relay_orders[index]);
+  const pair = relayPairs(...record.relay_orders)[round-1];
+  if (!pair) return "";
+  return pair[index] < 0 ? "relay_wait" : relayPhase(pair[index]+1,record.relay_orders[index]);
+}
 
 function validRelayOrder(value) {
   return Array.isArray(value) && value.length <= 5 && value.every((token, index) => relayTypes.has(token) && value.indexOf(token) === index);
@@ -35,8 +59,9 @@ export function iceJoinFields(message) {
   if (message.relay_enabled !== undefined && typeof message.relay_enabled !== "boolean") return null;
   if (message.relay_enabled === false && message.relay_order === undefined) return null;
   if (message.relay_order !== undefined && !validRelayOrder(message.relay_order)) return null;
+  if (message.relay_pairing !== undefined && (message.relay_pairing !== ALL_PAIRS || message.relay_order === undefined)) return null;
   const relayEnabled = message.relay_enabled ?? true;
-  return { signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], relay_policy: message.relay_policy ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : []}) };
+  return { signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : []}) };
 }
 export function negotiateProfile(left, right) {
   const a = left.transport_profiles ?? [LEGACY_PROFILE];
@@ -98,12 +123,13 @@ export class RoomICE {
     const relayPolicy = a.member.relay_policy === RELAY_POLICY && b.member.relay_policy === RELAY_POLICY ? RELAY_POLICY : "";
     const roundMode = Array.isArray(a.member.relay_order) && Array.isArray(b.member.relay_order);
     const relayOrders = roundMode ? [a.member.relay_order, b.member.relay_order] : null;
+    const pairing = roundMode && a.member.relay_pairing === ALL_PAIRS && b.member.relay_pairing === ALL_PAIRS ? ALL_PAIRS : "";
     let changed = false;
     if (!record) {
       if (this.records.size >= 128) { fault(a.ws, "transport_limit", "房间传输记录达到上限"); fault(b.ws, "transport_limit", "房间传输记录达到上限"); return; }
       record = { id: crypto.randomUUID(), pair_key: key, a: a.member.device_name, b: b.member.device_name, generation: "1", phase: "direct", round: 0, round_mode: roundMode, relay_orders: relayOrders, runtime, fingerprints, epochs, mappings, ice: {}, retry: 0 };
       changed = true;
-    } else if (!same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (roundMode && !same(record.relay_orders, relayOrders))) {
+    } else if (!same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
       record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
       record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; changed = true;
     }
@@ -113,6 +139,7 @@ export class RoomICE {
     record.round_mode = roundMode;
     record.round = roundMode ? (record.round ?? 0) : 0;
     record.relay_orders = relayOrders;
+    record.relay_pairing = pairing;
     record.mappings = mappings; record.online = true; record.lease_until = Date.now() + LEASE_MS;
     this.records.set(key, record);
     if (changed) { record.expires_at = Date.now() + OFFLINE_RETENTION_MS; await this.persist(record); }
@@ -122,9 +149,10 @@ export class RoomICE {
     const own = this.member(name); if (!own) return;
     const index = name === record.a ? 0 : 1;
     const peerName = index === 0 ? record.b : record.a;
-    const phase = record.round_mode ? relayPhase(record.round ?? 0, record.relay_orders[index]) : record.phase;
+    const phase = record.round_mode ? recordPhase(record, record.round ?? 0, index) : record.phase;
     const ready = { type: "transport_ready", transport_id: record.id, transport_generation: record.generation, profile: ICE_PROFILE, session_version: 2, phase, relay_policy: record.relay_policy ?? "", peer_device: peerName, peer_runtime_id: record.runtime[1-index], peer_fingerprint: record.fingerprints[1-index], runtime_id: record.runtime[index], initiator_id: record.a, mappings: record.mappings, lease_until: String(record.lease_until), retry_after_ms: record.retry_after_ms ?? 0 };
     if (record.round_mode) Object.assign(ready, {relay_round:record.round ?? 0,relay_order:record.relay_orders[index],peer_relay_order:record.relay_orders[1-index]});
+    if (record.relay_pairing) ready.relay_pairing = record.relay_pairing;
     send(own.ws, ready);
     if (replay) {
       const cached = record.ice[peerName]; if (!cached) return;
@@ -199,9 +227,12 @@ export class RoomICE {
       if (record.round_mode) {
         const ownOrder = record.relay_orders[record.a === name ? 0 : 1];
         const peerOrder = record.relay_orders[record.a === name ? 1 : 0];
-        const maxRound = Math.max(ownOrder.length, peerOrder.length);
+        const allPairs = record.relay_pairing === ALL_PAIRS;
+        const maxRound = allPairs ? relayPairs(...record.relay_orders).length : Math.max(ownOrder.length, peerOrder.length);
         const requested = message.relay_round;
-        if (!Number.isSafeInteger(requested) || requested < 0 || requested > maxRound + 1 || message.phase !== relayPhase(requested, ownOrder)) { fault(ws, "invalid_phase", "路径轮次或本机阶段无效", message); return true; }
+        const expectedPhase = allPairs ? recordPhase(record, requested, record.a === name ? 0 : 1) : relayPhase(requested, ownOrder);
+        if (!Number.isSafeInteger(requested) || requested < 0 || requested > maxRound + 1 ||
+            (allPairs ? (message.phase !== undefined && message.phase !== expectedPhase) : message.phase !== expectedPhase)) { fault(ws, "invalid_phase", "路径轮次或本机阶段无效", message); return true; }
         const current = record.round ?? 0;
         if (requested !== 0 && requested !== current && requested !== current + 1) { fault(ws, "invalid_phase", "路径轮次应按顺序推进", message); return true; }
         record.round = requested > maxRound ? 0 : requested;
@@ -267,8 +298,8 @@ function turnURLPriority(url) {
   const [, scheme, port, queryProtocol] = match;
   const protocol = queryProtocol ?? (scheme === "turns" ? "tcp" : "udp");
   if (scheme === "turn" && protocol === "udp" && port === "3478") return 0;
-  if (scheme === "turns" && protocol === "tcp") return port === "443" ? 3 : port === "5349" ? 4 : Infinity;
-  if (scheme === "turn" && protocol === "tcp") return port === "80" ? 1 : port === "3478" ? 2 : Infinity;
+  if (scheme === "turns" && protocol === "tcp") return port === "5349" ? 3 : port === "443" ? 4 : Infinity;
+  if (scheme === "turn" && protocol === "tcp") return port === "3478" ? 1 : port === "80" ? 2 : Infinity;
   return Infinity;
 }
 
@@ -305,7 +336,7 @@ export class TurnBroker {
     const identityKey=JSON.stringify([input.room,input.device,this.env.TURN_KEY_ID,this.env.TURN_POLICY_VERSION??"1"]);
     // Invalidate filtered endpoint caches from before plain TURN/TCP support,
     // while retaining the existing per-device issuance rate-limit identity.
-    const key=JSON.stringify([identityKey,ttl,RELAY_POLICY]);
+    const key=JSON.stringify([identityKey,ttl,RELAY_POLICY,"standard-ports-first"]);
     let job=this.inflight.get(key);
     if (!job) {
       if(this.inflight.size>=8)return Response.json({code:"turn_rate_limited"},{status:429});

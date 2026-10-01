@@ -236,9 +236,14 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 		candidates, _ = platform.Candidates(ctx, r.Config, holePort)
 	}
 	relayEnabled := r.Config.TURN.Mode != "off"
+	order := relayOrderForConfig(RelayPolicyUDPTCPTLS, r.Config.TURN)
+	// Older round-capable Workers require a present relay_order when disabled.
+	if !relayEnabled {
+		order = relayOrder(RelayPolicyUDPTCPTLS, nil)
+	}
 	join := iceSignalMessage{SignalMessage: SignalMessage{Type: "join", Room: r.Config.Room, Token: r.Config.Token, DeviceID: r.Config.DeviceName, DeviceName: r.Config.DeviceName, Provide: r.Config.Provide, Consume: r.Config.Consume, Candidates: candidates, CertFingerprint: c.fingerprint},
 		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS,
-		RelayEnabled: &relayEnabled, RelayOrder: relayOrder(RelayPolicyUDPTCPTLS, r.Config.TURN.Order)}
+		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll}
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err = conn.WriteJSON(join); err != nil {
 		return err, false
@@ -348,10 +353,18 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		}
 	case "transport_ready":
 		cfg := c.request().Config
+		if m.RelayPairing != "" && m.RelayPairing != relayPairingAll {
+			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不支持的中继配对策略"}
+		}
 		if m.RelayPolicy != "" && m.RelayPolicy != RelayPolicyUDPTCPTLS {
 			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不受支持的中继策略"}
 		}
-		if m.RelayRound != nil {
+		if m.RelayPairing == relayPairingAll {
+			if m.RelayRound == nil || !validRelayOrder(m.RelayOrder) || !validRelayOrder(m.PeerRelayOrder) ||
+				m.Phase == "" || m.Phase != pairedRelayPhase(*m.RelayRound, m.RelayOrder, m.PeerRelayOrder, cfg.DeviceName < m.PeerDevice) {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继配对轮次无效"}
+			}
+		} else if m.RelayRound != nil {
 			if !validRelayRound(*m.RelayRound, m.Phase, m.RelayOrder, m.PeerRelayOrder) {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继轮次或本机路径阶段无效"}
 			}
