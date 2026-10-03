@@ -25,7 +25,6 @@ import androidx.compose.ui.text.style.TextAlign
 import dev.hole.app.ConfigUiState
 import dev.hole.app.config.ConsumeEntry
 import dev.hole.app.config.ProvideEntry
-import dev.hole.app.config.ThemeStyle
 import dev.hole.app.config.composeExpose
 import dev.hole.app.config.composeServiceUrl
 import dev.hole.corebridge.CoreSnapshot
@@ -51,7 +50,6 @@ fun HomeScreen(
 ) {
     val listState = rememberLazyListState()
     val mappingStates = remember(snapshot.mappings) { snapshot.mappings.associate { (it.role to it.id) to it.state } }
-    val miuix = LocalThemeStyle.current == ThemeStyle.MIUIX
     HoleScaffold(
         title = "hole",
         largeTitle = true,
@@ -72,14 +70,14 @@ fun HomeScreen(
             item { ConnectionCard(snapshot, configState, commandError, onToggleRun, onOpenDetails) }
             item {
                 SectionHeader(
-                    title = if (miuix) "提供服务" else "provide · 提供服务",
-                    subtitle = "把本机或本机可达的服务提供给房间内的设备",
-                    addLabel = "新增 provide 配置",
+                    title = "提供服务",
+                    subtitle = null,
+                    addLabel = "新增提供项",
                     onAdd = onAddProvide,
                 )
             }
             if (configState.config.provide.isEmpty()) {
-                item { EmptyCard("暂无 provide 配置", "点击右上角新增，向远端提供 TCP 或 UDP 服务。") }
+                item { EmptyCard("暂无配置") }
             } else {
                 items(configState.config.provide, key = { it.entryId }) { entry ->
                     ProvideRow(entry, onEditProvide, onToggleProvide, onDeleteProvide, mappingStates["provide" to entry.id])
@@ -87,27 +85,18 @@ fun HomeScreen(
             }
             item {
                 SectionHeader(
-                    title = if (miuix) "使用服务" else "consume · 使用服务",
-                    subtitle = "把远端服务映射到本地端口",
-                    addLabel = "新增 consume 配置",
+                    title = "使用服务",
+                    subtitle = null,
+                    addLabel = "新增使用项",
                     onAdd = onAddConsume,
                 )
             }
             if (configState.config.consume.isEmpty()) {
-                item { EmptyCard("暂无 consume 配置", "点击右上角新增，通过本地端口使用远端服务。") }
+                item { EmptyCard("暂无配置") }
             } else {
                 items(configState.config.consume, key = { it.entryId }) { entry ->
                     ConsumeRow(entry, onEditConsume, onToggleConsume, onDeleteConsume, mappingStates["consume" to entry.id])
                 }
-            }
-            item {
-                Text(
-                    "转发由前台服务保持；进程被系统回收后按保存的配置重新连接，" +
-                        "不恢复原有 TCP socket。停止请使用总开关或通知中的\"停止\"。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 24.dp),
-                )
             }
         }
     }
@@ -121,7 +110,6 @@ private fun ConnectionCard(
     onToggleRun: (Boolean) -> Unit,
     onOpenDetails: () -> Unit,
 ) {
-    val miuix = LocalThemeStyle.current == ThemeStyle.MIUIX
     val provideEnabled = configState.config.provide.count { it.enabled }
     val consumeEnabled = configState.config.consume.count { it.enabled }
     HoleCard(
@@ -137,7 +125,7 @@ private fun ConnectionCard(
                     Column(Modifier.weight(1f)) {
                         Text("连接", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
                         Text(
-                            if (snapshot.runRequested) "转发由前台服务保持，退出页面不停止" else "开启后由前台服务保持转发",
+                            if (snapshot.runRequested) "退出页面不会停止" else "开启后在后台持续转发",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -157,8 +145,7 @@ private fun ConnectionCard(
             StatusRow(
                 "配置",
                 if (!configState.loaded) "读取中"
-                else if (miuix) "提供 $provideEnabled 项 · 使用 $consumeEnabled 项"
-                else "已保存 · provide $provideEnabled 项 / consume $consumeEnabled 项启用",
+                else "提供 $provideEnabled 项 · 使用 $consumeEnabled 项",
             )
             if (snapshot.runRequested) {
                 StatusRow(
@@ -228,7 +215,7 @@ private fun ConsumeRow(
         title = entry.id.ifBlank { "（未命名）" },
         subtitle = composeExpose(entry.host, entry.port),
         status = if (!entry.enabled) "已停用" else state?.let(::mappingLabel)
-            ?: "协议由远端 provide 决定，当前等待匹配",
+            ?: "等待匹配",
         enabled = entry.enabled,
         onToggle = { onToggle(entry.entryId, it) },
         onEdit = { onEdit(entry.entryId) },
@@ -237,15 +224,10 @@ private fun ConsumeRow(
 }
 
 @Composable
-private fun EmptyCard(title: String, description: String) {
+private fun EmptyCard(title: String) {
     HoleCard(Modifier.fillMaxWidth(), outlined = true) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.padding(16.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }

@@ -44,16 +44,6 @@ func TestRelayLegsAndCandidateSocket(t *testing.T) {
 	}
 }
 
-func TestICEChecksExhaustedNeedsEveryPairFailed(t *testing.T) {
-	failed := ice.CandidatePairStats{State: ice.CandidatePairStateFailed}
-	if iceChecksExhausted([]ice.CandidatePairStats{failed, {State: ice.CandidatePairStateInProgress}}) {
-		t.Fatal("in-progress pair reported as exhausted")
-	}
-	if !iceChecksExhausted([]ice.CandidatePairStats{failed, failed}) || !iceChecksExhausted(nil) {
-		t.Fatal("all-failed checklist not reported")
-	}
-}
-
 func TestQUICConfigProbesMTUOnlyOnDirectPaths(t *testing.T) {
 	if iceQUICConfig("direct").DisablePathMTUDiscovery {
 		t.Fatal("direct path keeps the 1200-byte floor")

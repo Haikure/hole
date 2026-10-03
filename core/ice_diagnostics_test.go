@@ -103,6 +103,31 @@ func TestICEDiagnosticsBoundedConcurrentLogsKeepFinalCause(t *testing.T) {
 	}
 }
 
+func TestICEDiagnosticsKeepsSendAndIntegrityFailuresAfterCandidateWait(t *testing.T) {
+	events := make(chan Event, 100)
+	d := newICEDiagnostics(context.Background(), iceSignalMessage{}, Config{TURN: TURNConfig{Credential: "hidden-secret"}}, func(e Event) { events <- e })
+	l := d.NewLogger("ice")
+	for i := 0; i < 100; i++ {
+		l.Warn("Failed to ping without candidate pairs. Connection is not possible yet.")
+	}
+	for i := 0; i < 100; i++ {
+		l.Infof("Failed to send packet: %v", errors.New("permission failed hidden-secret"))
+	}
+	l.Warn("Discard success response with broken integrity: attribute not found")
+	if len(events) != 3 {
+		t.Fatal("transient warnings consumed diagnostic budget", len(events))
+	}
+	if e := <-events; e.State != "info" {
+		t.Fatal(e)
+	}
+	if e := <-events; e.State != "warning" || !strings.Contains(e.Message, "permission failed") || strings.Contains(e.Message, "hidden-secret") {
+		t.Fatal(e)
+	}
+	if e := <-events; !strings.Contains(e.Message, "broken integrity") {
+		t.Fatal(e)
+	}
+}
+
 func TestICEFailedKeepsRawDiagnosticAndFriendlySnapshot(t *testing.T) {
 	c, p := lifecycleCoordinator(t)
 	c.online = false
@@ -126,8 +151,9 @@ func TestICEFailedKeepsRawDiagnosticAndFriendlySnapshot(t *testing.T) {
 		t.Fatal(transport)
 	}
 	p.failed(a, errors.New("过期尝试"))
+	a.diagnostics.NewLogger("ice").Warn("Failed to read from candidate: use of closed network connection")
 	if len(events) != 0 {
-		t.Fatal("过期尝试仍输出失败事件")
+		t.Fatal("过期尝试或资源清理仍输出失败事件")
 	}
 }
 

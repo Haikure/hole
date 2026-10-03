@@ -44,6 +44,11 @@ Worker 与新客户端均支持 `relay_order` / `relay_round` 后才会启用每
 Worker 识别 `relay_enabled: false` 后将该端有效顺序置空，双方都关闭时只保留直连重试，
 单侧关闭时仍为该端保留 `relay_wait`，让它接收对端 relay 候选。旧 Worker 忽略此字段并保留
 命名 phase 行为。
+Worker 支持 `relay_only: true`，将任一端的仅中继要求通知双方，并在首次连接和所有重试回环中
+跳过直连；仅中继端无法参与的 `relay_wait` 轮也会跳过。`joined` / `transport_ready` 返回
+`relay_only_policy: relay-only-v1`，ready 同时返回双方设置及合并后的 `relay_required`。
+策略随成员与传输记录持久化，策略变化使代次和候选缓存失效。普通端仍可使用单跳中继。
+仅中继客户端连接旧 Worker 时提示升级，不静默回退；应先部署 Worker，再更新客户端。
 只要任一端没有上报顺序，Worker 就保持原有命名 phase 与 `relay_policy` 协商。
 新 Worker 校验不超过 5 项的内部 token（`udp`、`tcp_80`、`tcp`、`tls_443`、`tls`），并在顺序变化时
 重置 generation 与 ICE 候选缓存。

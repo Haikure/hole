@@ -70,6 +70,12 @@ func (c *iceCoordinator) submit(r Request) {
 	old := c.desired
 	c.desired = r
 	c.configMu.Unlock()
+	if r.Config.ICE.RelayOnly && !old.Config.ICE.RelayOnly {
+		// Stop old direct data paths immediately, even while signaling is offline.
+		for _, p := range c.peerList() {
+			p.requireRelay(true)
+		}
+	}
 	if !reflect.DeepEqual(old.Config.ICE, r.Config.ICE) || !reflect.DeepEqual(old.Config.TURN, r.Config.TURN) || old.Config.Transport != r.Config.Transport {
 		c.networkEpoch.Add(1)
 		c.turnMu.Lock()
@@ -231,7 +237,7 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 	defer stop()
 	profiles := []string{ProfileICE}
 	var candidates []Candidate
-	if r.Config.Transport.AllowLegacy {
+	if r.Config.Transport.AllowLegacy && !r.Config.ICE.RelayOnly {
 		profiles = append(profiles, ProfileLegacy)
 		candidates, _ = platform.Candidates(ctx, r.Config, holePort)
 	}
@@ -243,7 +249,7 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 	}
 	join := iceSignalMessage{SignalMessage: SignalMessage{Type: "join", Room: r.Config.Room, Token: r.Config.Token, DeviceID: r.Config.DeviceName, DeviceName: r.Config.DeviceName, Provide: r.Config.Provide, Consume: r.Config.Consume, Candidates: candidates, CertFingerprint: c.fingerprint},
 		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS,
-		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll}
+		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll, RelayOnly: r.Config.ICE.RelayOnly}
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err = conn.WriteJSON(join); err != nil {
 		return err, false
@@ -332,6 +338,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if m.SignalVersion < 2 && !sessionRequest.Config.Transport.AllowLegacy {
 			return &Fault{Code: "worker_upgrade_required", Message: "协调服务尚未支持 ICE，请先更新 Worker"}
 		}
+		if sessionRequest.Config.ICE.RelayOnly && m.RelayOnlyPolicy != relayOnlyPolicy {
+			return &Fault{Code: "worker_upgrade_required", Message: "仅中继模式需要更新 Worker 以协商双方连接策略"}
+		}
 		c.mu.Lock()
 		c.online = true
 		c.serverV2 = m.SignalVersion >= 2
@@ -352,7 +361,19 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			}
 		}
 	case "transport_ready":
+		if !sameEffective(sessionRequest, c.request()) {
+			return nil
+		}
 		cfg := c.request().Config
+		if cfg.ICE.RelayOnly && m.RelayOnlyPolicy != relayOnlyPolicy {
+			return &Fault{Code: "worker_upgrade_required", Message: "仅中继模式需要更新 Worker 以协商双方连接策略"}
+		}
+		if m.RelayOnlyPolicy != "" && (m.RelayOnlyPolicy != relayOnlyPolicy || m.RelayOnly != cfg.ICE.RelayOnly || m.RelayRequired != (m.RelayOnly || m.PeerRelayOnly)) {
+			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的仅中继约束与双方策略不一致"}
+		}
+		if m.RelayRequired && (m.Phase == "direct" || (m.RelayRound != nil && *m.RelayRound == 0)) {
+			return &Fault{Code: "protocol_mismatch", Message: "仅中继连接不能进入直连轮次"}
+		}
 		if m.RelayPairing != "" && m.RelayPairing != relayPairingAll {
 			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不支持的中继配对策略"}
 		}
@@ -440,7 +461,7 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if m.Profile != "" && m.Profile != ProfileLegacy {
 			return nil
 		}
-		if !sessionRequest.Config.Transport.AllowLegacy {
+		if !sessionRequest.Config.Transport.AllowLegacy || c.request().Config.ICE.RelayOnly {
 			return &Fault{Code: "protocol_mismatch", Message: "对端仅支持 IPv6 直连协议，当前配置未启用兼容模式"}
 		}
 		if err := c.legacyMapping(m.SignalMessage, platform); err != nil {

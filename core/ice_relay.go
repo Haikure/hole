@@ -17,6 +17,7 @@ var orderedRelayTypes = []string{"udp", "tcp_80", "tcp", "tls_443", "tls"}
 var compatibleRelayTypes = []string{"udp", "tls", "tls_443"}
 
 const relayPairingAll = "all-pairs-v1"
+const relayOnlyPolicy = "relay-only-v1"
 
 // Expand by preference depth, trying each diagonal first, then its cross pairs.
 // Device-name order fixes orientation so both endpoints derive the same plan.

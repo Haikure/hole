@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"time"
 
@@ -103,22 +104,24 @@ func candidatePairSnapshots(agent *ice.Agent) []CandidatePairSnapshot {
 	return out
 }
 
-func iceChecksExhausted(stats []ice.CandidatePairStats) bool {
-	for _, s := range stats {
-		if s.State != ice.CandidatePairStateFailed {
-			return false
-		}
+func iceAttemptTimeout(cfg ICEConfig, phase string) time.Duration {
+	if phase == "direct" {
+		return cfg.DirectProbeTimeout.Duration()
 	}
-	return true
+	return cfg.GatherTimeout.Duration() + cfg.ConnectivityTimeout.Duration()
 }
 
-// watchICEExhaustion ends an attempt once every pair the two gathered
-// candidate sets can form has failed, instead of spending the rest of the
-// phase budget. Remote candidates reach the checklist asynchronously and a
-// pair Pion gave up on can still be revived by the peer's own check, so the
-// verdict must hold for a full second, and an empty checklist only counts
-// after a grace period.
-func watchICEExhaustion(ctx context.Context, agent *ice.Agent, fail func(error)) {
+// Candidate arrival triggers extra checks, consuming Pion's default seven
+// retries in a burst. Let the bounded time budget control checking instead.
+// MaxUint16-1 avoids overflow of Pion's uint16 counter (it tests count > limit).
+func iceCheckOptions(timeout time.Duration) []ice.AgentOption {
+	return []ice.AgentOption{ice.WithCheckInterval(200 * time.Millisecond),
+		ice.WithMaxBindingRequests(math.MaxUint16 - 1), ice.WithFailedTimeout(max(20*time.Second, timeout))}
+}
+
+// Remote candidates enter the checklist asynchronously. Only a persistently
+// empty list after both end-of-candidates markers warrants early failure.
+func watchICEEmptyChecklist(ctx context.Context, agent *ice.Agent, fail func(error)) {
 	const interval, required = 250 * time.Millisecond, 4
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -133,12 +136,12 @@ func watchICEExhaustion(ctx context.Context, agent *ice.Agent, fail func(error))
 				return
 			}
 			stats := agent.GetCandidatePairsStats()
-			if !iceChecksExhausted(stats) || (len(stats) == 0 && now.Sub(start) < time.Second) {
+			if len(stats) != 0 || now.Sub(start) < time.Second {
 				strikes = 0
 				continue
 			}
 			if strikes++; strikes >= required {
-				fail(&Fault{Code: "ice_path_failed", Message: "双方候选已收集完毕且所有候选对均未连通，提前尝试下一条路径"})
+				fail(&Fault{Code: "ice_path_failed", Message: "双方候选已收集完毕但没有可配对候选，尝试下一条路径"})
 				return
 			}
 		}

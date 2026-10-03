@@ -6,6 +6,8 @@
 ## 工具链
 
 CLI / `desktop-core` 需要 Bash、Python 3 和 Go 1.26+；桌面桥接不需要 Qt、Slint 或 CGo。
+完整 `desktop` 目标还需要 Rust stable / Cargo。桌面 GUI 支持 Linux、Windows 的 AMD64 / ARM64；
+交叉构建需提前安装对应 Rust target 和平台 linker / sysroot，构建脚本不会自动安装 Rust 工具链。
 项目 Android 构建固定使用 Go 1.26.4。
 
 | Android 组件 | 版本 |
@@ -28,11 +30,11 @@ bash android/scripts/setup-toolchain.sh
 
 脚本准备 SDK / NDK、Gradle 和同版本 gomobile / gobind，默认安装到 `~/.local/share/hole-android/`，
 SDK 许可交互确认；`--accept-licenses` 用于显式自动接受。
-普通 `build.sh` / `build-core.sh` 不安装 SDK，首次在线构建会下载 Maven / Go 依赖及 Wrapper 分发包。
+普通构建脚本不安装 SDK 或 Rust 工具链；首次在线构建会下载所需 Go、Cargo、Maven 依赖及 Gradle Wrapper 分发包。
 
 Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `HOLE_TOOLCHAIN_ENV` 指定其他环境文件，
 或在没有默认文件时直接提供 `PATH`、`JAVA_HOME`、`ANDROID_HOME`。`JDK17_HOME` 可显式选择绑定用 JDK。
-只构建 CLI / `desktop-core` 时不加载 Android 环境，也不要求签名信息。
+只构建 CLI / `desktop-core` / `desktop` 时不加载 Android 环境，也不要求签名信息。
 
 ## 命令与参数
 
@@ -42,22 +44,25 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 ./build.sh cli --os windows --arch amd64
 ./build.sh desktop-core                # 独立 Go stdio 桥接；不构建 GUI
 ./build.sh desktop-core --os windows --arch amd64
+./build.sh desktop                    # GUI + 匹配架构的 Go 桥接目录包
+./build.sh desktop --os windows --arch amd64
 ./build.sh android                     # 手机 ARM64
 ./build.sh wear                        # 手表 ARM32 + ARM64
 ./build.sh android wear                # 一次 Gradle 调用构建两种 APK
-./build.sh all                         # 保持 CLI + 手机 + 手表，不包含 desktop-core
-./build.sh all desktop-core            # 显式组合新增桥接目标
+./build.sh all                         # CLI + 手机 + 手表，不包含桌面目标
+./build.sh all desktop-core            # 显式组合独立 Go 桥接
+./build.sh all desktop                 # 显式增加桌面 GUI
 ./build.sh -t cli -t wear --offline
 ```
 
 | 参数 | 含义 |
 | --- | --- |
-| `cli`、`desktop-core`、`android` / `phone`、`wear`、`all` | 位置参数，可组合；重复目标去重，`all` 不包含桌面桥接 |
+| `cli`、`desktop-core`、`desktop`、`android` / `phone`、`wear`、`all` | 位置参数，可组合；重复目标去重，`all` 不包含桌面目标 |
 | `-t NAME` / `--target NAME` | 等价的目标选项，可重复 |
-| `--os GOOS`、`--arch GOARCH` | 控制 CLI / `desktop-core`；优先于 `GOOS` / `GOARCH` 环境变量，其次使用宿主值 |
+| `--os GOOS`、`--arch GOARCH` | 控制 CLI / 桌面目标；优先于 `GOOS` / `GOARCH` 环境变量，其次使用宿主值；交叉构建 GUI 还需对应 Rust target 与 linker |
 | `-o DIR` / `--output DIR` | 交付根目录，默认仓库 `dist/` |
 | `--signing-config FILE` | 签名环境文件，默认仓库 `signing.env` |
-| `--offline` | 只使用已缓存 Go / Gradle 依赖；缓存缺项时报告错误 |
+| `--offline` | 只使用已缓存 Go / Cargo / Gradle 依赖；缓存缺项时报告错误 |
 | `-h` / `--help` | 显示帮助；无参数时同样显示帮助 |
 
 显式指定的输出目录和配置文件相对调用目录解析；密钥库相对路径固定相对仓库根目录。
@@ -98,6 +103,8 @@ HOLE_SIGNING_KEY_PASSWORD='KEY_PASSWORD'
 | `.cache/go-build/` | Go 编译缓存 `GOCACHE` |
 | `.cache/go/` | 项目 `GOPATH`，含 gomobile 工作数据 |
 | `.cache/go/pkg/mod/` | Go 模块缓存 `GOMODCACHE` |
+| `.cache/cargo-home/` | Cargo registry、crate 下载和索引缓存 |
+| `.cache/cargo-target/` | 桌面 GUI Release 构建产物与增量缓存 |
 | `.cache/gradle/` | `GRADLE_USER_HOME`，含 Wrapper、Maven 依赖和 Gradle 缓存 |
 | `.cache/gradle-project/` | Gradle 项目状态 |
 | `.cache/kotlin/` | Kotlin 持久状态 |
@@ -116,6 +123,10 @@ dist/
   cli/hole-<goos>-<goarch>[.exe].sha256
   desktop-core/hole-desktop-core-<goos>-<goarch>[.exe]
   desktop-core/hole-desktop-core-<goos>-<goarch>[.exe].sha256
+  desktop/<goos>-<goarch>/hole-desktop[.exe]
+  desktop/<goos>-<goarch>/hole-desktop[.exe].sha256
+  desktop/<goos>-<goarch>/hole-desktop-core-<goos>-<goarch>[.exe]
+  desktop/<goos>-<goarch>/hole-desktop-core-<goos>-<goarch>[.exe].sha256
   android/hole-<version>-release.apk
   android/hole-<version>-release-mapping.txt
   android/build-manifest.json
@@ -126,7 +137,8 @@ dist/
   wear/SHA256SUMS
 ```
 
-CLI / 桌面桥接使用 `CGO_ENABLED=0`、`-trimpath`、`-s -w`，不调用宿主 `strip` 处理其他架构二进制。
+CLI / 桌面 Go 桥接使用 `CGO_ENABLED=0`、`-trimpath`、`-s -w`，不调用宿主 `strip` 处理其他架构二进制。
+桌面 GUI 使用 Cargo `release` profile；`desktop` 目录包含 GUI 与匹配架构的 Go 桥接程序及各自 SHA-256 文件。
 Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使用 R8、资源收缩和 native strip，
 不包含调试信息或静态符号表，动态链接与 Go 运行所需元数据保留。
 
@@ -134,8 +146,8 @@ Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使�
 普通构建不运行单元测试或完整 lint，清单中的相应字段标为未检查，而不是复用旧报告声明通过。
 `SHA256SUMS` 仅引用同目录交付文件；用于追踪核心的 AAR 摘要保留在构建清单中。
 
-桌面桥接的 stdio 协议见 [desktop/README.md](../desktop/README.md)，后续界面见
-[GUI 实施计划](DESKTOP_GUI_PLAN.md)。`desktop/` 和 `cmd/hole-desktop-core/` 不在共享核心
+桌面桥接的 stdio 协议和 GUI 构建说明见 [desktop/README.md](../desktop/README.md)，界面路线与完整验收矩阵见
+[GUI 实施计划](DESKTOP_GUI_PLAN.md)。`desktop/`、`desktop/gui/` 和 `cmd/hole-desktop-core/` 不在共享核心
 源码摘要中，也不被 CLI / gomobile 导入；只修改桌面代码不会改变 AAR 的核心源码身份。
 
 ## 回归测试

@@ -199,6 +199,14 @@ func runRelayFixture(t *testing.T, protocol string) {
 	if s.PeerTransports[0].RelayProtocol != protocol || s.PeerTransports[0].RelayPolicy != RelayPolicyUDPTCPTLS {
 		t.Fatal(s.PeerTransports)
 	}
+	for _, engine := range []*Engine{a, b} {
+		for len(engine.Events()) > 0 {
+			e := <-engine.Events()
+			if e.Kind == "transport" && e.State == "checking" && e.Phase == "direct" {
+				t.Fatal("relay-only attempted direct", e)
+			}
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))

@@ -1,8 +1,8 @@
 # 桌面 Go 桥接
 
 `hole/desktop` 为 Windows / Linux GUI 提供独立的 stdio 宿主，入口为
-`cmd/hole-desktop-core`。当前交付只有 Go 桥接，不含 Rust / Slint 界面。
-界面后续实现见 [桌面 GUI 计划](../docs/DESKTOP_GUI_PLAN.md)。
+`cmd/hole-desktop-core`；Rust + Slint GUI 源码位于 `desktop/gui/`。
+界面功能范围和 Android 对齐验收项见 [桌面 GUI 计划](../docs/DESKTOP_GUI_PLAN.md)。
 
 ```text
 Slint → Rust CoreClient → child stdin/stdout → desktop → core.Engine
@@ -16,14 +16,20 @@ Slint → Rust CoreClient → child stdin/stdout → desktop → core.Engine
 ## 构建与启动
 
 ```bash
-./build.sh desktop-core --os linux --arch amd64
-./build.sh desktop-core --os windows --arch amd64
+./build.sh desktop
+./build.sh desktop --os linux --arch arm64
+./build.sh desktop --os windows --arch amd64
 ```
 
-产物为 `dist/desktop-core/hole-desktop-core-<goos>-<goarch>[.exe]` 及同名 `.sha256`。
-使用 `CGO_ENABLED=0`、`-mod=readonly`、`-trimpath`、`-s -w`，缓存进入根 `.cache/`。
-构建目标可以组合，但 `cli`、`android`、`wear` 和 `all` 原有目标集合不变；
-`all` 不包含 `desktop-core`。桌面源码不属于共享 AAR 的源码摘要输入。
+`desktop` 生成 `dist/desktop/<goos>-<goarch>/` 目录包，内含 `hole-desktop[.exe]`、
+同平台桥接程序和各自的 `.sha256`。构建完整 GUI 需要 Rust stable / Cargo；交叉构建需预装 Rust target
+及对应 linker / sysroot。缓存统一位于根 `.cache/`。
+
+只构建 Go stdio 桥接时使用 `./build.sh desktop-core --os linux --arch amd64`；产物为
+`dist/desktop-core/hole-desktop-core-<goos>-<goarch>[.exe]` 及同名 `.sha256`。
+桥接使用 `CGO_ENABLED=0`、`-mod=readonly`、`-trimpath`、`-s -w`，不依赖 Qt、Slint 或 CGo。
+`cli`、`android`、`wear` 和 `all` 不隐式包含桌面目标；`all` 可显式组合 `desktop`。
+桌面源码不属于共享 AAR 的源码摘要输入。
 
 宿主无运行参数；`--help` 写到 stderr，版本通过 `hello` 查询。仅查询本地状态：
 

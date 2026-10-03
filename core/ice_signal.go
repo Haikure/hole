@@ -29,6 +29,10 @@ type iceSignalMessage struct {
 	Phase               string              `json:"phase,omitempty"`
 	RelayPolicy         string              `json:"relay_policy,omitempty"`
 	RelayEnabled        *bool               `json:"relay_enabled,omitempty"`
+	RelayOnly           bool                `json:"relay_only,omitempty"`
+	PeerRelayOnly       bool                `json:"peer_relay_only,omitempty"`
+	RelayRequired       bool                `json:"relay_required,omitempty"`
+	RelayOnlyPolicy     string              `json:"relay_only_policy,omitempty"`
 	RelayOrder          []string            `json:"relay_order,omitempty"`
 	PeerRelayOrder      []string            `json:"peer_relay_order,omitempty"`
 	RelayRound          *int                `json:"relay_round,omitempty"`

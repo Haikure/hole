@@ -110,6 +110,8 @@ consume:
 例如 DNS 解析失败、TCP 拒绝连接、TLS 证书错误或 TURN 分配失败；最终失败原因不再只剩“路径未连通”。
 普通模式仍保持简洁提示。日志会脱敏本次尝试的信令、房间、TURN 和 ICE 凭据，不启用报文级 trace；
 每次尝试最多输出 64 条底层日志，达到上限会提示省略，最终失败原因仍单独输出。
+“尚无候选对”每次尝试只输出一次等待信息；重复发送失败合并，保留脱敏后的 socket / TURN
+permission 错误。正常取消不再输出关闭连接的告警；响应完整性校验始终保留。
 调试日志可能包含服务器和候选地址，分享前请检查。
 
 配置中省略 `transport` 时保留 IPv6 模式；上面的示例显式开启 ICE。
@@ -117,21 +119,28 @@ STUN 默认使用 Cloudflare，TURN 默认向 Worker 按需申请短期凭据。
 独立配置 `udp`、`tcp`、`tls` 顺序。Worker 与两端均支持 `all-pairs-v1` 时，
 轮次覆盖两端白名单的跨类型组合；Cloudflare 的 TCP / TLS 先试标准端口，再试 80 / 443。
 manual URL 必须给端口；省略 `transport` 时，`turn:` 支持 UDP / TCP，`turns:` 仅支持 TLS。
+任一端启用 `ice.relay_only: true` 时，需要开启本机 TURN；新版 Worker 通知双方跳过直连，
+重试和切网后也只尝试中继，仍支持单跳中继。连接旧 Worker 时会提示升级。运行中开启仅中继
+会停止旧的无约束路径。中继检查保留完整时间预算，不再因候选对瞬时 Failed 而提前放弃。
 旧版本继续使用其支持的轮次或命名阶段。TCP 重放缓存按需增长，单方向最多 16 MiB，
 同一核心实例的重放块容量合计最多 128 MiB；恢复与限额细节见 [协议说明](docs/PROTOCOL.md)。
 
-## 桌面 GUI 前置桥接
+## 桌面客户端构建
 
-Windows / Linux 的独立 Go stdio 桥接已提供，复用现有核心；Rust + Slint 界面尚待实现。
+`desktop` 会以 Release 模式构建 Rust + Slint GUI 和匹配目标的 Go stdio 桥接，并生成可直接运行的目录包：
 
 ```bash
-./build.sh desktop-core --os linux --arch amd64
-./build.sh desktop-core --os windows --arch amd64
+./build.sh desktop
+./build.sh desktop --os linux --arch arm64
+./build.sh desktop --os windows --arch amd64
 ```
 
-产物在 `dist/desktop-core/`，Go 桥接不依赖 Qt、Slint 或 CGo。`cli` / `android` / `wear` / `all` 的原有目标集合不变，
-需要时显式加上 `desktop-core`。控制协议见 [桌面桥接](desktop/README.md)，
-界面分阶段路线和 Android 功能对齐验收矩阵见 [GUI 计划](docs/DESKTOP_GUI_PLAN.md)。
+交付位于 `dist/desktop/<goos>-<goarch>/`，包含 GUI、桥接程序和各自的 SHA-256 文件。
+构建完整 GUI 需要 Rust stable / Cargo；交叉构建还需要预装对应 Rust target 和平台 linker。
+若只需要独立 Go 桥接，可构建 `desktop-core`，产物位于 `dist/desktop-core/`，不需要 Qt、Slint 或 CGo。
+`cli` / `android` / `wear` / `all` 不会隐式构建桌面目标；需要时显式组合 `desktop`。
+控制协议见 [桌面桥接](desktop/README.md)，界面路线和 Android 功能对齐验收矩阵见
+[GUI 计划](docs/DESKTOP_GUI_PLAN.md)。
 
 ## 构建与签名
 

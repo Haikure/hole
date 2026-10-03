@@ -15,7 +15,7 @@ TOOL = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
-keys = ("GOCACHE", "GOPATH", "GOMODCACHE", "GRADLE_USER_HOME", "TMPDIR", "GOPROXY", "GOOS", "GOARCH", "CGO_ENABLED", "HOLE_SIGNING_KEY_ALIAS", "HOLE_SIGNING_STORE_FILE")
+keys = ("GOCACHE", "GOPATH", "GOMODCACHE", "GRADLE_USER_HOME", "CARGO_HOME", "TMPDIR", "GOPROXY", "GOOS", "GOARCH", "CGO_ENABLED", "HOLE_SIGNING_KEY_ALIAS", "HOLE_SIGNING_STORE_FILE")
 with open(os.environ["BUILD_TEST_LOG"], "a") as log:
     log.write(json.dumps({"tool": name, "args": args, "env": {key: os.environ.get(key) for key in keys}}) + "\n")
 if name == "go":
@@ -31,6 +31,16 @@ if name == "go":
         path.chmod(0o755)
 elif name == "javac":
     print("javac 17.0.0")
+elif name == "cargo":
+    if os.environ.get("FAIL_CARGO"): sys.exit(10)
+    if args[:1] == ["build"]:
+        target = args[args.index("--target") + 1] if "--target" in args else None
+        output = pathlib.Path.cwd().parents[1] / ".cache/cargo-target"
+        if target: output /= target
+        binary = output / "release" / ("hole-desktop.exe" if target and "windows" in target else "hole-desktop")
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("release-gui-fixture")
+        binary.chmod(0o755)
 elif name == "xmake":
     if os.environ.get("FAIL_XMAKE"): sys.exit(7)
     if args == ["build", "hole_plugin"]:
@@ -69,10 +79,13 @@ class BuildTests(unittest.TestCase):
             target.write_text("fixture\n")
         binary_dir = self.root / "tools"
         binary_dir.mkdir()
-        for name in ("go", "java", "javac", "keytool", "gomobile", "gobind"):
+        for name in ("go", "java", "javac", "keytool", "gomobile", "gobind", "cargo", "rustc"):
             target = binary_dir / name
             target.write_text(TOOL)
             target.chmod(0o755)
+        gui = self.root / "desktop/gui"
+        gui.mkdir(parents=True)
+        (gui / "Cargo.toml").write_text("[package]\nname = 'hole-desktop'\n")
         wrapper = self.root / "android/gradlew"
         wrapper.write_text(TOOL)
         wrapper.chmod(0o755)
@@ -241,6 +254,51 @@ class BuildTests(unittest.TestCase):
         self.assertEqual("0", build["env"]["CGO_ENABLED"])
         self.assertEqual("off", build["env"]["GOPROXY"])
 
+    def test_desktop_build_packages_release_gui_and_matching_bridge(self):
+        self.toolchain.write_text("exit 93\n")
+        (self.root / "signing.env").write_text("exit 94\n")
+        self.invoke("desktop", "--offline")
+        package = self.root / "dist/desktop/linux-amd64"
+        gui = package / "hole-desktop"
+        bridge = package / "hole-desktop-core-linux-amd64"
+        self.assertEqual("release-gui-fixture", gui.read_text())
+        self.assertTrue(os.access(gui, os.X_OK))
+        self.assertTrue(os.access(bridge, os.X_OK))
+        for binary in (gui, bridge):
+            checksum = binary.with_name(binary.name + ".sha256").read_text().split()
+            self.assertEqual([hashlib.sha256(binary.read_bytes()).hexdigest(), binary.name], checksum)
+        builds = [call for call in self.calls("go") if call["args"][0] == "build"]
+        self.assertEqual(["./cmd/hole-desktop-core"], [build["args"][-1] for build in builds])
+        cargo = self.calls("cargo")[0]
+        self.assertEqual(["build", "--release", "--locked", "--offline"], cargo["args"])
+        self.assertEqual(str(self.root / ".cache/cargo-home"), cargo["env"]["CARGO_HOME"])
+        self.assertIsNone(cargo["env"]["GOOS"])
+        self.assertIsNone(cargo["env"]["GOARCH"])
+        self.assertFalse(self.calls("gradlew"))
+
+    def test_desktop_cross_target_and_combined_target_are_deduplicated(self):
+        self.invoke("desktop", "desktop-core", "--os", "windows", "--arch", "amd64")
+        package = self.root / "dist/desktop/windows-amd64"
+        self.assertTrue((package / "hole-desktop.exe").is_file())
+        self.assertTrue((package / "hole-desktop-core-windows-amd64.exe").is_file())
+        builds = [call for call in self.calls("go") if call["args"][0] == "build"]
+        self.assertEqual(1, len(builds))
+        self.assertEqual("windows", builds[0]["env"]["GOOS"])
+        cargo = self.calls("cargo")[0]
+        self.assertEqual("x86_64-pc-windows-gnu", cargo["args"][cargo["args"].index("--target") + 1])
+
+    def test_desktop_rejects_unsupported_target_before_building(self):
+        self.invoke("desktop", "--os", "darwin", "--arch", "amd64", success=False)
+        self.assertFalse([call for call in self.calls("go") if call["args"][0] == "build"])
+        self.assertFalse(self.calls("cargo"))
+
+    def test_failed_desktop_gui_build_preserves_existing_package(self):
+        self.invoke("desktop")
+        package = self.root / "dist/desktop/linux-amd64"
+        previous = {path.name: path.read_bytes() for path in package.iterdir()}
+        self.invoke("desktop", success=False, FAIL_CARGO="1")
+        self.assertEqual(previous, {path.name: path.read_bytes() for path in package.iterdir()})
+
     def test_cli_and_all_keep_the_existing_target_set(self):
         for target in ("cli", "all"):
             with self.subTest(target=target):
@@ -249,6 +307,8 @@ class BuildTests(unittest.TestCase):
                 builds = [call for call in self.calls("go") if call["args"][0] == "build"]
                 self.assertEqual(["."], [build["args"][-1] for build in builds])
                 self.assertFalse((self.root / "dist/desktop-core").exists())
+                self.assertFalse((self.root / "dist/desktop").exists())
+                self.assertFalse(self.calls("cargo"))
 
     def test_desktop_core_can_combine_with_all_without_leaking_cross_settings(self):
         self.invoke("desktop-core", "all", "desktop-core", "--os", "windows", "--arch", "amd64")

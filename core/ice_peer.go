@@ -117,7 +117,8 @@ func (p *icePeer) update(m iceSignalMessage) {
 	p.stats.RelayOrderFallback = customOrderConfigured && m.RelayRound == nil
 	p.stats.MappingCount = len(m.Mappings)
 	active := p.active
-	if identityChanged {
+	retireActive := identityChanged || (m.RelayRequired && active != nil && !relayReadyConforms(active.ready, m.RelayOnly))
+	if retireActive {
 		p.active = nil
 		if p.pending != nil {
 			p.pending.cancel()
@@ -158,10 +159,10 @@ func (p *icePeer) update(m iceSignalMessage) {
 	if need || !wasOnline || !slices.Equal(old.Mappings, m.Mappings) {
 		p.stateChanged()
 	}
+	if retireActive && active != nil {
+		active.close()
+	}
 	if identityChanged {
-		if active != nil {
-			active.close()
-		}
 		for _, r := range old.Mappings {
 			p.coordinator.sessions.terminate(r.ID, old.PeerFingerprint)
 		}
@@ -181,7 +182,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 	for _, r := range m.Mappings {
 		p.coordinator.sessions.claimPeer(r.ID, m.PeerDevice, m.PeerFingerprint)
 	}
-	if active != nil && !identityChanged {
+	if active != nil && !retireActive {
 		active.mux.syncMappings()
 	}
 	if same {
@@ -250,6 +251,32 @@ func (p *icePeer) emitMapping(id, state, protocol string) {
 	path := p.stats.RemoteAddress
 	p.mu.Unlock()
 	p.coordinator.emit(Event{Kind: "mapping", MappingID: id, Protocol: protocol, State: state, Peer: peer, Path: path, Profile: ProfileICE})
+}
+
+// Retire paths created without the new constraint before starting its generation.
+// This also runs on local configuration changes without waiting for the Worker.
+func relayReadyConforms(m iceSignalMessage, localOnly bool) bool {
+	return m.RelayRequired && (!localOnly || m.RelayOnly)
+}
+
+func (p *icePeer) requireRelay(localOnly bool) {
+	p.mu.Lock()
+	if p.pending != nil && !relayReadyConforms(p.pending.ready, localOnly) {
+		p.pending.cancel()
+		p.pending = nil
+	}
+	var retired *liveICETransport
+	if p.active != nil && !relayReadyConforms(p.active.ready, localOnly) {
+		retired, p.active = p.active, nil
+		p.stats.State = "reconnecting"
+	}
+	p.mu.Unlock()
+	if retired != nil {
+		// submit runs under the Engine lock: stop traffic now, but let the
+		// owning attempt drain its workers without waiting under that lock.
+		retired.cancel()
+		_ = retired.session.CloseWithError(0, "relay policy changed")
+	}
 }
 func (p *icePeer) mappingError(id string, err error) {
 	p.coordinator.emit(Event{Kind: "mapping", MappingID: id, State: "error", Profile: ProfileICE, Error: classifyError(err)})
@@ -386,6 +413,9 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 		p.stats.State = "error"
 	}
 	p.mu.Unlock()
+	// Emit the cause first, then cancel before any deferred QUIC/ICE cleanup
+	// closes candidate sockets and produces misleading read-error warnings.
+	defer a.cancel()
 	state := "retrying"
 	if fatal {
 		state = "error"
@@ -429,6 +459,10 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	}
 	cfg := p.coordinator.request().Config
 	a.diagnostics = newICEDiagnostics(a.ctx, a.ready, cfg, p.coordinator.emit)
+	if (cfg.ICE.RelayOnly || a.ready.RelayRequired) && a.ready.Phase == "direct" {
+		p.failed(a, &Fault{Code: "protocol_mismatch", Message: "仅中继连接不能执行直连尝试"})
+		return
+	}
 	platform, err := p.coordinator.pin(a.ctx)
 	if err != nil {
 		p.failed(a, err)
@@ -523,6 +557,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	if cfg.ICE.IncludeLoopback {
 		options = append(options, ice.WithIncludeLoopback())
 	}
+	options = append(options, iceCheckOptions(iceAttemptTimeout(cfg.ICE, a.ready.Phase))...)
 	if a.ready.Phase == "relay_tls" || a.ready.Phase == "relay_tls_443" || a.ready.Phase == "relay_tcp" || a.ready.Phase == "relay_tcp_80" {
 		options = append(options, ice.WithTURNTransportProtocols([]ice.NetworkType{ice.NetworkTypeTCP4, ice.NetworkTypeTCP6}))
 	} else {
@@ -535,6 +570,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	}
 	defer func() {
 		if !owned {
+			a.cancel()
 			_ = agent.Close()
 		}
 	}()
@@ -676,6 +712,10 @@ func (p *icePeer) attempt(a *iceAttempt) {
 					if candidate.Type() == ice.CandidateTypeRelay {
 						remoteRelay.Store(true)
 					}
+					if a.ready.PeerRelayOnly && candidate.Type() != ice.CandidateTypeRelay {
+						fail(&Fault{Code: "protocol_mismatch", Message: "仅中继对端发送了直连候选"})
+						return
+					}
 					if described {
 						if e = agent.AddRemoteCandidate(candidate); e != nil {
 							fail(e)
@@ -693,10 +733,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 	}()
 	defer func() { stopEvents(); <-eventsDone }()
-	timeout := cfg.ICE.ConnectivityTimeout.Duration() + cfg.ICE.GatherTimeout.Duration()
-	if a.ready.Phase == "direct" {
-		timeout = cfg.ICE.DirectProbeTimeout.Duration()
-	}
+	timeout := iceAttemptTimeout(cfg.ICE, a.ready.Phase)
 	checkCtx, stopCheck := context.WithTimeout(a.ctx, timeout)
 	defer stopCheck()
 	var remote iceSignalMessage
@@ -719,11 +756,8 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		p.failed(a, err)
 		return
 	}
-	// Once both sides have announced end-of-candidates, every pair the two
-	// sets can form is already on the checklist. If all of them fail, the
-	// remaining phase budget buys nothing; move to the next path. The verdict
-	// travels on its own channel: a late one must not outlive a connection
-	// that a revived pair completed in the meantime.
+	// Only an empty checklist can end the phase early. Failed pairs may still
+	// receive delayed responses or checks after TURN permissions become ready.
 	exhausted := make(chan error, 1)
 	exhaustionCtx, stopExhaustion := context.WithCancel(checkCtx)
 	defer stopExhaustion()
@@ -738,7 +772,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 			return
 		case <-remoteGathered:
 		}
-		watchICEExhaustion(exhaustionCtx, agent, func(err error) {
+		watchICEEmptyChecklist(exhaustionCtx, agent, func(err error) {
 			select {
 			case exhausted <- err:
 			default:
@@ -833,6 +867,11 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		return
 	}
 	selectedPair, selectedPairErr := agent.GetSelectedCandidatePair()
+	if a.ready.RelayRequired && (selectedPairErr != nil || selectedPair == nil || relayLegs(selectedPair.Local, selectedPair.Remote) == 0 || (cfg.ICE.RelayOnly && selectedPair.Local.Type() != ice.CandidateTypeRelay)) {
+		_ = connection.CloseWithError(1, "relay required")
+		p.failed(a, &Fault{Code: "protocol_mismatch", Message: "选中的路径不符合仅中继约束"})
+		return
+	}
 	if selectedPairErr == nil && selectedPair != nil {
 		p.mu.Lock()
 		if p.pending == a {

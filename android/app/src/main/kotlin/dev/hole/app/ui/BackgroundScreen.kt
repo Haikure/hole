@@ -43,11 +43,11 @@ fun BackgroundScreen(onBack: () -> Unit) {
     HoleScaffold(title = "后台保持", navigationIcon = { HoleBackButton(onBack) }) { insets ->
         Column(Modifier.fillMaxWidth().padding(insets).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            HoleSettingsGroup("当前运行条件") {
-                DetailRow("电池优化", if (info.batteryExempt) "已允许不受电池优化限制" else "系统仍在优化电池使用")
-                DetailRow("后台限制", if (info.backgroundRestricted) "系统限制了后台运行" else "未检测到系统后台限制")
-                DetailRow("状态通知", if (info.notificationsEnabled) "已允许显示" else "未允许显示；前台服务状态仍可在系统任务管理器查看")
-                HoleButton(if (info.batteryExempt) "查看电池优化设置" else "允许不受电池优化限制", onClick = {
+            HoleSettingsGroup("运行状态") {
+                DetailRow("电池优化", if (info.batteryExempt) "已豁免" else "受优化")
+                DetailRow("后台限制", if (info.backgroundRestricted) "受限" else "未受限")
+                DetailRow("状态通知", if (info.notificationsEnabled) "已开启" else "未开启")
+                HoleButton(if (info.batteryExempt) "电池优化设置" else "允许忽略电池优化", onClick = {
                     if (info.batteryExempt) open(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                     else open(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, "package:${context.packageName}".toUri()))
                 }, secondary = true)
@@ -61,18 +61,16 @@ fun BackgroundScreen(onBack: () -> Unit) {
             HoleSettingsGroup("自动恢复") {
                 HoleSwitchPreference(
                     title = "设备重启后恢复", checked = info.resumeAfterBoot,
-                    summary = "仅恢复重启前已开启的连接；手动停止后保持停止，首次启动默认关闭。",
+                    summary = "仅恢复重启前运行的连接；手动停止后不会恢复。",
                     onCheckedChange = { RunStateStore(context).setResumeAfterBoot(it); info = readBackgroundInfo(context) },
                 )
-                Text("退出页面或划掉最近任务保留当前前台服务。系统允许的进程重建、覆盖升级按已保存的运行意图重新连接。",
+                Text("划掉最近任务不会停止转发；进程重建或升级后重新连接。",
                     style = MaterialTheme.typography.bodyMedium)
                 if (info.lastResumeError.isNotEmpty()) Text(info.lastResumeError, color = MaterialTheme.colorScheme.error)
             }
-            HoleSettingsGroup("恢复方式") {
-                Text("切换 Wi-Fi / 移动网络后自动重新加入信令并恢复有效会话；新网络无公网 IPv6 时等待网络恢复，不反复启动服务。")
-                Text("每次进入恢复阶段最多持有 30 秒唤醒锁，连接恢复或用户停止即释放；持续重试不延长这一时限。")
-                Text("强制停止、厂商清理和系统终止会结束进程；再次启动创建新运行实例，原 TCP socket 不跨进程恢复。")
-                Text("在有额外后台管理的机型上，可在系统中允许自启动、设为不受限制，并锁定最近任务。",
+            HoleSettingsGroup("连接恢复") {
+                Text("网络切换后自动重连；无公网 IPv6 时等待网络恢复。")
+                Text("强制停止或系统清理后需重新启动，原 TCP 连接不会恢复。",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }

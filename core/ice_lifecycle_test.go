@@ -55,6 +55,59 @@ func TestLeaseRenewalIsLightweightAndSkipsIdleOrOfflinePeers(t *testing.T) {
 	}
 }
 
+func TestRelayOnlyRequiresWorkerSupportAndConsistentReady(t *testing.T) {
+	c, _ := lifecycleCoordinator(t)
+	c.desired.Config.ICE.RelayOnly = true
+	r := c.request()
+	checkFault := func(m iceSignalMessage, code string) {
+		t.Helper()
+		err := c.handle(m, r, DefaultPlatform{})
+		var fault *Fault
+		if !errors.As(err, &fault) || fault.Code != code {
+			t.Fatalf("got %v, want %s", err, code)
+		}
+	}
+	joined := signalMessage("joined")
+	joined.SignalVersion = 2
+	checkFault(joined, "worker_upgrade_required")
+	joined.RelayOnlyPolicy = relayOnlyPolicy
+	if err := c.handle(joined, r, DefaultPlatform{}); err != nil {
+		t.Fatal(err)
+	}
+	ready := signalMessage("transport_ready")
+	checkFault(ready, "worker_upgrade_required")
+	ready.RelayOnlyPolicy = relayOnlyPolicy
+	checkFault(ready, "protocol_mismatch")
+	ready.RelayOnly, ready.RelayRequired, ready.Phase = true, true, "direct"
+	checkFault(ready, "protocol_mismatch")
+	legacy := signalMessage("mapping_ready")
+	c.desired.Config.Transport.AllowLegacy = true
+	r = c.request()
+	checkFault(legacy, "protocol_mismatch")
+}
+
+func TestRelayOnlyRejectsDisabledTURN(t *testing.T) {
+	r := iceFixtureRequest("ws://127.0.0.1/ws", "local")
+	r.Config.ICE.RelayOnly = true
+	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "需要开启 TURN") {
+		t.Fatalf("impossible relay-only configuration accepted: %v", err)
+	}
+}
+
+func TestRelayOnlySubmitCancelsPendingDirectWhileOffline(t *testing.T) {
+	c, p := lifecycleCoordinator(t)
+	c.online = false
+	ctx, cancel := context.WithCancel(c.ctx)
+	defer cancel()
+	p.pending = &iceAttempt{ctx: ctx, cancel: cancel, ready: p.ready}
+	r := c.request()
+	r.Config.ICE.RelayOnly = true
+	c.submit(r)
+	if ctx.Err() == nil || p.pending != nil {
+		t.Fatal("pending direct survived relay-only reconfiguration")
+	}
+}
+
 func TestLeaseReplyCannotReviveStaleGenerationOrOfflinePeer(t *testing.T) {
 	_, p := lifecycleCoordinator(t)
 	old := p.ready.LeaseUntil

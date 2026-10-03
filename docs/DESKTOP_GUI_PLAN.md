@@ -231,9 +231,9 @@ GUI 使用 Rust stable、Cargo 和 Slint；具体 Rust toolchain、Slint 版本�
 
 ## M5：打包与完整回归
 
-- 新 GUI 构建入口必须显式选择目标；不要让现有 `cli`、`android`、`wear`、`all` 意外依赖 Rust/Cargo/Slint。
-- Go 宿主继续通过根 `build.sh desktop-core` 构建；Cargo registry、target 和 Slint 构建缓存统一放在根 `.cache/`。
-- 桌面目录包包含 Slint GUI 可执行文件、必要资源和匹配架构的 Go 宿主，后者使用固定文件名定位；
+- 根 `build.sh desktop` 显式构建 GUI 与 Go 宿主；现有 `cli`、`android`、`wear`、`all` 不隐式依赖 Rust/Cargo/Slint。
+- Go 宿主可单独通过根 `build.sh desktop-core` 构建；Cargo registry、target 和 Slint 构建缓存统一放在根 `.cache/`。
+- 桌面目录包包含 Slint GUI 可执行文件和匹配架构的 Go 宿主，后者使用固定文件名定位；
   单文件发布包则把 Go 宿主作为资源嵌入 GUI，并在启动时释放到版本化运行时临时目录，退出后回收，
   启动时清理上次异常退出留下的过期目录。
   新交付进入独立 `dist/desktop/`，保留原 CLI/APK 留存包。

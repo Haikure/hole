@@ -129,6 +129,9 @@ func (c Config) validateTransport() error {
 	if c.TURN.Mode != "worker" && c.TURN.Mode != "manual" && c.TURN.Mode != "off" {
 		return fmt.Errorf("turn.mode 需要 worker、manual 或 off")
 	}
+	if c.ICE.RelayOnly && c.TURN.Mode == "off" {
+		return fmt.Errorf("ice.relay_only 需要开启 TURN")
+	}
 	if len(c.TURN.Order) > 3 {
 		return fmt.Errorf("turn.order 最多 3 项")
 	}

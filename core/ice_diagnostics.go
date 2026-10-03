@@ -17,16 +17,17 @@ import (
 const maxICEDiagnosticLogs = 64
 
 // 每次尝试保留独立的脱敏上下文，覆盖配置重配前的秘密和动态 TURN / ICE 凭据。
-// 只接收 warning/error，不启用可能包含协议报文的 Pion debug/trace。
+// 接收 warning/error 及明确的发送失败，不启用包含协议报文的 debug/trace。
 type iceDiagnostics struct {
 	ctx   context.Context
 	ready iceSignalMessage
 	emit  func(Event)
 
-	mu       sync.Mutex
-	secrets  map[string]bool
-	replacer *strings.Replacer
-	logs     int
+	mu            sync.Mutex
+	secrets       map[string]bool
+	replacer      *strings.Replacer
+	logs          int
+	seenTransient map[string]bool
 }
 
 func newICEDiagnostics(ctx context.Context, ready iceSignalMessage, cfg Config, emit func(Event)) *iceDiagnostics {
@@ -77,6 +78,24 @@ func (d *iceDiagnostics) log(state, scope, message string) {
 	if d.emit == nil || d.ctx.Err() != nil {
 		return
 	}
+	if message == "Failed to ping without candidate pairs. Connection is not possible yet." || strings.HasPrefix(message, "Failed to send packet:") {
+		key := scope + ":" + d.redact(message)
+		d.mu.Lock()
+		if d.seenTransient == nil {
+			d.seenTransient = make(map[string]bool)
+		}
+		seen := d.seenTransient[key]
+		if len(d.seenTransient) < maxICEDiagnosticLogs {
+			d.seenTransient[key] = true
+		}
+		d.mu.Unlock()
+		if seen {
+			return
+		}
+		if message == "Failed to ping without candidate pairs. Connection is not possible yet." {
+			state, message = "info", "等待本地与对端候选形成候选对"
+		}
+	}
 	d.mu.Lock()
 	n := d.logs
 	if n <= maxICEDiagnosticLogs {
@@ -126,4 +145,17 @@ func (l *iceDiagnosticLogger) Error(message string) {
 }
 func (l *iceDiagnosticLogger) Errorf(format string, args ...any) {
 	l.Error(fmt.Sprintf(format, args...))
+}
+
+// Pion reports socket/permission write failures at Info. Admit only this
+// known error prefix, without enabling its credential-bearing protocol logs.
+func (l *iceDiagnosticLogger) Info(message string) {
+	if strings.HasPrefix(message, "Failed to send packet:") {
+		l.diagnostics.log("warning", l.scope, message)
+	}
+}
+func (l *iceDiagnosticLogger) Infof(format string, args ...any) {
+	if strings.HasPrefix(format, "Failed to send packet:") {
+		l.Info(fmt.Sprintf(format, args...))
+	}
 }

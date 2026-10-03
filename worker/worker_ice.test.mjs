@@ -62,6 +62,84 @@ test('relay pairing requires both endpoints and rejects unknown capabilities',as
  assert.equal(record.relay_pairing,'');
  assert.equal(a.messages.at(-1).relay_pairing,undefined);
 });
+test('relay-only joins reject impossible settings and cannot negotiate legacy',()=>{
+ for (const fields of [{relay_only:'true'},{relay_only:true,relay_enabled:false,relay_order:['udp']},{relay_only:true,relay_order:[]},{relay_only:true,transport_profiles:[LEGACY_PROFILE]}])
+  assert.equal(iceJoinFields({...join('alpha'),...fields}),null);
+ assert.equal(negotiateProfile({...iceJoinFields(join('alpha')),relay_only:true},{}),null);
+});
+for (const only of [[true,false],[false,true],[true,true]]) {
+ test(`relay-only ${only} skips direct on join, retries, rejoin and hibernation`,async()=>{
+  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+  const caps={relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1',relay_order:['tcp','udp']};
+  await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps,relay_only:only[0]}));
+  await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps,relay_only:only[1]}));
+  const record=[...r.ice.records.values()][0];
+  const check=()=>{
+   for(const [i,s] of [a,b].entries()) {
+    const ready=s.messages.filter(m=>m.type==='transport_ready').at(-1);
+    assert.equal(ready.relay_only_policy,'relay-only-v1');assert.equal(ready.relay_required,true);
+    assert.equal(ready.relay_only,only[i]);assert.equal(ready.peer_relay_only,only[1-i]);
+    assert.notEqual(ready.phase,'direct');assert.notEqual(ready.relay_round,0);
+   }
+  };
+  check();assert.equal(record.round,1);
+  for(const round of [2,3,4,0,1,0]) {
+   const generation=record.generation;
+   const message={type:'transport_restart',transport_id:record.id,expected_generation:generation,relay_round:round};
+   await r.webSocketMessage(a,JSON.stringify(message));
+   await r.webSocketMessage(b,JSON.stringify(message));
+   assert.equal(record.generation,String(BigInt(generation)+1n));check();
+  }
+  assert.ok(record.retry_after_ms>0);
+  const resumed=new Room(f.state,{});
+  await resumed.webSocketMessage(a,JSON.stringify({type:'transport_sync'}));check();
+  const replacement=f.socket();
+  await resumed.webSocketMessage(replacement,JSON.stringify({...join('alpha',['one']),...caps,relay_only:only[0],transport_epoch:'2'}));
+  assert.equal(replacement.messages.filter(m=>m.type==='transport_ready').at(-1).relay_round,1);
+  assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).relay_round,1);
+ });
+}
+test('relay-only allows a TURN-disabled peer and rejects direct candidates from the constrained endpoint',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const caps={relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1',relay_order:['udp']};
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps,relay_only:true}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps,relay_enabled:false}));
+ const record=[...r.ice.records.values()][0];
+ assert.equal(a.messages.at(-1).phase,'relay_udp');assert.equal(b.messages.at(-1).phase,'relay_wait');
+ const common={type:'ice_candidate',transport_id:record.id,transport_generation:record.generation};
+ const candidate='1 1 udp 2130706431 192.0.2.1 1234 typ host';
+ await r.webSocketMessage(a,JSON.stringify({...common,to_peer_id:'beta',candidate}));
+ assert.equal(a.messages.at(-1).code,'invalid_ice_candidate');assert.equal(record.ice.alpha,undefined);
+ await r.webSocketMessage(b,JSON.stringify({...common,to_peer_id:'alpha',candidate}));
+ assert.equal(a.messages.at(-1).candidate,candidate);
+ await r.webSocketMessage(a,JSON.stringify({...common,to_peer_id:'beta',candidate:candidate.replace('typ host','typ relay')}));
+ assert.equal(b.messages.at(-1).type,'ice_candidate');
+});
+test('relay-only skips incompatible wait rounds with old round peers and handles named-phase peers',async()=>{
+ for(const roundMode of [true,false]) {
+  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+  await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),relay_only:true,relay_policy:RELAY_POLICY,relay_order:['udp']}));
+  await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),relay_policy:RELAY_POLICY,...(roundMode?{relay_order:['udp','tcp']}: {})}));
+  const record=[...r.ice.records.values()][0];
+  assert.equal(a.messages.at(-1).phase,'relay_udp');
+  const request={type:'transport_restart',transport_id:record.id};
+  await r.webSocketMessage(a,JSON.stringify({...request,expected_generation:record.generation,phase:roundMode?'relay_wait':'direct',...(roundMode?{relay_round:2}:{})}));
+  assert.equal(a.messages.at(-1).phase,'relay_udp');assert.ok(record.retry_after_ms>0);
+ }
+});
+test('changing relay-only policy resets generation and candidate cache without an epoch change',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket(),caps={relay_order:['udp'],relay_pairing:'all-pairs-v1'};
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+ const record=[...r.ice.records.values()][0];
+ record.ice.alpha={candidates:['old']};
+ for(const only of [true,false]) {
+  const previous=record.generation,replacement=f.socket();
+  await r.webSocketMessage(replacement,JSON.stringify({...join('alpha',['one']),...caps,relay_only:only}));
+  assert.equal(record.generation,String(BigInt(previous)+1n));assert.deepEqual(record.ice,{});
+  assert.equal(record.round,only?1:0);assert.equal(b.messages.at(-1).relay_required,only);
+ }
+});
 test('one persisted pair carries multiple mappings and sorted initiator',async()=>{const{record}=await pair();assert.equal(record.mappings.length,2);assert.equal(record.a,'alpha');assert.equal(record.generation,'1')});
 test('concurrent restarts of one generation coalesce',async()=>{
  const {r,a,b,record}=await pair();const message={type:'transport_restart',request_id:'restart',transport_id:record.id,expected_generation:'1',phase:'relay_udp'};

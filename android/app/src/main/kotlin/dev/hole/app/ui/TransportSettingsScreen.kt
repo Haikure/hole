@@ -63,36 +63,35 @@ fun TransportSettingsScreen(
     BackHandler(handleBack) { back() }
     HoleScaffold(title = "连接方式", navigationIcon = { HoleBackButton { back() } }) { insets ->
         Column(Modifier.fillMaxWidth().padding(insets).verticalScroll(rememberScrollState(), enabled = !turnOrderDragging).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            HoleSettingsGroup("选择连接策略") {
+            HoleSettingsGroup("连接策略") {
                 HoleSingleChoice(listOf("auto", "ice", "legacy").map { it to connectionModeLabel(it) }, mode, { mode = it }, Modifier.fillMaxWidth())
                 Text(connectionModeDescription(mode), style = MaterialTheme.typography.bodyMedium)
-                if (mode == "legacy") Text("下方 ICE 的探测和中继设置仅在“自动”或“仅 ICE”模式下生效。", style = MaterialTheme.typography.bodySmall)
+                if (mode == "legacy") Text("此模式不使用下方 ICE / TURN 设置。", style = MaterialTheme.typography.bodySmall)
             }
             HoleSettingsGroup("直连探测") {
                 HoleTextField(stun, { stun = it }, "STUN 服务器", modifier = Modifier.fillMaxWidth(),
-                    supportingText = { Text("默认 Cloudflare：$DEFAULT_STUN_URL。每行一条；留空时仅尝试本地地址。") })
-                Text("STUN 只帮助发现公网映射，不转发业务数据。服务之间仍通过加密的 QUIC 通道传输。", style = MaterialTheme.typography.bodySmall)
+                    supportingText = { Text("默认 Cloudflare：$DEFAULT_STUN_URL；每行一条，留空仅尝试本地地址。") })
+                Text("STUN 只探测公网映射，不承载业务数据。", style = MaterialTheme.typography.bodySmall)
                 HoleTextButton("恢复 Cloudflare 默认值", { stun = DEFAULT_STUN_URL })
             }
             HoleSettingsGroup("直连失败后的中继") {
                 HoleSingleChoice(listOf("worker" to "协调服务", "manual" to "手动", "off" to "关闭"), relay, { relay = it }, Modifier.fillMaxWidth())
                 Text(when (relay) {
-                    "manual" -> "填写自己的 TURN 服务器。凭据在本机加密保存。"
-                    "off" -> "不申请本机 TURN 中继，继续尝试直连。"
-                    else -> "由 Worker 签发 Cloudflare 短期凭据；主密钥留在部署侧。未配置中继时，直连仍可使用。"
+                    "manual" -> "使用自备 TURN；凭据加密保存在本机。"
+                    "off" -> "不申请 TURN 凭据，仅尝试直连。"
+                    else -> "由 Worker 发放短期凭据；未配置 TURN 时仍可直连。"
                 }, style = MaterialTheme.typography.bodyMedium)
                 AnimatedVisibility(relay == "manual") {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        HoleTextField(urls, { urls = it }, "TURN 地址", modifier = Modifier.fillMaxWidth(), supportingText = { Text("每行一条，必须填写端口。turn:HOST:PORT 未写 transport 时按顺序尝试 UDP/TCP；turns:HOST:PORT 仅使用 TLS。显式 transport 可限制接入类型。") })
+                        HoleTextField(urls, { urls = it }, "TURN 地址", modifier = Modifier.fillMaxWidth(), supportingText = { Text("每行一个地址，需含端口；turns: 使用 TLS。") })
                         HoleTextField(username, { username = it }, "TURN 用户名", modifier = Modifier.fillMaxWidth(), singleLine = true)
                         HoleTextField(credential, { credential = it }, "TURN 凭据", modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
                     }
                 }
-                Text("先尝试直连；直连失败后按下方本机顺序尝试 TURN。两端每轮可使用不同类型，连接服务仍通过加密 QUIC 传输。", style = MaterialTheme.typography.bodySmall)
-                Text("TLS 加密本机到 TURN 的接入；普通 TCP 接入不使用 TLS。业务数据始终由 QUIC 端到端加密。新顺序需双方客户端与 Worker 均支持。", style = MaterialTheme.typography.bodySmall)
+                Text("先尝试直连，再按本机顺序尝试 TURN。TLS 仅保护 TLS 中继接入；业务数据由 QUIC 端到端加密。", style = MaterialTheme.typography.bodySmall)
             }
             HoleSettingsGroup("本机 TURN 类型顺序") {
-                Text("每台设备独立设置。留空使用默认顺序；未选中的类型会跳过。两端顺序不同也会在同一连接轮次中分别尝试。", style = MaterialTheme.typography.bodySmall)
+                Text("顺序仅影响本机；留空使用默认值，未选类型会跳过。", style = MaterialTheme.typography.bodySmall)
                 TurnOrderBoard(
                     order = relayOrder,
                     onChange = { relayOrderText = it.joinToString(", ") },
@@ -106,14 +105,14 @@ fun TransportSettingsScreen(
             HoleTextButton(if (advanced) "收起高级参数" else "高级连接参数", { advanced = !advanced })
             AnimatedVisibility(advanced) {
                 HoleSettingsGroup("高级参数") {
-                    HoleTextField(probe, { probe = it }, "优先直连时间", supportingText = { Text("默认 3s；时间格式可用 ms、s、m。") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    HoleTextField(probe, { probe = it }, "优先直连时间", supportingText = { Text("默认 3s；支持 ms、s、m。") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     HoleTextField(gather, { gather = it }, "候选收集期限", modifier = Modifier.fillMaxWidth(), singleLine = true)
                     HoleTextField(check, { check = it }, "连通性检查期限", modifier = Modifier.fillMaxWidth(), singleLine = true)
                     HoleTextField(retry, { retry = it }, "最大重试间隔", modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    HoleTextField(ttl, { ttl = it }, "请求的中继凭据有效期", supportingText = { Text("默认 6h；Worker 最终决定签发期限。") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    HoleTextField(interfaces, { interfaces = it }, "允许使用的网卡", supportingText = { Text("留空表示自动选择；Android 仍使用系统选定的网络。") }, modifier = Modifier.fillMaxWidth())
-                    HoleSwitchPreference("仅用中继测试", "用于核对 TURN；日常使用保持关闭以优先直连。", checked = relayOnly, onCheckedChange = { relayOnly = it })
-                    HoleSwitchPreference("允许本地 ws 测试", "默认使用 wss://，此项只为显式配置的本地测试入口启用。", checked = insecure, onCheckedChange = { insecure = it })
+                    HoleTextField(ttl, { ttl = it }, "请求的中继凭据有效期", supportingText = { Text("默认 6h；以 Worker 签发期限为准。") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    HoleTextField(interfaces, { interfaces = it }, "允许使用的网卡", supportingText = { Text("留空自动选择；Android 跟随系统网络。") }, modifier = Modifier.fillMaxWidth())
+                    HoleSwitchPreference("仅用中继测试", "跳过直连，强制使用 TURN。", checked = relayOnly, onCheckedChange = { relayOnly = it })
+                    HoleSwitchPreference("允许本地 ws 测试", "仅本地测试使用 ws://；生产环境请用 wss://。", checked = insecure, onCheckedChange = { insecure = it })
                 }
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
