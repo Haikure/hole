@@ -243,6 +243,8 @@ private fun AppRoot(
             handleBack = route == page,
         )
         page == "transport" -> TransportSettingsScreen(configState, model::saveTransportSettings, { goBack() }, handleBack = route == page)
+        page == "voice" -> PlaceholderNavigationScreen("语音", "房间语音能力已接入核心，Android 音频设备控制即将可用", { goHome() })
+        page == "config" -> PlaceholderNavigationScreen("配置", "选择主页的提供服务或使用服务条目进行编辑", { goHome() })
         page == "background" -> BackgroundScreen(onBack = { goBack() })
         page == "transfer" -> ConfigTransferScreen(configState, onImport = model::importConfig, onBack = { goBack() })
         page == "details" -> RuntimeDetailsScreen(
@@ -299,7 +301,15 @@ private fun AppRoot(
             onDeleteProvide = { entryId -> deleteProvideWithUndo(entryId) },
             onDeleteConsume = { entryId -> deleteConsumeWithUndo(entryId) },
             onToggleRun = onToggleRun,
-        )
+            onNavigate = { target ->
+                when (target) {
+                    "home" -> goHome()
+                    "settings" -> navigate("settings")
+                    "config" -> navigate("config")
+                    "voice" -> navigate("voice")
+                }
+            },
+
        }
       }
     }

@@ -79,8 +79,6 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val scrollState = rememberScrollState()
-    val miuix = LocalThemeStyle.current == ThemeStyle.MIUIX
-    val serverUrlError = validateServerUrl(serverUrl)
     val addressError = candidateAddresses.split(',', '，').map { it.trim() }
         .filter { it.isNotEmpty() }.firstOrNull { !isPublicIpv6(it) }
 
@@ -116,7 +114,7 @@ fun SettingsScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (!miuix) HoleSectionTitle("外观")
+            HoleSectionTitle("外观")
             if (configState.loaded) {
                 ThemeSection(
                     themeStyle = ThemeStyle.fromValue(configState.config.themeStyle),

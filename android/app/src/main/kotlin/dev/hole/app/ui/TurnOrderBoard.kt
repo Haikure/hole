@@ -49,10 +49,8 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import dev.hole.app.config.ThemeStyle
 import kotlin.math.abs
 import kotlin.math.roundToInt
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** token 顺序即默认顺序，与 core/ice_config.go 的 turn.order 校验保持一致。 */
 internal val turnOrderTypes = listOf("udp", "tcp", "tls")
@@ -108,14 +106,13 @@ fun TurnOrderBoard(
     val currentOnDraggingChanged = rememberUpdatedState(onDraggingChanged)
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
-    val miuix = LocalThemeStyle.current == ThemeStyle.MIUIX
     val materialColors = MaterialTheme.colorScheme
-    val accent = if (miuix) MiuixTheme.colorScheme.primary else materialColors.primary
-    val muted = if (miuix) MiuixTheme.colorScheme.onSurfaceSecondary else materialColors.onSurfaceVariant
-    val dividerColor = if (miuix) MiuixTheme.colorScheme.dividerLine else materialColors.outlineVariant
-    val idleContainer = if (miuix) MiuixTheme.colorScheme.surfaceContainer else materialColors.surfaceContainerLow
-    val selectedContainer = if (miuix) accent.copy(alpha = 0.12f) else materialColors.secondaryContainer
-    val chipShape = if (miuix) RoundedCornerShape(14.dp) else MaterialTheme.shapes.medium
+    val accent = materialColors.primary
+    val muted = materialColors.onSurfaceVariant
+    val dividerColor = materialColors.outlineVariant
+    val idleContainer = materialColors.surfaceContainerLow
+    val selectedContainer = materialColors.secondaryContainer
+    val chipShape = MaterialTheme.shapes.medium
 
     fun chipBounds(token: String) = Modifier.onGloballyPositioned {
         val rect = it.boundsInRoot()
@@ -339,7 +336,7 @@ private fun TurnOrderChip(
                     Modifier.size(21.dp).background(accent, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("$badge", style = MaterialTheme.typography.labelSmall, color = if (LocalThemeStyle.current == ThemeStyle.MIUIX) MiuixTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onPrimary)
+                    Text("$badge", style = MaterialTheme.typography.labelSmall, color = materialColors.onPrimary)
                 }
             } else {
                 Text("+", style = MaterialTheme.typography.titleMedium, color = accent)

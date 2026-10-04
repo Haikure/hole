@@ -29,7 +29,6 @@ import dev.hole.app.config.normalizeHostInput
 import dev.hole.app.config.parsePort
 import dev.hole.app.config.ConsumeEntry
 import dev.hole.app.config.ProvideEntry
-import dev.hole.app.config.ThemeStyle
 import java.util.UUID
 
 @Composable
@@ -217,7 +216,6 @@ fun ConsumeEditScreen(
 
 @Composable
 private fun EnabledRow(enabled: Boolean, onChange: (Boolean) -> Unit) {
-    if (LocalThemeStyle.current == ThemeStyle.MIUIX) {
         HoleSwitchPreference(
             title = "保存后启用", summary = "停用时保留配置，不加入运行集合", checked = enabled,
             insideMargin = PaddingValues(0.dp), onCheckedChange = onChange,

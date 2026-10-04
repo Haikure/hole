@@ -47,6 +47,7 @@ fun HomeScreen(
     onToggleRun: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
     onOpenDetails: () -> Unit = {},
+    onNavigate: (String) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val mappingStates = remember(snapshot.mappings) { snapshot.mappings.associate { (it.role to it.id) to it.state } }
@@ -58,6 +59,7 @@ fun HomeScreen(
             HoleSettingsButton(onClick = onOpenSettings)
         },
         snackbarHost = { HoleSnackbarHost(snackbarHostState) },
+        bottomBar = { FloatingIslandNavigation(selected = "home", onSelect = onNavigate) },
     ) { insets ->
         LazyColumn(
             Modifier

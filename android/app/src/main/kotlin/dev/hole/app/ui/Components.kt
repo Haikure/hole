@@ -25,8 +25,6 @@ import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import dev.hole.app.config.ThemeStyle
-import top.yukonga.miuix.kmp.basic.BasicComponent
 
 /**
  * 支持从右向左滑动删除的列表行：背景为删除色，达到阈值后触发 [onDelete]。
@@ -57,7 +55,7 @@ fun SwipeDismissRow(
             Row(
                 Modifier
                     .fillMaxSize()
-                    .clip(if (LocalThemeStyle.current == ThemeStyle.MIUIX) MaterialTheme.shapes.medium else MaterialTheme.shapes.large)
+                                    .clip(MaterialTheme.shapes.large)
                     .background(MaterialTheme.colorScheme.errorContainer)
                     .padding(end = 24.dp),
                 horizontalArrangement = Arrangement.End,
@@ -99,14 +97,6 @@ fun MappingRow(
                 },
             containerColor = if (enabled) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.surfaceContainer,
         ) {
-            if (LocalThemeStyle.current == ThemeStyle.MIUIX) {
-                BasicComponent(
-                    title = title,
-                    summary = listOfNotNull(subtitle, status).joinToString("\n"),
-                    onClick = onEdit,
-                    endActions = { HoleSwitch(checked = enabled, onCheckedChange = onToggle, label = "启用 $title") },
-                )
-            } else {
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -117,22 +107,11 @@ fun MappingRow(
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(title, style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            subtitle,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (status != null) {
-                            Text(
-                                status,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (status != null) Text(status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     HoleSwitch(checked = enabled, onCheckedChange = onToggle, label = "启用 $title")
                 }
-            }
         }
     }
 }
@@ -148,8 +127,7 @@ fun SectionHeader(
 ) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            if (LocalThemeStyle.current == ThemeStyle.MIUIX) HoleSectionTitle(title)
-            else Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(title, style = MaterialTheme.typography.titleMedium)
             if (subtitle != null) {
                 Text(
                     subtitle,
