@@ -50,11 +50,23 @@ type iceCoordinator struct {
 	turnRetry                time.Time
 	turnBackoff              time.Duration
 	turnChanged              chan struct{}
+	voiceMu                  sync.RWMutex
+	voiceMembers             map[string]voiceRoomMember
+	voice                    *voiceRuntime
+}
+
+func (c *iceCoordinator) voiceRuntimePtr() *voiceRuntime {
+	c.voiceMu.RLock()
+	defer c.voiceMu.RUnlock()
+	return c.voice
 }
 
 func newICECoordinator(ctx context.Context, r Request, platform Platform, sessions *sessionManager, identity *tls.Config, runtimeID string, epoch uint64, emit func(Event), networkObserved func(NetworkSnapshot)) *iceCoordinator {
 	ctx, cancel := context.WithCancel(ctx)
-	c := &iceCoordinator{ctx: ctx, cancel: cancel, platform: platform, sessions: sessions, identity: identity, runtimeID: runtimeID, fingerprint: certFingerprint(identity.Certificates[0]), emit: emit, networkObserved: networkObserved, desired: r, reset: make(chan struct{}, 1), peers: map[string]*icePeer{}, turnState: "pending", turnChanged: make(chan struct{})}
+	c := &iceCoordinator{ctx: ctx, cancel: cancel, platform: platform, sessions: sessions, identity: identity, runtimeID: runtimeID, fingerprint: certFingerprint(identity.Certificates[0]), emit: emit, networkObserved: networkObserved, desired: r, reset: make(chan struct{}, 1), peers: map[string]*icePeer{}, turnState: "pending", turnChanged: make(chan struct{}), voiceMembers: map[string]voiceRoomMember{}}
+	if r.Config.Voice.Enabled {
+		c.voice = newConfiguredVoiceRuntime(ctx)
+	}
 	c.networkEpoch.Store(epoch)
 	return c
 }
@@ -70,6 +82,19 @@ func (c *iceCoordinator) submit(r Request) {
 	old := c.desired
 	c.desired = r
 	c.configMu.Unlock()
+	if old.Config.Voice.Enabled != r.Config.Voice.Enabled {
+		c.voiceMu.Lock()
+		previous := c.voice
+		if r.Config.Voice.Enabled {
+			c.voice = newConfiguredVoiceRuntime(c.ctx)
+		} else {
+			c.voice = nil
+		}
+		c.voiceMu.Unlock()
+		if previous != nil {
+			previous.close()
+		}
+	}
 	if r.Config.ICE.RelayOnly && !old.Config.ICE.RelayOnly {
 		// Stop old direct data paths immediately, even while signaling is offline.
 		for _, p := range c.peerList() {
@@ -165,6 +190,14 @@ func (c *iceCoordinator) run() error {
 		c.online = false
 		c.sink = nil
 		c.mu.Unlock()
+		for _, peer := range c.peerList() {
+			peer.mu.Lock()
+			isVoice := peer.ready.Voice
+			peer.mu.Unlock()
+			if isVoice {
+				peer.offline("signal_offline")
+			}
+		}
 		c.turnMu.Lock()
 		c.turnRequestID = ""
 		if c.turnState == "requesting" {
@@ -250,6 +283,7 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 	join := iceSignalMessage{SignalMessage: SignalMessage{Type: "join", Room: r.Config.Room, Token: r.Config.Token, DeviceID: r.Config.DeviceName, DeviceName: r.Config.DeviceName, Provide: r.Config.Provide, Consume: r.Config.Consume, Candidates: candidates, CertFingerprint: c.fingerprint},
 		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS,
 		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll, RelayOnly: r.Config.ICE.RelayOnly}
+	join.Voice = r.Config.Voice.Enabled
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err = conn.WriteJSON(join); err != nil {
 		return err, false
@@ -351,6 +385,13 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			// Full state is requested once on join/rejoin, never as a heartbeat.
 			_ = c.send(signalMessage("transport_sync"))
 		}
+	case "room_state":
+		if !sameEffective(sessionRequest, c.request()) {
+			return nil
+		}
+		if err := c.updateVoiceMembers(m.RoomState); err != nil {
+			return &Fault{Code: "protocol_mismatch", Message: err.Error()}
+		}
 	case "transport_lease":
 		for _, lease := range m.Leases {
 			c.mu.Lock()
@@ -409,6 +450,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		}
 		if m.Profile != ProfileICE || m.SessionVersion != sessionProtocol || m.TransportID == "" || m.TransportGeneration == 0 || m.PeerRuntimeID == "" || len(m.PeerFingerprint) != 64 || m.PeerDevice == "" || len(m.Mappings) > maxPeerChannels {
 			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的 ICE 能力或传输信息无效"}
+		}
+		if m.Voice && !cfg.Voice.Enabled {
+			return &Fault{Code: "protocol_mismatch", Message: "未启用语音的配置收到语音传输"}
 		}
 		expected := c.deviceID()
 		if m.PeerDevice < expected {
@@ -602,6 +646,80 @@ func (c *iceCoordinator) snapshot() []PeerTransportSnapshot {
 	})
 	return result
 }
+
+func (c *iceCoordinator) updateVoiceMembers(members []voiceRoomMember) error {
+	seen := make(map[string]bool, len(members))
+	for _, member := range members {
+		if member.DeviceName == "" || len(member.DeviceName) > 128 || seen[member.DeviceName] {
+			return errors.New("room_state 成员无效")
+		}
+		seen[member.DeviceName] = true
+	}
+	c.voiceMu.Lock()
+	c.voiceMembers = make(map[string]voiceRoomMember, len(members))
+	for _, member := range members {
+		if member.Voice {
+			c.voiceMembers[member.DeviceName] = member
+		}
+	}
+	c.voiceMu.Unlock()
+	c.emit(Event{Kind: "room", VoiceState: "changed"})
+	return nil
+}
+
+func (c *iceCoordinator) voiceSnapshot() VoiceSnapshot {
+	cfg := c.request().Config
+	snapshot := VoiceSnapshot{Enabled: cfg.Voice.Enabled, State: "disabled", Members: []VoiceMemberSnapshot{}, Peers: []VoicePeerSnapshot{}}
+	if !cfg.Voice.Enabled {
+		return snapshot
+	}
+	snapshot.State = "waiting"
+	runtimePeers := map[string]VoicePeerSnapshot{}
+	if voice := c.voiceRuntimePtr(); voice != nil {
+		snapshot.Muted = voice.muted.Load()
+		for _, peer := range voice.snapshot() {
+			runtimePeers[peer.PeerID] = peer
+		}
+	}
+	c.voiceMu.RLock()
+	signalState := "online"
+	if !c.signalOnline() {
+		signalState = "offline"
+	}
+	for _, member := range c.voiceMembers {
+		snapshot.Members = append(snapshot.Members, VoiceMemberSnapshot{DeviceName: member.DeviceName, Voice: true, SignalState: signalState, TransportState: "offline", MediaState: "offline"})
+	}
+	c.voiceMu.RUnlock()
+	for _, peer := range c.peerList() {
+		stats := peer.snapshot()
+		if !stats.Voice {
+			continue
+		}
+		voicePeer := runtimePeers[stats.PeerID]
+		voicePeer.PeerID = stats.PeerID
+		voicePeer.TransportID = stats.TransportID
+		voicePeer.Generation = stats.Generation
+		voicePeer.State = stats.State
+		voicePeer.Path = stats.PathType
+		voicePeer.RTTMS = stats.RTTMS
+		snapshot.Peers = append(snapshot.Peers, voicePeer)
+		for i := range snapshot.Members {
+			if snapshot.Members[i].DeviceName == stats.PeerID {
+				snapshot.Members[i].TransportID = stats.TransportID
+				snapshot.Members[i].TransportGen = stats.Generation
+				snapshot.Members[i].TransportState = stats.State
+				if stats.State == "active" {
+					snapshot.Members[i].MediaState = "ready"
+				}
+			}
+		}
+	}
+	if len(snapshot.Peers) > 0 {
+		snapshot.State = "active"
+	}
+	sortVoiceSnapshot(&snapshot)
+	return snapshot
+}
 func (c *iceCoordinator) close() {
 	c.cancel()
 	c.mu.Lock()
@@ -612,6 +730,9 @@ func (c *iceCoordinator) close() {
 		p.close()
 	}
 	c.closeLegacy()
+	if voice := c.voiceRuntimePtr(); voice != nil {
+		voice.close()
+	}
 }
 func (c *iceCoordinator) legacyMapping(msg SignalMessage, p Platform) error {
 	c.mu.Lock()
@@ -689,7 +810,7 @@ func (c *iceCoordinator) leaseRequest() (iceSignalMessage, bool) {
 	if ready {
 		for _, p := range c.peerList() {
 			p.mu.Lock()
-			needed := p.online && !p.closed && len(p.ready.Mappings) > 0
+			needed := p.online && !p.closed && (p.ready.Voice || len(p.ready.Mappings) > 0)
 			p.mu.Unlock()
 			if needed {
 				kind := "transport_sync" // Compatibility with older Workers.

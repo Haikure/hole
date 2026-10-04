@@ -50,6 +50,24 @@ data class NetworkSnapshot(
     val available: Boolean = false, val validated: Boolean = false, val metered: Boolean = false,
 )
 
+data class VoiceMemberSnapshot(
+    val deviceName: String = "", val voice: Boolean = false, val signalState: String = "",
+    val transportState: String = "", val mediaState: String = "", val transportId: String = "",
+    val transportGeneration: String = "0",
+)
+
+data class VoicePeerSnapshot(
+    val peerId: String = "", val transportId: String = "", val generation: String = "0",
+    val state: String = "", val path: String = "", val bitrate: Int = 0,
+    val packetLoss: String = "0", val queueDepth: Int = 0, val queueDrops: String = "0",
+    val datagramDrops: String = "0", val jitterDepth: Int = 0,
+)
+
+data class VoiceSnapshot(
+    val enabled: Boolean = false, val muted: Boolean = false, val state: String = "disabled",
+    val members: List<VoiceMemberSnapshot> = emptyList(), val peers: List<VoicePeerSnapshot> = emptyList(),
+)
+
 data class CoreSnapshot(
     val nativeReady: Boolean = false,
     val configured: Boolean = false,
@@ -75,6 +93,7 @@ data class CoreSnapshot(
     val liveConfiguration: Boolean = false,
     val networkBinding: Boolean = false,
     val peers: List<PeerSnapshot> = emptyList(),
+    val voice: VoiceSnapshot = VoiceSnapshot(),
 ) {
     val tcpSessions: Long get() = mappings.sumOf { it.tcpSessions }
     val udpSessions: Long get() = mappings.sumOf { it.udpSessions }
@@ -110,6 +129,7 @@ data class CoreSnapshot(
             val error = json.optJSONObject("error")
             val network = json.optJSONObject("network") ?: JSONObject()
             val capabilities = json.optJSONObject("capabilities") ?: JSONObject()
+            val voice = json.optJSONObject("voice") ?: JSONObject()
             fun strings(key: String): List<String> {
                 val array = network.optJSONArray(key) ?: return emptyList()
                 return (0 until array.length()).map { array.getString(it) }
@@ -143,6 +163,17 @@ data class CoreSnapshot(
                 liveConfiguration = capabilities.optBoolean("live_configuration"),
                 networkBinding = capabilities.optBoolean("network_binding"),
                 peers = json.optJSONArray("peer_transports")?.let { array -> (0 until array.length()).map { PeerSnapshot.fromJson(array.getJSONObject(it)) } }.orEmpty(),
+                voice = VoiceSnapshot(
+                    enabled = voice.optBoolean("enabled"), muted = voice.optBoolean("muted"), state = voice.optString("state", "disabled"),
+                    members = voice.optJSONArray("members")?.let { array -> (0 until array.length()).map { item ->
+                        val member = array.getJSONObject(item)
+                        VoiceMemberSnapshot(member.optString("device_name"), member.optBoolean("voice"), member.optString("signal_state"), member.optString("transport_state"), member.optString("media_state"), member.optString("transport_id"), member.optString("transport_generation", "0"))
+                    } }.orEmpty(),
+                    peers = voice.optJSONArray("peers")?.let { array -> (0 until array.length()).map { item ->
+                        val peer = array.getJSONObject(item)
+                        VoicePeerSnapshot(peer.optString("peer_id"), peer.optString("transport_id"), peer.optString("generation", "0"), peer.optString("state"), peer.optString("path"), peer.optInt("bitrate"), peer.optString("packet_loss", "0"), peer.optInt("queue_depth"), peer.optString("queue_drops", "0"), peer.optString("datagram_drops", "0"), peer.optInt("jitter_depth"))
+                    } }.orEmpty(),
+                ),
             )
         }
 

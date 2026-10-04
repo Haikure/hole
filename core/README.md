@@ -3,6 +3,12 @@
 `hole/core` 供 CLI 与 Android 共用，实现信令、ICE / QUIC、TCP / UDP 映射及可恢复应用会话。
 本包不读取配置文件、不解析命令行参数，不安装进程信号处理器，也不退出宿主进程。
 
+配置中的 `voice.enabled` 默认关闭。开启后，核心只接受平台提供的 48 kHz、单声道、PCM16
+20 ms 帧（每帧 960 个采样），通过同一 room 的 voice-only ICE / QUIC 传输发送 Opus 帧。
+`PCMSource` / `PCMSink` 是内部接口；gomobile 使用 `PushVoicePCM` / `PullVoicePCM` 批量方法
+传递 PCM，不经过 JSON 事件桥，每次最多处理 4 帧。Android corebridge 通过 `AudioRecord` /
+`AudioTrack` 接入设备。语音成员、传输和媒体统计从 `Snapshot.voice` 读取，事件只作刷新提示。
+
 ## 宿主接入
 
 ```go

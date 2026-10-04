@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net/url"
 	"reflect"
@@ -293,6 +294,95 @@ func (e *Engine) RenominateTransports() error {
 	return nil
 }
 
+// PushVoicePCM submits one to four consecutive 20 ms PCM frames from a
+// platform adapter. Sequence and timestamp are measured in frames/samples and
+// are intentionally int64 so gomobile can expose this method without uint64.
+func (e *Engine) PushVoicePCM(sequence, timestamp int64, packed []byte) error {
+	if sequence < 0 || timestamp < 0 {
+		return &Fault{Code: "invalid_voice_pcm", Message: "语音序号和时间戳不能为负数"}
+	}
+	e.mu.Lock()
+	run := e.run
+	requested := e.requested
+	e.mu.Unlock()
+	if !requested || run == nil {
+		return &Fault{Code: "voice_unavailable", Message: "语音引擎尚未运行"}
+	}
+	e.mu.Lock()
+	coordinator := run.ice
+	e.mu.Unlock()
+	if coordinator == nil {
+		return &Fault{Code: "voice_unavailable", Message: "当前传输不支持语音"}
+	}
+	voice := coordinator.voiceRuntimePtr()
+	if voice == nil {
+		return &Fault{Code: "voice_disabled", Message: "语音未启用"}
+	}
+	if len(packed)%2 != 0 {
+		return &Fault{Code: "invalid_voice_pcm", Message: "PCM16 字节数必须为偶数"}
+	}
+	samples := make([]int16, len(packed)/2)
+	for i := range samples {
+		samples[i] = int16(binary.LittleEndian.Uint16(packed[i*2:]))
+	}
+	return voice.pushPCM(uint64(sequence), uint64(timestamp), samples)
+}
+
+// PullVoicePCM returns up to maxFrames decoded mixed frames for a platform
+// audio sink. An empty slice means the bounded playback queue is currently
+// empty; callers should wait briefly and poll again.
+func (e *Engine) PullVoicePCM(maxFrames int) []byte {
+	if maxFrames < 1 {
+		maxFrames = 1
+	}
+	e.mu.Lock()
+	run := e.run
+	e.mu.Unlock()
+	if run == nil {
+		return nil
+	}
+	e.mu.Lock()
+	coordinator := run.ice
+	e.mu.Unlock()
+	if coordinator == nil {
+		return nil
+	}
+	voice := coordinator.voiceRuntimePtr()
+	if voice == nil {
+		return nil
+	}
+	samples := voice.pullPCM(maxFrames)
+	if len(samples) == 0 {
+		return nil
+	}
+	packed := make([]byte, len(samples)*2)
+	for i, sample := range samples {
+		binary.LittleEndian.PutUint16(packed[i*2:], uint16(sample))
+	}
+	return packed
+}
+
+func (e *Engine) SetVoiceMuted(muted bool) error {
+	e.mu.Lock()
+	run := e.run
+	e.mu.Unlock()
+	if run == nil {
+		return &Fault{Code: "voice_unavailable", Message: "语音引擎尚未运行"}
+	}
+	e.mu.Lock()
+	coordinator := run.ice
+	e.mu.Unlock()
+	if coordinator == nil {
+		return &Fault{Code: "voice_unavailable", Message: "当前传输不支持语音"}
+	}
+	voice := coordinator.voiceRuntimePtr()
+	if voice == nil {
+		return &Fault{Code: "voice_disabled", Message: "语音未启用"}
+	}
+	voice.setMuted(muted)
+	return nil
+}
+
 func (e *Engine) requestCycleLocked() {
 	e.run.epoch++
 	select {
@@ -435,7 +525,7 @@ func (e *Engine) Snapshot() Snapshot {
 		EventsDropped:       e.dropped,
 		TransportGeneration: e.transportGeneration, NetworkChanges: e.networkChanges, Reconnects: e.reconnects,
 		StartedAt: e.startedAt, Network: e.network.clone(),
-		Mappings: []MappingSnapshot{}, PeerTransports: []PeerTransportSnapshot{}, Capabilities: Capabilities{Transport: "IPv6 / QUIC / hole-v2", RequiresIPv6: true, LiveConfiguration: true},
+		Mappings: []MappingSnapshot{}, PeerTransports: []PeerTransportSnapshot{}, Voice: VoiceSnapshot{State: "disabled", Members: []VoiceMemberSnapshot{}, Peers: []VoicePeerSnapshot{}}, Capabilities: Capabilities{Transport: "IPv6 / QUIC / hole-v2", RequiresIPv6: true, LiveConfiguration: true},
 	}
 	if p, ok := e.platform.(NetworkSnapshotter); ok {
 		s.Capabilities.NetworkBinding = p.NetworkBinding()
@@ -447,6 +537,10 @@ func (e *Engine) Snapshot() Snapshot {
 	if e.request == nil {
 		e.mu.Unlock()
 		return s
+	}
+	s.Voice.Enabled = e.request.Config.Voice.Enabled
+	if s.Voice.Enabled {
+		s.Voice.State = "waiting"
 	}
 	if e.request.Config.Transport.Preferred == PreferredICE {
 		s.Capabilities.Transport = "ICE / QUIC / mux-v1"
@@ -477,6 +571,7 @@ func (e *Engine) Snapshot() Snapshot {
 	if coordinator != nil {
 		s.PeerTransports = coordinator.snapshot()
 		activeMappings = coordinator.activeMappings()
+		s.Voice = coordinator.voiceSnapshot()
 	}
 	// Never hold Engine.mu while taking session locks: session logging can emit
 	// an Engine event while already holding a session-manager lock.

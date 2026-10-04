@@ -44,6 +44,9 @@ Android 使用带 `NetworkBinding` 的构造方法；旧 `newEngine` 和 `newEng
 - `config_revision` 是旧版本可选字段，核心不读取、不比较，也不在快照和事件中回传；新宿主无需发送。
 - 代次、序号及 64 位计数以字符串跨越 JSON 边界。
 - `server_url` 位于请求外层；应用专用的 `enabled` / `entry_id` 不进入核心配置。
+- `config.voice.enabled` 可选且默认关闭。语音 PCM 不进入 JSON 请求或事件桥：`PushVoicePCM`
+  每次接收最多 4 个连续的 PCM16 帧，`PullVoicePCM` 每次返回最多 4 帧，`SetVoiceMuted` 控制本地发送。
+  Android corebridge 使用这些批量方法连接 `AudioRecord` / `AudioTrack`。
 - 错误以含 `code`、`message` 的 JSON 传出。状态快照与事件不包含凭据。
 - `EventSink.onEvent` 在 Go 后台线程执行，应及时返回；生命周期命令调度到其他线程。
 - Android 只接收结构化事件，桥接层过滤原始日志；`stop` 返回后不再交付旧回调。

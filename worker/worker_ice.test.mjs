@@ -24,6 +24,34 @@ test('version negotiation only falls back when both sides advertise legacy',()=>
  assert.equal(iceJoinFields({...join('alpha'),auth_mode:'device-proof'}),null);
  assert.equal(iceJoinFields({...join('alpha'),transport_epoch:1}),null);
 });
+
+test('voice-only members receive a versioned room state and transport', async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha'),voice:true}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta'),voice:true}));
+ const state=a.messages.filter(m=>m.type==='room_state').at(-1);
+ assert.deepEqual(state.members,[{device_name:'alpha',voice:true},{device_name:'beta',voice:true}]);
+ const ready=a.messages.filter(m=>m.type==='transport_ready').at(-1);
+ assert.equal(ready.voice,true); assert.deepEqual(ready.mappings,[]);
+ assert.equal([...r.ice.records.values()].length,1);
+});
+
+test('voice participant capacity does not change ordinary mapping capacity', async()=>{
+ const f=fixture(),r=new Room(f.state,{});
+ for(let i=0;i<9;i++) { const s=f.socket(); const name=`voice-${String(i).padStart(2,'0')}`; await r.webSocketMessage(s,JSON.stringify({...join(name),voice:true})); }
+ const records=[...r.ice.records.values()].filter(record=>record.voice===true);
+ assert.equal(records.length,28);
+ const ninth=[...f.state.getWebSockets()].find(s=>s.messages.some(m=>m.type==='error'&&m.code==='voice_capacity'));
+ assert.ok(ninth);
+});
+
+test('voice-only pair requires the ICE profile', async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha'),voice:true,transport_profiles:[LEGACY_PROFILE]}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta'),voice:true,transport_profiles:[LEGACY_PROFILE]}));
+ assert.equal([...r.ice.records.values()].length,0);
+ assert.equal(a.messages.at(-1).code,'voice_protocol_mismatch');
+});
 test('complete relay pairing covers cross types, survives hibernation and coalesces restarts',async()=>{
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
  const capabilities={relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1'};

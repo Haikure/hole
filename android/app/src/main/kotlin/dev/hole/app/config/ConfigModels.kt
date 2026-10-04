@@ -59,9 +59,15 @@ data class StoredConfig(
     val materialPalette: String = ThemePalette.BLUE.value,
     // Miuix 默认使用官方 HyperOS 蓝色；壁纸配色独立保存，不继承 Material 的 Monet 开关。
     val miuixDynamicColor: Boolean = false,
+    val voice: VoiceSettings = VoiceSettings(),
     val connection: ConnectionSettings = ConnectionSettings(),
     val provide: List<ProvideEntry> = emptyList(),
     val consume: List<ConsumeEntry> = emptyList(),
+)
+
+@Serializable
+data class VoiceSettings(
+    val enabled: Boolean = false,
 )
 
 // ---- 交给 Go 核心的有效配置（mobile facade API 1 请求格式，字段名与 mobile/README.md 一致）----
@@ -93,6 +99,7 @@ data class CoreConfig(
     val transport: CoreTransport = CoreTransport(),
     val ice: IceSettings = IceSettings(),
     val turn: CoreTurn = CoreTurn(),
+    val voice: VoiceSettings = VoiceSettings(),
 )
 
 @Serializable

@@ -5,6 +5,7 @@ export const LEGACY_PROFILE = "legacy-ipv6-quic-v2";
 const LEASE_MS = 10 * 60_000;
 const OFFLINE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_CANDIDATES = 64;
+export const VOICE_MEMBER_LIMIT = 8;
 const send = (ws, value) => { try { ws.send(JSON.stringify(value)); } catch {} };
 const fault = (ws, code, message, request = {}) => send(ws, { type: "error", code, message, request_id: request.request_id, transport_id: request.transport_id });
 const decimal = value => typeof value === "string" && /^(0|[1-9][0-9]{0,19})$/.test(value) && BigInt(value) <= 18446744073709551615n;
@@ -77,7 +78,8 @@ export function iceJoinFields(message) {
   if (message.relay_order !== undefined && !validRelayOrder(message.relay_order)) return null;
   if (message.relay_pairing !== undefined && (message.relay_pairing !== ALL_PAIRS || message.relay_order === undefined)) return null;
   const relayEnabled = message.relay_enabled ?? true;
-  return { signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], relay_only: message.relay_only === true, relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : []}) };
+  if (message.voice !== undefined && typeof message.voice !== "boolean") return null;
+  return { signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : []}) };
 }
 export function negotiateProfile(left, right) {
   const a = left.transport_profiles ?? [LEGACY_PROFILE];
@@ -127,7 +129,7 @@ export class RoomICE {
     await this.scheduleCleanup();
   }
   member(name) { return this.room.members.get(name); }
-  async activate(left, right, matches, seen) {
+  async activate(left, right, matches, seen, voice = false) {
     const a = left.member.device_name < right.member.device_name ? left : right;
     const b = a === left ? right : left;
     const key = pairKey(a.member.device_name, b.member.device_name);
@@ -147,12 +149,12 @@ export class RoomICE {
     let resetPath = false;
     if (!record) {
       if (this.records.size >= 128) { fault(a.ws, "transport_limit", "房间传输记录达到上限"); fault(b.ws, "transport_limit", "房间传输记录达到上限"); return; }
-      record = { id: crypto.randomUUID(), pair_key: key, a: a.member.device_name, b: b.member.device_name, generation: "1", phase: "direct", round: 0, round_mode: roundMode, relay_orders: relayOrders, runtime, fingerprints, epochs, mappings, ice: {}, retry: 0 };
+      record = { id: crypto.randomUUID(), pair_key: key, a: a.member.device_name, b: b.member.device_name, generation: "1", phase: "direct", round: 0, round_mode: roundMode, relay_orders: relayOrders, runtime, fingerprints, epochs, mappings, voice, ice: {}, retry: 0 };
       changed = true;
       resetPath = true;
-    } else if (!same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
+    } else if (record.voice !== voice || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
       record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
-      record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; changed = true;
+      record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; record.voice = voice; changed = true;
       resetPath = true;
     }
     if (!same(record.mappings, mappings)) changed = true;
@@ -169,7 +171,7 @@ export class RoomICE {
       record.phase = relayRequired ? "relay_udp" : "direct";
       record.retry_after_ms = 0;
     }
-    record.mappings = mappings; record.online = true; record.lease_until = Date.now() + LEASE_MS;
+    record.mappings = mappings; record.voice = voice; record.online = true; record.lease_until = Date.now() + LEASE_MS;
     this.records.set(key, record);
     if (changed) { record.expires_at = Date.now() + OFFLINE_RETENTION_MS; await this.persist(record); }
     if (changed) { this.notify(record, a.member.device_name, true); this.notify(record, b.member.device_name, true); }
@@ -179,7 +181,7 @@ export class RoomICE {
     const index = name === record.a ? 0 : 1;
     const peerName = index === 0 ? record.b : record.a;
     const phase = record.round_mode ? recordPhase(record, record.round ?? 0, index) : record.phase;
-    const ready = { type: "transport_ready", transport_id: record.id, transport_generation: record.generation, profile: ICE_PROFILE, session_version: 2, phase, relay_policy: record.relay_policy ?? "", peer_device: peerName, peer_runtime_id: record.runtime[1-index], peer_fingerprint: record.fingerprints[1-index], runtime_id: record.runtime[index], initiator_id: record.a, mappings: record.mappings, lease_until: String(record.lease_until), retry_after_ms: record.retry_after_ms ?? 0 };
+    const ready = { type: "transport_ready", transport_id: record.id, transport_generation: record.generation, profile: ICE_PROFILE, session_version: 2, phase, relay_policy: record.relay_policy ?? "", peer_device: peerName, peer_runtime_id: record.runtime[1-index], peer_fingerprint: record.fingerprints[1-index], runtime_id: record.runtime[index], initiator_id: record.a, mappings: record.mappings, voice: record.voice === true, lease_until: String(record.lease_until), retry_after_ms: record.retry_after_ms ?? 0 };
     if (record.round_mode) Object.assign(ready, {relay_round:record.round ?? 0,relay_order:record.relay_orders[index],peer_relay_order:record.relay_orders[1-index]});
     if (record.relay_pairing) ready.relay_pairing = record.relay_pairing;
     Object.assign(ready, {relay_only_policy:RELAY_ONLY_POLICY, relay_required:record.relay_required === true,
@@ -242,7 +244,7 @@ export class RoomICE {
     }
     if (message.type === "turn_request") { await this.turn(ws, member, message); return true; }
     const record = [...this.records.values()].find(r => r.id === message.transport_id && (r.a === name || r.b === name));
-    if (!record || !record.online || record.mappings.length === 0) { fault(ws, "transport_not_authorized", "当前设备没有该对端传输关系", message); return true; }
+    if (!record || !record.online || (record.mappings.length === 0 && record.voice !== true)) { fault(ws, "transport_not_authorized", "当前设备没有该对端传输关系", message); return true; }
     const peerName = record.a === name ? record.b : record.a;
     if (message.type === "transport_failed") {
       if (message.transport_generation === record.generation && ["peer_identity_mismatch", "protocol_mismatch"].includes(message.code)) {

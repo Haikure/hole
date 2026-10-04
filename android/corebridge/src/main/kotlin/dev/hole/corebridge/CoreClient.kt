@@ -1,28 +1,31 @@
 package dev.hole.corebridge
 
 import android.content.Context
+import android.content.pm.PackageManager
 import dev.hole.core.mobile.EventSink
 import dev.hole.core.mobile.Mobile
 import go.Seq
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 // Java names/signatures were checked against the generated AAR using javap.
 // Construct, collect and close on a background dispatcher. Only application
 // context reaches Seq; this object and its Go callback never retain an Activity.
 class CoreClient(context: Context) : CoreController {
+    private val appContext = context.applicationContext
     private val sampler = SnapshotSampler()
     private val lifecycle = Mutex()
-    private val network = AndroidNetworkProvider(context.applicationContext)
+    private val network = AndroidNetworkProvider(appContext)
     private val pendingNetworks = Channel<String>(Channel.CONFLATED)
     override val networkEvents = pendingNetworks.receiveAsFlow()
     private val engine = run {
-        Seq.setContext(context.applicationContext)
+        Seq.setContext(appContext)
         check(Mobile.version() == 1L) { "桥接 API 版本不匹配" }
         Mobile.newEngineWithNetworkBinding(object : EventSink {
             override fun onEvent(eventJSON: String) {
@@ -31,6 +34,7 @@ class CoreClient(context: Context) : CoreController {
             }
         }, network)
     }
+    private var voiceAudio: VoiceAudio? = null
 
     override val snapshots = sampler.snapshots { CoreSnapshot.fromJson(engine.snapshotJSON()) }.flowOn(Dispatchers.IO)
     override fun setTelemetryActive(active: Boolean) { sampler.setUiVisible(active) }
@@ -65,7 +69,32 @@ class CoreClient(context: Context) : CoreController {
         withContext(Dispatchers.IO) { try { engine.renominateTransports() } finally { sampler.wake() } }
     }
 
+    override suspend fun startVoiceAudio(requestJSON: String): Unit = lifecycle.withLock {
+        val enabled = JSONObject(requestJSON).optJSONObject("config")?.optJSONObject("voice")?.optBoolean("enabled", false) == true
+        withContext(Dispatchers.IO) {
+            if (!enabled) {
+                voiceAudio?.close()
+                voiceAudio = null
+                return@withContext
+            }
+            if (appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                error("voice_microphone_permission_required: 请先授予麦克风权限")
+            }
+            voiceAudio?.close()
+            voiceAudio = VoiceAudio(engine).also { it.start() }
+        }
+    }
+
+    override suspend fun stopVoiceAudio(): Unit = lifecycle.withLock {
+        withContext(Dispatchers.IO) {
+            voiceAudio?.close()
+            voiceAudio = null
+        }
+    }
+
     override fun close() {
+        voiceAudio?.close()
+        voiceAudio = null
         network.close()
         engine.close()
         sampler.close()

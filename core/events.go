@@ -45,6 +45,9 @@ type Event struct {
 	Target              string `json:"target,omitempty"`
 	Stage               string `json:"stage,omitempty"`
 	Resume              bool   `json:"resume,omitempty"`
+	VoicePeer           string `json:"voice_peer,omitempty"`
+	VoiceState          string `json:"voice_state,omitempty"`
+	VoiceBitrate        int    `json:"voice_bitrate,omitempty"`
 }
 
 type MappingSnapshot struct {
@@ -94,6 +97,7 @@ type Snapshot struct {
 	StartedAt           string                  `json:"started_at,omitempty"`
 	Network             NetworkSnapshot         `json:"network"`
 	PeerTransports      []PeerTransportSnapshot `json:"peer_transports"`
+	Voice               VoiceSnapshot           `json:"voice"`
 }
 
 // CoreVersion can be set by the CLI/AAR build using -ldflags -X.

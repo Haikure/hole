@@ -230,6 +230,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         save { it.withDynamicColor(style, enabled) }
     }
 
+    fun setVoiceEnabled(enabled: Boolean) = viewModelScope.launch {
+        save { it.copy(voice = it.voice.copy(enabled = enabled)) }
+    }
+
     override fun onCleared() {
         collector?.cancel()
         commandCollector?.cancel()

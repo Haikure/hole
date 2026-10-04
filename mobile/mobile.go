@@ -153,6 +153,35 @@ func (e *Engine) RenominateTransports() error {
 	return bridgeError(e.engine.RenominateTransports())
 }
 
+// VoicePCMFrameSamples is the number of mono PCM16 samples in one 20 ms
+// frame. Platform adapters should submit one to four frames per call.
+func VoicePCMFrameSamples() int { return core.DefaultPCMFormat.FrameSamples }
+
+// VoicePCMFrameBytes is the packed little-endian PCM16 size of one frame.
+func VoicePCMFrameBytes() int { return core.DefaultPCMFormat.FrameSamples * 2 }
+
+// PushVoicePCM accepts packed little-endian PCM16 mono samples. Up to four
+// consecutive 20 ms frames are accepted per call to avoid JNI calls at audio
+// callback frequency.
+func (e *Engine) PushVoicePCM(sequence, timestamp int64, packed []byte) error {
+	e.operations.Lock()
+	defer e.operations.Unlock()
+	return bridgeError(e.engine.PushVoicePCM(sequence, timestamp, packed))
+}
+
+// PullVoicePCM returns up to maxFrames of mixed packed PCM16 samples.
+func (e *Engine) PullVoicePCM(maxFrames int) []byte {
+	e.operations.Lock()
+	defer e.operations.Unlock()
+	return e.engine.PullVoicePCM(maxFrames)
+}
+
+func (e *Engine) SetVoiceMuted(muted bool) error {
+	e.operations.Lock()
+	defer e.operations.Unlock()
+	return bridgeError(e.engine.SetVoiceMuted(muted))
+}
+
 func Validate(requestJSON string) error {
 	request, err := parseRequest(requestJSON)
 	if err != nil {

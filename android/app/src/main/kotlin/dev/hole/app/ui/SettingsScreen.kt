@@ -57,10 +57,12 @@ fun SettingsScreen(
     onOpenBackground: () -> Unit = {},
     onOpenTransfer: () -> Unit = {},
     onOpenTransport: () -> Unit = {},
+    onVoiceEnabledChange: (Boolean) -> Unit = {},
     handleBack: Boolean = true,
     onPaletteChange: (dev.hole.app.config.ThemePalette) -> Unit = {},
 ) {
     val connection = configState.config.connection
+    var voiceEnabled by rememberSaveable { mutableStateOf(configState.config.voice.enabled) }
     var serverUrl by rememberSaveable { mutableStateOf(connection.serverUrl) }
     var password by remember { mutableStateOf(configState.password) }
     var room by rememberSaveable { mutableStateOf(connection.room) }
@@ -134,6 +136,12 @@ fun SettingsScreen(
             }
 
             HoleSettingsGroup("运行与数据") {
+                HoleSwitchPreference(
+                    "房间语音",
+                    "使用本机麦克风和扬声器加入当前 room 的固定多人混音；需要麦克风权限。",
+                    checked = voiceEnabled,
+                    onCheckedChange = { voiceEnabled = it; onVoiceEnabledChange(it) },
+                )
                 HoleButton("连接方式 · ICE 与中继", { leave("transport") }, secondary = true, modifier = Modifier.fillMaxWidth())
                 HoleButton("后台保持与自动恢复", { leave("background") }, secondary = true, modifier = Modifier.fillMaxWidth())
                 HoleButton("导入与导出配置", { leave("transfer") }, secondary = true, modifier = Modifier.fillMaxWidth())

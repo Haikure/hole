@@ -139,6 +139,20 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestVoiceConfigDefaultsAndParsing(t *testing.T) {
+	cfg := validConfig()
+	if cfg.Voice.Enabled {
+		t.Fatal("voice must default to disabled")
+	}
+	parsed, err := ParseConfig([]byte("room: r\ntoken: t\npassword: p\ndevice_name: d\nvoice:\n  enabled: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parsed.Voice.Enabled {
+		t.Fatal("voice.enabled was not parsed")
+	}
+}
+
 // 严格解析：consume 里的旧字段（provider/service）与任何未知字段都应报错，
 // 而不是被静默忽略后配出一条"看起来配了但没生效"的隧道。
 func TestParseConfigRejectsUnknownFields(t *testing.T) {

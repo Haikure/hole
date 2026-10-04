@@ -59,7 +59,7 @@ type icePeer struct {
 
 func newICEPeer(c *iceCoordinator, m iceSignalMessage) *icePeer {
 	ctx, cancel := context.WithCancel(c.ctx)
-	p := &icePeer{coordinator: c, ctx: ctx, cancel: cancel, stats: PeerTransportSnapshot{PeerID: m.PeerDevice, TransportID: m.TransportID, Profile: ProfileICE, State: "connecting"}}
+	p := &icePeer{coordinator: c, ctx: ctx, cancel: cancel, stats: PeerTransportSnapshot{PeerID: m.PeerDevice, TransportID: m.TransportID, Profile: ProfileICE, Voice: m.Voice, State: "connecting"}}
 	p.workers.Add(1)
 	go func() { defer p.workers.Done(); p.maintain() }()
 	return p
@@ -105,6 +105,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 	p.online = true
 	identityChanged := old.PeerFingerprint != "" && (old.PeerFingerprint != m.PeerFingerprint || old.PeerRuntimeID != m.PeerRuntimeID)
 	p.ready = m
+	p.stats.Voice = m.Voice
 	p.stats.LeaseUntil = m.LeaseUntil
 	p.stats.RelayPolicy = m.RelayPolicy
 	p.stats.RelayRound = 0
@@ -223,17 +224,32 @@ func (p *icePeer) offline(reason string) {
 		p.pending = nil
 	}
 	p.stats.State = "paused"
+	if reason == "signal_offline" {
+		p.terminal = false
+	}
 	active := p.active
+	if active != nil && reason == "signal_offline" {
+		// A signaling reconnect can replay the same generation. Retire the
+		// closed path so that replay starts a fresh ICE attempt.
+		p.active = nil
+	}
 	records := append([]peerMappingRecord{}, p.ready.Mappings...)
 	fp := p.ready.PeerFingerprint
+	peerID := p.ready.PeerDevice
+	isVoice := p.ready.Voice
 	p.mu.Unlock()
 	p.stateChanged()
-	if reason == "mapping_removed" || reason == "peer_runtime_changed" || reason == "revoked" {
+	if reason == "mapping_removed" || reason == "peer_runtime_changed" || reason == "revoked" || reason == "signal_offline" {
 		for _, r := range records {
 			p.coordinator.sessions.terminate(r.ID, fp)
 		}
 		if active != nil {
 			active.close()
+		}
+		if isVoice {
+			if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
+				voice.unbindPeer(peerID)
+			}
 		}
 	}
 }
@@ -909,6 +925,11 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	p.stats.TURNExpiresAt = expires
 	p.mu.Unlock()
 	owned = true
+	if a.ready.Voice {
+		if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
+			voice.bindPeer(a.ready.PeerDevice, a.ready.TransportID, a.ready.TransportGeneration, mux)
+		}
+	}
 	mux.syncMappings()
 	if old != nil {
 		old.close()
@@ -924,6 +945,11 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	case err = <-a.failed:
 	}
 	live.close()
+	if a.ready.Voice {
+		if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
+			voice.unbindPeer(a.ready.PeerDevice)
+		}
+	}
 	p.mu.Lock()
 	current := p.active == live
 	if current {

@@ -187,7 +187,7 @@ fun toStartRequest(
             candidateAddresses = stored.connection.candidateAddresses,
             provide = provide,
             consume = consume,
-            transport = connection.coreTransport(), ice = connection.ice, turn = connection.coreTurn(turnCredential),
+            transport = connection.coreTransport(), ice = connection.ice, turn = connection.coreTurn(turnCredential), voice = stored.voice,
         ),
     )
 }

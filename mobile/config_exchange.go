@@ -29,6 +29,7 @@ type exchangeConfig struct {
 	Transport           core.TransportConfig `json:"transport" yaml:"transport"`
 	ICE                 core.ICEConfig       `json:"ice" yaml:"ice"`
 	TURN                core.TURNConfig      `json:"turn" yaml:"turn"`
+	Voice               core.VoiceConfig     `json:"voice" yaml:"voice"`
 	Room                string               `json:"room" yaml:"room"`
 	Password            string               `json:"password" yaml:"password,omitempty"`
 	Token               string               `json:"token" yaml:"token,omitempty"`
@@ -80,7 +81,7 @@ func exchangeDocument(text string) (exchangeConfig, error) {
 			return exchangeConfig{}, errors.New("CLI server_url 需要有效的信令服务器地址，并与连接方式匹配")
 		}
 	}
-	doc := exchangeConfig{ServerURL: cfg.ServerURL, Transport: cfg.Transport, ICE: cfg.ICE, TURN: cfg.TURN,
+	doc := exchangeConfig{ServerURL: cfg.ServerURL, Transport: cfg.Transport, ICE: cfg.ICE, TURN: cfg.TURN, Voice: cfg.Voice,
 		Room: cfg.Room, Password: cfg.Password, Token: cfg.Token, DeviceName: cfg.DeviceName,
 		SessionTimeout: cfg.SessionTimeout.String(), CandidateInterfaces: append([]string{}, cfg.CandidateInterfaces...),
 		CandidateAddresses: append([]string{}, cfg.CandidateAddresses...), Provide: []exchangeProvide{}, Consume: []exchangeConsume{},

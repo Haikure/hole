@@ -27,6 +27,13 @@ type Config struct {
 	Transport           TransportConfig `yaml:"transport"`
 	ICE                 ICEConfig       `yaml:"ice"`
 	TURN                TURNConfig      `yaml:"turn"`
+	Voice               VoiceConfig     `yaml:"voice" json:"voice"`
+}
+
+// VoiceConfig controls the optional room voice mesh. Media format and
+// transport details remain fixed in the protocol for compatibility.
+type VoiceConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
 // Provide 声明本机向房间内其他设备提供的服务。
@@ -134,6 +141,9 @@ func ParseConfig(data []byte) (Config, error) {
 func (cfg Config) Validate() error {
 	if err := cfg.validateTransport(); err != nil {
 		return err
+	}
+	if cfg.Voice.Enabled && cfg.Transport.Preferred != PreferredICE {
+		return errors.New("语音需要 ICE / QUIC 传输")
 	}
 	if cfg.SessionTimeout < 0 {
 		return errors.New("session_timeout 必须为正时长，例如 10m")

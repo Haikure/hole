@@ -26,6 +26,11 @@ turn:
   credential: ""
   order: []
 
+# 可选语音房。启用后，同一 room 内启用语音的在线设备自动建立点对点语音传输。
+# 第一版固定使用 48 kHz、单声道、20 ms PCM 帧；平台适配器负责音频设备。
+voice:
+  enabled: false
+
 # 提供方id必须唯一，使用id匹配服务
 provide:
   - id: ssh

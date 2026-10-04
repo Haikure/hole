@@ -33,6 +33,17 @@ ICE 配置要求 WSS；本地 WS 测试需显式启用 `transport.allow_insecure
 
 ## ICE 与 TURN
 
+### 语音能力与房间状态
+
+新版 `join` 可携带可选的 `voice: true` 能力声明。Worker 保留 `joined.room_members` 的旧字符串
+数组，同时向成员发送版本化 `room_state`：`members` 是包含 `device_name` 与 `voice` 的完整在线快照。
+只有两个成员都声明语音且位于前 8 个语音参与者内时，Worker 才创建 `transport_ready.voice: true`
+的 ICE 传输；该传输的 `mappings` 可以为空。未启用语音的旧客户端继续只处理普通 mapping。
+
+语音数据面使用版本 2 的独立 QUIC DATAGRAM envelope（magic、版本、kind、32 位序号、64 位采样时间戳、Opus codec
+和长度），不复用普通 UDP mapping 的 channel、分片或应用 socket。语音帧不重传，反馈使用独立的
+低频控制包。`room_state` 的在线状态、`transport_ready` 的路径状态和媒体统计彼此独立。
+
 `turn.order` 可为每端设置独立白名单和尝试顺序，只使用 `udp`、`tcp`、`tls`，最多 3 项且不能
 重复；留空为 UDP → TCP → TLS。Cloudflare TURN 在每种类型内先尝试标准端口，再尝试备用端口：
 

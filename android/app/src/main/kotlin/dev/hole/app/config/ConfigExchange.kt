@@ -73,6 +73,7 @@ object ConfigExchange {
                 connectionMode = if (cli.transport.preferred == PREFERRED_IPV6) "legacy" else if (cli.transport.allowLegacy) "auto" else "ice",
                 allowInsecureSignal = cli.transport.allowInsecureSignal, ice = cli.ice, turn = TurnSettings(cli.turn.mode, cli.turn.ttl, cli.turn.urls, cli.turn.username, normalizedTurnOrder(cli.turn.order)),
             ),
+            voice = cli.voice,
             provide = cli.provide.map {
                 val (host, port) = splitEndpoint(it.service.substringAfter("://"))
                 ProvideEntry(UUID.randomUUID().toString(), it.id, it.service.substringBefore("://"), host, port)

@@ -56,6 +56,10 @@ Worker 支持 `relay_only: true`，将任一端的仅中继要求通知双方，
 UDP 3478、TCP 3478、TCP 80、TLS 5349、TLS 443 排序；缓存键随端口优先级策略变化。
 行为细节见 [协议说明](PROTOCOL.md#ice-与-turn)。
 
+启用语音的 join 使用可选 `voice: true` 字段。Worker 广播 `room_state` 完整成员快照，并为两个
+语音成员创建允许空 `mappings` 的 voice-only transport；语音参与者上限为 8，超过时返回
+`voice_capacity`，不影响普通 16 人房间和 mapping 配对。旧客户端仍收到原有 `room_members` 字符串数组。
+
 ## TURN broker
 
 broker 是全局 Durable Object，按房间、设备、密钥策略和 TTL 缓存凭据，合并在途请求，

@@ -1,4 +1,4 @@
-import { RoomICE, TurnBroker, iceJoinFields, negotiateProfile, ICE_PROFILE, LEGACY_PROFILE, RELAY_ONLY_POLICY } from "./worker_ice.mjs";
+import { RoomICE, TurnBroker, iceJoinFields, negotiateProfile, ICE_PROFILE, LEGACY_PROFILE, RELAY_ONLY_POLICY, VOICE_MEMBER_LIMIT } from "./worker_ice.mjs";
 export { TurnBroker };
 const ROOM_PATH = "/ws";
 const MAX_MESSAGE_SIZE = 256 * 1024;
@@ -229,6 +229,7 @@ export class Room {
       relay_only_policy: RELAY_ONLY_POLICY,
       room_members: [...this.members.keys()],
     });
+    await this.broadcastRoomState();
     await this.reconcile();
   }
 
@@ -256,6 +257,7 @@ export class Room {
 
     this.members.delete(name);
     await this.state.storage.delete(memberKey(name));
+    await this.broadcastRoomState();
     // Online state may disappear; room authentication and transport generations remain.
     await this.reconcile();
   }
@@ -274,6 +276,15 @@ export class Room {
     } else {
       await this.state.storage.put("activeMappings", [...kept]);
     }
+  }
+
+  // room_members remains the legacy string list in joined messages. Voice
+  // clients consume this versioned object snapshot instead.
+  async broadcastRoomState() {
+    const members = [...this.members.values()]
+      .map(({ member }) => ({ device_name: member.device_name, voice: member.voice === true }))
+      .sort((a, b) => a.device_name.localeCompare(b.device_name));
+    for (const { ws } of this.members.values()) send(ws, { type: "room_state", version: 1, members });
   }
 
   // pushCandidateUpdates 把某成员的最新候选地址推给所有涉及它的活跃映射
@@ -298,6 +309,12 @@ export class Room {
     const nextActive = new Set();
     const icePairs = new Set();
     const entries = [...this.members.values()];
+    const voiceEntries = entries.filter(entry => entry.member.voice === true)
+      .sort((a, b) => a.member.device_name.localeCompare(b.member.device_name));
+    const allowedVoice = new Set(voiceEntries.slice(0, VOICE_MEMBER_LIMIT).map(entry => entry.member.device_name));
+    for (const entry of voiceEntries.slice(VOICE_MEMBER_LIMIT)) {
+      send(entry.ws, { type: "error", code: "voice_capacity", message: `语音房参与者上限为 ${VOICE_MEMBER_LIMIT}` });
+    }
 
     // consume 只按 id 配对：id 在房间内被多台设备同时提供时无法确定对端，
     // 跳过这些映射并向相关成员发 error，避免静默无输出的配置错误。
@@ -327,10 +344,17 @@ export class Room {
         const left = entries[i];
         const right = entries[j];
         const pairMappings = [...matchingPairs(left, right, providersById), ...matchingPairs(right, left, providersById)];
+        const voicePair = left.member.voice === true && right.member.voice === true &&
+          allowedVoice.has(left.member.device_name) && allowedVoice.has(right.member.device_name);
 
-        if (pairMappings.length) {
+        if (pairMappings.length || voicePair) {
           const profile = negotiateProfile(left.member, right.member);
-          if (profile === ICE_PROFILE) { await this.ice.activate(left, right, pairMappings, icePairs); continue; }
+          if (profile === ICE_PROFILE) { await this.ice.activate(left, right, pairMappings, icePairs, voicePair); continue; }
+          if (voicePair) {
+            for (const entry of [left, right]) send(entry.ws, { type: "error", code: "voice_protocol_mismatch", message: "语音传输需要双方支持 ICE / QUIC 语音协议" });
+            // A voice-only pair has no legacy mapping fallback.
+            if (!pairMappings.length) continue;
+          }
           if (!profile) {
             for (const match of pairMappings) for (const entry of [left, right]) send(entry.ws,{type:"error",code:"protocol_mismatch",mapping_id:match.id,message:"双方没有共同连接方式，请更新对端或显式开启旧版兼容"});
             continue;
@@ -496,6 +520,7 @@ function validateJoin(message) {
 
   return {
     ...iceFields,
+    voice: message.voice === true,
     token: String(message.token),
     device_name: message.device_name,
     device_id: message.device_name,

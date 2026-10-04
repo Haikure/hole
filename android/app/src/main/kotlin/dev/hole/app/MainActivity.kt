@@ -155,13 +155,25 @@ private fun AppRoot(
 
     // 通知权限只影响通知可见性，不影响前台服务运行；拒绝后照常启动并提示。
     var startAfterPermission by remember { mutableStateOf(false) }
+    var startAfterMicrophonePermission by remember { mutableStateOf(false) }
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (startAfterMicrophonePermission) {
+            startAfterMicrophonePermission = false
+            if (!granted) showNotice("未授予麦克风权限，房间语音无法启动") else model.startRun()
+        }
+    }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (startAfterPermission) {
             startAfterPermission = false
             if (!granted) showNotice("未授予通知权限，运行状态通知可能不显示")
-            model.startRun()
+            if (configState.config.voice.enabled && Build.VERSION.SDK_INT >= 23 && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                startAfterMicrophonePermission = true
+                microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            } else model.startRun()
         }
     }
 
@@ -177,7 +189,10 @@ private fun AppRoot(
                     context, Manifest.permission.POST_NOTIFICATIONS,
                 ) == PackageManager.PERMISSION_GRANTED
                 if (granted) {
-                    model.startRun()
+                    if (configState.config.voice.enabled && Build.VERSION.SDK_INT >= 23 && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                        startAfterMicrophonePermission = true
+                        microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    } else model.startRun()
                 } else {
                     startAfterPermission = true
                     permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -224,6 +239,7 @@ private fun AppRoot(
             onOpenBackground = { navigate("background") },
             onOpenTransfer = { navigate("transfer") },
             onOpenTransport = { navigate("transport") },
+            onVoiceEnabledChange = model::setVoiceEnabled,
             handleBack = route == page,
         )
         page == "transport" -> TransportSettingsScreen(configState, model::saveTransportSettings, { goBack() }, handleBack = route == page)

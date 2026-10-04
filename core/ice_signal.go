@@ -43,12 +43,19 @@ type iceSignalMessage struct {
 	ICECandidate        string              `json:"candidate,omitempty"`
 	EndOfCandidates     bool                `json:"end_of_candidates,omitempty"`
 	Mappings            []peerMappingRecord `json:"mappings,omitempty"`
+	Voice               bool                `json:"voice,omitempty"`
+	RoomState           []voiceRoomMember   `json:"members,omitempty"`
 	LeaseUntil          int64               `json:"lease_until,string,omitempty"`
 	ExpiresAt           int64               `json:"expire_at,string,omitempty"`
 	RefreshAt           int64               `json:"refresh_at,string,omitempty"`
 	TTLSecs             int                 `json:"ttl,omitempty"`
 	ICEServers          []ICEServer         `json:"ice_servers,omitempty"`
 	RetryAfterMS        int                 `json:"retry_after_ms,omitempty"`
+}
+
+type voiceRoomMember struct {
+	DeviceName string `json:"device_name"`
+	Voice      bool   `json:"voice"`
 }
 
 type transportLease struct {
@@ -62,6 +69,7 @@ type PeerTransportSnapshot struct {
 	TransportID string `json:"transport_id"`
 	Generation  uint64 `json:"generation,string"`
 	Profile     string `json:"profile"`
+	Voice       bool   `json:"voice,omitempty"`
 	State       string `json:"state"`
 	Phase       string `json:"phase"`
 	PathType    string `json:"path_type,omitempty"`

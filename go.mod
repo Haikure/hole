@@ -6,6 +6,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/ice/v4 v4.4.2
 	github.com/pion/logging v0.2.4
+	github.com/pion/opus v0.1.1-0.20261001050837-cfb9e7a35aad
 	github.com/pion/stun/v4 v4.0.0
 	github.com/pion/transport/v4 v4.1.0
 	github.com/pion/turn/v5 v5.1.0

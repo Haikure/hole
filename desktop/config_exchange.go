@@ -29,6 +29,7 @@ type portableConfig struct {
 	Transport           core.TransportConfig `json:"transport" yaml:"transport"`
 	ICE                 core.ICEConfig       `json:"ice" yaml:"ice"`
 	TURN                core.TURNConfig      `json:"turn" yaml:"turn"`
+	Voice               core.VoiceConfig     `json:"voice" yaml:"voice"`
 	Room                string               `json:"room" yaml:"room"`
 	Password            string               `json:"password" yaml:"password,omitempty"`
 	Token               string               `json:"token" yaml:"token,omitempty"`
@@ -76,7 +77,7 @@ func portableDocument(data []byte) (portableConfig, *rpcError) {
 		return portableConfig{}, documentFault()
 	}
 	doc := portableConfig{
-		ServerURL: cfg.ServerURL, Transport: cfg.Transport, ICE: cfg.ICE, TURN: cfg.TURN,
+		ServerURL: cfg.ServerURL, Transport: cfg.Transport, ICE: cfg.ICE, TURN: cfg.TURN, Voice: cfg.Voice,
 		Room: cfg.Room, Password: cfg.Password, Token: cfg.Token, DeviceName: cfg.DeviceName,
 		SessionTimeout: cfg.SessionTimeout.String(), CandidateInterfaces: append([]string{}, cfg.CandidateInterfaces...),
 		CandidateAddresses: append([]string{}, cfg.CandidateAddresses...), Provide: []portableProvide{}, Consume: []portableConsume{},
