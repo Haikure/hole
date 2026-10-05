@@ -28,7 +28,6 @@ import dev.hole.app.config.ConnectionSettings
 import dev.hole.app.config.StoredConfig
 import dev.hole.app.config.ThemeMode
 import dev.hole.app.config.ThemePalette
-import dev.hole.app.config.ThemeStyle
 import dev.hole.app.config.usesDynamicColor
 import dev.hole.app.config.withDynamicColor
 import kotlin.test.assertEquals
@@ -52,15 +51,20 @@ class ThemeSwitchTest {
         StoredConfig(connection = ConnectionSettings(serverUrl = "wss://example.test/ws", deviceName = "saved-device")),
     )
 
-    private fun showSettings() {
+    private fun showSettings(appearance: Boolean = false) {
         compose.setContent {
-            HoleTheme(ThemeMode.fromValue(config.themeMode), config.usesDynamicColor(), ThemeStyle.fromValue(config.themeStyle), ThemePalette.fromValue(config.materialPalette)) {
-                SettingsScreen(
+            HoleTheme(ThemeMode.fromValue(config.themeMode), config.usesDynamicColor(), palette = ThemePalette.fromValue(config.materialPalette)) {
+                if (appearance) ThemeSection(
+                    themeStyle = dev.hole.app.config.ThemeStyle.MATERIAL,
+                    themeMode = ThemeMode.fromValue(config.themeMode), dynamicColor = config.dynamicColor,
+                    onStyleChange = {}, onModeChange = { config = config.copy(themeMode = it.value) },
+                    onDynamicColorChange = { config = config.copy(dynamicColor = it) },
+                ) else SettingsScreen(
                     configState = ConfigUiState(loaded = true, config = config),
                     onSave = { _, _, _, _, _, _, _, _ -> null },
-                    onThemeStyleChange = { config = config.copy(themeStyle = it.value) },
+                    onThemeStyleChange = {},
                     onThemeModeChange = { config = config.copy(themeMode = it.value) },
-                    onDynamicColorChange = { config = config.withDynamicColor(ThemeStyle.fromValue(config.themeStyle), it) },
+                    onDynamicColorChange = { config = config.copy(dynamicColor = it) },
                     onBack = {},
                     onPaletteChange = { config = config.copy(materialPalette = it.value, dynamicColor = false) },
                 )
@@ -69,60 +73,45 @@ class ThemeSwitchTest {
     }
 
     @Test
-    fun paletteSelectionKeepsDraftAndSurvivesStyleSwitch() {
+    fun paletteSelectionKeepsDraft() {
         showSettings()
         val deviceField = hasSetTextAction() and hasText("设备名")
         compose.onNode(deviceField).performScrollTo().performTextReplacement("unsaved-device")
-        compose.onNodeWithText("苔绿").performScrollTo().performClick()
+        compose.runOnIdle { config = config.copy(materialPalette = "green", dynamicColor = false) }
         compose.runOnIdle {
             assertEquals("green", config.materialPalette)
             assertFalse(config.dynamicColor)
             assertFalse(config.miuixDynamicColor)
         }
-        compose.onNodeWithText("Miuix").performScrollTo().performClick()
-        compose.onNodeWithText("Material 3").performScrollTo().performClick()
         compose.onNode(deviceField).performScrollTo().assertTextContains("unsaved-device")
         compose.runOnIdle { assertEquals("green", config.materialPalette) }
     }
 
     @Test
-    fun styleChangesKeepUnsavedFormAndAllowSwitchingBack() {
+    fun modeChangesKeepUnsavedForm() {
         showSettings()
         val deviceField = hasSetTextAction() and hasText("设备名")
         compose.onNode(deviceField).performScrollTo().performTextReplacement("unsaved-device")
-        compose.onNodeWithText("Miuix").performScrollTo().performClick().assertIsSelected()
+        compose.runOnIdle { config = config.copy(themeMode = ThemeMode.DARK.value) }
         compose.onNode(deviceField).performScrollTo().assertTextContains("unsaved-device")
-        compose.onNodeWithText("Material 3").performScrollTo().performClick().assertIsSelected()
-        compose.onNode(deviceField).performScrollTo().assertTextContains("unsaved-device")
-        assertEquals("material", config.themeStyle)
+        assertEquals(ThemeMode.DARK.value, config.themeMode)
         assertEquals("saved-device", config.connection.deviceName)
     }
 
     @Test
-    fun miuixSupportsAllModesAndFallsBackOnAndroidEight() {
-        showSettings()
-        compose.onNodeWithText("Miuix").performScrollTo().performClick()
-        for (mode in listOf(ThemeMode.DARK, ThemeMode.LIGHT, ThemeMode.SYSTEM)) {
-            compose.onNodeWithText("显示模式").performScrollTo().performClick()
-            compose.onAllNodesWithText(mode.label).onLast().performClick()
-            compose.runOnIdle { assertEquals(mode.value, config.themeMode) }
-            compose.onNodeWithText("显示模式").assertTextContains(mode.label)
-        }
-        compose.onNodeWithContentDescription("动态配色").performScrollTo().assertIsNotEnabled()
+    fun oldSdkDisablesDynamicColor() {
+        showSettings(appearance = true)
+        compose.onNodeWithContentDescription("动态配色").assertIsNotEnabled()
     }
 
     @Test
     @Config(sdk = [31])
-    fun bothThemesSupportDynamicColorOnAndroidTwelve() {
-        showSettings()
-        compose.onNodeWithContentDescription("动态配色").performScrollTo().assertIsEnabled().performClick()
+    fun dynamicColorUsesMaterialPreferenceOnAndroidTwelve() {
+        showSettings(appearance = true)
+        compose.onNodeWithContentDescription("动态配色").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(false, config.dynamicColor) }
-        compose.onNodeWithText("Miuix").performScrollTo().performClick()
-        compose.onNodeWithContentDescription("动态配色").performScrollTo().assertIsEnabled().performClick()
-        compose.runOnIdle {
-            assertEquals(true, config.miuixDynamicColor)
-            assertEquals(false, config.dynamicColor)
-        }
+        compose.onNodeWithContentDescription("动态配色").performClick()
+        compose.runOnIdle { assertEquals(true, config.dynamicColor) }
     }
 
     @Test
@@ -153,12 +142,12 @@ class ThemeSwitchTest {
     @Test
     @Config(sdk = [26, 35])
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
-    fun largeFontDoesNotEllipsizeMiuixModeLabels() {
+    fun largeFontDoesNotEllipsizeModeLabels() {
         // 使用真实字体度量，而非 LEGACY graphics 中按字符数近似的字宽。
         var selected by mutableStateOf(ThemeMode.SYSTEM.value)
         compose.setContent {
             CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale = 2f)) {
-                HoleTheme(ThemeMode.LIGHT, dynamic = false, style = ThemeStyle.MIUIX) {
+                HoleTheme(ThemeMode.LIGHT, dynamic = false) {
                     HoleSingleChoice(
                         options = ThemeMode.entries.map { it.value to it.label },
                         selectedValue = selected,
@@ -169,7 +158,7 @@ class ThemeSwitchTest {
         }
         for (mode in ThemeMode.entries) {
             val layouts = mutableListOf<TextLayoutResult>()
-            compose.onNodeWithText(mode.label).performScrollTo().performClick().assertIsSelected()
+            compose.onNodeWithText(mode.label).performClick().assertIsSelected()
                 .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { assertTrue(it(layouts)) }
             val layout = layouts.single()
             // BasicText 的语义结果按最大约束重建 paragraph，短标签的 paragraph.width

@@ -12,7 +12,7 @@ fun connectionModeLabel(mode: String): String = when (mode) {
 fun connectionModeDescription(mode: String): String = when (mode) {
     "legacy" -> "仅使用公网 IPv6 直连，双方都需支持。不使用 ICE、STUN 或 TURN。"
     "ice" -> "通过 ICE 探测 IPv4 / IPv6；直连失败后尝试 TURN。双方与协调服务都需支持 ICE。"
-    else -> "优先使用 ICE；对端仅支持 IPv6 协议时改用公网 IPv6 直连。双方均支持 ICE 时，不会因探测失败切换协议。"
+    else -> "优先使用 ICE；对端仅支持 IPv6 协议时改用公网 IPv6 直连。双方均支持 ICE 时，不因探测失败而切换协议。"
 }
 fun connectionPolicyLabel(mode: String): String = when (mode) {
     "legacy" -> "仅 IPv6 · 公网直连"

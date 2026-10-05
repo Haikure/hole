@@ -1,30 +1,25 @@
 package dev.hole.app.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.hole.app.BuildConfig
 import dev.hole.app.ConfigUiState
 import dev.hole.corebridge.CoreSnapshot
@@ -32,202 +27,218 @@ import dev.hole.corebridge.MappingSnapshot
 import dev.hole.corebridge.PeerSnapshot
 import java.time.Duration
 import java.time.Instant
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.flow
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun RuntimeDetailsScreen(
     snapshot: CoreSnapshot, config: ConfigUiState, commandError: String?,
     onBack: () -> Unit, onReconnect: () -> Unit, onExport: () -> Unit, onBackground: () -> Unit,
     snackbarHostState: SnackbarHostState? = null, onTransportSettings: () -> Unit = {},
 ) {
-    val uptimeFlow = remember(snapshot.startedAt, snapshot.runRequested) {
-        flow {
-            while (true) {
-                emit(elapsedLabel(snapshot.startedAt, snapshot.runRequested))
-                if (!snapshot.runRequested) break
-                delay(1000)
+    var tab by rememberSaveable { mutableStateOf("devices") }
+    var query by rememberSaveable { mutableStateOf("") }
+    var filter by rememberSaveable { mutableStateOf("all") }
+    var selectedPeer by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedMapping by rememberSaveable { mutableStateOf<String?>(null) }
+    var diagnostics by rememberSaveable { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    val floatingInset = LocalFloatingInset.current
+    val peers = snapshot.peers.filter {
+        (filter == "all" || it.pathType == filter) &&
+            listOf(it.peerId, it.localAddress, it.remoteAddress, peerPathLabel(it)).any { value -> value.contains(query, ignoreCase = true) }
+    }
+    val mappings = snapshot.mappings.filter {
+        (filter == "all" || it.protocol == filter) &&
+            listOf(it.id, it.endpoint, it.peer).any { value -> value.contains(query, ignoreCase = true) }
+    }
+    HoleScaffold(title = "连接", actions = {
+        HoleIconButton(onReconnect) { Icon(Icons.Default.Refresh, "重选路径") }
+        Box {
+            HoleIconButton({ menu = true }) { Icon(Icons.Default.MoreVert, "连接选项") }
+            DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem(text = { Text("网络诊断") }, onClick = { menu = false; diagnostics = true })
+                DropdownMenuItem(text = { Text("连接方式") }, onClick = { menu = false; onTransportSettings() })
+                DropdownMenuItem(text = { Text("导出报告") }, onClick = { menu = false; onExport() })
+            }
+        }
+    }, snackbarHost = { snackbarHostState?.let { HoleSnackbarHost(it) } }) { insets ->
+        LazyColumn(
+            Modifier.fillMaxSize().padding(insets).testTag("connection-details"),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = floatingInset + 20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            item {
+                HoleSingleChoice(
+                    listOf("devices" to "设备 ${snapshot.peers.size}", "services" to "服务 ${snapshot.mappings.size}"),
+                    tab, { tab = it; filter = "all" },
+                )
+            }
+            item {
+                TextField(query, { query = it }, Modifier.fillMaxWidth(),
+                    placeholder = { Text(if (tab == "devices") "搜索设备或地址" else "搜索服务或端口") },
+                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    trailingIcon = if (query.isNotEmpty()) ({ IconButton({ query = "" }) { Icon(Icons.Default.Close, "清除搜索") } }) else null,
+                    singleLine = true, shape = CircleShape,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                        focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                        unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                    ),
+                )
+            }
+            item {
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    val filters = if (tab == "devices") listOf("all" to "全部", "direct" to "直连", "relay" to "中继")
+                        else listOf("all" to "全部", "tcp" to "TCP", "udp" to "UDP")
+                    filters.forEach { (value, label) ->
+                        FilterChip(selected = filter == value, onClick = { filter = value }, label = { Text(label) }, shape = CircleShape)
+                    }
+                }
+            }
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(if (tab == "devices") "${peers.size} 台设备" else "${mappings.size} 项服务",
+                        style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("TCP ${snapshot.tcpSessions}  ·  UDP ${snapshot.udpSessions}",
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            listOfNotNull(commandError, snapshot.errorMessage).distinct().forEach { error ->
+                item { Text(error, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
+            }
+            if ((tab == "devices" && peers.isEmpty()) || (tab == "services" && mappings.isEmpty())) item {
+                Column(Modifier.fillMaxWidth().padding(vertical = 44.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(Icons.Default.Search, null, Modifier.size(36.dp), tint = MaterialTheme.colorScheme.outline)
+                    Text(if (query.isNotBlank() || filter != "all") "没有匹配的连接" else if (!snapshot.runRequested) "连接已停止" else "等待对端连接",
+                        style = MaterialTheme.typography.titleMedium)
+                    if (tab == "devices" && config.config.connection.connectionMode == "legacy") Text("IPv6 线路显示在服务中", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (tab == "devices") items(peers, key = { it.transportId }) { peer ->
+                PeerConnectionRow(peer, Modifier.animateItem()) { selectedPeer = peer.transportId }
+            } else items(mappings, key = { "${it.role}/${it.id}" }) { mapping ->
+                ServiceConnectionRow(mapping, Modifier.animateItem()) { selectedMapping = "${mapping.role}/${mapping.id}" }
             }
         }
     }
-    val uptime by uptimeFlow.collectAsStateWithLifecycle(initialValue = elapsedLabel(snapshot.startedAt, snapshot.runRequested))
-    val active = snapshot.mappings.count { it.state == "active" }
-    HoleScaffold(title = "连接详情", navigationIcon = { HoleBackButton(onBack) },
-        snackbarHost = { snackbarHostState?.let { HoleSnackbarHost(it) } }) { insets ->
-        LazyColumn(Modifier.fillMaxWidth().padding(insets).padding(horizontal = 16.dp).testTag("connection-details"),
-            verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            item {
-                HoleCard(Modifier.fillMaxWidth(), containerColor = MaterialTheme.colorScheme.secondaryContainer) {
-                    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(connectionTitle(snapshot), style = MaterialTheme.typography.headlineSmall)
-                        Text(if (snapshot.runRequested) "当前 $active / ${snapshot.mappings.size} 个服务通道可用。退出此页面不会停止转发。" else "设置与服务条目仍保留，开启首页开关后重新连接。",
-                            style = MaterialTheme.typography.bodyMedium)
-                        CompactDetail("运行时间", uptime)
-                        CompactDetail("业务连接", "TCP ${snapshot.tcpSessions} · UDP ${snapshot.udpSessions}")
-                        snapshot.errorCode?.let { Text(connectionIssue(it), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
-                        commandError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            HoleButton("重选路径", onReconnect, enabled = snapshot.runRequested, secondary = true)
-                            HoleTextButton("连接方式", onTransportSettings)
-                        }
-                    }
+    selectedPeer?.let { id ->
+        InspectionSheet("设备连接", { selectedPeer = null }) {
+            val peer = snapshot.peers.firstOrNull { it.transportId == id }
+            if (peer == null) Text("连接已结束") else {
+                Text(peer.peerId, style = MaterialTheme.typography.headlineSmall)
+                InspectionValue("线路", peerPathLabel(peer))
+                InspectionValue("状态", peerStateLabel(peer))
+                InspectionValue("延迟", "${peer.rttMs} ms")
+                InspectionValue("连接过程", peerPhaseLabel(peer))
+                DetailRow("本机连接", selectedConnectionLabel(peer.localType, peer.localAddress))
+                DetailRow("对端连接", selectedConnectionLabel(peer.remoteType, peer.remoteAddress))
+                InspectionValue("上行 / 下行", "${formatBytes(peer.bytesSent)} / ${formatBytes(peer.bytesReceived)}")
+                InspectionValue("服务通道", "${peer.activeChannels} / ${peer.mappingCount}")
+                InspectionValue("建连耗时", "${peer.connectMs} ms")
+                InspectionValue("重试 / 丢包", "${peer.retryCount} / ${peer.droppedDatagrams}")
+                if (peer.pathType == "relay") {
+                    InspectionValue("中继接入", relayPathLabel(peer))
+                    InspectionValue("本机顺序", relayOrderLabel(peer.relayOrder))
+                    InspectionValue("对端顺序", relayOrderLabel(peer.peerRelayOrder))
+                    InspectionValue("凭据有效期", remainingTime(peer.turnExpiresAt))
                 }
+                peer.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
-            item { HoleSectionTitle("设备与线路") }
-            if (snapshot.peers.isEmpty()) item {
-                DetailCard {
-                    val ipv6 = config.config.connection.connectionMode == "legacy" || snapshot.mappings.any { it.profile == "legacy-ipv6-quic-v2" }
-                    Text(when {
-                        !snapshot.runRequested -> "连接尚未开启"
-                        ipv6 && snapshot.mappings.any { it.state == "active" } -> "正在使用 IPv6 直连"
-                        ipv6 -> "等待 IPv6 对端连接"
-                        else -> "暂无已配对的 ICE 设备"
-                    }, style = MaterialTheme.typography.titleMedium)
-                    Text(if (ipv6) "IPv6 直连的对端与路径地址见下方服务明细；此方式不使用 ICE 或 TURN 中继。"
-                        else if (snapshot.runRequested) "双方使用相同房间，并启用匹配的提供 / 使用服务后，这里会显示直连或中继、延迟与流量。"
-                        else "连接开启后显示每台对端设备实际使用的线路。", style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+    selectedMapping?.let { id ->
+        InspectionSheet("服务连接", { selectedMapping = null }) {
+            val mapping = snapshot.mappings.firstOrNull { "${it.role}/${it.id}" == id }
+            if (mapping == null) Text("连接已结束") else {
+                Text(mapping.id, style = MaterialTheme.typography.headlineSmall)
+                InspectionValue("状态", mappingLabel(mapping.state))
+                DetailRow("监听地址", mapping.endpoint.ifBlank { "等待分配" })
+                DetailRow("对端", mapping.peer.ifBlank { "等待匹配" })
+                DetailRow("线路", mapping.path.ifBlank { "共享设备线路" })
+                InspectionValue("TCP / UDP", "${mapping.tcpSessions} / ${mapping.udpSessions}")
+                InspectionValue("上行 / 下行", "${formatBytes(mapping.readBytes)} / ${formatBytes(mapping.writtenBytes)}")
+                InspectionValue("待确认数据", formatBytes(mapping.replayBytes))
+                mapping.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        }
+    }
+    if (diagnostics) InspectionSheet("网络诊断", { diagnostics = false }) {
+        InspectionValue("核心", engineLabel(snapshot))
+        InspectionValue("房间", signalLabel(snapshot.signalState))
+        InspectionValue("网络", snapshot.network.transport)
+        InspectionValue("互联网", if (snapshot.network.validated) "已验证" else "未验证")
+        DetailRow("网卡", snapshot.network.interfaceName.ifBlank { "系统选择" })
+        DetailRow("地址", snapshot.network.addresses.joinToString("\n").ifBlank { "暂无" })
+        DetailRow("DNS", snapshot.network.dns.joinToString("\n").ifBlank { "系统提供" })
+        InspectionValue("切网 / 重连", "${snapshot.networkChanges} / ${snapshot.reconnects}")
+        InspectionValue("会话保留", config.config.connection.sessionTimeout)
+        InspectionValue("运行 / 网络重建编号", "${snapshot.generation} / ${snapshot.transportGeneration}")
+        InspectionValue("客户端", BuildConfig.VERSION_NAME)
+        DetailRow("核心版本", snapshot.coreVersion.ifBlank { "加载中" })
+        HoleButton("导出报告", onExport, Modifier.fillMaxWidth())
+        HoleTextButton("后台运行设置", onBackground)
+    }
+}
+
+@Composable
+private fun PeerConnectionRow(peer: PeerSnapshot, modifier: Modifier, onClick: () -> Unit) {
+    RaisedPanel(modifier.fillMaxWidth().clickable(onClickLabel = "查看 ${peer.peerId}", onClick = onClick)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                    Icon(Icons.Default.Home, null, Modifier.padding(10.dp).size(22.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
                 }
-            }
-            items(snapshot.peers, key = { "peer/${it.transportId}" }) { peer -> PeerDetail(peer) }
-            item { HoleSectionTitle("服务明细 · ${snapshot.mappings.size}") }
-            if (snapshot.mappings.isEmpty()) item {
-                Text("尚未启用服务。可以返回首页添加提供服务或使用服务。", style = MaterialTheme.typography.bodyMedium)
-            }
-            items(snapshot.mappings, key = { "mapping/${it.role}/${it.id}" }) { mapping -> MappingDetail(mapping) }
-            item {
-                DetailCard {
-                    Text("设置与恢复", style = MaterialTheme.typography.titleMedium)
-                    Text(configurationText(snapshot, config), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyLarge)
-                    CompactDetail("协调服务", signalLabel(snapshot.signalState))
-                    CompactDetail("恢复记录", "切网 ${snapshot.networkChanges} 次 · 协调重连 ${snapshot.reconnects} 次")
-                    CompactDetail("断线保留", config.config.connection.sessionTimeout)
-                    Text("底层路径断开时，已有 TCP 会话在保留期限内尝试续接；正常转发不会到点停止。UDP 期间可能丢包。删除服务、变更身份或停止运行会结束对应会话。",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(peer.peerId.ifBlank { "未命名设备" }, style = MaterialTheme.typography.titleMedium)
+                    Text(peerPathLabel(peer), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                Text(peer.rttMs.takeUnless { it == "0" }?.let { "$it ms" } ?: "—", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleMedium)
             }
-            item {
-                DetailCard {
-                    Text("本机网络与后台", style = MaterialTheme.typography.titleMedium)
-                    CompactDetail("网络", snapshot.network.transport.takeUnless { it == "none" || it.isBlank() } ?: "等待可用网络")
-                    CompactDetail("网络状态", when { !snapshot.runRequested -> "显示最近使用的网络"; snapshot.network.validated -> "系统已确认互联网可用"; snapshot.network.available -> "网络已连接，等待互联网验证"; else -> "尚无可用网络" })
-                    CompactDetail("连接策略", connectionPolicyLabel(config.config.connection.connectionMode))
-                    Disclosure("网络地址与探测服务", "收起网络信息") {
-                        DetailRow("网卡", snapshot.network.interfaceName.ifEmpty { "由系统选择" })
-                        DetailRow("本机地址", snapshot.network.addresses.joinToString("\n").ifEmpty { "暂无地址" })
-                        DetailRow("DNS", snapshot.network.dns.joinToString("\n").ifEmpty { "由当前网络提供" })
-                        val ipv6Only = config.config.connection.connectionMode == "legacy"
-                        DetailRow("STUN", if (ipv6Only) "未使用（仅 IPv6 模式）" else config.config.connection.ice.stunUrls.joinToString("\n").ifEmpty { "未启用，仅探测本地地址" })
-                        Text(if (ipv6Only) "当前转发路径仅使用公网 IPv6；STUN 与 TURN 设置不会用于此模式。"
-                            else "STUN 用于发现可直连的公网映射，不转发业务数据。ICE 同时尝试 IPv4 与 IPv6；直连不通时按设置尝试中继。", style = MaterialTheme.typography.bodySmall)
-                        CompactDetail("计费网络", if (snapshot.network.metered) "是" else "否")
-                        CompactDetail("网络绑定", if (snapshot.networkBinding) "外部连接与 DNS 跟随所选网络" else "使用系统网络")
-                    }
-                    HoleTextButton("后台保持设置", onBackground)
-                }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .4f))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("↑ ${formatBytes(peer.bytesSent)}", style = MaterialTheme.typography.bodyMedium)
+                Text("↓ ${formatBytes(peer.bytesReceived)}", style = MaterialTheme.typography.bodyMedium)
+                Text(peerStateLabel(peer), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             }
-            item {
-                DetailCard {
-                    Text("连接报告", style = MaterialTheme.typography.titleMedium)
-                    Text("导出当前状态、线路和服务统计，便于排查问题。不包含密码、TURN 凭据或 Go 原始日志。", style = MaterialTheme.typography.bodyMedium)
-                    HoleButton("导出连接报告", onExport, secondary = true)
-                    Disclosure("版本与技术信息", "收起技术信息") {
-                        CompactDetail("客户端", "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-                        DetailRow("共享组件", snapshot.coreVersion.ifEmpty { "加载中" })
-                        CompactDetail("运行 / 网络重建编号", "${snapshot.generation} / ${snapshot.transportGeneration}")
-                        CompactDetail("桥接 / 会话协议", "${snapshot.apiVersion} / ${snapshot.sessionProtocol}")
-                        snapshot.errorMessage?.let { DetailRow("当前错误详情", "${snapshot.errorCode}: $it") }
-                    }
-                }
-            }
-            item { Text("统计来自当前连接状态；线路流量包含协议开销，不作为中继账单。", Modifier.padding(bottom = 28.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
     }
 }
 
 @Composable
-private fun PeerDetail(peer: PeerSnapshot) {
-    DetailCard {
-        Text(peer.peerId, style = MaterialTheme.typography.titleLarge)
-        Text(peerStateLabel(peer), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-        Text(peerPathLabel(peer), style = MaterialTheme.typography.bodyLarge)
-        CompactDetail("共享服务", "${peer.activeChannels} / ${peer.mappingCount}")
-        CompactDetail("往返延迟", peer.rttMs.takeUnless { it == "0" }?.let { "$it ms" } ?: "正在测量")
-        CompactDetail("线路流量 ↑ / ↓", "${formatBytes(peer.bytesSent)} / ${formatBytes(peer.bytesReceived)}")
-        if (peer.pendingPhase.isNotEmpty()) Text("同时${phaseLabel(peer.pendingPhase)}，新路径就绪后切换。", style = MaterialTheme.typography.bodySmall)
-        if (peer.errorCode != null && peer.state !in setOf("active", "switching")) Text(connectionIssue(peer.errorCode), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-        Disclosure("查看线路细节", "收起线路细节") {
-            CompactDetail("连接过程", peerPhaseLabel(peer))
-            CompactDetail("本机 TURN 顺序", relayOrderLabel(peer.relayOrder))
-            CompactDetail("对端 TURN 顺序", relayOrderLabel(peer.peerRelayOrder))
-            if (peer.relayOrderFallback) Text("对端或协调服务不支持自定义顺序，当前使用默认顺序。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            else if (peer.relayRound > 0) CompactDetail("共享中继轮次", "第 ${peer.relayRound} 轮")
-            if (peer.pathType == "relay") {
-                CompactDetail("中继使用方", when (peer.relaySide) { "both" -> "本机与对端"; "local" -> "本机"; "remote" -> "对端"; else -> "等待确认" })
-                CompactDetail("中继接入", relayPathLabel(peer))
-                Text("接入类型按实际选中的 TURN 连接显示，不按候选地址端口猜测；仅对端使用中继时，其接入协议可能未上报。", style = MaterialTheme.typography.bodySmall)
+private fun ServiceConnectionRow(mapping: MappingSnapshot, modifier: Modifier, onClick: () -> Unit) {
+    RaisedPanel(modifier.fillMaxWidth().clickable(onClickLabel = "查看 ${mapping.id}", onClick = onClick)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(mapping.id, style = MaterialTheme.typography.titleMedium)
+                Text(mapping.protocol.uppercase(), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
             }
-            DetailRow("本机连接", selectedConnectionLabel(peer.localType, peer.localAddress))
-            DetailRow("对端连接", selectedConnectionLabel(peer.remoteType, peer.remoteAddress))
-            CompactDetail("已发现候选地址", "本机 ${peer.localCandidates} · 对端 ${peer.remoteCandidates}")
-            CompactDetail("建连耗时", peer.connectMs.takeUnless { it == "0" }?.let { "$it ms" } ?: "尚未完成")
-            CompactDetail("路径重试", "${peer.retryCount} 次")
-            CompactDetail("丢弃的 UDP 报文", peer.droppedDatagrams)
-            CompactDetail("本机中继来源", when (peer.relayState) { "ready" -> "短期凭据已就绪"; "manual" -> "手动配置"; "off" -> "不申请本机中继"; "unavailable", "expired" -> "暂不可用，直连仍可使用"; else -> "准备中" })
-            if (peer.turnExpiresAt != "0") CompactDetail("中继凭据剩余时间", remainingTime(peer.turnExpiresAt))
-            CompactDetail("授权确认剩余时间", remainingTime(peer.leaseUntil))
-            DetailRow("传输标识", "${peer.transportId} · 第 ${peer.generation} 次路径")
+            Text(mapping.endpoint.ifBlank { "等待匹配" }, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${mappingLabel(mapping.state)} · ${mapping.tcpSessions + mapping.udpSessions} 个会话", style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InspectionSheet(title: String, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Text(title, style = MaterialTheme.typography.titleLarge)
+            content()
         }
     }
 }
 
 @Composable
-private fun MappingDetail(mapping: MappingSnapshot) {
-    DetailCard {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(mapping.id, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            Text(mappingLabel(mapping.state), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-        }
-        Text("${if (mapping.role == "provide") "提供服务" else "使用服务"} · ${mapping.protocol.uppercase().ifBlank { "等待匹配协议" }}", style = MaterialTheme.typography.labelLarge)
-        Text(mapping.endpoint.ifBlank { "等待分配监听地址" }, style = MaterialTheme.typography.bodyMedium)
-        CompactDetail("业务连接", "TCP ${mapping.tcpSessions} · UDP ${mapping.udpSessions}")
-        Disclosure("服务地址与数据详情", "收起服务详情") {
-            CompactDetail("传输方式", when (mapping.profile) { "legacy-ipv6-quic-v2" -> "IPv6 直连"; "ice-quic-mux-v1" -> "ICE · 多服务共享 QUIC"; else -> "等待协商" })
-            DetailRow("对端设备", mapping.peer.ifBlank { "尚未匹配" })
-            DetailRow("线路地址", mapping.path.ifBlank { "由上方设备线路统一承载" })
-            CompactDetail("TCP 应用上行 / 下行", "${formatBytes(mapping.tcpReadBytes)} / ${formatBytes(mapping.tcpWrittenBytes)}")
-            CompactDetail("TCP 待确认数据", formatBytes(mapping.replayBytes))
-            Text("TCP 统计当前存活的业务连接和应用数据；UDP 按本地来源计数。确认前的 TCP 缓存可用于断线续接。", style = MaterialTheme.typography.bodySmall)
-            mapping.error?.let { DetailRow("当前服务提示", it) }
-        }
-    }
-}
-
-@Composable
-private fun DetailCard(content: @Composable () -> Unit) {
-    HoleCard(Modifier.fillMaxWidth().animateContentSize()) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { content() }
-    }
-}
-@Composable
-private fun Disclosure(openLabel: String, closeLabel: String, content: @Composable () -> Unit) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    HoleTextButton(if (expanded) closeLabel else openLabel, { expanded = !expanded })
-    AnimatedVisibility(expanded) { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { content() } }
-}
-@Composable
-private fun CompactDetail(label: String, value: String) {
-    if (LocalDensity.current.fontScale > 1.3f) {
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, style = MaterialTheme.typography.bodyMedium)
-        }
-        return
-    }
+private fun InspectionValue(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(0.9f))
-        Text(value, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.End, modifier = Modifier.weight(1.1f))
+        Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+        SelectionContainer(Modifier.weight(1.4f)) { Text(value, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.End) }
     }
 }
+
 @Composable
 fun DetailRow(label: String, value: String) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {

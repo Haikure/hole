@@ -30,11 +30,6 @@ type voiceOutbound struct {
 	enqueued time.Time
 }
 
-type voiceDecoded struct {
-	peer  string
-	frame PCMFrame
-}
-
 type voicePeer struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -45,14 +40,17 @@ type voicePeer struct {
 	codec         voiceCodec
 	bitrate       *bitrateController
 	out           chan voiceOutbound
-	decoded       chan<- voiceDecoded
 	jitter        *jitterBuffer
-	sequence      atomic.Uint32
 	queueDrops    atomic.Uint64
 	datagramDrops atomic.Uint64
 	lateFrames    atomic.Uint64
 	reordered     atomic.Uint64
 	received      atomic.Uint64
+	sent          atomic.Uint64
+	decoded       atomic.Uint64
+	concealed     atomic.Uint64
+	lastSent      atomic.Int64
+	lastDecoded   atomic.Int64
 	lost          atomic.Uint64
 	highest       atomic.Uint32
 	mu            sync.Mutex
@@ -62,15 +60,14 @@ type voicePeer struct {
 	closeOnce     sync.Once
 }
 
-func newVoicePeer(parent context.Context, peerID, transportID string, generation uint64, link voiceLink, codec voiceCodec, decoded chan<- voiceDecoded) *voicePeer {
+func newVoicePeer(parent context.Context, peerID, transportID string, generation uint64, link voiceLink, codec voiceCodec) *voicePeer {
 	ctx, cancel := context.WithCancel(parent)
-	p := &voicePeer{ctx: ctx, cancel: cancel, peerID: peerID, transport: transportID, generation: generation, link: link, codec: codec, bitrate: newBitrateController(), out: make(chan voiceOutbound, voiceQueueFrames), decoded: decoded, jitter: newJitterBuffer(voiceJitterLimit), state: "connecting"}
-	p.workers.Add(5)
+	p := &voicePeer{ctx: ctx, cancel: cancel, peerID: peerID, transport: transportID, generation: generation, link: link, codec: codec, bitrate: newBitrateController(), out: make(chan voiceOutbound, voiceQueueFrames), jitter: newJitterBuffer(voiceJitterLimit), state: "connecting"}
+	p.workers.Add(4)
 	go func() { defer p.workers.Done(); p.writeLoop() }()
 	go func() { defer p.workers.Done(); p.readLoop() }()
 	go func() { defer p.workers.Done(); p.feedbackLoop() }()
 	go func() { defer p.workers.Done(); p.feedbackReadLoop() }()
-	go func() { defer p.workers.Done(); p.playLoop() }()
 	return p
 }
 
@@ -97,6 +94,9 @@ func (p *voicePeer) enqueue(frame PCMFrame) {
 }
 
 func (p *voicePeer) writeLoop() {
+	var sequence uint32
+	var previousTimestamp uint64
+	haveTimestamp := false
 	for {
 		select {
 		case <-p.ctx.Done():
@@ -111,7 +111,16 @@ func (p *voicePeer) writeLoop() {
 				p.setError(err)
 				continue
 			}
-			sequence := p.sequence.Add(1) - 1
+			// Preserve capture gaps (including mute) on the receiver's playout
+			// timeline. A restarted adapter may reset its sampling clock to zero.
+			if haveTimestamp {
+				step := uint64(1)
+				if item.frame.Timestamp > previousTimestamp {
+					step = max(step, (item.frame.Timestamp-previousTimestamp)/uint64(DefaultPCMFormat.FrameSamples))
+				}
+				sequence += uint32(step)
+			}
+			previousTimestamp, haveTimestamp = item.frame.Timestamp, true
 			packet, err := marshalVoicePacket(voicePacket{Version: voiceWireVersion, Kind: voiceKindMedia, Sequence: sequence, Timestamp: item.frame.Timestamp, Codec: voiceCodecOpus, Payload: payload})
 			if err != nil {
 				p.setError(err)
@@ -120,6 +129,9 @@ func (p *voicePeer) writeLoop() {
 			if err = p.link.SendVoiceDatagram(packet); err != nil {
 				p.datagramDrops.Add(1)
 				p.setError(err)
+			} else {
+				p.sent.Add(1)
+				p.lastSent.Store(time.Now().UnixNano())
 			}
 		}
 	}
@@ -151,40 +163,39 @@ func (p *voicePeer) readLoop() {
 	}
 }
 
-func (p *voicePeer) playLoop() {
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-p.ctx.Done():
-			return
-		case <-ticker.C:
-			frame, ok := p.jitter.popForPlayback()
-			if !ok {
-				continue
-			}
-			if p.codec == nil {
-				p.setError(errors.New("voice Opus decoder is unavailable"))
-				continue
-			}
-			samples := make([]int16, DefaultPCMFormat.FrameSamples)
-			n, err := p.codec.Decode(frame.Payload, samples)
-			if err != nil || n != len(samples) {
-				p.datagramDrops.Add(1)
-				if err != nil {
-					p.setError(err)
-				}
-				continue
-			}
-			select {
-			case p.decoded <- voiceDecoded{peer: p.peerID, frame: PCMFrame{Sequence: uint64(frame.Sequence), Timestamp: frame.Timestamp, Samples: samples}}:
-			case <-p.ctx.Done():
-				return
-			default:
-				p.lateFrames.Add(1)
-			}
-		}
+// Only the runtime playback clock calls decodeFrame, so each decoder advances
+// once per output period regardless of packet arrival order or peer count.
+func (p *voicePeer) decodeFrame() ([]int16, bool) {
+	if p.ctx.Err() != nil {
+		return nil, false
 	}
+	frame, ok := p.jitter.popForPlayback()
+	if !ok {
+		return nil, false
+	}
+	samples := make([]int16, DefaultPCMFormat.FrameSamples)
+	if p.codec == nil {
+		p.setError(errors.New("voice Opus decoder is unavailable"))
+		return samples, true
+	}
+	n, err := p.codec.Decode(frame.Payload, samples)
+	if err != nil || n != len(samples) {
+		p.datagramDrops.Add(1)
+		if err != nil && len(frame.Payload) > 0 {
+			p.setError(err)
+		}
+		clear(samples)
+		p.concealed.Add(1)
+	} else if len(frame.Payload) == 0 {
+		p.concealed.Add(1)
+	} else {
+		p.decoded.Add(1)
+		p.lastDecoded.Store(time.Now().UnixNano())
+		p.mu.Lock()
+		p.state, p.error = "active", nil
+		p.mu.Unlock()
+	}
+	return samples, true
 }
 
 func (p *voicePeer) feedbackLoop() {
@@ -258,12 +269,28 @@ func (p *voicePeer) snapshot() VoicePeerSnapshot {
 	p.mu.Lock()
 	state, fault := p.state, p.error
 	p.mu.Unlock()
-	s := VoicePeerSnapshot{PeerID: p.peerID, TransportID: p.transport, Generation: p.generation, State: state, Bitrate: p.bitrate.bitrate(), QueueDepth: len(p.out), QueueDrops: p.queueDrops.Load(), DatagramDrops: p.datagramDrops.Load(), LateFrames: p.lateFrames.Load(), JitterDepth: p.jitter.len()}
+	media := "waiting"
+	sending, receiving := voiceRecently(p.lastSent.Load()), voiceRecently(p.lastDecoded.Load())
+	switch {
+	case fault != nil:
+		media = "paused"
+	case sending && receiving:
+		media = "active"
+	case receiving:
+		media = "receiving"
+	case sending:
+		media = "sending"
+	}
+	s := VoicePeerSnapshot{PeerID: p.peerID, TransportID: p.transport, Generation: p.generation, State: state, MediaState: media, SentFrames: p.sent.Load(), ReceivedFrames: p.received.Load(), DecodedFrames: p.decoded.Load(), ConcealedFrames: p.concealed.Load(), PacketLoss: p.lost.Load(), Reordered: p.reordered.Load(), Bitrate: p.bitrate.bitrate(), QueueDepth: len(p.out), QueueDrops: p.queueDrops.Load(), DatagramDrops: p.datagramDrops.Load(), LateFrames: p.lateFrames.Load(), JitterDepth: p.jitter.len()}
 	if fault != nil {
 		copy := *fault
 		s.Error = &copy
 	}
 	return s
+}
+
+func voiceRecently(timestamp int64) bool {
+	return timestamp > 0 && time.Since(time.Unix(0, timestamp)) < 2*time.Second
 }
 
 func (p *voicePeer) close() {
@@ -281,7 +308,9 @@ type voiceRuntime struct {
 	muted        atomic.Bool
 	mu           sync.Mutex
 	peers        map[string]*voicePeer
-	decoded      chan voiceDecoded
+	captured     atomic.Uint64
+	lastCaptured atomic.Int64
+	mixed        atomic.Uint64
 	workers      sync.WaitGroup
 	closed       bool
 }
@@ -306,7 +335,7 @@ func newVoiceRuntime(parent context.Context, source PCMSource, sink PCMSink, cod
 
 func newVoiceRuntimeWithFactory(parent context.Context, source PCMSource, sink PCMSink, factory voiceCodecFactory) *voiceRuntime {
 	ctx, cancel := context.WithCancel(parent)
-	r := &voiceRuntime{ctx: ctx, cancel: cancel, source: source, sink: sink, codecFactory: factory, peers: map[string]*voicePeer{}, decoded: make(chan voiceDecoded, voiceJitterLimit)}
+	r := &voiceRuntime{ctx: ctx, cancel: cancel, source: source, sink: sink, codecFactory: factory, peers: map[string]*voicePeer{}}
 	if source != nil {
 		r.workers.Add(1)
 		go func() { defer r.workers.Done(); r.captureLoop() }()
@@ -348,7 +377,7 @@ func (r *voiceRuntime) bindPeer(peerID, transportID string, generation uint64, l
 	if r.codecFactory != nil {
 		codec, _ = r.codecFactory()
 	}
-	p := newVoicePeer(r.ctx, peerID, transportID, generation, link, codec, r.decoded)
+	p := newVoicePeer(r.ctx, peerID, transportID, generation, link, codec)
 	r.peers[peerID] = p
 	r.mu.Unlock()
 	if old != nil {
@@ -367,21 +396,19 @@ func (r *voiceRuntime) unbindPeer(peerID string) {
 }
 
 func (r *voiceRuntime) captureLoop() {
-	var previous PCMFrame
-	havePrevious := false
 	for {
 		var frame PCMFrame
 		if err := r.source.ReadPCM(r.ctx, &frame); err != nil {
 			return
 		}
-		if frame.Validate() != nil || (havePrevious && (frame.Sequence != previous.Sequence+1 || frame.Timestamp != previous.Timestamp+uint64(DefaultPCMFormat.FrameSamples))) || r.muted.Load() {
-			if frame.Validate() == nil {
-				previous = frame
-				havePrevious = true
-			}
+		if frame.Validate() != nil {
 			continue
 		}
-		previous, havePrevious = frame, true
+		r.captured.Add(1)
+		r.lastCaptured.Store(time.Now().UnixNano())
+		if r.muted.Load() {
+			continue
+		}
 		r.mu.Lock()
 		for _, peer := range r.peers {
 			peer.enqueue(frame)
@@ -391,40 +418,66 @@ func (r *voiceRuntime) captureLoop() {
 }
 
 func (r *voiceRuntime) mixLoop() {
-	frames := make(map[string]PCMFrame, voicePeerLimit)
+	ticker := time.NewTicker(voiceFrameMillis * time.Millisecond)
+	defer ticker.Stop()
+	var sequence uint64
 	for {
 		select {
 		case <-r.ctx.Done():
 			return
-		case input := <-r.decoded:
-			for peer, frame := range frames {
-				window := uint64(2 * DefaultPCMFormat.FrameSamples)
-				if input.frame.Timestamp > frame.Timestamp+window || frame.Timestamp > input.frame.Timestamp+window {
-					delete(frames, peer)
-				}
-			}
-			frames[input.peer] = input.frame
-			if len(frames) == 0 {
-				continue
-			}
-			mixed := make([]int16, DefaultPCMFormat.FrameSamples)
-			for _, frame := range frames {
-				for i, sample := range frame.Samples {
-					value := int32(mixed[i]) + int32(sample)
-					if value > 32767 {
-						value = 32767
-					}
-					if value < -32768 {
-						value = -32768
-					}
-					mixed[i] = int16(value)
-				}
-			}
-			if err := r.sink.WritePCM(r.ctx, PCMFrame{Timestamp: input.frame.Timestamp, Sequence: input.frame.Sequence, Samples: mixed}); err != nil {
+		case <-ticker.C:
+			if err := r.sink.WritePCM(r.ctx, r.mixFrame(sequence)); err != nil {
 				return
 			}
+			r.mixed.Add(1)
+			sequence++
 		}
 	}
+}
+
+func (r *voiceRuntime) mixFrame(sequence uint64) PCMFrame {
+	r.mu.Lock()
+	peers := make([]*voicePeer, 0, len(r.peers))
+	for _, peer := range r.peers {
+		peers = append(peers, peer)
+	}
+	r.mu.Unlock()
+	sums := make([]int32, DefaultPCMFormat.FrameSamples)
+	for _, peer := range peers {
+		samples, ok := peer.decodeFrame()
+		if !ok {
+			continue
+		}
+		for i, sample := range samples {
+			sums[i] += int32(sample)
+		}
+	}
+	// Apply one gain to the whole frame when voices overlap beyond PCM16 range.
+	// Summing in int32 before limiting also keeps cancellation order-independent.
+	peak := int32(32767)
+	for _, sum := range sums {
+		if sum > peak {
+			peak = sum
+		}
+		if -sum > peak {
+			peak = -sum
+		}
+	}
+	samples := make([]int16, len(sums))
+	for i, sum := range sums {
+		samples[i] = int16(int64(sum) * 32767 / int64(peak))
+	}
+	return PCMFrame{Sequence: sequence, Timestamp: sequence * uint64(DefaultPCMFormat.FrameSamples), Samples: samples}
+}
+
+func (r *voiceRuntime) captureState() string {
+	if !voiceRecently(r.lastCaptured.Load()) {
+		return "waiting"
+	}
+	if r.muted.Load() {
+		return "muted"
+	}
+	return "capturing"
 }
 
 func (r *voiceRuntime) snapshot() []VoicePeerSnapshot {

@@ -6,6 +6,8 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -23,9 +25,14 @@ fun PageMotion(route: String, back: Boolean, content: @Composable (String) -> Un
         targetState = route,
         modifier = Modifier.fillMaxSize().clipToBounds(),
         transitionSpec = {
+            if (initialState in primaryRoutes && targetState in primaryRoutes) {
+                (fadeIn(tween(220)) + scaleIn(tween(320, easing = FastOutSlowInEasing), initialScale = .97f)) togetherWith
+                    (fadeOut(tween(140)) + scaleOut(tween(220), targetScale = 1.015f))
+            } else {
             val enter = slideInHorizontally(tween(320, easing = FastOutSlowInEasing)) { if (back) -it / 4 else it } + fadeIn(tween(240))
             val exit = slideOutHorizontally(tween(320, easing = FastOutSlowInEasing)) { if (back) it else -it / 4 } + fadeOut(tween(200))
             (enter togetherWith exit).using(SizeTransform(clip = false)).apply { targetContentZIndex = if (back) -1f else 1f }
+            }
         },
         label = "page navigation",
     ) { page -> content(page) }

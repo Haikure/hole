@@ -1,32 +1,15 @@
 package dev.hole.app.ui
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.clickable
-import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.text.style.TextAlign
 import dev.hole.app.ConfigUiState
-import dev.hole.app.config.ConsumeEntry
-import dev.hole.app.config.ProvideEntry
-import dev.hole.app.config.composeExpose
-import dev.hole.app.config.composeServiceUrl
 import dev.hole.corebridge.CoreSnapshot
 
 @Composable
@@ -34,7 +17,7 @@ fun HomeScreen(
     snapshot: CoreSnapshot,
     configState: ConfigUiState,
     commandError: String?,
-    snackbarHostState: SnackbarHostState,
+    snackbarHostState: SnackbarHostState? = null,
     onOpenSettings: () -> Unit,
     onAddProvide: () -> Unit,
     onEditProvide: (String) -> Unit,
@@ -49,199 +32,87 @@ fun HomeScreen(
     onOpenDetails: () -> Unit = {},
     onNavigate: (String) -> Unit = {},
 ) {
-    val listState = rememberLazyListState()
-    val mappingStates = remember(snapshot.mappings) { snapshot.mappings.associate { (it.role to it.id) to it.state } }
-    HoleScaffold(
-        title = "hole",
-        largeTitle = true,
-        modifier = modifier,
-        actions = {
-            HoleSettingsButton(onClick = onOpenSettings)
-        },
-        snackbarHost = { HoleSnackbarHost(snackbarHostState) },
-        bottomBar = { FloatingIslandNavigation(selected = "home", onSelect = onNavigate) },
-    ) { insets ->
-        LazyColumn(
-            Modifier
-                .fillMaxWidth()
-                .padding(insets)
-                .padding(horizontal = 16.dp),
-            state = listState,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            item { ConnectionCard(snapshot, configState, commandError, onToggleRun, onOpenDetails) }
+    val floatingInset = LocalFloatingInset.current
+    HoleScaffold(title = "hole", modifier = modifier, actions = { HoleSettingsButton(onOpenSettings) },
+        snackbarHost = { snackbarHostState?.let { HoleSnackbarHost(it) } }) { insets ->
+        LazyColumn(Modifier.fillMaxSize().padding(insets).testTag("dashboard"),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = floatingInset + 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            item { HomeConnectionStatus(snapshot) }
+            item { DashboardPair("TCP 会话", snapshot.tcpSessions.toString(), "UDP 会话", snapshot.udpSessions.toString()) }
+            item { DashboardPair(
+                "上行流量", formatBytes(snapshot.peers.sumOf { it.bytesSent.toLongOrNull() ?: 0L }.toString()),
+                "下行流量", formatBytes(snapshot.peers.sumOf { it.bytesReceived.toLongOrNull() ?: 0L }.toString()),
+            ) }
             item {
-                SectionHeader(
-                    title = "提供服务",
-                    subtitle = null,
-                    addLabel = "新增提供项",
-                    onAdd = onAddProvide,
-                )
-            }
-            if (configState.config.provide.isEmpty()) {
-                item { EmptyCard("暂无配置") }
-            } else {
-                items(configState.config.provide, key = { it.entryId }) { entry ->
-                    ProvideRow(entry, onEditProvide, onToggleProvide, onDeleteProvide, mappingStates["provide" to entry.id])
+                HoleSettingsGroup("当前连接") {
+                    DashboardLine("房间", configState.config.connection.room.ifBlank { "未设置" })
+                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
+                    DashboardLine("设备", configState.config.connection.deviceName.ifBlank { "未设置" })
+                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
+                    DashboardLine("连接方式", connectionModeLabel(configState.config.connection.connectionMode))
                 }
             }
             item {
-                SectionHeader(
-                    title = "使用服务",
-                    subtitle = null,
-                    addLabel = "新增使用项",
-                    onAdd = onAddConsume,
-                )
-            }
-            if (configState.config.consume.isEmpty()) {
-                item { EmptyCard("暂无配置") }
-            } else {
-                items(configState.config.consume, key = { it.entryId }) { entry ->
-                    ConsumeRow(entry, onEditConsume, onToggleConsume, onDeleteConsume, mappingStates["consume" to entry.id])
+                HoleSettingsGroup("运行状态") {
+                    DashboardLine("核心", engineLabel(snapshot))
+                    DashboardLine("设备线路", snapshot.peers.size.toString())
+                    DashboardLine("可用服务", snapshot.mappings.count { it.state == "active" }.toString())
+                    DashboardLine("网络", snapshot.network.transport.takeUnless { it == "none" || it.isBlank() } ?: "未连接")
                 }
             }
+            if (configState.config.connection.serverUrl.isBlank()) item {
+                HoleButton("配置连接", { onNavigate("connection-settings") }, Modifier.fillMaxWidth())
+            }
+            listOfNotNull(snapshot.errorMessage, configState.lastError, commandError).distinct().forEach { error ->
+                item { Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
+            }
         }
     }
 }
 
 @Composable
-private fun ConnectionCard(
-    snapshot: CoreSnapshot,
-    configState: ConfigUiState,
-    commandError: String?,
-    onToggleRun: (Boolean) -> Unit,
-    onOpenDetails: () -> Unit,
-) {
-    val provideEnabled = configState.config.provide.count { it.enabled }
-    val consumeEnabled = configState.config.consume.count { it.enabled }
-    HoleCard(
-        Modifier.fillMaxWidth().animateContentSize().clickable(
-            enabled = snapshot.nativeReady || snapshot.runRequested,
-            onClickLabel = "查看运行详情", onClick = onOpenDetails,
-        ),
-        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            run {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("连接", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
-                        Text(
-                            if (snapshot.runRequested) "退出页面不会停止" else "开启后在后台持续转发",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    // 开关状态取核心快照的 run_requested：表达"用户希望运行"，
-                    // 与信令是否已加入、映射是否 active 是分开的状态。
-                    HoleSwitch(
-                        checked = snapshot.runRequested,
-                        onCheckedChange = onToggleRun,
-                        label = "运行转发",
-                        enabled = configState.loaded,
-                    )
-                }
-                StatusRow("核心", engineLabel(snapshot))
+private fun DashboardPair(first: String, firstValue: String, second: String, secondValue: String) {
+    BoxWithConstraints {
+        if (maxWidth < 280.dp || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.4f) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                DashboardMetric(first, firstValue, Modifier.fillMaxWidth())
+                DashboardMetric(second, secondValue, Modifier.fillMaxWidth())
             }
-            StatusRow("信令", signalLabel(snapshot.signalState))
-            StatusRow(
-                "配置",
-                if (!configState.loaded) "读取中"
-                else "提供 $provideEnabled 项 · 使用 $consumeEnabled 项",
-            )
-            if (snapshot.runRequested) {
-                StatusRow(
-                    "运行映射",
-                    "提供 ${snapshot.provideCount} 项 · 使用 ${snapshot.consumeCount} 项",
-                )
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                DashboardMetric(first, firstValue, Modifier.weight(1f))
+                DashboardMetric(second, secondValue, Modifier.weight(1f))
             }
-            if (snapshot.runRequested || snapshot.nativeReady) {
-                StatusRow("应用会话", "${snapshot.tcpSessions} TCP · ${snapshot.udpSessions} UDP")
-                Text("查看运行详情 ›", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(top = 4.dp))
-            }
-            snapshot.errorMessage?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            configState.lastError?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            commandError?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            if (snapshot.engineState == "loading") LinearProgressIndicator(Modifier.fillMaxWidth())
         }
     }
 }
 
 @Composable
-private fun StatusRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(value, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
+private fun DashboardMetric(title: String, value: String, modifier: Modifier) {
+    HoleCard(modifier) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AnimatedMetric(value)
+        }
     }
 }
 
 @Composable
-private fun ProvideRow(
-    entry: ProvideEntry,
-    onEdit: (String) -> Unit,
-    onToggle: (String, Boolean) -> Unit,
-    onDelete: (String) -> Unit,
-    state: String?,
-) {
-    MappingRow(
-        title = entry.id.ifBlank { "（未命名）" },
-        subtitle = composeServiceUrl(entry.protocol, entry.host, entry.port),
-        status = if (!entry.enabled) "已停用" else state?.let(::mappingLabel),
-        enabled = entry.enabled,
-        onToggle = { onToggle(entry.entryId, it) },
-        onEdit = { onEdit(entry.entryId) },
-        onDelete = { onDelete(entry.entryId) },
-    )
-}
-
-@Composable
-private fun ConsumeRow(
-    entry: ConsumeEntry,
-    onEdit: (String) -> Unit,
-    onToggle: (String, Boolean) -> Unit,
-    onDelete: (String) -> Unit,
-    state: String?,
-) {
-    MappingRow(
-        title = entry.id.ifBlank { "（未命名）" },
-        subtitle = composeExpose(entry.host, entry.port),
-        status = if (!entry.enabled) "已停用" else state?.let(::mappingLabel)
-            ?: "等待匹配",
-        enabled = entry.enabled,
-        onToggle = { onToggle(entry.entryId, it) },
-        onEdit = { onEdit(entry.entryId) },
-        onDelete = { onDelete(entry.entryId) },
-    )
-}
-
-@Composable
-private fun EmptyCard(title: String) {
-    HoleCard(Modifier.fillMaxWidth(), outlined = true) {
-        Column(Modifier.padding(16.dp)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-        }
+private fun DashboardLine(title: String, value: String) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 36.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, Modifier.weight(1.2f), style = MaterialTheme.typography.bodyLarge, textAlign = androidx.compose.ui.text.style.TextAlign.End)
     }
 }
 
 fun engineLabel(snapshot: CoreSnapshot): String = when (snapshot.engineState) {
-    "loading" -> "正在加载核心"
-    "stopped" -> if (snapshot.configured) "已停止" else "未配置 · 已停止"
+    "loading" -> "正在加载"
+    "stopped" -> if (snapshot.configured) "已停止" else "未配置"
     "starting" -> "正在启动"
-    "running" -> "核心运行中"
+    "running" -> "运行中"
     "stopping" -> "正在停止"
-    "reconfiguring" -> "正在应用配置"
-    "recovering" -> "等待网络 / 恢复连接"
+    "reconfiguring" -> "应用配置中"
+    "recovering" -> "等待网络"
     "error" -> "核心异常"
     else -> snapshot.engineState
 }
@@ -249,9 +120,9 @@ fun engineLabel(snapshot: CoreSnapshot): String = when (snapshot.engineState) {
 fun signalLabel(state: String): String = when (state) {
     "disconnected" -> "未连接"
     "connecting" -> "连接中"
-    "joining" -> "正在加入房间"
-    "joined" -> "已加入房间"
+    "joining" -> "加入房间中"
+    "joined" -> "已加入"
     "reconnecting" -> "等待重连"
-    "error" -> "异常"
+    "error" -> "连接异常"
     else -> state
 }

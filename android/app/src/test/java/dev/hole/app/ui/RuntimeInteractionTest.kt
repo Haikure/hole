@@ -14,7 +14,6 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import dev.hole.app.ConfigUiState
 import dev.hole.app.config.StoredConfig
-import dev.hole.app.config.ThemeStyle
 import dev.hole.app.config.ThemeMode
 import dev.hole.corebridge.CoreSnapshot
 import kotlin.test.assertEquals
@@ -31,12 +30,12 @@ import org.robolectric.annotation.LooperMode
 @LooperMode(LooperMode.Mode.PAUSED)
 class RuntimeInteractionTest {
     @get:Rule val compose = createComposeRule()
-    @Test fun switchAndDetailsHaveIndependentClickActionsInBothThemes() {
-        var theme by mutableStateOf(ThemeStyle.MATERIAL)
+    @Test fun dashboardStartsServiceWithoutOpeningDetails() {
         var toggles = 0
         var opened = 0
         compose.setContent {
-            HoleTheme(mode = ThemeMode.LIGHT, style = theme, dynamic = false) {
+            HoleTheme(mode = ThemeMode.LIGHT, dynamic = false) {
+              FloatingAppFrame("home", {}, CoreSnapshot(runRequested = true), true, { toggles++ }) {
                 HomeScreen(
                     snapshot = CoreSnapshot(nativeReady = true, runRequested = true, engineState = "running", signalState = "joined"),
                     configState = ConfigUiState(loaded = true), commandError = null, snackbarHostState = remember { SnackbarHostState() },
@@ -44,29 +43,27 @@ class RuntimeInteractionTest {
                     onToggleProvide = { _, _ -> }, onToggleConsume = { _, _ -> }, onDeleteProvide = {}, onDeleteConsume = {},
                     onToggleRun = { toggles++ }, onOpenDetails = { opened++ },
                 )
+              }
             }
         }
-        for ((index, style) in ThemeStyle.entries.withIndex()) {
-            compose.runOnIdle { theme = style }
-            compose.onNodeWithText("已确认配置").assertDoesNotExist()
-            compose.onNodeWithText("#123456").assertDoesNotExist()
-            compose.onNodeWithContentDescription("运行转发").performClick()
-            compose.runOnIdle { assertEquals(index + 1, toggles); assertEquals(index, opened) }
-            compose.onNodeWithText("查看运行详情 ›").performClick()
-            compose.runOnIdle { assertEquals(index + 1, toggles); assertEquals(index + 1, opened) }
-        }
+        compose.onNodeWithText("已确认配置").assertDoesNotExist()
+        compose.onNodeWithText("#123456").assertDoesNotExist()
+        compose.onNodeWithTag("run-control").performClick()
+        compose.runOnIdle { assertEquals(1, toggles); assertEquals(0, opened) }
+        compose.onNodeWithText("查看运行详情 ›").assertDoesNotExist()
+        compose.onNodeWithText("TCP 会话").assertExists()
     }
     @Test fun firstSaveValidatesRatherThanSavingAnInvalidDraft() {
         var saved = 0
         compose.setContent { HoleTheme(mode = ThemeMode.LIGHT, dynamic = false) {
             ProvideEditScreen(null, ConfigUiState(loaded = true, config = StoredConfig()), onSave = { saved++ }, onDelete = {}, onBack = {})
         } }
-        compose.onNodeWithText("保存").performClick()
+        compose.onNodeWithContentDescription("保存").performClick()
         compose.runOnIdle { assertEquals(0, saved) }
         compose.onNode(hasSetTextAction() and hasText("映射 ID")).performScrollTo().performTextReplacement("ssh")
         compose.onNode(hasSetTextAction() and hasText("服务地址")).performScrollTo().performTextReplacement("127.0.0.1")
         compose.onNode(hasSetTextAction() and hasText("服务端口")).performScrollTo().performTextReplacement("22")
-        compose.onNodeWithText("保存").performClick()
+        compose.onNodeWithContentDescription("保存").performClick()
         compose.runOnIdle { assertEquals(1, saved) }
     }
     @Test fun enteringAndReturningUseOppositeMotionAndRemoveOldPage() {
@@ -74,20 +71,20 @@ class RuntimeInteractionTest {
         var back by mutableStateOf(false)
         compose.setContent { PageMotion(route, back) { page -> Box(Modifier.fillMaxSize().testTag(page)) { Text(page) } } }
         compose.mainClock.autoAdvance = false
-        compose.runOnIdle { route = "details" }
+        compose.runOnIdle { route = "provide/" }
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(160)
-        assertTrue(compose.onNodeWithTag("details").getUnclippedBoundsInRoot().left.value > 0)
+        assertTrue(compose.onNodeWithTag("provide/").getUnclippedBoundsInRoot().left.value > 0)
         compose.mainClock.advanceTimeBy(400)
-        assertEquals(0f, compose.onNodeWithTag("details").getUnclippedBoundsInRoot().left.value)
+        assertEquals(0f, compose.onNodeWithTag("provide/").getUnclippedBoundsInRoot().left.value)
         compose.runOnIdle { back = true; route = "home" }
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(160)
         assertTrue(compose.onNodeWithTag("home").getUnclippedBoundsInRoot().left.value < 0)
         compose.mainClock.advanceTimeBy(400)
-        compose.onNodeWithTag("details").assertDoesNotExist()
+        compose.onNodeWithTag("provide/").assertDoesNotExist()
         assertEquals(0f, compose.onNodeWithTag("home").getUnclippedBoundsInRoot().left.value)
     }
 }

@@ -69,5 +69,11 @@ func (c *Codec) Encode(samples []int16, bitrate int) ([]byte, error) {
 }
 
 func (c *Codec) Decode(payload []byte, samples []int16) (int, error) {
+	if len(payload) == 0 {
+		if err := c.decoder.DecodePLC(samples); err != nil {
+			return 0, err
+		}
+		return len(samples), nil
+	}
 	return c.decoder.DecodeToInt16(payload, samples)
 }

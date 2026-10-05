@@ -34,9 +34,12 @@ class CoreClient(context: Context) : CoreController {
             }
         }, network)
     }
-    private var voiceAudio: VoiceAudio? = null
+    @Volatile private var voiceAudio: VoiceAudio? = null
 
-    override val snapshots = sampler.snapshots { CoreSnapshot.fromJson(engine.snapshotJSON()) }.flowOn(Dispatchers.IO)
+    override val snapshots = sampler.snapshots {
+        val snapshot = CoreSnapshot.fromJson(engine.snapshotJSON())
+        voiceAudio?.let { snapshot.copy(voice = it.snapshot(snapshot.voice)) } ?: snapshot
+    }.flowOn(Dispatchers.IO)
     override fun setTelemetryActive(active: Boolean) { sampler.setUiVisible(active) }
 
     /**
@@ -54,7 +57,9 @@ class CoreClient(context: Context) : CoreController {
     }
 
     override suspend fun stop(): Unit = lifecycle.withLock {
-        withContext(Dispatchers.IO) { try { network.close(); engine.stop() } finally { sampler.wake() } }
+        withContext(Dispatchers.IO) {
+            try { voiceAudio?.close(); voiceAudio = null; network.close(); engine.stop() } finally { sampler.wake() }
+        }
     }
 
     override suspend fun applyConfig(requestJSON: String): Unit = lifecycle.withLock {
@@ -80,8 +85,11 @@ class CoreClient(context: Context) : CoreController {
             if (appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 error("voice_microphone_permission_required: 请先授予麦克风权限")
             }
+            if (voiceAudio?.isRunning() == true) return@withContext
             voiceAudio?.close()
-            voiceAudio = VoiceAudio(engine).also { it.start() }
+            voiceAudio = null
+            voiceAudio = VoiceAudio(appContext, engine).also { it.start() }
+            sampler.wake()
         }
     }
 
@@ -89,6 +97,13 @@ class CoreClient(context: Context) : CoreController {
         withContext(Dispatchers.IO) {
             voiceAudio?.close()
             voiceAudio = null
+        }
+    }
+
+    override suspend fun setVoiceMuted(muted: Boolean): Unit = lifecycle.withLock {
+        withContext(Dispatchers.IO) {
+            engine.setVoiceMuted(muted)
+            sampler.wake()
         }
     }
 

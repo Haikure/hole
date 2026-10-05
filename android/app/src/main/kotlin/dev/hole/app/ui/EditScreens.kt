@@ -1,6 +1,10 @@
 package dev.hole.app.ui
 
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -57,7 +61,7 @@ fun ProvideEditScreen(
     val conflict = if (attempted) findIdConflict(otherProvide + candidate, configState.config.consume) else null
 
     EditScaffold(
-        title = if (existing == null) "新增 provide" else "编辑 provide",
+        title = if (existing == null) "新增提供服务" else "编辑提供服务",
         onBack = onBack,
         attempted = attempted,
         hasErrors = idError != null || hostError != null || portError != null || conflict != null,
@@ -147,7 +151,7 @@ fun ConsumeEditScreen(
     val conflict = if (attempted) findIdConflict(configState.config.provide, otherConsume + candidate) else null
 
     EditScaffold(
-        title = if (existing == null) "新增 consume" else "编辑 consume",
+        title = if (existing == null) "新增使用服务" else "编辑使用服务",
         onBack = onBack,
         attempted = attempted,
         hasErrors = idError != null || hostError != null || portError != null || conflict != null,
@@ -194,11 +198,7 @@ fun ConsumeEditScreen(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.fillMaxWidth(),
             )
-            Text(
-                "协议由匹配到的远端 provide 决定；尚未匹配时显示“等待远端服务”。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            HoleHelp("服务协议", "由匹配的远端提供服务决定。")
             conflict?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
@@ -216,21 +216,11 @@ fun ConsumeEditScreen(
 
 @Composable
 private fun EnabledRow(enabled: Boolean, onChange: (Boolean) -> Unit) {
-        HoleSwitchPreference(
-            title = "保存后启用", summary = "停用时保留配置，不加入运行集合", checked = enabled,
-            insideMargin = PaddingValues(0.dp), onCheckedChange = onChange,
-        )
-        return
-    }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("保存后启用")
-            Text(
-                "停用的条目保留全部字段，不进入有效配置",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
+        HoleInfoButton("保存后启用") { Text("停用后保留设置，不参与转发。") }
         HoleSwitch(checked = enabled, onCheckedChange = onChange, label = "保存后启用")
     }
 }
@@ -251,25 +241,9 @@ private fun EditScaffold(
         navigationIcon = {
             HoleBackButton(onClick = onBack)
         },
-        bottomBar = {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (onDelete != null) {
-                    // 读屏或不便滑动的用户从编辑页删除；滑动删除在列表页仍可用。
-                    HoleButton("删除", onClick = onDelete, secondary = true)
-                }
-                HoleButton(
-                    text = "保存",
-                    enabled = !attempted || !hasErrors,
-                    onClick = onSave,
-                )
-            }
+        floatingActions = {
+            if (onDelete != null) FloatingIconAction(androidx.compose.material.icons.Icons.Default.Delete, "删除", onDelete)
+            FloatingIconAction(androidx.compose.material.icons.Icons.Default.Check, "保存", onSave, enabled = !attempted || !hasErrors)
         },
     ) { insets ->
         Column(
@@ -278,9 +252,10 @@ private fun EditScaffold(
                 .padding(insets)
                 .verticalScroll(scrollState)
                 .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             HoleSettingsGroup("服务配置") { fields() }
+            androidx.compose.foundation.layout.Spacer(Modifier.height(96.dp))
         }
     }
 }

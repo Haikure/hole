@@ -91,14 +91,14 @@ fun ConfigTransferScreen(config: ConfigUiState, onImport: suspend (ImportPreview
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
             HoleSettingsGroup("导出内容") {
                 HoleSwitchPreference("包含连接凭据", "默认关闭。开启后文件包含明文信令密码、房间密码和手动 TURN 凭据。", checked = includeSecrets, onCheckedChange = { includeSecrets = it })
-                Text("CLI YAML 包含信令服务器 server_url 和当前启用项；未包含的凭据需在使用前补齐。导入旧版未填写服务器的 YAML 时保留本机服务器设置。Android 备份同时保留停用项、列表顺序、外观和开机恢复选项。")
+                HoleHelp("文件格式", "CLI YAML 包含信令服务器 server_url 和当前启用项；未包含的凭据需在使用前补齐。导入旧版未填写服务器的 YAML 时保留本机服务器设置。Android 备份同时保留停用项、列表顺序、外观和开机恢复选项。")
                 HoleButton("导出 CLI YAML", { exportDocument(false) }, enabled = config.loaded && !busy)
-                HoleButton("导出 Android 完整配置", { exportDocument(true) }, enabled = config.loaded && !busy, secondary = true)
+                HoleButton("导出完整备份", { exportDocument(true) }, enabled = config.loaded && !busy, secondary = true)
             }
             HoleSettingsGroup("导入配置") {
-                Text("先检查导入预览，再确认替换。确认后停止当前连接；检查服务器与凭据后手动开启，不自动连接新配置。")
+                HoleHelp("导入说明", "先预览再替换。导入后连接停止，检查服务器与凭据后手动启动。")
                 HoleButton("导入 CLI YAML / JSON", { importingBackup = false; picker.launch(arrayOf("*/*")) }, enabled = !busy, secondary = true)
-                HoleButton("恢复 Android 配置备份", { importingBackup = true; picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }, enabled = !busy, secondary = true)
+                HoleButton("恢复备份", { importingBackup = true; picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }, enabled = !busy, secondary = true)
             }
             if (busy) Text("正在处理文件…", style = MaterialTheme.typography.bodyMedium)
             message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }

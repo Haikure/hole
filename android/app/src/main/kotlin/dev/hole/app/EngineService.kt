@@ -76,6 +76,7 @@ open class EngineService : Service() {
         data class Network(val epoch: Long, val event: String) : Command
         data class Stop(val completion: CompletableDeferred<Unit>? = null) : Command
         data object Renominate : Command
+        data class SetVoiceMuted(val muted: Boolean) : Command
     }
     inner class LocalBinder : Binder() { val service: EngineService get() = this@EngineService }
     protected open suspend fun createCore(): CoreController = CoreClient(applicationContext)
@@ -84,6 +85,10 @@ open class EngineService : Service() {
     fun setUiVisible(owner: Any, visible: Boolean) = synchronized(visibleHosts) {
         if (visible) visibleHosts.add(owner) else visibleHosts.remove(owner)
         telemetryActive.value = visibleHosts.isNotEmpty()
+    }
+
+    fun setVoiceMuted(muted: Boolean) {
+        if (requested) commands.trySend(Command.SetVoiceMuted(muted))
     }
 
     override fun onCreate() {
@@ -137,6 +142,7 @@ open class EngineService : Service() {
                         is Command.Apply -> cancellableCommand { applyLatest(command.epoch) }
                         is Command.Network -> cancellableCommand { if (isCurrent(command.epoch)) ready.await().networkChanged(command.event) }
                         Command.Renominate -> if (requested) ready.await().renominateTransports()
+                        is Command.SetVoiceMuted -> if (requested) ready.await().setVoiceMuted(command.muted)
                         is Command.Stop -> {
                             try { stopInternal(); command.completion?.complete(Unit) }
                             catch (failure: Throwable) { command.completion?.completeExceptionally(failure); throw failure }

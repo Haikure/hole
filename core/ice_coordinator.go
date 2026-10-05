@@ -677,6 +677,9 @@ func (c *iceCoordinator) voiceSnapshot() VoiceSnapshot {
 	runtimePeers := map[string]VoicePeerSnapshot{}
 	if voice := c.voiceRuntimePtr(); voice != nil {
 		snapshot.Muted = voice.muted.Load()
+		snapshot.CaptureState = voice.captureState()
+		snapshot.CapturedFrames = voice.captured.Load()
+		snapshot.MixedFrames = voice.mixed.Load()
 		for _, peer := range voice.snapshot() {
 			runtimePeers[peer.PeerID] = peer
 		}
@@ -687,7 +690,13 @@ func (c *iceCoordinator) voiceSnapshot() VoiceSnapshot {
 		signalState = "offline"
 	}
 	for _, member := range c.voiceMembers {
-		snapshot.Members = append(snapshot.Members, VoiceMemberSnapshot{DeviceName: member.DeviceName, Voice: true, SignalState: signalState, TransportState: "offline", MediaState: "offline"})
+		value := VoiceMemberSnapshot{DeviceName: member.DeviceName, Voice: true, SignalState: signalState, TransportState: "offline", MediaState: "offline"}
+		if member.DeviceName == cfg.DeviceName {
+			value.Local = true
+			value.TransportState = "local"
+			value.MediaState = snapshot.CaptureState
+		}
+		snapshot.Members = append(snapshot.Members, value)
 	}
 	c.voiceMu.RUnlock()
 	for _, peer := range c.peerList() {
@@ -696,6 +705,9 @@ func (c *iceCoordinator) voiceSnapshot() VoiceSnapshot {
 			continue
 		}
 		voicePeer := runtimePeers[stats.PeerID]
+		if voicePeer.TransportID != stats.TransportID || voicePeer.Generation != stats.Generation {
+			voicePeer = VoicePeerSnapshot{MediaState: "waiting"}
+		}
 		voicePeer.PeerID = stats.PeerID
 		voicePeer.TransportID = stats.TransportID
 		voicePeer.Generation = stats.Generation
@@ -709,13 +721,23 @@ func (c *iceCoordinator) voiceSnapshot() VoiceSnapshot {
 				snapshot.Members[i].TransportGen = stats.Generation
 				snapshot.Members[i].TransportState = stats.State
 				if stats.State == "active" {
-					snapshot.Members[i].MediaState = "ready"
+					snapshot.Members[i].MediaState = voicePeer.MediaState
 				}
 			}
 		}
 	}
-	if len(snapshot.Peers) > 0 {
-		snapshot.State = "active"
+	for _, peer := range snapshot.Peers {
+		if peer.State != "active" {
+			if snapshot.State == "waiting" {
+				snapshot.State = "connecting"
+			}
+			continue
+		}
+		if peer.MediaState == "active" || peer.MediaState == "sending" || peer.MediaState == "receiving" {
+			snapshot.State = "active"
+			break
+		}
+		snapshot.State = "ready"
 	}
 	sortVoiceSnapshot(&snapshot)
 	return snapshot

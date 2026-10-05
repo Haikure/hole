@@ -11,7 +11,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Composable
@@ -39,8 +38,27 @@ import dev.hole.app.ui.SettingsScreen
 import dev.hole.app.ui.RuntimeDetailsScreen
 import dev.hole.app.ui.BackgroundScreen
 import dev.hole.app.ui.ConfigTransferScreen
+import dev.hole.app.ui.ConfigOverviewScreen
 import dev.hole.app.ui.PageMotion
 import dev.hole.app.ui.TransportSettingsScreen
+import dev.hole.app.ui.VoiceScreen
+import dev.hole.app.ui.AppNavigation
+import dev.hole.app.ui.FloatingAppFrame
+import dev.hole.app.ui.SettingsHub
+import dev.hole.app.ui.primaryRoutes
+import dev.hole.app.ui.showUndoSnackbar
+import dev.hole.app.ui.HoleScaffold
+import dev.hole.app.ui.HoleBackButton
+import dev.hole.app.ui.ThemeSection
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import dev.hole.app.config.ThemeMode
 import dev.hole.app.config.ThemeStyle
 import dev.hole.app.config.usesDynamicColor
@@ -112,13 +130,13 @@ private fun AppRoot(
     }
 
     fun discardFormState() {
-        if ((route == "settings" || route == "transport") || route.startsWith("provide/") || route.startsWith("consume/")) pageState.removeState(route)
+        if ((route == "connection-settings" || route == "transport") || route.startsWith("provide/") || route.startsWith("consume/")) pageState.removeState(route)
     }
     fun navigate(target: String) {
         if (target == route) return
         discardFormState()
         popping = false
-        backStack = backStack + target
+        backStack = if (target in primaryRoutes) listOf(target) else backStack + target
     }
     fun goBack() {
         if (backStack.size > 1) {
@@ -128,7 +146,9 @@ private fun AppRoot(
         }
     }
     fun goHome() { discardFormState(); popping = true; backStack = listOf("home") }
-    BackHandler(enabled = route != "home" && route != "settings" && route != "transport") { goBack() }
+    BackHandler(enabled = route != "home" && route != "connection-settings" && route != "transport") {
+        if (backStack.size > 1) goBack() else goHome()
+    }
     LaunchedEffect(detailRequest) { if (detailRequest > 0) navigate("details") }
 
     var report by remember { mutableStateOf("") }
@@ -148,7 +168,7 @@ private fun AppRoot(
     // 串行处理撤销队列：每条 Snackbar 等待结束（超时、操作或被替换）再处理下一条。
     LaunchedEffect(Unit) {
         for (undo in undoQueue) {
-            val result = snackbarHostState.showSnackbar(undo.message, actionLabel = "撤销", duration = SnackbarDuration.Long)
+            val result = snackbarHostState.showUndoSnackbar(undo.message)
             if (result == SnackbarResult.ActionPerformed) undo.restore(model)
         }
     }
@@ -156,10 +176,14 @@ private fun AppRoot(
     // 通知权限只影响通知可见性，不影响前台服务运行；拒绝后照常启动并提示。
     var startAfterPermission by remember { mutableStateOf(false) }
     var startAfterMicrophonePermission by remember { mutableStateOf(false) }
+    var enableVoiceAfterMicrophonePermission by remember { mutableStateOf(false) }
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (startAfterMicrophonePermission) {
+        if (enableVoiceAfterMicrophonePermission) {
+            enableVoiceAfterMicrophonePermission = false
+            if (!granted) showNotice("未授予麦克风权限，房间语音未启用") else model.setVoiceEnabled(true)
+        } else if (startAfterMicrophonePermission) {
             startAfterMicrophonePermission = false
             if (!granted) showNotice("未授予麦克风权限，房间语音无法启动") else model.startRun()
         }
@@ -201,11 +225,20 @@ private fun AppRoot(
         }
     }
 
+    val requestVoicePermission: () -> Unit = {
+        if (Build.VERSION.SDK_INT < 23 || ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            model.setVoiceEnabled(true)
+        } else {
+            enableVoiceAfterMicrophonePermission = true
+            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
     fun deleteProvideWithUndo(entryId: String) {
         scope.launch {
             val removed = model.deleteProvide(entryId)
             if (removed != null) {
-                undoQueue.trySend(UndoAction("已删除 provide \"${removed.first.id}\"") { vm ->
+                undoQueue.trySend(UndoAction("已删除「${removed.first.id}」") { vm ->
                     vm.upsertProvide(removed.first, removed.second)
                 })
             }
@@ -216,17 +249,32 @@ private fun AppRoot(
         scope.launch {
             val removed = model.deleteConsume(entryId)
             if (removed != null) {
-                undoQueue.trySend(UndoAction("已删除 consume \"${removed.first.id}\"") { vm ->
+                undoQueue.trySend(UndoAction("已删除「${removed.first.id}」") { vm ->
                     vm.upsertConsume(removed.first, removed.second)
                 })
             }
         }
     }
 
-    PageMotion(route, popping) { page ->
+    FloatingAppFrame(route, ::navigate, snapshot, configState.loaded, onToggleRun, snackbarHostState = snackbarHostState) {
+      PageMotion(route, popping) { page ->
       pageState.SaveableStateProvider(page) {
        when {
-        page == "settings" -> SettingsScreen(
+        page == "settings" -> SettingsHub(::navigate)
+        page == "appearance" -> HoleScaffold(title = "外观", navigationIcon = { HoleBackButton { goBack() } }) { insets ->
+            Column(Modifier.padding(insets).verticalScroll(rememberScrollState()).padding(20.dp)) {
+                ThemeSection(
+                    themeStyle = ThemeStyle.fromValue(configState.config.themeStyle),
+                    themeMode = ThemeMode.fromValue(configState.config.themeMode),
+                    dynamicColor = configState.config.usesDynamicColor(),
+                    onStyleChange = model::setThemeStyle, onModeChange = model::setThemeMode,
+                    onDynamicColorChange = { model.setDynamicColor(ThemeStyle.fromValue(configState.config.themeStyle), it) },
+                    palette = dev.hole.app.config.ThemePalette.fromValue(configState.config.materialPalette),
+                    onPaletteChange = model::setMaterialPalette,
+                )
+            }
+        }
+        page == "connection-settings" -> SettingsScreen(
             configState = configState,
             onSave = { url, password, room, token, deviceName, timeout, interfaces, addresses ->
                 model.saveConnectionSettings(url, password, room, token, deviceName, timeout, interfaces, addresses)
@@ -243,8 +291,31 @@ private fun AppRoot(
             handleBack = route == page,
         )
         page == "transport" -> TransportSettingsScreen(configState, model::saveTransportSettings, { goBack() }, handleBack = route == page)
-        page == "voice" -> PlaceholderNavigationScreen("语音", "房间语音能力已接入核心，Android 音频设备控制即将可用", { goHome() })
-        page == "config" -> PlaceholderNavigationScreen("配置", "选择主页的提供服务或使用服务条目进行编辑", { goHome() })
+        page == "voice" -> VoiceScreen(
+            snapshot = snapshot,
+            configState = configState,
+            commandError = commandError,
+            microphoneGranted = Build.VERSION.SDK_INT < 23 || ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
+            onVoiceEnabledChange = model::setVoiceEnabled,
+            onMutedChange = model::setVoiceMuted,
+            onRequestMicrophone = requestVoicePermission,
+            onBack = { goBack() },
+            onToggleRun = onToggleRun,
+        )
+        page == "config" -> ConfigOverviewScreen(
+            configState = configState,
+            snapshot = snapshot,
+            onAddProvide = { navigate("provide/") },
+            onEditProvide = { entryId -> navigate("provide/$entryId") },
+            onAddConsume = { navigate("consume/") },
+            onEditConsume = { entryId -> navigate("consume/$entryId") },
+            onToggleProvide = { entryId, enabled -> model.toggleProvide(entryId, enabled) },
+            onToggleConsume = { entryId, enabled -> model.toggleConsume(entryId, enabled) },
+            onDeleteProvide = { entryId -> deleteProvideWithUndo(entryId) },
+            onDeleteConsume = { entryId -> deleteConsumeWithUndo(entryId) },
+            onBack = { goBack() },
+            onToggleRun = onToggleRun,
+        )
         page == "background" -> BackgroundScreen(onBack = { goBack() })
         page == "transfer" -> ConfigTransferScreen(configState, onImport = model::importConfig, onBack = { goBack() })
         page == "details" -> RuntimeDetailsScreen(
@@ -253,7 +324,7 @@ private fun AppRoot(
             onExport = {
                 report = diagnosticReport(snapshot, configState, readBackgroundInfo(context))
                 exportReport.launch("hole-diagnostics.txt")
-            }, onBackground = { navigate("background") }, snackbarHostState = snackbarHostState, onTransportSettings = { navigate("transport") },
+            }, onBackground = { navigate("background") }, onTransportSettings = { navigate("transport") },
         )
         page.startsWith("provide") -> ProvideEditScreen(
             entryId = page.removePrefix("provide/").ifEmpty { null },
@@ -261,12 +332,12 @@ private fun AppRoot(
             onSave = { entry ->
                 scope.launch {
                     model.upsertProvide(entry).join()
-                    if (model.configState.value.lastError == null) goHome() else showNotice("配置保存失败，请重试")
+                    if (model.configState.value.lastError == null) goBack() else showNotice("配置保存失败，请重试")
                 }
             },
             onDelete = { entryId ->
                 deleteProvideWithUndo(entryId)
-                goHome()
+                goBack()
             },
             onBack = { goBack() },
         )
@@ -276,12 +347,12 @@ private fun AppRoot(
             onSave = { entry ->
                 scope.launch {
                     model.upsertConsume(entry).join()
-                    if (model.configState.value.lastError == null) goHome() else showNotice("配置保存失败，请重试")
+                    if (model.configState.value.lastError == null) goBack() else showNotice("配置保存失败，请重试")
                 }
             },
             onDelete = { entryId ->
                 deleteConsumeWithUndo(entryId)
-                goHome()
+                goBack()
             },
             onBack = { goBack() },
         )
@@ -289,7 +360,6 @@ private fun AppRoot(
             snapshot = snapshot,
             configState = configState,
             commandError = commandError,
-            snackbarHostState = snackbarHostState,
             onOpenSettings = { navigate("settings") },
             onOpenDetails = { navigate("details") },
             onAddProvide = { navigate("provide/") },
@@ -301,16 +371,11 @@ private fun AppRoot(
             onDeleteProvide = { entryId -> deleteProvideWithUndo(entryId) },
             onDeleteConsume = { entryId -> deleteConsumeWithUndo(entryId) },
             onToggleRun = onToggleRun,
-            onNavigate = { target ->
-                when (target) {
-                    "home" -> goHome()
-                    "settings" -> navigate("settings")
-                    "config" -> navigate("config")
-                    "voice" -> navigate("voice")
-                }
-            },
+            onNavigate = ::navigate,
 
+            )
        }
       }
+     }
     }
 }

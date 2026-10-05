@@ -336,7 +336,7 @@ private fun TurnOrderChip(
                     Modifier.size(21.dp).background(accent, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("$badge", style = MaterialTheme.typography.labelSmall, color = materialColors.onPrimary)
+                    Text("$badge", style = MaterialTheme.typography.labelSmall, color = foreground)
                 }
             } else {
                 Text("+", style = MaterialTheme.typography.titleMedium, color = accent)

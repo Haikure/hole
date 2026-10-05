@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	voiceQueueFrames = 3
+	voiceQueueFrames = 4
 	voiceJitterLimit = 8
 	voiceBridgeBatch = 4
 )
@@ -212,6 +212,10 @@ func newJitterBuffer(capacity int) *jitterBuffer {
 func (b *jitterBuffer) push(frame jitterFrame) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.haveNext && voiceSequenceBefore(frame.Sequence, b.next) {
+		b.dropped++
+		return
+	}
 	if _, exists := b.frames[frame.Sequence]; exists {
 		b.reordered++
 		return
@@ -220,7 +224,7 @@ func (b *jitterBuffer) push(frame jitterFrame) {
 		var oldest uint32
 		first := true
 		for sequence := range b.frames {
-			if first || sequence < oldest {
+			if first || voiceSequenceBefore(sequence, oldest) {
 				oldest, first = sequence, false
 			}
 		}
@@ -240,25 +244,41 @@ func (b *jitterBuffer) pop(sequence uint32) (jitterFrame, bool) {
 	return frame, ok
 }
 
-// popForPlayback keeps a small startup delay for reordering, then advances
-// over a missing sequence once the bounded buffer is full.
+func voiceSequenceBefore(a, b uint32) bool { return int32(a-b) < 0 }
+
+// Once started, every poll consumes one playback slot. An empty payload marks
+// a lost frame for PLC; a prolonged underrun restarts the small reorder delay.
 func (b *jitterBuffer) popForPlayback() (jitterFrame, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(b.frames) == 0 {
-		return jitterFrame{}, false
-	}
 	if !b.haveNext {
+		if len(b.frames) == 0 {
+			return jitterFrame{}, false
+		}
 		b.startupPolls++
 		if len(b.frames) < 3 && b.startupPolls < 2 {
 			return jitterFrame{}, false
 		}
 		for sequence := range b.frames {
-			if !b.haveNext || sequence < b.next {
+			if !b.haveNext || voiceSequenceBefore(sequence, b.next) {
 				b.next, b.haveNext = sequence, true
 			}
 		}
 		b.startupPolls = 0
+	}
+	// Bound latency after an overflow or a large sequence discontinuity.
+	if len(b.frames) > 0 {
+		var oldest uint32
+		first := true
+		for sequence := range b.frames {
+			if first || voiceSequenceBefore(sequence, oldest) {
+				oldest, first = sequence, false
+			}
+		}
+		if !voiceSequenceBefore(oldest, b.next) && oldest-b.next >= uint32(b.capacity) {
+			b.dropped += uint64(oldest - b.next)
+			b.next = oldest
+		}
 	}
 	if frame, ok := b.frames[b.next]; ok {
 		delete(b.frames, b.next)
@@ -267,23 +287,13 @@ func (b *jitterBuffer) popForPlayback() (jitterFrame, bool) {
 		return frame, true
 	}
 	b.missingPolls++
-	if len(b.frames) < 3 && b.missingPolls < 2 {
-		return jitterFrame{}, false
+	frame := jitterFrame{Sequence: b.next}
+	b.next++
+	b.dropped++
+	if b.missingPolls >= voiceJitterLimit {
+		b.haveNext = false
+		b.missingPolls = 0
 	}
-	var oldest uint32
-	first := true
-	for sequence := range b.frames {
-		if first || sequence < oldest {
-			oldest, first = sequence, false
-		}
-	}
-	if oldest >= b.next {
-		b.dropped += uint64(oldest - b.next)
-	}
-	b.next = oldest + 1
-	b.missingPolls = 0
-	frame := b.frames[oldest]
-	delete(b.frames, oldest)
 	return frame, true
 }
 

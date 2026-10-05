@@ -46,7 +46,13 @@ Android 使用带 `NetworkBinding` 的构造方法；旧 `newEngine` 和 `newEng
 - `server_url` 位于请求外层；应用专用的 `enabled` / `entry_id` 不进入核心配置。
 - `config.voice.enabled` 可选且默认关闭。语音 PCM 不进入 JSON 请求或事件桥：`PushVoicePCM`
   每次接收最多 4 个连续的 PCM16 帧，`PullVoicePCM` 每次返回最多 4 帧，`SetVoiceMuted` 控制本地发送。
-  Android corebridge 使用这些批量方法连接 `AudioRecord` / `AudioTrack`。
+  桥接队列可容纳完整 4 帧批次；Android corebridge 按单个 20 ms 帧连接 `AudioRecord` / `AudioTrack`。
+- 语音快照的本机成员使用 `local: true` / `transport_state: local`；`capture_state` 与
+  `captured_frames` 表示核心收到的本机 PCM。`mixed_frames` 表示写入核心输出桥的帧数，
+  不代表设备已播放。线路的 `state` 表示传输，`media_state` 根据最近 2 秒实际发送、解码
+  区分 `waiting` / `sending` / `receiving` / `active`；`sent_frames`、`received_frames`、
+  `decoded_frames`、`concealed_frames` 分别记录成功发送、收到、解码与 PLC / 静音补帧。
+  这些 64 位计数仍使用十进制字符串。字段为 API 1 的兼容扩展，旧快照缺失时不得推断媒体活跃。
 - 错误以含 `code`、`message` 的 JSON 传出。状态快照与事件不包含凭据。
 - `EventSink.onEvent` 在 Go 后台线程执行，应及时返回；生命周期命令调度到其他线程。
 - Android 只接收结构化事件，桥接层过滤原始日志；`stop` 返回后不再交付旧回调。

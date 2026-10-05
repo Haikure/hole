@@ -40,7 +40,7 @@ fun BackgroundScreen(onBack: () -> Unit) {
     fun open(intent: Intent) {
         try { context.startActivity(intent) } catch (_: RuntimeException) { error = "请从系统应用信息中打开电池与后台运行设置" }
     }
-    HoleScaffold(title = "后台保持", navigationIcon = { HoleBackButton(onBack) }) { insets ->
+    HoleScaffold(title = "后台运行", navigationIcon = { HoleBackButton(onBack) }) { insets ->
         Column(Modifier.fillMaxWidth().padding(insets).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
             HoleSettingsGroup("运行状态") {
@@ -64,14 +64,12 @@ fun BackgroundScreen(onBack: () -> Unit) {
                     summary = "仅恢复重启前运行的连接；手动停止后不会恢复。",
                     onCheckedChange = { RunStateStore(context).setResumeAfterBoot(it); info = readBackgroundInfo(context) },
                 )
-                Text("划掉最近任务不会停止转发；进程重建或升级后重新连接。",
-                    style = MaterialTheme.typography.bodyMedium)
+                HoleHelp("进程恢复", "划掉最近任务不会停止转发；进程重建或升级后重新连接。")
                 if (info.lastResumeError.isNotEmpty()) Text(info.lastResumeError, color = MaterialTheme.colorScheme.error)
             }
             HoleSettingsGroup("连接恢复") {
-                Text("网络切换后自动重连；无公网 IPv6 时等待网络恢复。")
-                Text("强制停止或系统清理后需重新启动，原 TCP 连接不会恢复。",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                HoleHelp("网络恢复", "网络切换后自动重连；仅 IPv6 模式下无公网 IPv6 时等待网络恢复。")
+                HoleHelp("强制停止", "强制停止或系统清理后需重新启动，原 TCP 连接不会恢复。")
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }

@@ -54,6 +54,7 @@ data class VoiceMemberSnapshot(
     val deviceName: String = "", val voice: Boolean = false, val signalState: String = "",
     val transportState: String = "", val mediaState: String = "", val transportId: String = "",
     val transportGeneration: String = "0",
+    val local: Boolean = false,
 )
 
 data class VoicePeerSnapshot(
@@ -61,11 +62,16 @@ data class VoicePeerSnapshot(
     val state: String = "", val path: String = "", val bitrate: Int = 0,
     val packetLoss: String = "0", val queueDepth: Int = 0, val queueDrops: String = "0",
     val datagramDrops: String = "0", val jitterDepth: Int = 0,
+    val mediaState: String = "waiting", val sentFrames: String = "0", val receivedFrames: String = "0",
+    val decodedFrames: String = "0", val concealedFrames: String = "0",
 )
 
 data class VoiceSnapshot(
     val enabled: Boolean = false, val muted: Boolean = false, val state: String = "disabled",
     val members: List<VoiceMemberSnapshot> = emptyList(), val peers: List<VoicePeerSnapshot> = emptyList(),
+    val captureState: String = "waiting", val capturedFrames: String = "0", val mixedFrames: String = "0",
+    val audioState: String = "stopped", val playbackFrames: String = "0", val audioError: String? = null,
+    val audioRoute: String = "", val aecEnabled: Boolean = false, val nsEnabled: Boolean = false,
 )
 
 data class CoreSnapshot(
@@ -165,13 +171,15 @@ data class CoreSnapshot(
                 peers = json.optJSONArray("peer_transports")?.let { array -> (0 until array.length()).map { PeerSnapshot.fromJson(array.getJSONObject(it)) } }.orEmpty(),
                 voice = VoiceSnapshot(
                     enabled = voice.optBoolean("enabled"), muted = voice.optBoolean("muted"), state = voice.optString("state", "disabled"),
+                    captureState = voice.optString("capture_state", "waiting"), capturedFrames = voice.optString("captured_frames", "0"), mixedFrames = voice.optString("mixed_frames", "0"),
                     members = voice.optJSONArray("members")?.let { array -> (0 until array.length()).map { item ->
                         val member = array.getJSONObject(item)
-                        VoiceMemberSnapshot(member.optString("device_name"), member.optBoolean("voice"), member.optString("signal_state"), member.optString("transport_state"), member.optString("media_state"), member.optString("transport_id"), member.optString("transport_generation", "0"))
+                        VoiceMemberSnapshot(member.optString("device_name"), member.optBoolean("voice"), member.optString("signal_state"), member.optString("transport_state"), member.optString("media_state"), member.optString("transport_id"), member.optString("transport_generation", "0"), local = member.optBoolean("local"))
                     } }.orEmpty(),
                     peers = voice.optJSONArray("peers")?.let { array -> (0 until array.length()).map { item ->
                         val peer = array.getJSONObject(item)
-                        VoicePeerSnapshot(peer.optString("peer_id"), peer.optString("transport_id"), peer.optString("generation", "0"), peer.optString("state"), peer.optString("path"), peer.optInt("bitrate"), peer.optString("packet_loss", "0"), peer.optInt("queue_depth"), peer.optString("queue_drops", "0"), peer.optString("datagram_drops", "0"), peer.optInt("jitter_depth"))
+                        VoicePeerSnapshot(peer.optString("peer_id"), peer.optString("transport_id"), peer.optString("generation", "0"), peer.optString("state"), peer.optString("path"), peer.optInt("bitrate"), peer.optString("packet_loss", "0"), peer.optInt("queue_depth"), peer.optString("queue_drops", "0"), peer.optString("datagram_drops", "0"), peer.optInt("jitter_depth"),
+                            mediaState = peer.optString("media_state", "waiting"), sentFrames = peer.optString("sent_frames", "0"), receivedFrames = peer.optString("received_frames", "0"), decodedFrames = peer.optString("decoded_frames", "0"), concealedFrames = peer.optString("concealed_frames", "0"))
                     } }.orEmpty(),
                 ),
             )

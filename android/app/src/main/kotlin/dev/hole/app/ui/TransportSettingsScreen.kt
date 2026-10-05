@@ -1,5 +1,7 @@
 package dev.hole.app.ui
 
+import androidx.compose.material.icons.filled.Check
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
@@ -60,27 +62,40 @@ fun TransportSettingsScreen(
     val turn = TurnSettings(relay, ttl.trim(), splitListField(urls), username.trim(), relayOrder)
     val dirty = mode != current.connectionMode || ice != current.ice || turn != current.turn || credential != configState.turnCredential || insecure != current.allowInsecureSignal
     fun back() { if (busy) return; if (dirty) confirm = true else onBack() }
+    val saveTransport: () -> Unit = {
+                error = when {
+                    mode != "legacy" && current.candidateAddresses.isNotEmpty() -> "请先在连接设置中清空手动 IPv6 候选地址，或选择“仅 IPv6”模式。"
+                    listOf(probe, gather, check, retry, ttl).any { !isValidDuration(it) } -> "请检查时间格式，例如 3s、6h。"
+                    ice.stunUrls.any { !it.startsWith("stun:") } -> "STUN 地址需以 stun: 开头。"
+                    relay == "manual" && (turn.urls.isEmpty() || username.isBlank() || credential.isEmpty()) -> "请填齐 TURN 地址、用户名和凭据。"
+                    relay == "manual" && turn.urls.any { !it.startsWith("turn:") && !it.startsWith("turns:") } -> "TURN 地址需以 turn: 或 turns: 开头。"
+                    relayOrderError(relayOrder) != null -> relayOrderError(relayOrder)
+                    else -> null
+                }
+                if (error == null) scope.launch { busy = true; error = onSave(mode, ice, turn, credential, insecure); busy = false; if (error == null) onBack() }
+    }
     BackHandler(handleBack) { back() }
-    HoleScaffold(title = "连接方式", navigationIcon = { HoleBackButton { back() } }) { insets ->
+    HoleScaffold(title = "连接方式", navigationIcon = { HoleBackButton { back() } },
+        floatingActions = { FloatingIconAction(androidx.compose.material.icons.Icons.Default.Check, "保存连接方式", saveTransport, enabled = configState.loaded && !busy) }) { insets ->
         Column(Modifier.fillMaxWidth().padding(insets).verticalScroll(rememberScrollState(), enabled = !turnOrderDragging).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             HoleSettingsGroup("连接策略") {
                 HoleSingleChoice(listOf("auto", "ice", "legacy").map { it to connectionModeLabel(it) }, mode, { mode = it }, Modifier.fillMaxWidth())
-                Text(connectionModeDescription(mode), style = MaterialTheme.typography.bodyMedium)
+                HoleHelp("策略说明", connectionModeDescription(mode))
                 if (mode == "legacy") Text("此模式不使用下方 ICE / TURN 设置。", style = MaterialTheme.typography.bodySmall)
             }
             HoleSettingsGroup("直连探测") {
                 HoleTextField(stun, { stun = it }, "STUN 服务器", modifier = Modifier.fillMaxWidth(),
                     supportingText = { Text("默认 Cloudflare：$DEFAULT_STUN_URL；每行一条，留空仅尝试本地地址。") })
-                Text("STUN 只探测公网映射，不承载业务数据。", style = MaterialTheme.typography.bodySmall)
+                HoleHelp("STUN 说明", "只探测公网映射，不承载业务数据。")
                 HoleTextButton("恢复 Cloudflare 默认值", { stun = DEFAULT_STUN_URL })
             }
             HoleSettingsGroup("直连失败后的中继") {
                 HoleSingleChoice(listOf("worker" to "协调服务", "manual" to "手动", "off" to "关闭"), relay, { relay = it }, Modifier.fillMaxWidth())
-                Text(when (relay) {
+                HoleHelp("凭据来源", when (relay) {
                     "manual" -> "使用自备 TURN；凭据加密保存在本机。"
                     "off" -> "不申请 TURN 凭据，仅尝试直连。"
                     else -> "由 Worker 发放短期凭据；未配置 TURN 时仍可直连。"
-                }, style = MaterialTheme.typography.bodyMedium)
+                })
                 AnimatedVisibility(relay == "manual") {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         HoleTextField(urls, { urls = it }, "TURN 地址", modifier = Modifier.fillMaxWidth(), supportingText = { Text("每行一个地址，需含端口；turns: 使用 TLS。") })
@@ -88,10 +103,10 @@ fun TransportSettingsScreen(
                         HoleTextField(credential, { credential = it }, "TURN 凭据", modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
                     }
                 }
-                Text("先尝试直连，再按本机顺序尝试 TURN。TLS 仅保护 TLS 中继接入；业务数据由 QUIC 端到端加密。", style = MaterialTheme.typography.bodySmall)
+                HoleHelp("中继说明", "先尝试直连，再按本机顺序尝试 TURN。TLS 保护中继接入，业务数据由 QUIC 端到端加密。")
             }
             HoleSettingsGroup("本机 TURN 类型顺序") {
-                Text("顺序仅影响本机；留空使用默认值，未选类型会跳过。", style = MaterialTheme.typography.bodySmall)
+                HoleHelp("尝试顺序", "顺序仅影响本机；留空使用默认值，未选类型会跳过。")
                 TurnOrderBoard(
                     order = relayOrder,
                     onChange = { relayOrderText = it.joinToString(", ") },
@@ -116,18 +131,7 @@ fun TransportSettingsScreen(
                 }
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            HoleButton("保存连接方式", enabled = configState.loaded && !busy, modifier = Modifier.fillMaxWidth(), onClick = {
-                error = when {
-                    mode != "legacy" && current.candidateAddresses.isNotEmpty() -> "请先在连接设置中清空手动 IPv6 候选地址，或选择“仅 IPv6”模式。"
-                    listOf(probe, gather, check, retry, ttl).any { !isValidDuration(it) } -> "请检查时间格式，例如 3s、6h。"
-                    ice.stunUrls.any { !it.startsWith("stun:") } -> "STUN 地址需以 stun: 开头。"
-                    relay == "manual" && (turn.urls.isEmpty() || username.isBlank() || credential.isEmpty()) -> "请填齐 TURN 地址、用户名和凭据。"
-                    relay == "manual" && turn.urls.any { !it.startsWith("turn:") && !it.startsWith("turns:") } -> "TURN 地址需以 turn: 或 turns: 开头。"
-                    relayOrderError(relayOrder) != null -> relayOrderError(relayOrder)
-                    else -> null
-                }
-                if (error == null) scope.launch { busy = true; error = onSave(mode, ice, turn, credential, insecure); busy = false; if (error == null) onBack() }
-            })
+            androidx.compose.foundation.layout.Spacer(Modifier.padding(bottom = 96.dp))
         }
     }
     if (confirm) Dialog(onDismissRequest = { confirm = false }) {

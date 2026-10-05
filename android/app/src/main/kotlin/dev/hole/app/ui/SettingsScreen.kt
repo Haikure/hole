@@ -1,16 +1,22 @@
 package dev.hole.app.ui
 
-import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.filled.Check
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -75,12 +81,15 @@ fun SettingsScreen(
     var showToken by rememberSaveable { mutableStateOf(false) }
     var saveError by rememberSaveable { mutableStateOf<String?>(null) }
     var showCancelConfirm by rememberSaveable { mutableStateOf(false) }
+    var showAdvanced by rememberSaveable { mutableStateOf(false) }
     var destination by rememberSaveable { mutableStateOf("back") }
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val scrollState = rememberScrollState()
+    val serverUrlError = validateServerUrl(serverUrl)
     val addressError = candidateAddresses.split(',', '，').map { it.trim() }
         .filter { it.isNotEmpty() }.firstOrNull { !isPublicIpv6(it) }
+    val validTimeout = sessionTimeout.isNotBlank() && isValidDuration(sessionTimeout)
 
     val dirty = serverUrl != connection.serverUrl || password != configState.password ||
         room != connection.room || token != configState.token ||
@@ -97,13 +106,27 @@ fun SettingsScreen(
             else -> onBack()
         }
     }
+
+    fun saveConnection() {
+        keyboard?.hide()
+        scope.launch {
+            val error = onSave(
+                serverUrl, password, room, token, deviceName,
+                sessionTimeout, candidateInterfaces, candidateAddresses,
+            )
+            if (error == null) onBack() else saveError = error
+        }
+    }
+
     BackHandler(enabled = handleBack) { leave("back") }
 
     HoleScaffold(
-        title = "设置",
+        title = "房间与身份",
         largeTitle = true,
-        navigationIcon = {
-            HoleBackButton(onClick = { leave("back") })
+        navigationIcon = { HoleBackButton(onClick = { leave("back") }) },
+        floatingActions = {
+            FloatingIconAction(androidx.compose.material.icons.Icons.Default.Check, "保存", ::saveConnection,
+                enabled = dirty && serverUrlError == null && addressError == null && validTimeout && configState.loaded)
         },
     ) { insets ->
         Column(
@@ -111,46 +134,16 @@ fun SettingsScreen(
                 .fillMaxWidth()
                 .padding(insets)
                 .verticalScroll(scrollState)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            HoleSectionTitle("外观")
-            if (configState.loaded) {
-                ThemeSection(
-                    themeStyle = ThemeStyle.fromValue(configState.config.themeStyle),
-                    themeMode = ThemeMode.fromValue(configState.config.themeMode),
-                    dynamicColor = configState.config.usesDynamicColor(),
-                    onStyleChange = { keyboard?.hide(); onThemeStyleChange(it) },
-                    onModeChange = onThemeModeChange,
-                    onDynamicColorChange = onDynamicColorChange,
-                    palette = dev.hole.app.config.ThemePalette.fromValue(configState.config.materialPalette),
-                    onPaletteChange = onPaletteChange,
-                )
-            } else {
-                Text("正在读取外观设置…", style = MaterialTheme.typography.bodySmall)
-            }
-            configState.lastError?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-
-            HoleSettingsGroup("运行与数据") {
-                HoleSwitchPreference(
-                    "房间语音",
-                    "使用本机麦克风和扬声器加入当前 room 的固定多人混音；需要麦克风权限。",
-                    checked = voiceEnabled,
-                    onCheckedChange = { voiceEnabled = it; onVoiceEnabledChange(it) },
-                )
-                HoleButton("连接方式 · ICE 与中继", { leave("transport") }, secondary = true, modifier = Modifier.fillMaxWidth())
-                HoleButton("后台保持与自动恢复", { leave("background") }, secondary = true, modifier = Modifier.fillMaxWidth())
-                HoleButton("导入与导出配置", { leave("transfer") }, secondary = true, modifier = Modifier.fillMaxWidth())
-            }
-
+            saveError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
             HoleSettingsGroup("连接") {
                 HoleTextField(
                     value = serverUrl,
-                    onValueChange = { serverUrl = it },
+                    onValueChange = { serverUrl = it; saveError = null },
                     label = "信令服务器",
-                    supportingText = { Text(serverUrlError ?: "完整 WebSocket URL，例如 wss://HOST/ws；明文 ws:// 仅用于开发") },
+                    supportingText = { Text(serverUrlError ?: "输入完整 WebSocket 地址，例如 wss://HOST/ws") },
                     isError = serverUrlError != null,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -158,14 +151,14 @@ fun SettingsScreen(
                 SecretField(
                     label = "信令密码",
                     value = password,
-                    onValueChange = { password = it },
+                    onValueChange = { password = it; saveError = null },
                     visible = showPassword,
                     onToggleVisible = { showPassword = !showPassword },
-                    supportingText = "Worker 部署密码，经 Authorization: Bearer 发送",
+                    supportingText = "用于连接信令服务器",
                 )
                 HoleTextField(
                     value = room,
-                    onValueChange = { room = it },
+                    onValueChange = { room = it; saveError = null },
                     label = "房间号",
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -173,31 +166,25 @@ fun SettingsScreen(
                 SecretField(
                     label = "房间密码",
                     value = token,
-                    onValueChange = { token = it },
+                    onValueChange = { token = it; saveError = null },
                     visible = showToken,
                     onToggleVisible = { showToken = !showToken },
-                    supportingText = "加入房间使用的共享 token，与信令密码是两个凭据",
+                    supportingText = "加入此房间使用，与服务器密码不同",
                 )
                 HoleTextField(
                     value = deviceName,
-                    onValueChange = { deviceName = it },
+                    onValueChange = { deviceName = it; saveError = null },
                     label = "设备名",
-                    supportingText = { Text("在房间内展示的成员名称") },
+                    supportingText = { Text("在房间成员列表中显示") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 HoleTextField(
                     value = sessionTimeout,
-                    onValueChange = { sessionTimeout = it },
+                    onValueChange = { sessionTimeout = it; saveError = null },
                     label = "会话保留期限",
                     supportingText = {
-                        Text(
-                            if (isValidDuration(sessionTimeout) || sessionTimeout.isBlank()) {
-                                "例如 10m；网络中断后 TCP 在此期限内恢复，UDP 为空闲期限"
-                            } else {
-                                "格式无效，例如 10m、1h30m"
-                            },
-                        )
+                        Text(if (validTimeout || sessionTimeout.isBlank()) "例如 10m 或 1h30m" else "格式无效，请使用 10m 或 1h30m")
                     },
                     isError = sessionTimeout.isNotBlank() && !isValidDuration(sessionTimeout),
                     singleLine = true,
@@ -205,69 +192,75 @@ fun SettingsScreen(
                 )
             }
 
-            HoleSettingsGroup("高级") {
-                HoleTextField(
-                    value = candidateInterfaces,
-                    onValueChange = { candidateInterfaces = it },
-                    label = "候选网卡",
-                    supportingText = { Text("逗号分隔的网卡名，留空表示不限制") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                HoleTextField(
-                    value = candidateAddresses,
-                    onValueChange = { candidateAddresses = it },
-                    label = "候选地址",
-                    supportingText = {
-                        Text(
-                            if (addressError == null) "逗号分隔的公网 IPv6 字面地址，留空表示不使用"
-                            else "\"$addressError\" 不是公网 IPv6 字面地址",
+            HoleSettingsGroup("网络高级选项") {
+                HoleHelp("网络选项", "可限制探测使用的网卡或指定公网 IPv6 地址；通常保持默认即可。")
+                HoleTextButton(if (showAdvanced) "收起网络选项" else "编辑网络选项", { showAdvanced = !showAdvanced })
+                AnimatedVisibility(showAdvanced) {
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        HoleTextField(
+                            value = candidateInterfaces,
+                            onValueChange = { candidateInterfaces = it; saveError = null },
+                            label = "候选网卡",
+                            supportingText = { Text("网卡名以逗号分隔；留空表示不限制") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
                         )
-                    },
-                    isError = addressError != null,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                        HoleTextField(
+                            value = candidateAddresses,
+                            onValueChange = { candidateAddresses = it; saveError = null },
+                            label = "候选地址",
+                            supportingText = {
+                                Text(if (addressError == null) "公网 IPv6 地址以逗号分隔；留空表示自动探测" else "“$addressError”不是公网 IPv6 地址")
+                            },
+                            isError = addressError != null,
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
             }
-
-            saveError?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            val canSave = serverUrlError == null && addressError == null &&
-                sessionTimeout.isNotBlank() && isValidDuration(sessionTimeout)
-            Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalArrangement = Arrangement.End) {
-                HoleButton(
-                    text = "保存连接设置",
-                    enabled = canSave && configState.loaded,
-                    onClick = {
-                        keyboard?.hide()
-                        scope.launch {
-                            val error = onSave(
-                                serverUrl, password, room, token, deviceName,
-                                sessionTimeout, candidateInterfaces, candidateAddresses,
-                            )
-                            if (error == null) onBack() else saveError = error
-                        }
-                    },
-                )
-            }
+            androidx.compose.foundation.layout.Spacer(Modifier.height(96.dp))
         }
     }
 
     if (showCancelConfirm) {
         Dialog(onDismissRequest = { showCancelConfirm = false }) {
             HoleCard {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("放弃未保存的修改？", style = MaterialTheme.typography.titleMedium)
+                Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("放弃未保存的修改？", style = MaterialTheme.typography.titleLarge)
+                    Text("当前连接设置尚未保存。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                         HoleTextButton("继续编辑", onClick = { showCancelConfirm = false })
                         HoleTextButton("放弃", onClick = {
                             showCancelConfirm = false
-                            when (destination) { "transport" -> onOpenTransport(); "background" -> onOpenBackground(); "transfer" -> onOpenTransfer(); else -> onBack() }
+                            when (destination) {
+                                "transport" -> onOpenTransport()
+                                "background" -> onOpenBackground()
+                                "transfer" -> onOpenTransfer()
+                                else -> onBack()
+                            }
                         })
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SettingsActionRow(title: String, summary: String, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClickLabel = title, onClick = onClick),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
+    ) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text("›", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
         }
     }
 }
@@ -289,10 +282,7 @@ private fun SecretField(
         singleLine = true,
         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-        trailingIcon = {
-            // 核心图标集中没有可见性图标，用文字切换，同样支持读屏。
-            HoleTextButton(if (visible) "隐藏" else "显示", onClick = onToggleVisible)
-        },
+        trailingIcon = { HoleTextButton(if (visible) "隐藏" else "显示", onClick = onToggleVisible) },
         modifier = Modifier.fillMaxWidth(),
     )
 }

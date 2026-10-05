@@ -16,7 +16,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import dev.hole.app.config.ThemeMode
-import dev.hole.app.config.ThemeStyle
 import androidx.compose.ui.unit.dp
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -83,22 +82,17 @@ class TurnOrderBoardInteractionTest {
     @get:Rule val compose = createComposeRule()
 
     @Test
-    fun tapTogglesTypesInBothThemes() {
-        var theme by mutableStateOf(ThemeStyle.MATERIAL)
+    fun tapTogglesTypes() {
         val order = mutableStateOf(emptyList<String>())
         compose.setContent {
-            HoleTheme(mode = ThemeMode.LIGHT, style = theme, dynamic = false) {
+            HoleTheme(mode = ThemeMode.LIGHT, dynamic = false) {
                 TurnOrderBoard(order = order.value, onChange = { order.value = it })
             }
         }
-        for (style in ThemeStyle.entries) {
-            compose.runOnIdle { theme = style }
-            compose.waitForIdle()
-            compose.onNodeWithText("TLS").performClick()
-            compose.runOnIdle { assertEquals(listOf("tls"), order.value) }
-            compose.onNodeWithText("TLS").performClick()
-            compose.runOnIdle { assertEquals(emptyList<String>(), order.value) }
-        }
+        compose.onNodeWithText("TLS").performClick()
+        compose.runOnIdle { assertEquals(listOf("tls"), order.value) }
+        compose.onNodeWithText("TLS").performClick()
+        compose.runOnIdle { assertEquals(emptyList<String>(), order.value) }
     }
 
     @Test

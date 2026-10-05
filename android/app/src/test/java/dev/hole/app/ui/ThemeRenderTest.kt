@@ -3,16 +3,21 @@ package dev.hole.app.ui
 import android.graphics.Bitmap
 import android.graphics.HardwareRenderer
 import android.graphics.RenderNode
+import androidx.compose.foundation.background
 import androidx.activity.ComponentActivity
 import androidx.test.filters.SdkSuppress
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.Density
 import dev.hole.app.ConfigUiState
 import dev.hole.app.config.ConnectionSettings
@@ -21,7 +26,6 @@ import dev.hole.app.config.ProvideEntry
 import dev.hole.app.config.StoredConfig
 import dev.hole.app.config.ThemeMode
 import dev.hole.app.config.ThemePalette
-import dev.hole.app.config.ThemeStyle
 import dev.hole.corebridge.CoreSnapshot
 import dev.hole.corebridge.PeerSnapshot
 import dev.hole.corebridge.MappingSnapshot
@@ -47,27 +51,40 @@ class ThemeRenderTest {
 
     @Test
     @SdkSuppress(minSdkVersion = 35)
-    fun renderBothThemesAndEditScreens() {
-        var style by mutableStateOf(ThemeStyle.MATERIAL)
+    fun renderThemeAndEditScreens() {
         var mode by mutableStateOf(ThemeMode.LIGHT)
         var screen by mutableStateOf("settings")
         var fontScale by mutableStateOf(1f)
         var palette by mutableStateOf(ThemePalette.BLUE)
+        var previewRunning by mutableStateOf(true)
+        var previewSignal by mutableStateOf("joined")
+        var previewUndo by mutableStateOf(false)
+        val previewSnackbar = SnackbarHostState()
         val base = StoredConfig(
             connection = ConnectionSettings(serverUrl = "wss://example.test/ws", deviceName = "android-preview"),
             provide = listOf(ProvideEntry("provide-preview", "ssh", "tcp", "127.0.0.1", 22)),
             consume = listOf(ConsumeEntry("consume-preview", "web", "127.0.0.1", 8080)),
         )
         compose.setContent {
-            HoleTheme(mode, dynamic = false, style = style, palette = palette) {
+            HoleTheme(mode, dynamic = false, palette = palette) {
                 CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, fontScale)) {
                     val configState = ConfigUiState(
                         loaded = true,
-                        config = base.copy(themeStyle = style.value, themeMode = mode.value, dynamicColor = false, materialPalette = palette.value),
+                        config = base.copy(themeMode = mode.value, dynamicColor = false, materialPalette = palette.value,
+                            consume = if (previewUndo) emptyList() else base.consume),
                     )
-                    when (screen) {
+                    FloatingAppFrame(
+                        route = if (screen == "hub") "settings" else if (screen == "settings") "connection-settings" else screen,
+                        onNavigate = { screen = if (it == "settings") "hub" else it }, snapshot = CoreSnapshot(runRequested = previewRunning, engineState = if (previewRunning) "running" else "stopped", startedAt = "2026-10-04T00:00:00Z"),
+                        enabled = true, onToggleRun = { previewRunning = it },
+                        snackbarHostState = previewSnackbar,
+                    ) {
+                    PageMotion(screen, false) { page ->
+                    when (page) {
+                        "hub" -> SettingsHub {}
+                        "appearance" -> ThemeSection(dev.hole.app.config.ThemeStyle.MATERIAL, mode, false, {}, { mode = it }, {}, palette, { palette = it })
                         "home" -> HomeScreen(
-                            snapshot = CoreSnapshot(nativeReady = true, configured = true, runRequested = true, engineState = "running", signalState = "joined",
+                            snapshot = CoreSnapshot(nativeReady = true, configured = true, runRequested = previewRunning, engineState = if (previewRunning) "running" else "stopped", signalState = if (previewRunning) previewSignal else "disconnected",
                                 provideCount = 1, consumeCount = 1,
                                 mappings = listOf(MappingSnapshot("ssh", "provide", "tcp", "active", tcpSessions = 3), MappingSnapshot("web", "consume", "udp", "active", udpSessions = 2))),
                             configState = configState, commandError = null,
@@ -88,26 +105,43 @@ class ThemeRenderTest {
                         )
                         "transport" -> TransportSettingsScreen(configState,onSave={_,_,_,_,_->null},onBack={})
                         "transport-ipv6" -> TransportSettingsScreen(configState.copy(config=configState.config.copy(connection=configState.config.connection.copy(connectionMode="legacy"))),onSave={_,_,_,_,_->null},onBack={})
+                        "config" -> ConfigOverviewScreen(
+                            configState = configState,
+                            onAddProvide = {}, onEditProvide = {}, onAddConsume = {}, onEditConsume = {},
+                            onToggleProvide = { _, _ -> }, onToggleConsume = { _, _ -> },
+                            onDeleteProvide = {}, onDeleteConsume = {}, onBack = {},
+                        )
+                        "voice" -> VoiceScreen(CoreSnapshot(voice = dev.hole.corebridge.VoiceSnapshot(enabled = true, state = "active")), configState, onVoiceEnabledChange = {}, onMutedChange = {}, onRequestMicrophone = {}, onBack = {})
                         "background" -> BackgroundScreen(onBack = {})
                         "transfer" -> ConfigTransferScreen(configState, onImport = {}, onBack = {})
                         else -> SettingsScreen(
                             configState = configState, onSave = { _, _, _, _, _, _, _, _ -> null },
-                            onThemeStyleChange = { style = it }, onThemeModeChange = { mode = it },
+                            onThemeStyleChange = {}, onThemeModeChange = { mode = it },
                             onDynamicColorChange = {}, onBack = {},
                             onPaletteChange = { palette = it },
                         )
+                    }
+                    }
+                    }
+                    LaunchedEffect(previewUndo) {
+                        if (previewUndo) previewSnackbar.showUndoSnackbar("已删除「web」")
                     }
                 }
             }
         }
         val directory = File("build/outputs/theme-previews").apply { mkdirs() }
         fun capture(name: String) {
+            if (compose.mainClock.autoAdvance) {
+                compose.mainClock.advanceTimeByFrame()
+                compose.waitForIdle()
+                compose.mainClock.advanceTimeBy(600)
+                compose.waitForIdle()
+            }
             compose.runOnIdle { compose.activity.window.decorView.invalidate() }
             compose.mainClock.advanceTimeByFrame()
             compose.waitForIdle()
             compose.runOnIdle {
                 val view = compose.activity.window.decorView
-                // Miuix 在 API 33+ 使用 RuntimeShader；记录到硬件 Canvas，避免软件 Canvas 跳过或拒绝着色器。
                 val node = RenderNode("theme-preview").apply { setPosition(0, 0, view.width, view.height) }
                 view.draw(node.beginRecording(view.width, view.height))
                 node.endRecording()
@@ -128,34 +162,63 @@ class ThemeRenderTest {
                 assertTrue(pixels.asSequence().distinct().take(33).count() > 32, "$name 应包含完整页面，而非空白截图")
             }
         }
-        for (theme in ThemeStyle.entries) {
-            for (appearance in listOf(ThemeMode.LIGHT, ThemeMode.DARK)) {
-                for (page in listOf("settings", "home", "provide", "consume", "details", "background", "transfer", "transport", "transport-ipv6")) {
-                    compose.runOnIdle { style = theme; mode = appearance; screen = page }
-                    compose.waitForIdle()
-                    capture("${theme.value}-${appearance.value}-$page.png")
-                }
+        for (appearance in listOf(ThemeMode.LIGHT, ThemeMode.DARK)) {
+            for (page in listOf("hub", "appearance", "settings", "home", "provide", "consume", "details", "background", "transfer", "transport", "transport-ipv6", "config", "voice")) {
+                compose.runOnIdle { mode = appearance; screen = page }
+                compose.waitForIdle()
+                capture("theme-${appearance.value}-$page.png")
             }
         }
         for (color in ThemePalette.entries) {
             for (appearance in listOf(ThemeMode.LIGHT, ThemeMode.DARK)) {
-                compose.runOnIdle { style = ThemeStyle.MATERIAL; mode = appearance; screen = "home"; palette = color }
+                compose.runOnIdle { mode = appearance; screen = "home"; palette = color }
                 capture("material-${appearance.value}-${color.value}-home.png")
             }
         }
-        compose.runOnIdle { style = ThemeStyle.MATERIAL; mode = ThemeMode.LIGHT; screen = "settings"; fontScale = 2f }
+        for (appearance in listOf(ThemeMode.LIGHT, ThemeMode.DARK)) {
+            for (phase in listOf("offline", "connecting", "joining", "joined")) {
+                compose.runOnIdle { mode = appearance; screen = "home"; palette = ThemePalette.BLUE; previewRunning = phase != "offline"; previewSignal = phase }
+                capture("status-${appearance.value}-$phase.png")
+            }
+        }
+        compose.runOnIdle { mode = ThemeMode.LIGHT; screen = "config"; palette = ThemePalette.BLUE; previewUndo = true }
+        capture("service-undo-light.png")
+        compose.runOnIdle { previewSnackbar.currentSnackbarData?.dismiss(); previewUndo = false }
+        compose.runOnIdle { mode = ThemeMode.LIGHT; screen = "settings"; fontScale = 2f }
         capture("material-large-font-settings.png")
-        compose.runOnIdle { style = ThemeStyle.MIUIX; mode = ThemeMode.LIGHT; screen = "settings"; fontScale = 2f }
-        compose.waitForIdle()
-        capture("miuix-large-font-settings.png")
         compose.runOnIdle { screen = "details" }
         compose.waitForIdle()
-        capture("miuix-large-font-details.png")
+        capture("material-large-font-details.png")
         compose.runOnIdle { screen = "transport" }
         compose.waitForIdle()
-        capture("miuix-large-font-transport.png")
+        capture("material-large-font-transport.png")
         compose.runOnIdle { screen = "home" }
         compose.waitForIdle()
-        capture("miuix-large-font-home.png")
+        capture("material-large-font-home.png")
+        compose.runOnIdle { mode = ThemeMode.LIGHT; screen = "home"; fontScale = 1f; palette = ThemePalette.BLUE; previewRunning = false }
+        compose.waitForIdle()
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("navigation-track").performTouchInput { down(Offset(width * .1f, centerY)) }
+        for (frame in 0..8) {
+            compose.onNodeWithTag("navigation-track").performTouchInput { moveTo(Offset(width * (.1f + frame * .1f), centerY), 60) }
+            compose.mainClock.advanceTimeBy(60)
+            capture("motion-dock-%02d.png".format(frame))
+        }
+        compose.onNodeWithTag("navigation-track").performTouchInput { up() }
+        for (frame in 9..16) {
+            compose.mainClock.advanceTimeBy(48)
+            capture("motion-dock-%02d.png".format(frame))
+        }
+        compose.runOnIdle { screen = "home"; previewRunning = true; previewSignal = "connecting" }
+        for (frame in 17..27) {
+            compose.mainClock.advanceTimeBy(48)
+            capture("motion-dock-%02d.png".format(frame))
+        }
+        compose.runOnIdle { previewSignal = "joined" }
+        for (frame in 28..38) {
+            compose.mainClock.advanceTimeBy(48)
+            capture("motion-dock-%02d.png".format(frame))
+        }
+        compose.mainClock.autoAdvance = true
     }
 }

@@ -44,6 +44,12 @@ ICE 配置要求 WSS；本地 WS 测试需显式启用 `transport.allow_insecure
 和长度），不复用普通 UDP mapping 的 channel、分片或应用 socket。语音帧不重传，反馈使用独立的
 低频控制包。`room_state` 的在线状态、`transport_ready` 的路径状态和媒体统计彼此独立。
 
+远端包的时间戳仅属于各自采样时钟，不用于比较不同设备是否对齐。接收侧以本机统一 20 ms
+播放时钟从各路抖动缓冲取帧，缺包调用 Opus PLC，持续停流后重新缓冲；混音每周期仅输出一帧。
+PCM 桥接仍接受最多 4 帧批次，Android 采集与播放使用单帧。媒体包格式与协议版本不变。
+快照以 `local` 标识本机成员，以独立的 `media_state` 与发送、接收、解码、补帧计数描述媒体，
+传输 `active` 本身不会使媒体标为活跃；详细字段见 [桥接 API](../mobile/README.md)。
+
 `turn.order` 可为每端设置独立白名单和尝试顺序，只使用 `udp`、`tcp`、`tls`，最多 3 项且不能
 重复；留空为 UDP → TCP → TLS。Cloudflare TURN 在每种类型内先尝试标准端口，再尝试备用端口：
 

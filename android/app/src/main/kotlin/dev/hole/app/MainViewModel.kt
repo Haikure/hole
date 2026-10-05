@@ -234,6 +234,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         save { it.copy(voice = it.voice.copy(enabled = enabled)) }
     }
 
+    fun setVoiceMuted(muted: Boolean) {
+        serviceReference.get()?.setVoiceMuted(muted)
+    }
+
     override fun onCleared() {
         collector?.cancel()
         commandCollector?.cancel()

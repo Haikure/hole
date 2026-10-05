@@ -66,6 +66,7 @@ type PCMSink interface {
 
 type VoiceMemberSnapshot struct {
 	DeviceName     string `json:"device_name"`
+	Local          bool   `json:"local"`
 	Voice          bool   `json:"voice"`
 	SignalState    string `json:"signal_state"`
 	TransportState string `json:"transport_state"`
@@ -75,35 +76,43 @@ type VoiceMemberSnapshot struct {
 }
 
 type VoicePeerSnapshot struct {
-	PeerID        string `json:"peer_id"`
-	TransportID   string `json:"transport_id,omitempty"`
-	Generation    uint64 `json:"generation,string,omitempty"`
-	State         string `json:"state"`
-	Path          string `json:"path,omitempty"`
-	RTTMS         int64  `json:"rtt_ms,string,omitempty"`
-	Bitrate       int    `json:"bitrate"`
-	PacketLoss    uint64 `json:"packet_loss,string"`
-	Reordered     uint64 `json:"reordered,string"`
-	LateFrames    uint64 `json:"late_frames,string"`
-	QueueDepth    int    `json:"queue_depth"`
-	QueueDrops    uint64 `json:"queue_drops,string"`
-	DatagramDrops uint64 `json:"datagram_drops,string"`
-	JitterDepth   int    `json:"jitter_depth"`
-	LastFeedback  string `json:"last_feedback,omitempty"`
-	Error         *Fault `json:"error,omitempty"`
+	PeerID          string `json:"peer_id"`
+	TransportID     string `json:"transport_id,omitempty"`
+	Generation      uint64 `json:"generation,string,omitempty"`
+	State           string `json:"state"`
+	MediaState      string `json:"media_state"`
+	SentFrames      uint64 `json:"sent_frames,string"`
+	ReceivedFrames  uint64 `json:"received_frames,string"`
+	DecodedFrames   uint64 `json:"decoded_frames,string"`
+	ConcealedFrames uint64 `json:"concealed_frames,string"`
+	Path            string `json:"path,omitempty"`
+	RTTMS           int64  `json:"rtt_ms,string,omitempty"`
+	Bitrate         int    `json:"bitrate"`
+	PacketLoss      uint64 `json:"packet_loss,string"`
+	Reordered       uint64 `json:"reordered,string"`
+	LateFrames      uint64 `json:"late_frames,string"`
+	QueueDepth      int    `json:"queue_depth"`
+	QueueDrops      uint64 `json:"queue_drops,string"`
+	DatagramDrops   uint64 `json:"datagram_drops,string"`
+	JitterDepth     int    `json:"jitter_depth"`
+	LastFeedback    string `json:"last_feedback,omitempty"`
+	Error           *Fault `json:"error,omitempty"`
 }
 
 type VoiceSnapshot struct {
-	Enabled bool                  `json:"enabled"`
-	Muted   bool                  `json:"muted"`
-	State   string                `json:"state"`
-	Members []VoiceMemberSnapshot `json:"members"`
-	Peers   []VoicePeerSnapshot   `json:"peers"`
+	Enabled        bool                  `json:"enabled"`
+	Muted          bool                  `json:"muted"`
+	State          string                `json:"state"`
+	CaptureState   string                `json:"capture_state"`
+	CapturedFrames uint64                `json:"captured_frames,string"`
+	MixedFrames    uint64                `json:"mixed_frames,string"`
+	Members        []VoiceMemberSnapshot `json:"members"`
+	Peers          []VoicePeerSnapshot   `json:"peers"`
 }
 
 func (s VoiceSnapshot) clone() VoiceSnapshot {
 	s.Members = append([]VoiceMemberSnapshot(nil), s.Members...)
-	s.Peers = make([]VoicePeerSnapshot, len(s.Peers))
+	s.Peers = append([]VoicePeerSnapshot(nil), s.Peers...)
 	for i, peer := range s.Peers {
 		s.Peers[i] = peer
 		if peer.Error != nil {

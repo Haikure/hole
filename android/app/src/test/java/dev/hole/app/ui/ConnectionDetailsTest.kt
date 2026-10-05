@@ -28,16 +28,14 @@ class ConnectionDetailsTest {
         compose.setContent { HoleTheme(ThemeMode.LIGHT,false) {
             RuntimeDetailsScreen(snapshot,ConfigUiState(loaded=true),null,onBack={},onReconnect={},onExport={},onBackground={})
         } }
-        compose.onNodeWithText("连接详情").assertExists()
+        compose.onNodeWithText("连接").assertExists()
         compose.onNodeWithText("配置与会话边界").assertDoesNotExist()
         compose.onNodeWithText("最近事件").assertDoesNotExist()
         compose.onNodeWithText("保存版本").assertDoesNotExist()
-        compose.onNodeWithTag("connection-details").performScrollToNode(hasText("查看线路细节"))
         compose.onNodeWithText("直连 · IPv4").assertExists()
         compose.onNodeWithText("12 ms").assertExists()
         compose.onNodeWithText("192.168.1.20:40000").assertDoesNotExist()
-        compose.onNodeWithText("查看线路细节").performClick()
-        compose.onNodeWithTag("connection-details").performScrollToNode(hasText("本机连接"))
+        compose.onNodeWithText("desktop").performClick()
         compose.onNodeWithText("本机连接").assertExists()
         compose.onNodeWithText("直连 · 192.168.1.20:40000").assertExists()
         compose.onNodeWithText("对端连接").assertExists()
@@ -61,7 +59,9 @@ class ConnectionDetailsTest {
         } }
         compose.onNodeWithText("仅 IPv6").assertExists()
         compose.onNodeWithText("旧 IPv6").assertDoesNotExist()
-        compose.onNodeWithText(connectionModeDescription("legacy")).assertExists()
+        compose.onNodeWithText(connectionModeDescription("legacy")).assertDoesNotExist()
+        compose.onNodeWithContentDescription("策略说明 说明").performClick()
+        compose.onNodeWithText(connectionModeDescription("legacy")).assertIsDisplayed()
     }
     @Test fun relayLabelsDistinguishTcpTlsAndUnreportedRemoteAccess() {
         assertEquals("中继 · IPv4", peerPathLabel(PeerSnapshot(pathType="relay",relayProtocol="tcp",relaySide="local",addressFamily="IPv4")))
@@ -85,9 +85,9 @@ class ConnectionDetailsTest {
             RuntimeDetailsScreen(CoreSnapshot(runRequested=true), ConfigUiState(loaded=true), null,
                 onBack={},onReconnect={},onExport={},onBackground={})
         } }
-        compose.onNodeWithTag("connection-details").performScrollToNode(hasText("版本与技术信息"))
-        compose.onNodeWithText("版本与技术信息").performClick()
-        compose.onNodeWithTag("connection-details").performScrollToNode(hasText("运行 / 网络重建编号"))
+        compose.onNodeWithContentDescription("连接选项").performClick()
+        compose.onNodeWithText("网络诊断").performClick()
+        compose.onNodeWithText("运行 / 网络重建编号").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("配置版本：保存 / 提交 / 确认").assertDoesNotExist()
     }
 }
