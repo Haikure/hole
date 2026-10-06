@@ -127,6 +127,8 @@ pub enum Command {
     Refresh,
     /// 配置已变更；运行中则重配核心。
     ConfigChanged,
+    VoiceMuted(bool),
+    RetryVoiceAudio,
     Visible(bool),
     ImportText { text: String, kind: String },
     ConfirmImport,
@@ -138,6 +140,7 @@ pub enum Command {
 pub struct Controller {
     pub shared: Arc<Mutex<Shared>>,
     pub tx: Sender<Command>,
+    thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 struct TrafficSample {
@@ -164,6 +167,9 @@ struct Worker {
     history: VecDeque<TrafficSample>,
     last_read: Instant,
     bridge_path: String,
+    audio: Option<crate::voice_audio::VoiceAudio>,
+    audio_error: String,
+    voice_muted: bool,
 }
 
 impl Controller {
@@ -172,7 +178,7 @@ impl Controller {
         let (wake_tx, wake_rx) = mpsc::channel();
         let weak = window.as_weak();
         let shared_worker = shared.clone();
-        thread::Builder::new()
+        let worker_thread = thread::Builder::new()
             .name("hole-controller".into())
             .spawn(move || {
                 let mut worker = Worker {
@@ -193,26 +199,36 @@ impl Controller {
                     history: VecDeque::new(),
                     last_read: Instant::now() - MIN_INTERVAL,
                     bridge_path: String::new(),
+                    audio: None,
+                    audio_error: String::new(),
+                    voice_muted: false,
                 };
                 worker.connect_bridge(wake_tx.clone());
                 worker.run(wake_tx);
             })
             .expect("控制器线程启动失败");
-        Controller { shared, tx }
+        Controller { shared, tx, thread: Mutex::new(Some(worker_thread)) }
     }
 
     pub fn send(&self, command: Command) {
         let _ = self.tx.send(command);
     }
+
+    pub fn finish(&self) {
+        self.send(Command::Quit);
+        if let Some(worker) = self.thread.lock().unwrap().take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl Worker {
     fn connect_bridge(&mut self, wake_tx: Sender<Inbound>) {
-        match core_client::locate_bridge() {
-            Ok(path) => {
-                self.bridge_path = path.display().to_string();
+        match crate::core_host::prepare() {
+            Ok(host) => {
+                self.bridge_path = host.description.clone();
                 let tx = wake_tx;
-                match CoreClient::spawn(&path, move |inbound| {
+                match CoreClient::spawn(host, move |inbound| {
                     let _ = tx.send(inbound);
                 }) {
                     Ok(client) => match client.hello() {
@@ -256,7 +272,8 @@ impl Worker {
     fn run(mut self, _wake_tx: Sender<Inbound>) {
         loop {
             let timeout = if self.snapshot.run_requested && self.client.is_some() {
-                if self.visible { FOREGROUND_INTERVAL } else { BACKGROUND_INTERVAL }
+                if self.snapshot.voice.enabled { Duration::from_millis(500) }
+                else if self.visible { FOREGROUND_INTERVAL } else { BACKGROUND_INTERVAL }
             } else {
                 Duration::from_secs(3600)
             };
@@ -293,6 +310,7 @@ impl Worker {
         match inbound {
             Inbound::Event(params) => self.handle_event(&params),
             Inbound::Exited(reason) => {
+                self.audio.take();
                 self.client = None;
                 self.bridge_error = format!("{reason}；转发已中断。重新打开应用以重新启动核心宿主。");
                 self.snapshot = Snapshot::failure("bridge_exited", &reason);
@@ -385,6 +403,7 @@ impl Worker {
                     self.history.clear();
                 }
                 self.snapshot = s;
+                self.sync_audio();
             }
             Err(e) => self.command_error = format!("读取快照失败：{e}"),
         }
@@ -420,9 +439,27 @@ impl Worker {
                 self.push_ui();
             }
             Command::ConfigChanged => {
+                self.stop_audio();
+                self.audio_error.clear();
                 if self.snapshot.run_requested {
                     self.apply_config();
                 }
+                self.push_ui();
+            }
+            Command::VoiceMuted(muted) => {
+                if let Some(client) = &self.client {
+                    match client.call("set_voice_muted", Some(serde_json::json!({"muted": muted}))) {
+                        Ok(_) => { self.voice_muted = muted; self.command_error.clear(); },
+                        Err(e) => self.command_error = format!("语音静音操作失败：{e}"),
+                    }
+                }
+                self.read_snapshot();
+                self.push_ui();
+            }
+            Command::RetryVoiceAudio => {
+                self.stop_audio();
+                self.audio_error.clear();
+                self.read_snapshot();
                 self.push_ui();
             }
             Command::Visible(v) => {
@@ -447,6 +484,7 @@ impl Worker {
     }
 
     fn start(&mut self) -> Result<(), String> {
+        self.audio_error.clear();
         let client = self.client.clone().ok_or_else(|| self.bridge_error.clone())?;
         let request = self.build_request()?;
         client.call("validate", Some(request.clone())).map_err(|e| e.display())?;
@@ -462,6 +500,8 @@ impl Worker {
     }
 
     fn stop(&mut self) {
+        self.stop_audio();
+        self.audio_error.clear();
         {
             let mut s = self.shared.lock().unwrap();
             s.run_state.run_requested = false;
@@ -618,6 +658,7 @@ impl Worker {
     }
 
     fn quit(&mut self) {
+        self.stop_audio();
         if let Some(c) = self.client.take() {
             if self.snapshot.run_requested {
                 let _ = c.call("stop", None);
@@ -629,6 +670,63 @@ impl Worker {
 
     // ---------- 视图模型 ----------
 
+    fn stop_audio(&mut self) {
+        if self.audio.take().is_some() {
+            if let Some(client) = &self.client {
+                let _ = client.call("set_voice_audio", Some(serde_json::json!({"enabled": false})));
+            }
+        }
+    }
+
+    fn sync_audio(&mut self) {
+        let wanted = self.shared.lock().unwrap().config.voice.enabled;
+        if !wanted || !self.snapshot.run_requested || !self.snapshot.voice.enabled {
+            self.stop_audio();
+            return;
+        }
+        if let Some(error) = self.audio.as_ref().and_then(|a| a.error()) {
+            self.stop_audio();
+            self.audio_error = error;
+        }
+        if self.audio.is_some() || !self.audio_error.is_empty() || self.snapshot.engine_state != "running" { return; }
+        let Some(client) = self.client.clone() else { return };
+        let result = (|| {
+            if !self.hello.methods.iter().any(|m| m == "set_voice_audio") { return Err("核心宿主不支持桌面语音，请更新配套宿主".into()); }
+            // Preserve mute across device restart and configuration changes.
+            client.call("set_voice_muted", Some(serde_json::json!({"muted": self.voice_muted}))).map_err(|e| e.display())?;
+            let reply = client.call("set_voice_audio", Some(serde_json::json!({"enabled": true}))).map_err(|e| e.display())?;
+            let id = reply["stream_id"].as_str().and_then(|s| s.parse::<u64>().ok()).filter(|id| *id != 0).ok_or("语音流标识无效")?;
+            crate::voice_audio::VoiceAudio::open(client.clone(), id)
+        })();
+        match result {
+            Ok(audio) => self.audio = Some(audio),
+            Err(error) => {
+                let _ = client.call("set_voice_audio", Some(serde_json::json!({"enabled": false})));
+                self.audio_error = error;
+            }
+        }
+    }
+
+    fn build_voice_status(&self) -> crate::VoiceStatus {
+        let enabled = self.shared.lock().unwrap().config.voice.enabled;
+        let v = &self.snapshot.voice;
+        let label = if !enabled { "语音未启用" } else if !self.snapshot.run_requested { "已启用，等待连接" }
+            else if !self.audio_error.is_empty() { "音频设备需要处理" }
+            else if self.audio.is_none() { "正在准备语音" }
+            else { match v.state.as_str() {
+                "active" | "running" => "语音通话中", "connecting" => "语音线路连接中",
+                "ready" => "线路已连接，等待音频", _ => "等待语音成员",
+            } };
+        crate::VoiceStatus {
+            enabled, available: self.hello.methods.iter().any(|m| m == "set_voice_audio"),
+            muted: v.muted, running: self.audio.is_some(), label: label.into(),
+            capture: if v.muted { "麦克风已静音".into() } else { snap::media_label(&v.capture_state).into() },
+            route: self.audio.as_ref().map(|a| a.route.clone()).unwrap_or_default().into(),
+            error: self.audio_error.clone().into(),
+            stats: format!("采集 {} 帧 · 混音 {} 帧", v.captured_frames, v.mixed_frames).into(),
+        }
+    }
+
     fn push_ui(&mut self) {
         let status = self.build_status();
         let (provides, consumes, runtime) = self.build_mappings();
@@ -637,9 +735,15 @@ impl Worker {
         let network = self.build_network_info();
         let versions = self.build_version_info();
         let host = self.build_host_info();
+        let voice = self.build_voice_status();
+        let members = self.snapshot.voice.members.clone();
+        let voice_peers = self.snapshot.voice.peers.clone();
         let _ = self.window.upgrade_in_event_loop(move |w| {
             let app = w.global::<App>();
             app.set_status(status);
+            app.set_voice(voice);
+            app.set_voice_members(ModelRc::new(VecModel::from(members)));
+            app.set_voice_peers(ModelRc::new(VecModel::from(voice_peers)));
             app.set_provides(ModelRc::new(VecModel::from(provides.into_iter().map(MappingData::into_row).collect::<Vec<_>>())));
             app.set_consumes(ModelRc::new(VecModel::from(consumes.into_iter().map(MappingData::into_row).collect::<Vec<_>>())));
             app.set_runtime_mappings(ModelRc::new(VecModel::from(runtime.into_iter().map(MappingData::into_row).collect::<Vec<_>>())));

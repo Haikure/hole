@@ -7,6 +7,9 @@ description = "hole 桌面客户端（Rust + Slint），通过 stdio 桥接驱�
 publish = false
 build = "build.rs"
 
+[features]
+embedded-core = []
+
 [[bin]]
 name = "hole-desktop"
 path = "src/main.rs"
@@ -25,9 +28,20 @@ serde_json = { version = "1" }
 uuid = { version = "1", features = ["v4"] }
 dirs = { version = "6" }
 arboard = { version = "3", default-features = false }
+cpal = "0.16"
+flate2 = "1"
+sha2 = "0.10"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }
 
 [build-dependencies]
 slint-build = "1.18"
+flate2 = "1"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

@@ -10,7 +10,7 @@ usage() {
 目标（可组合，重复目标只构建一次）：
   cli                Go CLI，CGO_ENABLED=0、trimpath、-s -w
   desktop-core       桌面 GUI 的独立 Go stdio 桥接，Release；不需要 Qt
-  desktop            桌面 GUI + Go 桥接 Release 目录包，需要 Rust stable / Cargo
+  desktop            内嵌 Go 核心的单文件桌面 GUI，Release；需要 Rust stable / Cargo
   android / phone    Android 手机 Release，ARM64、R8、资源收缩、native strip
   wear               Wear OS Release，ARM32 + ARM64，同上
   all                cli + android + wear（不包含 desktop-core 或 desktop）
@@ -210,16 +210,12 @@ build_desktop_gui() (
   target_suffix=""
   [[ -z "$DESKTOP_RUST_TARGET" ]] || target_suffix="/$DESKTOP_RUST_TARGET"
   gui_name=hole-desktop
-  bridge_name="hole-desktop-core-$local_os-$local_arch"
   if [[ "$local_os" == windows ]]; then
     gui_name+=.exe
-    bridge_name+=.exe
   fi
   cargo_output="$ROOT/.cache/cargo-target$target_suffix/release"
   gui_binary="$cargo_output/$gui_name"
   [[ -f "$gui_binary" ]] || die "Cargo 未生成桌面程序：$gui_binary"
-  bridge_binary="$OUTPUT/desktop-core/$bridge_name"
-  [[ -f "$bridge_binary" ]] || die "未找到桌面桥接程序：$bridge_binary"
 
   package_parent="$OUTPUT/desktop"
   package="$package_parent/$local_os-$local_arch"
@@ -238,9 +234,7 @@ build_desktop_gui() (
   trap cleanup_package EXIT
 
   cp "$gui_binary" "$stage/$gui_name"
-  cp "$bridge_binary" "$stage/$bridge_name"
   python3 "$ROOT/scripts/build_meta.py" checksum "$stage/$gui_name"
-  python3 "$ROOT/scripts/build_meta.py" checksum "$stage/$bridge_name"
   if [[ -e "$package" || -L "$package" ]]; then
     backup=$(mktemp -d "$package_parent/.$local_os-$local_arch.backup.XXXXXXXX")
     rmdir "$backup"
@@ -253,13 +247,19 @@ build_desktop_gui() (
 )
 
 if (( BUILD_DESKTOP )); then
-  printf '\n[Desktop] %s/%s · GUI + Go bridge · Release\n' "$DESKTOP_OS" "$DESKTOP_ARCH"
-  cargo_args=(build --release --locked)
+  printf '\n[Desktop] %s/%s · 内嵌 Go 核心 · Release\n' "$DESKTOP_OS" "$DESKTOP_ARCH"
+  cargo_args=(build --release --locked --features embedded-core)
   if [[ -n "$DESKTOP_RUST_TARGET" ]]; then cargo_args+=(--target "$DESKTOP_RUST_TARGET"); fi
   if (( OFFLINE )); then cargo_args+=(--offline); fi
   # Go cross-compilation settings select the target above; Cargo receives only its Rust target.
   unset GOOS GOARCH GOARM GOARM64 GOAMD64 GO386 CGO_ENABLED
-  (cd "$ROOT/desktop/gui"; cargo "${cargo_args[@]}")
+  (
+    cd "$ROOT/desktop/gui"
+    embedded_core="$OUTPUT/desktop-core/hole-desktop-core-$DESKTOP_OS-$DESKTOP_ARCH"
+    [[ "$DESKTOP_OS" != windows ]] || embedded_core+=.exe
+    [[ -f "$embedded_core" ]] || die "未找到待嵌入核心：$embedded_core"
+    HOLE_EMBED_CORE="$embedded_core" cargo "${cargo_args[@]}"
+  )
   build_desktop_gui
 fi
 if (( BUILD_ANDROID || BUILD_WEAR )); then

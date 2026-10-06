@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -57,7 +58,10 @@ func TestBridgeRealCoreStartReconfigureNetworkStopRestart(t *testing.T) {
 	defer client.Close()
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, hostPipe, hostPipe) }()
-	decoder := json.NewDecoder(client)
+	decoder := bufio.NewScanner(client)
+	decoder.Buffer(make([]byte, 4096), MaxOutputBytes+2)
+	decoder.Split(splitFrames)
+	playbackFrames := 0
 	nextID := 0
 	var eventCount int
 	call := func(method, params string) wireMessage {
@@ -70,7 +74,17 @@ func TestBridgeRealCoreStartReconfigureNetworkStopRestart(t *testing.T) {
 		}
 		for {
 			var m wireMessage
-			if err := decoder.Decode(&m); err != nil {
+			if !decoder.Scan() {
+				t.Fatalf("bridge closed: %v", decoder.Err())
+			}
+			if data := decoder.Bytes(); len(data) > 0 && data[0] == 0 {
+				if len(data) != voicePacketBytes {
+					t.Fatal("invalid playback frame")
+				}
+				playbackFrames++
+				continue
+			}
+			if err := json.Unmarshal(decoder.Bytes(), &m); err != nil {
 				t.Fatal(err)
 			}
 			data, _ := json.Marshal(m)
@@ -107,6 +121,7 @@ func TestBridgeRealCoreStartReconfigureNetworkStopRestart(t *testing.T) {
 	}
 	params := strings.Replace(validParams(), "wss://example.invalid/ws", "ws"+strings.TrimPrefix(server.URL, "http"), 1)
 	params = strings.Replace(params, `"preferred":"ice"`, `"preferred":"ice","allow_insecure_signal":true`, 1)
+	params = strings.Replace(params, `"config":{`, `"config":{"voice":{"enabled":true},`, 1)
 	call("hello", "")
 	call("validate", params)
 	if joined.Load() != 0 {
@@ -114,6 +129,19 @@ func TestBridgeRealCoreStartReconfigureNetworkStopRestart(t *testing.T) {
 	}
 	call("start", params)
 	first := waitState(func(s core.Snapshot) bool { return s.SignalState == "joined" })
+	attached := call("set_voice_audio", `{"enabled":true}`)
+	var stream struct {
+		ID uint64 `json:"stream_id,string"`
+	}
+	if err := json.Unmarshal(attached.Result, &stream); err != nil || stream.ID == 0 {
+		t.Fatalf("audio attach: %s", attached.Result)
+	}
+	if _, err := client.Write(voicePacket(stream.ID, 0, make([]byte, 1920))); err != nil {
+		t.Fatal(err)
+	}
+	waitState(func(s core.Snapshot) bool { return s.Voice.CapturedFrames > 0 && playbackFrames > 0 })
+	call("set_voice_muted", `{"muted":true}`)
+	waitState(func(s core.Snapshot) bool { return s.Voice.Muted })
 	updated := strings.Replace(params, `"device_name":"desktop"`, `"device_name":"desktop-2"`, 1)
 	call("apply_config", updated)
 	waitState(func(s core.Snapshot) bool { return s.SignalState == "joined" && s.Generation == first.Generation })

@@ -130,7 +130,10 @@ manual URL 必须给端口；省略 `transport` 时，`turn:` 支持 UDP / TCP�
 
 ## 桌面客户端构建
 
-`desktop` 会以 Release 模式构建 Rust + Slint GUI 和匹配目标的 Go stdio 桥接，并生成可直接运行的目录包：
+桌面客户端的“语音”页支持房间通话、静音、成员和线路状态，使用系统默认麦克风与播放设备，
+与 Android 复用共享语音核心。需选择自动 / ICE 连接方式并启动连接，建议佩戴耳机。
+
+`desktop` 以 Release 模式构建 Rust + Slint GUI，将匹配目标的 Go 核心压缩嵌入，生成单文件客户端：
 
 ```bash
 ./build.sh desktop
@@ -138,7 +141,8 @@ manual URL 必须给端口；省略 `transport` 时，`turn:` 支持 UDP / TCP�
 ./build.sh desktop --os windows --arch amd64
 ```
 
-交付位于 `dist/desktop/<goos>-<goarch>/`，包含 GUI、桥接程序和各自的 SHA-256 文件。
+交付位于 `dist/desktop/<goos>-<goarch>/`，只需运行其中的 `hole-desktop[.exe]`，同目录附 SHA-256 文件。
+Linux 校验后从 memfd 匿名内存文件启动核心；Windows 从私有临时目录启动并在退出时回收，异常残留在下次启动时清理。
 构建完整 GUI 需要 Rust stable / Cargo；交叉构建还需要预装对应 Rust target 和平台 linker。
 若只需要独立 Go 桥接，可构建 `desktop-core`，产物位于 `dist/desktop-core/`，不需要 Qt、Slint 或 CGo。
 `cli` / `android` / `wear` / `all` 不会隐式构建桌面目标；需要时显式组合 `desktop`。

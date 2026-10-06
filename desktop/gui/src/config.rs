@@ -148,17 +148,28 @@ impl Default for Prefs {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct VoiceSettings {
+    pub enabled: bool,
+}
+
+impl Default for VoiceSettings {
+    fn default() -> Self { Self { enabled: false } }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct StoredConfig {
     pub schema_version: u32,
     pub prefs: Prefs,
     pub connection: ConnectionSettings,
+    pub voice: VoiceSettings,
     pub provide: Vec<ProvideEntry>,
     pub consume: Vec<ConsumeEntry>,
 }
 
 impl Default for StoredConfig {
     fn default() -> Self {
-        StoredConfig { schema_version: SCHEMA_VERSION, prefs: Prefs::default(), connection: ConnectionSettings::default(), provide: vec![], consume: vec![] }
+        StoredConfig { schema_version: SCHEMA_VERSION, prefs: Prefs::default(), connection: ConnectionSettings::default(), voice: VoiceSettings::default(), provide: vec![], consume: vec![] }
     }
 }
 
@@ -482,6 +493,7 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
             "candidate_addresses": c.candidate_addresses,
             "provide": provide,
             "consume": consume,
+            "voice": { "enabled": cfg.voice.enabled },
             "transport": transport,
             "ice": {
                 "stun_urls": c.ice.stun_urls,
@@ -593,7 +605,8 @@ pub fn from_portable_document(doc: &Value, current: &StoredConfig) -> Result<(St
         let (host, port) = split_endpoint(&s(&c["expose"]))?;
         consume.push(ConsumeEntry { entry_id: new_entry_id(), id: s(&c["id"]), host, port, enabled: true });
     }
-    let config = StoredConfig { schema_version: SCHEMA_VERSION, prefs: current.prefs.clone(), connection, provide, consume };
+    let voice = serde_json::from_value(doc.get("voice").cloned().unwrap_or(json!({}))).map_err(|_| "语音配置格式无效")?;
+    let config = StoredConfig { schema_version: SCHEMA_VERSION, prefs: current.prefs.clone(), connection, voice, provide, consume };
     let secrets = Secrets { password: s(&doc["password"]), token: s(&doc["token"]), turn_credential: s(&turn["credential"]) };
     validate_draft(&config)?;
     Ok((config, secrets))
@@ -614,6 +627,9 @@ pub fn split_endpoint(value: &str) -> Result<(String, u16), String> {
 
 /// 停止态草稿校验：允许缺少服务器与凭据，其余约束不变。
 pub fn validate_draft(cfg: &StoredConfig) -> Result<(), String> {
+    if cfg.voice.enabled && cfg.connection.connection_mode == "legacy" {
+        return Err("语音需要 ICE，请先关闭语音或选择自动 / ICE 连接方式".into());
+    }
     to_portable_document(cfg, &Secrets::default(), false).map(|_| ())
 }
 
@@ -692,6 +708,7 @@ fn android_backup(config: &Value, version: i64, current: &StoredConfig) -> Resul
     let mut cfg = StoredConfig {
         schema_version: SCHEMA_VERSION,
         prefs,
+        voice: serde_json::from_value(config.get("voice").cloned().unwrap_or(json!({}))).map_err(|_| "语音配置格式无效")?,
         connection: ConnectionSettings {
             server_url,
             room: s(&conn["room"]),
@@ -809,6 +826,23 @@ mod tests {
         assert_eq!(back.connection.connection_mode, "auto");
         assert_eq!(back.connection.turn.order, vec!["tls", "udp"]);
         assert_eq!(back_secrets.password, "");
+    }
+
+    #[test]
+    fn voice_survives_portable_and_backup_exchange() {
+        let mut cfg = StoredConfig::default();
+        cfg.voice.enabled = true;
+        let doc = to_portable_document(&cfg, &Secrets::default(), false).unwrap();
+        assert_eq!(doc["voice"]["enabled"], true);
+        let (restored, _) = from_portable_document(&doc, &StoredConfig::default()).unwrap();
+        assert!(restored.voice.enabled);
+        let backup = backup_document(&cfg, &Secrets::default(), false).to_string();
+        assert!(read_backup(&backup, &StoredConfig::default()).unwrap().config.voice.enabled);
+        let android = r#"{"format":"hole-android-backup","version":2,"config":{"schemaVersion":2,"connection":{"connectionMode":"ice"},"voice":{"enabled":true}}}"#;
+        assert!(read_backup(android, &StoredConfig::default()).unwrap().config.voice.enabled);
+        assert!(!serde_json::from_str::<StoredConfig>("{}").unwrap().voice.enabled);
+        cfg.connection.connection_mode = "legacy".into();
+        assert!(validate_draft(&cfg).is_err());
     }
 
     #[test]

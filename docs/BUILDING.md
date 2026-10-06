@@ -7,7 +7,9 @@
 
 CLI / `desktop-core` 需要 Bash、Python 3 和 Go 1.26+；桌面桥接不需要 Qt、Slint 或 CGo。
 完整 `desktop` 目标还需要 Rust stable / Cargo。桌面 GUI 支持 Linux、Windows 的 AMD64 / ARM64；
-交叉构建需提前安装对应 Rust target 和平台 linker / sysroot，构建脚本不会自动安装 Rust 工具链。
+Linux 语音设备适配通过 CPAL / ALSA 构建，需要 `pkg-config` 与 ALSA 开发包（Debian / Ubuntu 为
+`libasound2-dev`）；运行环境需系统 ALSA 库及默认音频设备。Windows 使用系统 WASAPI。
+交叉构建需提前安装对应 Rust target 和平台 linker / sysroot（Linux 含目标 ALSA 库），构建脚本不会自动安装 Rust 工具链或系统音频开发包。
 项目 Android 构建固定使用 Go 1.26.4。
 
 | Android 组件 | 版本 |
@@ -44,7 +46,7 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 ./build.sh cli --os windows --arch amd64
 ./build.sh desktop-core                # 独立 Go stdio 桥接；不构建 GUI
 ./build.sh desktop-core --os windows --arch amd64
-./build.sh desktop                    # GUI + 匹配架构的 Go 桥接目录包
+./build.sh desktop                    # 内嵌匹配架构 Go 核心的单文件 GUI
 ./build.sh desktop --os windows --arch amd64
 ./build.sh android                     # 手机 ARM64
 ./build.sh wear                        # 手表 ARM32 + ARM64
@@ -125,8 +127,6 @@ dist/
   desktop-core/hole-desktop-core-<goos>-<goarch>[.exe].sha256
   desktop/<goos>-<goarch>/hole-desktop[.exe]
   desktop/<goos>-<goarch>/hole-desktop[.exe].sha256
-  desktop/<goos>-<goarch>/hole-desktop-core-<goos>-<goarch>[.exe]
-  desktop/<goos>-<goarch>/hole-desktop-core-<goos>-<goarch>[.exe].sha256
   android/hole-<version>-release.apk
   android/hole-<version>-release-mapping.txt
   android/build-manifest.json
@@ -138,7 +138,10 @@ dist/
 ```
 
 CLI / 桌面 Go 桥接使用 `CGO_ENABLED=0`、`-trimpath`、`-s -w`，不调用宿主 `strip` 处理其他架构二进制。
-桌面 GUI 使用 Cargo `release` profile；`desktop` 目录包含 GUI 与匹配架构的 Go 桥接程序及各自 SHA-256 文件。
+桌面 GUI 使用 Cargo `release` profile 和 `embedded-core` feature；`desktop` 目录仅包含内嵌核心的 GUI
+与 SHA-256 文件。构建时通过 `HOLE_EMBED_CORE` 传入刚生成的同架构宿主，校验 ELF / PE 后压缩嵌入；
+Cargo 跟踪该输入的变化。Linux 运行时使用可执行 memfd 和 `/proc/self/fd`，Windows 使用私有临时目录，
+加载和清理细节见 [桌面桥接](../desktop/README.md#内嵌核心的加载与回收)。
 Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使用 R8、资源收缩和 native strip，
 不包含调试信息或静态符号表，动态链接与 Go 运行所需元数据保留。
 

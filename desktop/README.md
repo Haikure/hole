@@ -9,8 +9,8 @@ Slint → Rust CoreClient → child stdin/stdout → desktop → core.Engine
                                                         └─ ICE / QUIC / TCP / UDP
 ```
 
-一个宿主进程持有一个 Engine；多条映射共享它。IPC 只承载配置、控制、事件和快照，
-业务字节不经过 GUI。桌面宿主不读取配置文件、不自动启动网络、不监听控制 HTTP/TCP 端口，
+一个宿主进程持有一个 Engine；多条映射共享它。IPC 承载配置、控制、事件、快照和显式启用的语音 PCM，
+TCP / UDP 映射业务字节不经过 GUI。桌面宿主不读取配置文件、不自动启动网络、不监听控制 HTTP/TCP 端口，
 不依赖 gomobile、Qt 或 Slint。传输、身份、限额与恢复仍由 `core/` 实现。
 
 ## 构建与启动
@@ -21,8 +21,8 @@ Slint → Rust CoreClient → child stdin/stdout → desktop → core.Engine
 ./build.sh desktop --os windows --arch amd64
 ```
 
-`desktop` 生成 `dist/desktop/<goos>-<goarch>/` 目录包，内含 `hole-desktop[.exe]`、
-同平台桥接程序和各自的 `.sha256`。构建完整 GUI 需要 Rust stable / Cargo；交叉构建需预装 Rust target
+`desktop` 生成 `dist/desktop/<goos>-<goarch>/hole-desktop[.exe]` 单文件客户端及 `.sha256`，
+同平台 Go 核心以 gzip 压缩后内嵌，无需携带独立桥接程序。构建完整 GUI 需要 Rust stable / Cargo；交叉构建需预装 Rust target
 及对应 linker / sysroot。缓存统一位于根 `.cache/`。
 
 只构建 Go stdio 桥接时使用 `./build.sh desktop-core --os linux --arch amd64`；产物为
@@ -43,6 +43,57 @@ printf '%s\n' \
 
 GUI 用绝对路径直接启动对应文件，不经过 shell、不从 PATH 搜索同名程序；配置凭据放在
 stdin 消息中，不放到启动参数。Rust `CoreClient` 分离 stdout / stderr，并持续读取两条流。
+
+### 内嵌核心的加载与回收
+
+`./build.sh desktop` 先构建同平台的 stripped Go 核心，再通过 Cargo 的 `embedded-core` feature
+把它嵌入 GUI。构建脚本校验 ELF / PE 架构，记录未压缩大小和 SHA-256；核心文件变化会使 Cargo
+重新嵌入。`dist/desktop-core/` 保留独立构建产物，分发客户端时只需复制 `dist/desktop/` 下的 GUI 文件。
+
+- Linux：流式解压到 `memfd_create` 的匿名内存文件，校验大小和 SHA-256，再设置执行权限和写入封印，
+  通过 `/proc/self/fd/…` 启动核心。不会创建普通核心临时文件；核心停止后关闭内存文件句柄。
+  需要可用的 `/proc` 和允许可执行 memfd 的系统策略；禁止该操作时显示错误，不自动退回磁盘释放。
+- Windows：释放到 `%LOCALAPPDATA%/hole-desktop/runtime/v1-<sha256>-<随机标识>/core.exe`。
+  目录 ACL 仅向所有者和 SYSTEM 授权；写入后重新读取并校验，在核心退出前持有只读文件句柄和独占占用锁。
+  每个 GUI 实例使用独立目录。正常退出等待核心结束后删除临时文件；下次启动只回收命名匹配、
+  无占用锁且只含已知文件的残留目录，不跟随链接或重解析点，也不递归删除其他内容。
+
+运行期间保留 GUI 与 Go 核心两个进程，现有控制和语音 IPC 不变。内存加载描述的是核心可执行文件，
+GUI 配置仍按原方式保存；系统可能对匿名内存使用交换空间。
+GUI 退出会等待控制线程完成关闭与清理。强制结束 GUI 后，核心也会沿 stdin EOF 路径退出。
+
+开发时 `cargo build` / `cargo test` 默认不嵌入核心，沿用独立宿主查找方式。显式设置绝对路径
+`HOLE_DESKTOP_CORE` 可覆盖内嵌核心用于调试；无效的显式路径会报错。发布版默认优先使用内嵌核心，
+不会自动加载同目录其他核心文件。直接开启 `embedded-core` 时必须提供绝对路径 `HOLE_EMBED_CORE`：
+
+```bash
+source scripts/build-env.sh
+cd desktop/gui
+HOLE_EMBED_CORE="$HOLE_ROOT/dist/desktop-core/hole-desktop-core-linux-amd64" \
+  cargo test --offline --features embedded-core
+```
+
+这条命令包含 Linux 真正从 memfd 启动核心、握手和释放句柄的测试。Windows 文件回收的共用逻辑可在
+Linux 测试中验证，Windows ACL / CreateProcess 仍需 Windows 系统运行验收。
+Linux 单文件运行验收可用 `xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop/linux-amd64/hole-desktop`：
+测试只复制 GUI，检查子进程来自 memfd、八个页面截图、正常关闭及强制结束 GUI 后核心沿 EOF 退出。
+
+## 房间语音
+
+侧栏“语音”页提供语音开关、静音、房间成员和语音线路状态。双方填写相同房间并开启语音，
+启动连接后自动建立通话，无需添加服务映射。语音需要自动 / ICE 连接方式；仅 IPv6 模式下不能启用。
+语音开关保存在本机配置，支持 CLI YAML、桌面备份及 Android 备份交换；旧配置默认关闭。
+
+Rust 使用 CPAL 打开系统默认麦克风和播放设备：Linux 使用 ALSA，Windows 使用 WASAPI。
+Linux 构建需 `pkg-config` 和 ALSA 开发包（如 `libasound2-dev`），运行需系统 ALSA 库及可用的默认设备。
+优先使用 48 kHz，设备只支持其他采样率时在平台适配层转换为 48 kHz 单声道 PCM16。
+Opus、混音、抖动缓冲、成员发现和网络传输全部复用共享 Go 核心。
+
+停止连接、关闭语音、重配或退出会释放音频设备；静音停止本机发送但继续收听。
+音频设备不可用或系统权限被拒绝时页面显示原因，恢复后点“重试音频设备”。切换系统默认设备后可点
+“重新打开音频设备”。静音状态在本次 GUI 进程的重配与设备重启中保留；不作为配置导出。
+桌面适配目前不提供应用内回声消除和降噪，建议使用耳机。编译、自动化和截图检查不代表真实麦克风、
+Windows 设备或 Android 跨端通话验收。
 
 ## 协议 v1
 
@@ -93,6 +144,8 @@ GUI 启动后主动发送 `hello`，核对协议与核心 API 版本后再发送
 | `snapshot` | 省略或 `{}` | 当前核心快照及桥接事件丢弃计数 |
 | `network_changed` | 省略或 `{}` | 通知已有核心重建网络路径；停止态不启动网络 |
 | `renominate_transports` | 省略或 `{}` | 对已有 ICE active 路径发起新代次；进行中或无可用路径时幂等 |
+| `set_voice_audio` | `{"enabled":true}` | 运行且启用语音时返回新的十进制字符串 `stream_id`，启用下述二进制 PCM 扩展；false 停止扩展并返回 `"0"` |
+| `set_voice_muted` | `{"muted":true}` | 设置核心本机语音发送静音；不停止播放 |
 | `decode_cli_config` | `{"text":"YAML 或 JSON 文本"}` | `{"config":规范化便携配置}`；纯转换/预览，不改变 Engine |
 | `encode_cli_config` | `{"config":便携配置对象,"include_secrets":false}` | `{"text":"CLI YAML"}`；默认脱敏，不改变 Engine |
 | `shutdown` | 省略或 `{}` | 关闭 Engine，写出 `{"accepted":true}` 后退出宿主 |
@@ -105,9 +158,30 @@ GUI 启动后主动发送 `hello`，核对协议与核心 API 版本后再发送
 手动“重选路径”可使用 `renominate_transports`，沿用 Android 的新数据面语义；`network_changed`
 仅用于系统网络变化。
 
+### 可选二进制 PCM 扩展
+
+先通过 `hello.methods` 检查 `set_voice_audio` / `set_voice_muted`。未显式开启音频扩展时，
+宿主仅输出原有 NDJSON。开启后，两个方向都在 JSON 行之间插入固定 **1937 字节** 的二进制包：
+
+| 偏移 | 内容 |
+| --- | --- |
+| 0 | NUL 标记（`0x00`，不是有效 JSON 行的起始字节） |
+| 1–8 | `stream_id`，无符号 64 位小端序 |
+| 9–16 | 采集帧序号，无符号 64 位小端序；播放方向保留为 0 |
+| 17–1936 | 960 个有符号 PCM16 小端序样本，48 kHz、单声道、20 ms |
+
+二进制包没有 LF 结束符，PCM 内的 LF / NUL 必须原样保留。读取方在消息边界检查首字节，
+遇到 NUL 后精确读满包长；否则读取一行 JSON。帧序号从 0 开始递增，丢帧保留序号间隔，
+核心时间戳为序号 × 960；回退、重复、溢出和旧流标识帧被丢弃。
+每次开启返回新流标识；`start` / `apply_config` / `stop` / `shutdown` 使旧流失效。
+GUI 先释放旧设备，再重配并重新开启音频扩展；播放端也用流标识过滤仍在管道里的旧包。
+
+麦克风回调仅投递有界队列，由专用线程写入管道；输入 / 播放队列最多各 4 帧。
+控制响应优先于音频输出。PCM 不进入 JSON、事件、日志、配置或诊断报告；无需新增监听端口。
+
 ### 与 Android 对齐的配置交换
 
-两个转换方法使用与 Android 相同的 CLI 文档字段：`server_url`、`transport`、`ice`、`turn`、
+两个转换方法使用与 Android 相同的 CLI 文档字段：`server_url`、`transport`、`ice`、`turn`、`voice`、
 身份字段、会话期限、候选设置和有效 `provide` / `consume`。`service` / `expose` 仍为字符串端点。
 生产代码只依赖核心解析器；测试直接与 `mobile.DecodeCLIConfig` / `EncodeCLIConfig` 比较规范化结果，
 保持现有 mobile 源码、接口与构建输入不变。
@@ -232,13 +306,14 @@ cargo build --offline
 cargo test --offline
 ```
 
-界面截图模式通过 `HOLE_DESKTOP_SCREENSHOT_DIR` 指定输出目录，依次保存七个页面的 PPM 图片后退出。
+界面截图模式通过 `HOLE_DESKTOP_SCREENSHOT_DIR` 指定输出目录，依次保存八个页面（含语音）的 PPM 图片后退出。
 可用 `HOLE_DESKTOP_SCREENSHOT_SIZE=860x560` 检查最小窗口；尺寸有效范围为 860–3840 × 560–2160，格式错误时保留默认窗口尺寸。
 截图时应将 `HOLE_DESKTOP_CONFIG_DIR` 指向单独的演示配置目录并保持连接关闭；深浅色由该目录中配置的 `prefs.theme_mode` 决定。
 Linux 无显示环境可用 `xvfb-run` 配合 `SLINT_BACKEND=winit-software`。截图验证布局，不代表真实联网或 Windows 桌面验收。
 
 TURN 排序使用自动换行的小块，支持点按添加／移除和拖动排序；保存后继续调整基于刚保存的顺序。
 Linux 上可用 `xvfb-run -a python3 desktop/gui/tests/turn_order_x11.py .cache/cargo-target/debug/hole-desktop` 验证真实拖动与连续保存（需要 X11 / Xtst，使用隔离的临时配置）。
+语音开关、页面切换及仅 IPv6 模式拒绝可用 `xvfb-run -a python3 desktop/gui/tests/voice_x11.py dist/desktop/linux-amd64/hole-desktop` 验证；测试保持连接停止，不访问麦克风。
 密码与 TURN 凭据使用眼睛图标切换显示，保留键盘操作和无障碍标签。
 
 ```bash

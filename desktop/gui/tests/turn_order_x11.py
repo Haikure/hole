@@ -59,7 +59,7 @@ def main():
         try:
             time.sleep(2)
             assert process.poll() is None, "GUI exited before interaction"
-            click(90, 358)
+            click(90, 401)
             time.sleep(0.5)
 
             def save_and_check(expected):

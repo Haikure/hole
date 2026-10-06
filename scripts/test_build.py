@@ -15,7 +15,7 @@ TOOL = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
-keys = ("GOCACHE", "GOPATH", "GOMODCACHE", "GRADLE_USER_HOME", "CARGO_HOME", "TMPDIR", "GOPROXY", "GOOS", "GOARCH", "CGO_ENABLED", "HOLE_SIGNING_KEY_ALIAS", "HOLE_SIGNING_STORE_FILE")
+keys = ("GOCACHE", "GOPATH", "GOMODCACHE", "GRADLE_USER_HOME", "CARGO_HOME", "TMPDIR", "GOPROXY", "GOOS", "GOARCH", "CGO_ENABLED", "HOLE_EMBED_CORE", "HOLE_SIGNING_KEY_ALIAS", "HOLE_SIGNING_STORE_FILE")
 with open(os.environ["BUILD_TEST_LOG"], "a") as log:
     log.write(json.dumps({"tool": name, "args": args, "env": {key: os.environ.get(key) for key in keys}}) + "\n")
 if name == "go":
@@ -34,6 +34,9 @@ elif name == "javac":
 elif name == "cargo":
     if os.environ.get("FAIL_CARGO"): sys.exit(10)
     if args[:1] == ["build"]:
+        assert "embedded-core" in args, "release GUI must embed its core"
+        core = pathlib.Path(os.environ["HOLE_EMBED_CORE"])
+        assert core.is_absolute() and core.read_text() == "stripped-cli-fixture"
         target = args[args.index("--target") + 1] if "--target" in args else None
         output = pathlib.Path.cwd().parents[1] / ".cache/cargo-target"
         if target: output /= target
@@ -254,23 +257,25 @@ class BuildTests(unittest.TestCase):
         self.assertEqual("0", build["env"]["CGO_ENABLED"])
         self.assertEqual("off", build["env"]["GOPROXY"])
 
-    def test_desktop_build_packages_release_gui_and_matching_bridge(self):
+    def test_desktop_build_embeds_matching_bridge_and_packages_one_executable(self):
         self.toolchain.write_text("exit 93\n")
         (self.root / "signing.env").write_text("exit 94\n")
         self.invoke("desktop", "--offline")
         package = self.root / "dist/desktop/linux-amd64"
         gui = package / "hole-desktop"
-        bridge = package / "hole-desktop-core-linux-amd64"
+        bridge = self.root / "dist/desktop-core/hole-desktop-core-linux-amd64"
         self.assertEqual("release-gui-fixture", gui.read_text())
         self.assertTrue(os.access(gui, os.X_OK))
         self.assertTrue(os.access(bridge, os.X_OK))
+        self.assertEqual({"hole-desktop", "hole-desktop.sha256"}, {p.name for p in package.iterdir()})
         for binary in (gui, bridge):
             checksum = binary.with_name(binary.name + ".sha256").read_text().split()
             self.assertEqual([hashlib.sha256(binary.read_bytes()).hexdigest(), binary.name], checksum)
         builds = [call for call in self.calls("go") if call["args"][0] == "build"]
         self.assertEqual(["./cmd/hole-desktop-core"], [build["args"][-1] for build in builds])
         cargo = self.calls("cargo")[0]
-        self.assertEqual(["build", "--release", "--locked", "--offline"], cargo["args"])
+        self.assertEqual(["build", "--release", "--locked", "--features", "embedded-core", "--offline"], cargo["args"])
+        self.assertEqual(str(bridge), cargo["env"]["HOLE_EMBED_CORE"])
         self.assertEqual(str(self.root / ".cache/cargo-home"), cargo["env"]["CARGO_HOME"])
         self.assertIsNone(cargo["env"]["GOOS"])
         self.assertIsNone(cargo["env"]["GOARCH"])
@@ -280,12 +285,29 @@ class BuildTests(unittest.TestCase):
         self.invoke("desktop", "desktop-core", "--os", "windows", "--arch", "amd64")
         package = self.root / "dist/desktop/windows-amd64"
         self.assertTrue((package / "hole-desktop.exe").is_file())
-        self.assertTrue((package / "hole-desktop-core-windows-amd64.exe").is_file())
+        self.assertFalse((package / "hole-desktop-core-windows-amd64.exe").exists())
         builds = [call for call in self.calls("go") if call["args"][0] == "build"]
         self.assertEqual(1, len(builds))
         self.assertEqual("windows", builds[0]["env"]["GOOS"])
         cargo = self.calls("cargo")[0]
         self.assertEqual("x86_64-pc-windows-gnu", cargo["args"][cargo["args"].index("--target") + 1])
+        self.assertEqual(str(self.root / "dist/desktop-core/hole-desktop-core-windows-amd64.exe"), cargo["env"]["HOLE_EMBED_CORE"])
+
+    def test_desktop_replaces_old_sidecar_package_and_scopes_embedded_input(self):
+        package = self.root / "dist/desktop/linux-amd64"
+        package.mkdir(parents=True)
+        (package / "hole-desktop-core-linux-amd64").write_text("old sidecar")
+        self.invoke("desktop", "android", HOLE_EMBED_CORE="/wrong/old-core")
+        self.assertEqual({"hole-desktop", "hole-desktop.sha256"}, {p.name for p in package.iterdir()})
+        self.assertEqual(str(self.root / "dist/desktop-core/hole-desktop-core-linux-amd64"), self.calls("cargo")[0]["env"]["HOLE_EMBED_CORE"])
+        # The build's chosen input is local to Cargo and doesn't overwrite the caller's environment.
+        self.assertEqual("/wrong/old-core", self.calls("gradlew")[0]["env"]["HOLE_EMBED_CORE"])
+
+    def test_desktop_custom_output_embeds_absolute_path_with_spaces(self):
+        output = self.root / "single file output"
+        self.invoke("desktop", "--output", str(output))
+        self.assertEqual(str(output / "desktop-core/hole-desktop-core-linux-amd64"), self.calls("cargo")[0]["env"]["HOLE_EMBED_CORE"])
+        self.assertTrue((output / "desktop/linux-amd64/hole-desktop").is_file())
 
     def test_desktop_rejects_unsupported_target_before_building(self):
         self.invoke("desktop", "--os", "darwin", "--arch", "amd64", success=False)

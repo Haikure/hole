@@ -1,0 +1,92 @@
+import { Theme } from "../theme.slint";
+import { App } from "../state.slint";
+import { Icon, Icons } from "../icons.slint";
+import { Card, SectionTitle, Hint, Btn, Badge, EmptyState, Notice, PageHeader, PageBody, Toggle, Divider } from "../controls.slint";
+
+export component VoicePage inherits VerticalLayout {
+    spacing: 0px;
+    PageHeader {
+        title: "房间语音";
+        subtitle: "和同一房间的设备通话，让声音直接相连。";
+        Btn { text: "刷新"; icon: Icons.refresh; enabled: App.status.bridge-ready && !App.status.busy; clicked => { App.refresh(); } }
+    }
+    PageBody {
+        Card {
+            tinted: App.voice.running;
+            inset: Theme.space-5;
+            HorizontalLayout {
+                spacing: Theme.space-4;
+                Icon { name: Icons.microphone; size: 32px; tint: App.voice.running ? Theme.accent : Theme.text-muted; y: 5px; }
+                VerticalLayout {
+                    spacing: 5px;
+                    Text { text: App.voice.label; font-size: Theme.font-xl; font-weight: 600; color: Theme.text; wrap: word-wrap; }
+                    Hint { text: App.connection.room == "" ? "先在设置中填写房间和连接信息" : "当前房间 · " + App.connection.room; }
+                }
+                Toggle {
+                    checked: App.voice.enabled;
+                    label: "启用房间语音";
+                    enabled: App.config-loaded && !App.status.busy;
+                    toggled(on) => { App.set-voice-enabled(on); }
+                }
+            }
+            Hint { text: "开启后使用系统默认麦克风和播放设备。建议佩戴耳机，避免扬声器回声。"; }
+            if App.voice.enabled && !App.status.run-requested : Btn {
+                text: "启动连接"; icon: Icons.power; kind: "primary";
+                enabled: App.status.bridge-ready && !App.status.busy;
+                clicked => { App.toggle-run(true); }
+            }
+            if App.voice.enabled && App.status.run-requested : HorizontalLayout {
+                spacing: Theme.space-3;
+                VerticalLayout {
+                    spacing: 4px;
+                    Text { text: App.voice.capture; font-size: Theme.font-md; font-weight: 600; color: Theme.text; wrap: word-wrap; }
+                    Hint { text: App.voice.route == "" ? "等待音频设备" : App.voice.route; }
+                }
+                Btn {
+                    text: App.voice.muted ? "取消静音" : "静音";
+                    icon: Icons.microphone;
+                    enabled: App.voice.available && !App.status.busy;
+                    clicked => { App.set-voice-muted(!App.voice.muted); }
+                }
+            }
+            if App.voice.error != "" : Notice { text: App.voice.error; kind: "bad"; }
+            if App.voice.enabled && App.status.run-requested : Btn {
+                text: App.voice.error == "" ? "重新打开音频设备" : "重试音频设备";
+                enabled: !App.status.busy && App.voice.available;
+                clicked => { App.retry-voice-audio(); }
+            }
+            if App.voice.running : Hint { text: App.voice.stats; }
+            if !App.voice.available && App.status.bridge-ready : Hint { text: "当前核心宿主不支持桌面语音，请使用与 GUI 配套的新版宿主。"; }
+        }
+        SectionTitle { text: "房间成员 · " + App.voice-members.length; subtitle: "开启语音的成员会自动建立通话线路。"; }
+        if App.voice-members.length == 0 : EmptyState {
+            icon: Icons.devices;
+            title: App.status.run-requested ? "等待房间成员" : "连接尚未启动";
+            description: "双方使用相同房间并开启语音，即可通话，无需添加服务映射。";
+        }
+        for member in App.voice-members : Card {
+            HorizontalLayout {
+                spacing: Theme.space-3;
+                VerticalLayout {
+                    spacing: 5px;
+                    Text { text: member.name + (member.local ? "（本机）" : ""); font-size: Theme.font-md; font-weight: 600; color: Theme.text; wrap: word-wrap; }
+                    Hint { text: member.state + " · " + member.media; }
+                }
+                Badge { text: member.enabled ? "语音已开启" : "未开启语音"; kind: member.enabled ? "good" : "info"; }
+            }
+        }
+        SectionTitle { text: "语音线路 · " + App.voice-peers.length; subtitle: "连接状态与音频收发分别显示。"; }
+        if App.voice-peers.length == 0 : Hint { text: "暂无语音线路，等待其他成员开启语音。"; }
+        for peer in App.voice-peers : Card {
+            HorizontalLayout {
+                spacing: Theme.space-3;
+                Text { text: peer.name; font-size: Theme.font-md; font-weight: 600; color: Theme.text; wrap: word-wrap; }
+                Badge { text: peer.state; }
+            }
+            Hint { text: peer.media + " · " + peer.path + " · " + peer.bitrate; }
+            Hint { text: peer.stats; }
+            Hint { text: peer.buffering; }
+            if peer.error != "" : Notice { text: peer.error; kind: "bad"; }
+        }
+    }
+}

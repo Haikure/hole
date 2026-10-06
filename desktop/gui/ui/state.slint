@@ -1,6 +1,7 @@
 // 应用状态与命令边界：页面只读这里的属性、只调用这里的回调；
 // Rust 控制器在事件循环线程写属性并接管回调。
 import { Status, MappingRow, PeerRow, EventRow, ConnectionForm, TransportForm, Prefs, MappingForm, ImportPreview, HostInfo, KV } from "models.slint";
+import { VoiceStatus, VoiceMemberRow, VoicePeerRow } from "models.slint";
 
 export global App {
     // ---- 运行状态（由快照/事件驱动）----
@@ -13,6 +14,12 @@ export global App {
     in-out property <[KV]> network-info;
     in-out property <[KV]> version-info;
     in-out property <HostInfo> host;
+    in-out property <VoiceStatus> voice;
+    in-out property <[VoiceMemberRow]> voice-members;
+    in-out property <[VoicePeerRow]> voice-peers;
+    callback set-voice-enabled(bool);
+    callback set-voice-muted(bool);
+    callback retry-voice-audio();
 
     // ---- 已保存配置（表单初值）----
     in-out property <bool> config-loaded: false;

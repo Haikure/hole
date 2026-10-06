@@ -7,6 +7,9 @@ import { Btn, Toggle, Badge, Dialog, Toast, Label, Hint, IconBtn } from "control
 import { OverviewPage } from "pages/overview.slint";
 import { MappingsPage } from "pages/mappings.slint";
 import { DevicesPage } from "pages/devices.slint";
+import { VoicePage } from "pages/voice.slint";
+import { VoiceStatus, VoiceMemberRow, VoicePeerRow } from "models.slint";
+export { VoiceStatus, VoiceMemberRow, VoicePeerRow }
 import { DiagnosticsPage } from "pages/diagnostics.slint";
 import { SettingsPage } from "pages/settings.slint";
 import { TransportPage } from "pages/transport.slint";
@@ -20,7 +23,10 @@ component NavItem inherits Rectangle {
     in property <string> icon;
     in property <bool> active;
     callback clicked();
-    height: 40px;
+    min-height: 34px;
+    preferred-height: 40px;
+    max-height: 40px;
+    vertical-stretch: 0;
     border-radius: Theme.radius-lg;
     background: active ? Theme.accent-soft : ta.has-hover ? Theme.surface-hover : transparent;
     animate background { duration: Theme.motion-fast; }
@@ -93,6 +99,7 @@ export component MainWindow inherits Window {
         if p == "overview" { return "连接"; }
         if p == "mappings" { return "映射"; }
         if p == "devices" { return "设备"; }
+        if p == "voice" { return "语音"; }
         if p == "diagnostics" { return "诊断"; }
         if p == "settings" { return "设置"; }
         if p == "transport" { return "连接方式"; }
@@ -155,6 +162,7 @@ export component MainWindow inherits Window {
                 NavItem { label: "连接"; icon: Icons.overview; active: root.page == "overview"; clicked => { root.navigate("overview"); } }
                 NavItem { label: "服务"; icon: Icons.mappings; active: root.page == "mappings"; clicked => { root.navigate("mappings"); } }
                 NavItem { label: "设备"; icon: Icons.devices; active: root.page == "devices"; clicked => { root.navigate("devices"); } }
+                NavItem { label: "语音"; icon: Icons.microphone; active: root.page == "voice"; clicked => { root.navigate("voice"); } }
                 NavItem { label: "诊断"; icon: Icons.diagnostics; active: root.page == "diagnostics"; clicked => { root.navigate("diagnostics"); } }
                 Rectangle { height: 14px; }
                 Text { text: "配置"; font-size: Theme.font-xs; font-weight: 600; color: Theme.text-faint; x: 12px; }
@@ -209,6 +217,7 @@ export component MainWindow inherits Window {
                 if root.page == "overview" : OverviewPage { open-page(p) => { root.navigate(p); } }
                 if root.page == "mappings" : MappingsPage { }
                 if root.page == "devices" : DevicesPage { }
+                if root.page == "voice" : VoicePage { }
                 if root.page == "diagnostics" : DiagnosticsPage { }
                 settings := SettingsPage { visible: root.page == "settings"; open-page(p) => { root.navigate(p); } }
                 transport := TransportPage { visible: root.page == "transport"; open-page(p) => { root.navigate(p); } }

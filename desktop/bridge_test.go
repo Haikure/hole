@@ -296,7 +296,7 @@ func TestEventBackpressureIsBoundedAndSnapshotReportsLoss(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- h.run(ctx, frames, responses, events) }()
+	go func() { done <- h.run(ctx, frames, responses, events, make(chan []byte, 4)) }()
 	e.events <- core.Event{Kind: "log", Message: "raw log is filtered like Android"}
 	for i := 1; i <= eventCapacity+10; i++ {
 		select {

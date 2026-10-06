@@ -111,6 +111,50 @@ pub struct Snapshot {
     pub network: Network,
     pub transport_label: String,
     pub network_binding: bool,
+    pub voice: Voice,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Voice {
+    pub enabled: bool,
+    pub muted: bool,
+    pub state: String,
+    pub capture_state: String,
+    pub captured_frames: String,
+    pub mixed_frames: String,
+    pub members: Vec<crate::VoiceMemberRow>,
+    pub peers: Vec<crate::VoicePeerRow>,
+}
+
+pub fn media_label(state: &str) -> &str {
+    match state {
+        "active" => "音频收发中", "sending" => "音频发送中", "receiving" => "音频接收中",
+        "capturing" => "麦克风采集中", "muted" => "麦克风已静音", "paused" => "媒体异常",
+        "offline" => "媒体离线", _ => "等待音频",
+    }
+}
+
+fn parse_voice(v: &Value) -> Voice {
+    Voice {
+        enabled: v["enabled"].as_bool().unwrap_or(false),
+        muted: v["muted"].as_bool().unwrap_or(false),
+        state: s(v, "state"), capture_state: s(v, "capture_state"),
+        captured_frames: s_or(v, "captured_frames", "0"), mixed_frames: s_or(v, "mixed_frames", "0"),
+        members: v["members"].as_array().map(|members| members.iter().map(|m| crate::VoiceMemberRow {
+            name: s_or(m, "device_name", "未命名设备").into(), local: m["local"].as_bool().unwrap_or(false),
+            enabled: m["voice"].as_bool().unwrap_or(false),
+            state: if m["local"] == true { "本机音频".into() } else { peer_state_label(&s(m, "transport_state")).into() },
+            media: media_label(&s(m, "media_state")).into(),
+        }).collect()).unwrap_or_default(),
+        peers: v["peers"].as_array().map(|peers| peers.iter().map(|p| crate::VoicePeerRow {
+            name: s_or(p, "peer_id", "未知设备").into(), state: peer_state_label(&s(p, "state")).into(),
+            media: media_label(&s(p, "media_state")).into(), path: s_or(p, "path", "路径待确认").into(),
+            bitrate: format!("{} kb/s", i(p, "bitrate") / 1000).into(),
+            stats: format!("发送 {} · 解码 {} · 补帧 {} · 丢包 {}", s_or(p, "sent_frames", "0"), s_or(p, "decoded_frames", "0"), s_or(p, "concealed_frames", "0"), s_or(p, "packet_loss", "0")).into(),
+            buffering: format!("队列 {} · 抖动 {}", i(p, "queue_depth"), i(p, "jitter_depth")).into(),
+            error: p.get("error").and_then(fault).map(|f| f.message).unwrap_or_default().into(),
+        }).collect()).unwrap_or_default(),
+    }
 }
 
 impl Snapshot {
@@ -250,6 +294,7 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
     let caps = &j["capabilities"];
     Ok(Snapshot {
         native_ready: true,
+        voice: parse_voice(&j["voice"]),
         api_version: i(j, "api_version"),
         session_protocol: i(j, "session_protocol"),
         core_version: s(j, "core_version"),
@@ -611,6 +656,24 @@ pub fn short_time(rfc3339: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn voice_snapshot_preserves_members_media_and_large_counters() {
+        let value = serde_json::json!({"api_version": 1, "voice": {
+            "enabled": true, "muted": true, "state": "ready", "capture_state": "muted",
+            "captured_frames": "18446744073709551615", "mixed_frames": "9007199254740993",
+            "members": [{"device_name": "phone", "local": false, "voice": true, "transport_state": "active", "media_state": "receiving"}],
+            "peers": [{"peer_id": "phone", "state": "active", "media_state": "waiting", "bitrate": 24000, "packet_loss": "9007199254740993"}]
+        }});
+        let voice = super::parse_snapshot(&value).unwrap().voice;
+        assert!(voice.enabled && voice.muted);
+        assert_eq!(voice.captured_frames, "18446744073709551615");
+        assert_eq!(voice.members[0].media, "音频接收中");
+        assert_eq!(voice.peers[0].media, "等待音频");
+        assert!(voice.peers[0].stats.contains("9007199254740993"));
+        let empty = super::parse_snapshot(&serde_json::json!({"api_version": 1})).unwrap();
+        assert!(!empty.voice.enabled);
+        assert!(empty.voice.members.is_empty());
+    }
     use super::*;
     use serde_json::json;
 

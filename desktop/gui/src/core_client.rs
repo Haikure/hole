@@ -7,8 +7,8 @@
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -75,19 +75,21 @@ struct Shared {
     pending: Mutex<HashMap<String, Pending>>,
     stdin: Mutex<Option<std::process::ChildStdin>>,
     alive: Mutex<bool>,
+    audio: Arc<Mutex<crate::voice_audio::Playback>>,
 }
 
 pub struct CoreClient {
     shared: Arc<Shared>,
     child: Mutex<Option<Child>>,
     seq: AtomicU64,
-    pub path: PathBuf,
+    host: Mutex<Option<crate::core_host::PreparedCore>>,
 }
 
 impl CoreClient {
     /// 启动宿主并开始读取两条流；事件与退出通过 `on_inbound` 交付。
-    pub fn spawn(path: &Path, on_inbound: impl Fn(Inbound) + Send + Sync + 'static) -> Result<Arc<Self>, String> {
+    pub fn spawn(host: crate::core_host::PreparedCore, on_inbound: impl Fn(Inbound) + Send + Sync + 'static) -> Result<Arc<Self>, String> {
         let inbound: Arc<dyn Fn(Inbound) + Send + Sync> = Arc::new(on_inbound);
+        let path = &host.path;
         if !path.is_absolute() {
             return Err(format!("宿主路径必须是绝对路径：{}", path.display()));
         }
@@ -108,6 +110,15 @@ impl CoreClient {
             pending: Mutex::new(HashMap::new()),
             stdin: Mutex::new(Some(stdin)),
             alive: Mutex::new(true),
+            audio: Arc::new(Mutex::new(Default::default())),
+        });
+        // Own the child and runtime storage before spawning reader threads so
+        // any thread-creation failure also closes, reaps and cleans the host.
+        let client = Arc::new(CoreClient {
+            shared: shared.clone(),
+            child: Mutex::new(Some(child)),
+            seq: AtomicU64::new(1),
+            host: Mutex::new(Some(host)),
         });
 
         // stderr：诊断输出，读到 EOF 为止；不进入 UI 日志，避免夹带凭据。
@@ -133,7 +144,16 @@ impl CoreClient {
                 let mut reason = String::from("核心宿主已退出");
                 loop {
                     buffer.clear();
-                    match reader.read_until(b'\n', &mut buffer) {
+                    if matches!(reader.fill_buf(), Ok(bytes) if bytes.first() == Some(&0)) {
+                        let mut packet = [0u8; crate::voice_audio::PACKET_BYTES];
+                        if reader.read_exact(&mut packet).is_err() {
+                            reason = "语音数据流中断".into();
+                            break;
+                        }
+                        reader_shared.audio.lock().unwrap().receive(&packet);
+                        continue;
+                    }
+                    match reader.by_ref().take(MAX_LINE_BYTES as u64 + 1).read_until(b'\n', &mut buffer) {
                         Ok(0) => break,
                         Ok(_) => {}
                         Err(e) => {
@@ -163,16 +183,20 @@ impl CoreClient {
             })
             .map_err(|e| e.to_string())?;
 
-        Ok(Arc::new(CoreClient {
-            shared,
-            child: Mutex::new(Some(child)),
-            seq: AtomicU64::new(1),
-            path: path.to_path_buf(),
-        }))
+        Ok(client)
     }
 
     pub fn is_alive(&self) -> bool {
         *self.shared.alive.lock().unwrap()
+    }
+
+    pub fn playback(&self) -> Arc<Mutex<crate::voice_audio::Playback>> {
+        self.shared.audio.clone()
+    }
+
+    pub fn send_pcm(&self, packet: &[u8]) -> Result<(), String> {
+        let mut input = self.shared.stdin.lock().unwrap();
+        input.as_mut().ok_or("核心宿主输入已关闭")?.write_all(packet).map_err(|_| "语音数据写入失败".into())
     }
 
     fn next_id(&self, method: &str) -> String {
@@ -260,6 +284,7 @@ impl CoreClient {
             }
         }
         *child = None;
+        self.host.lock().unwrap().take();
     }
 
     pub fn close_stdin(&self) {

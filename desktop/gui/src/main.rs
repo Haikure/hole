@@ -4,7 +4,15 @@
 
 mod config;
 mod controller;
+mod voice_audio;
 mod core_client;
+mod core_host;
+#[cfg(any(windows, all(test, target_os = "linux")))]
+mod core_runtime;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../build_support.rs"]
+mod build_support;
 mod report;
 mod snapshot;
 mod storage;
@@ -61,8 +69,7 @@ fn main() {
 
     window.run().expect("运行事件循环失败");
     // 事件循环结束后确保宿主退出。
-    controller.send(Command::Quit);
-    std::thread::sleep(Duration::from_millis(200));
+    controller.finish();
 }
 
 /// 把已保存配置写回表单初值与偏好；导入替换后也调用。
@@ -167,6 +174,35 @@ fn save_config(shared: &Arc<Mutex<Shared>>, controller: &Controller, mutate: imp
 
 fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<Mutex<Shared>>) {
     let app = window.global::<App>();
+
+    {
+        let c = controller.clone();
+        let shared = shared.clone();
+        let weak = window.as_weak();
+        app.on_set_voice_enabled(move |enabled| {
+            let result = save_config(&shared, &c, |cfg, _| {
+                if enabled && cfg.connection.connection_mode == "legacy" {
+                    return Err("语音需要 ICE，请先在连接方式中选择自动或 ICE".into());
+                }
+                cfg.voice.enabled = enabled;
+                Ok(())
+            });
+            if let Some(w) = weak.upgrade() {
+                if let Err(error) = result { show_toast(&w, &error, "bad", false); }
+                let mut voice = w.global::<App>().get_voice();
+                voice.enabled = shared.lock().unwrap().config.voice.enabled;
+                w.global::<App>().set_voice(voice);
+            }
+        });
+    }
+    {
+        let c = controller.clone();
+        app.on_set_voice_muted(move |muted| c.send(Command::VoiceMuted(muted)));
+    }
+    {
+        let c = controller.clone();
+        app.on_retry_voice_audio(move || c.send(Command::RetryVoiceAudio));
+    }
 
     // ---- 运行控制 ----
     {
@@ -618,7 +654,7 @@ fn screenshot_mode(window: &MainWindow) {
             window.window().set_size(slint::LogicalSize::new(width as f32, height as f32));
         }
     }
-    let pages = ["overview", "mappings", "devices", "diagnostics", "settings", "transport", "exchange"];
+    let pages = ["overview", "mappings", "devices", "voice", "diagnostics", "settings", "transport", "exchange"];
     let dir = std::env::var("HOLE_DESKTOP_SCREENSHOT_DIR").unwrap_or_default();
     let weak = window.as_weak();
     let index = Rc::new(std::cell::Cell::new(0usize));

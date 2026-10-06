@@ -52,6 +52,37 @@ export struct Status {
     events-dropped: string,
 }
 
+export struct VoiceMemberRow {
+    name: string,
+    local: bool,
+    enabled: bool,
+    state: string,
+    media: string,
+}
+
+export struct VoicePeerRow {
+    name: string,
+    state: string,
+    media: string,
+    path: string,
+    bitrate: string,
+    stats: string,
+    buffering: string,
+    error: string,
+}
+
+export struct VoiceStatus {
+    enabled: bool,
+    available: bool,
+    muted: bool,
+    running: bool,
+    label: string,
+    capture: string,
+    route: string,
+    error: string,
+    stats: string,
+}
+
 export struct MappingRow {
     entry-id: string,
     id: string,

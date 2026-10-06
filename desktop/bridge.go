@@ -52,6 +52,10 @@ type frame struct {
 type host struct {
 	engine        engine
 	eventsDropped uint64
+	audioID       uint64
+	audioNext     uint64
+	audioSequence uint64
+	audioCaptured bool
 }
 
 func serve(parent context.Context, input io.ReadCloser, output io.WriteCloser, backend engine, timeout time.Duration) error {
@@ -59,6 +63,7 @@ func serve(parent context.Context, input io.ReadCloser, output io.WriteCloser, b
 	frames := make(chan frame, 1)
 	responses := make(chan []byte, responseCapacity)
 	events := make(chan []byte, eventCapacity)
+	audio := make(chan []byte, 4)
 	readDone, writeDone, cleanupDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	context.AfterFunc(ctx, func() {
 		defer close(cleanupDone)
@@ -72,7 +77,7 @@ func serve(parent context.Context, input io.ReadCloser, output io.WriteCloser, b
 	}()
 	go func() {
 		defer close(writeDone)
-		writeFrames(ctx, cancel, output, responses, events, timeout)
+		writeFrames(ctx, cancel, output, responses, events, timeout, audio)
 	}()
 	defer func() {
 		cancel(context.Canceled)
@@ -82,7 +87,7 @@ func serve(parent context.Context, input io.ReadCloser, output io.WriteCloser, b
 	}()
 
 	h := &host{engine: backend}
-	err := h.run(ctx, frames, responses, events)
+	err := h.run(ctx, frames, responses, events, audio)
 	// Graceful EOF/shutdown drains responses (including the shutdown ack), but
 	// not a potentially stale event backlog. Each write still has a deadline.
 	_ = backend.Close()
@@ -104,6 +109,7 @@ func readFrames(ctx context.Context, input io.Reader, frames chan<- frame) {
 		}
 	}
 	s := bufio.NewScanner(input)
+	s.Split(splitFrames)
 	s.Buffer(make([]byte, 4096), MaxRequestBytes+2) // LF or CRLF is not payload.
 	for s.Scan() {
 		if len(s.Bytes()) > MaxRequestBytes {
@@ -129,7 +135,20 @@ func readFrames(ctx context.Context, input io.Reader, frames chan<- frame) {
 	send(frame{err: err})
 }
 
-func writeFrames(ctx context.Context, cancel context.CancelCauseFunc, output io.Writer, responses, events <-chan []byte, timeout time.Duration) {
+func splitFrames(data []byte, atEOF bool) (int, []byte, error) {
+	if len(data) > 0 && data[0] == 0 {
+		if len(data) >= voicePacketBytes {
+			return voicePacketBytes, data[:voicePacketBytes], nil
+		}
+		if atEOF {
+			return 0, nil, io.ErrUnexpectedEOF
+		}
+		return 0, nil, nil
+	}
+	return bufio.ScanLines(data, atEOF)
+}
+
+func writeFrames(ctx context.Context, cancel context.CancelCauseFunc, output io.Writer, responses, events <-chan []byte, timeout time.Duration, audio <-chan []byte) {
 	write := func(data []byte) bool {
 		timer := time.AfterFunc(timeout, func() { cancel(errOutputTimeout) })
 		defer timer.Stop()
@@ -167,12 +186,20 @@ func writeFrames(ctx context.Context, cancel context.CancelCauseFunc, output io.
 			if !write(data) {
 				return
 			}
+		case data := <-audio:
+			if !write(data) {
+				return
+			}
 		}
 	}
 }
 
-func (h *host) run(ctx context.Context, frames <-chan frame, responses, events chan<- []byte) error {
+func (h *host) run(ctx context.Context, frames <-chan frame, responses, events chan<- []byte, audio chan []byte) error {
 	coreEvents := h.engine.Events()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	ticker.Stop()
+	var audioTick <-chan time.Time
+	defer ticker.Stop()
 	reply := func(r response) bool {
 		data, err := encodeMessage(r)
 		if err != nil {
@@ -195,11 +222,22 @@ func (h *host) run(ctx context.Context, frames <-chan frame, responses, events c
 			}
 			return true, f.err
 		}
+		if len(f.data) > 0 && f.data[0] == 0 {
+			h.capture(f.data)
+			return false, nil
+		}
 		r, fault := decodeRequest(f.data)
 		var result any
 		shutdown := false
 		if fault == nil {
 			result, fault, shutdown = h.dispatch(r)
+		}
+		if h.audioID != 0 && audioTick == nil {
+			ticker.Reset(20 * time.Millisecond)
+			audioTick = ticker.C
+		} else if h.audioID == 0 && audioTick != nil {
+			ticker.Stop()
+			audioTick = nil
 		}
 		if !reply(response{JSONRPC: "2.0", ID: r.ID, Result: result, Error: fault}) {
 			return true, context.Cause(ctx)
@@ -222,6 +260,21 @@ func (h *host) run(ctx context.Context, frames <-chan frame, responses, events c
 		select {
 		case <-ctx.Done():
 			return context.Cause(ctx)
+		case <-audioTick:
+			if packet := h.playback(); packet != nil {
+				select {
+				case audio <- packet:
+				default:
+					select {
+					case <-audio:
+					default:
+					}
+					select {
+					case audio <- packet:
+					default:
+					}
+				}
+			}
 		case f := <-frames:
 			if stop, err := handle(f); stop {
 				return err
@@ -254,6 +307,9 @@ func (h *host) dispatch(r request) (any, *rpcError, bool) {
 	accepted := struct {
 		Accepted bool `json:"accepted"`
 	}{true}
+	if r.Method == "set_voice_audio" || r.Method == "set_voice_muted" {
+		return h.voiceControl(r.Method, r.Params)
+	}
 	if r.Method == "decode_cli_config" || r.Method == "encode_cli_config" {
 		result, fault := exchangeConfig(r.Method, r.Params)
 		return result, fault, false
@@ -266,8 +322,10 @@ func (h *host) dispatch(r request) (any, *rpcError, bool) {
 		var err error
 		switch r.Method {
 		case "start":
+			h.audioID = 0
 			err = h.engine.Start(cfg)
 		case "apply_config":
+			h.audioID = 0
 			err = h.engine.ApplyConfig(cfg)
 		case "validate":
 			return struct {
@@ -293,18 +351,20 @@ func (h *host) dispatch(r request) (any, *rpcError, bool) {
 	case "hello":
 		return helloResult{
 			BridgeVersion: ProtocolVersion, APIVersion: core.APIVersion, CoreVersion: core.CoreVersion,
-			Methods: []string{"hello", "validate", "start", "apply_config", "stop", "snapshot", "network_changed", "renominate_transports", "decode_cli_config", "encode_cli_config", "shutdown"},
+			Methods: []string{"hello", "validate", "start", "apply_config", "stop", "snapshot", "network_changed", "renominate_transports", "decode_cli_config", "encode_cli_config", "set_voice_audio", "set_voice_muted", "shutdown"},
 			Limits:  protocolLimits{MaxRequestBytes, MaxConfigBytes, MaxOutputBytes, eventCapacity, responseCapacity, int(writeTimeout / time.Millisecond)},
 		}, nil, false
 	case "snapshot":
 		return snapshotResult{Snapshot: h.engine.Snapshot(), BridgeEventsDropped: h.eventsDropped}, nil, false
 	case "stop":
+		h.audioID = 0
 		err = h.engine.Stop()
 	case "network_changed":
 		err = h.engine.NetworkChanged()
 	case "renominate_transports":
 		err = h.engine.RenominateTransports()
 	case "shutdown":
+		h.audioID = 0
 		err = h.engine.Close()
 	}
 	if err != nil {

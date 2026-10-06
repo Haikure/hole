@@ -10,20 +10,20 @@
 视觉系统按桌面场景单独设计。**
 
 当前已有可独立构建的 [Go stdio 桥接](../desktop/README.md) 和 `desktop/gui` Slint 工程；跨平台安装包与真实系统集成验收仍待完成。
+桌面“语音”页已接入共享核心，包含开关、静音、成员、线路和系统音频设备适配；设备故障可重试。
+真实设备音质、回声与 Windows / Android 跨端通话仍需单独验收，接口与限制见桌面 README。
 本文件是后续实施路线，不表示界面、Windows 运行、托盘或性能已经通过验收。
 
 ### 单文件交付与运行时进程边界
 
-发布版可以把 `hole-desktop-core` 二进制作为资源嵌入 GUI 可执行文件，形成用户侧的单文件下载包。
-启动时 GUI 仍需将内置字节校验后释放到用户可写的版本化运行时临时目录，再启动 Go 宿主；正常关闭时等待宿主
-退出并删除该目录，异常退出留下的旧目录由下一次启动按版本、哈希和进程状态清理。因此跨 Windows / Linux
-的通用实现仍是两个运行进程，运行期间通常也会存在 GUI 文件和释放后的宿主文件。嵌入减少的是分发文件数量，
-不改变 `GUI → stdio → desktop → core` 的隔离边界。
+`./build.sh desktop` 已将匹配平台的 `hole-desktop-core` 压缩嵌入 GUI，交付目录只包含 GUI 和校验文件。
+启动时核对解压大小与 SHA-256；Linux 从带写入封印的 memfd 匿名内存文件执行，Windows 从带私有 ACL
+和占用锁的独立临时目录执行。GUI 正常退出会等待核心结束并回收资源；Windows 下次启动清理未被占用的残留目录。
+内存加载仍保留 `GUI → stdio → desktop → core` 两进程边界，控制与语音接口保持不变。
 
-Windows 的通用 `CreateProcess` 路径需要先释放 Go PE；Linux 的 `memfd_create` 可以减少临时文件，
-但不作为跨平台默认路径。GUI 退出流程先发送 `shutdown`，等待宿主退出，关闭管道和进程句柄后删除运行时文件；
-Windows 使用独占运行时目录，避免删除仍被子进程占用的文件。真正单进程需要把 Go 核心编译为 C ABI 静态库并由
-Rust 调用，需引入 CGO、包装层和新的跨语言生命周期测试，暂不作为首版方案。
+Linux 需要可用的 `/proc` 和允许 memfd 执行的系统策略；不自动退回磁盘释放。Windows ACL / CreateProcess
+需在 Windows 系统上验收。真正单进程需要把 Go 核心编译为 C ABI 静态库并由 Rust 调用，需引入 CGO、
+包装层和新的跨语言生命周期测试，暂不实现。
 
 约束：
 
@@ -233,9 +233,8 @@ GUI 使用 Rust stable、Cargo 和 Slint；具体 Rust toolchain、Slint 版本�
 
 - 根 `build.sh desktop` 显式构建 GUI 与 Go 宿主；现有 `cli`、`android`、`wear`、`all` 不隐式依赖 Rust/Cargo/Slint。
 - Go 宿主可单独通过根 `build.sh desktop-core` 构建；Cargo registry、target 和 Slint 构建缓存统一放在根 `.cache/`。
-- 桌面目录包包含 Slint GUI 可执行文件和匹配架构的 Go 宿主，后者使用固定文件名定位；
-  单文件发布包则把 Go 宿主作为资源嵌入 GUI，并在启动时释放到版本化运行时临时目录，退出后回收，
-  启动时清理上次异常退出留下的过期目录。
+- 桌面发布包内嵌匹配架构 Go 宿主：Linux 使用 memfd，Windows 使用私有临时文件并管理回收。
+  开发构建保留独立宿主查找与显式路径覆盖。
   新交付进入独立 `dist/desktop/`，保留原 CLI/APK 留存包。
 - 核心版本沿用 `scripts/build_meta.py`；桌面包另记录 GUI、桥接协议、Rust/Slint 版本及文件校验和。
 - 评估 Windows 运行库、Slint 图形后端、Linux X11/Wayland 与最低发行版依赖；签名仅使用维护者提供的密钥。
