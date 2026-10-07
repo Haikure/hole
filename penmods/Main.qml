@@ -513,7 +513,20 @@ Item {
             saveState = "未保存：缺少信令服务器地址"
             return
         }
-        saveState = holePlugin.saveConfig() ? "已保存" : "保存失败"
+        if (!page.runRequested) {
+            saveState = holePlugin.saveConfig() ? "已保存" : "保存失败"
+            return
+        }
+
+        var problem = page.validationMessage()
+        if (problem.length > 0) {
+            saveState = holePlugin.saveConfig()
+                        ? "已保存，暂未应用：" + problem
+                        : "保存失败"
+            return
+        }
+
+        saveState = holePlugin.applyConfig() ? "已保存，正在应用" : "保存失败"
     }
 
     // --------------------------------------------------------- mapping edits
@@ -618,7 +631,7 @@ Item {
     function stateTitle() {
         if (page.connectionEstablished) return "连接成功"
         if (holePlugin.state === "starting") return "正在连接"
-        if (holePlugin.state === "reconfiguring") return "正在重连"
+        if (holePlugin.state === "reconfiguring") return "正在应用配置"
         if (holePlugin.state === "recovering") return "正在恢复"
         if (holePlugin.state === "stopping") return "正在停止"
         if (holePlugin.state === "error") return "连接异常"
@@ -631,7 +644,7 @@ Item {
             return "连接成功，正在运行 " + provides.count + " 项提供与 " + consumes.count + " 项使用映射"
         }
         if (holePlugin.state === "starting") return "正在建立连接，请稍候"
-        if (holePlugin.state === "reconfiguring") return "配置已更新，正在重新建立连接，请稍候"
+        if (holePlugin.state === "reconfiguring") return "正在应用配置，核心会保留仍匹配的映射会话"
         if (holePlugin.state === "recovering") return "连接已断开，核心正在重试"
         if (holePlugin.state === "stopping") return "正在停止现有连接"
         if (holePlugin.running) return "正在建立连接，请稍候"
@@ -1260,9 +1273,9 @@ Item {
 
     Connections {
         target: holePlugin
-        onSnapshotChanged: page.refreshStatus()
-        onStateChanged: if (page.statusOpen) page.refreshSnapshot()
-        onRunningChanged: if (holePlugin.running) page.refreshSnapshot()
+        function onSnapshotChanged() { page.refreshStatus() }
+        function onStateChanged() { if (page.statusOpen) page.refreshSnapshot() }
+        function onRunningChanged() { if (holePlugin.running) page.refreshSnapshot() }
     }
 
     Component.onCompleted: page.readConfig()

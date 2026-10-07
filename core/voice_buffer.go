@@ -185,6 +185,8 @@ func (r *pcmRing) len() int        { r.mu.Lock(); defer r.mu.Unlock(); return le
 func (r *pcmRing) dropped() uint64 { r.mu.Lock(); defer r.mu.Unlock(); return r.drops }
 
 type jitterFrame struct {
+	// Sequence is an internal 20 ms playback slot, derived from the sampling
+	// timestamp. It is independent of the packet sequence used for feedback.
 	Sequence  uint32
 	Timestamp uint64
 	Payload   []byte

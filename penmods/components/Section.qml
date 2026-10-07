@@ -21,41 +21,53 @@ ColumnLayout {
     implicitWidth: Theme.contentWidth
     spacing: 4
 
-    RowLayout {
+    Item {
+        id: header
         Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
+        Layout.preferredHeight: visible
+                               ? Math.max(headerRow.implicitHeight, section.collapsible ? Theme.tapMin : 0)
+                               : 0
         visible: section.title.length > 0
-        spacing: 4
 
-        Text {
-            text: section.title
-            color: Theme.textPrimary
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontTitle
-            font.bold: true
-        }
+        RowLayout {
+            id: headerRow
+            anchors.fill: parent
+            spacing: 4
 
-        Text {
-            Layout.fillWidth: true
-            text: section.subtitle
-            visible: text.length > 0
-            color: Theme.textMuted
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontCaption
-            elide: Text.ElideRight
-            horizontalAlignment: Text.AlignRight
-        }
+            Text {
+                Layout.alignment: Qt.AlignVCenter
+                text: section.title
+                color: Theme.textPrimary
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontTitle
+                font.bold: true
+            }
 
-        Text {
-            visible: section.collapsible
-            text: section.open ? "收起" : "展开"
-            color: Theme.accent
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontCaption
+            Text {
+                Layout.alignment: Qt.AlignVCenter
+                Layout.fillWidth: true
+                text: section.subtitle
+                visible: text.length > 0
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontCaption
+                elide: Text.ElideRight
+                horizontalAlignment: Text.AlignRight
+            }
+
+            Text {
+                Layout.alignment: Qt.AlignVCenter
+                visible: section.collapsible
+                text: section.open ? "收起" : "展开"
+                color: Theme.accent
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.fontCaption
+            }
         }
 
         MouseArea {
             anchors.fill: parent
+            z: 1
             acceptedButtons: Qt.LeftButton
             enabled: section.collapsible
             preventStealing: false
@@ -76,9 +88,8 @@ ColumnLayout {
         ColumnLayout {
             id: body
 
-            x: Theme.cardPadding
-            y: Theme.cardPadding
-            width: parent.width - 2 * Theme.cardPadding
+            anchors.fill: parent
+            anchors.margins: Theme.cardPadding
             spacing: Theme.cardSpacing
         }
     }

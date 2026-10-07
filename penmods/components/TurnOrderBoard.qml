@@ -10,6 +10,7 @@ Item {
     readonly property var types: ["udp", "tcp", "tls"]
     readonly property var available: types.filter(function(token) { return board.order.indexOf(token) < 0 })
     readonly property bool dragging: dragToken.length > 0
+    readonly property int chipSpacing: 6
     readonly property real chipWidth: Math.min(128, (width - 6) / 2)
     property string dragToken: ""
     property var dragOrder: []
@@ -26,6 +27,11 @@ Item {
     function typeLabel(token) {
         var labels = {udp: "UDP", tcp: "TCP", tls: "TLS"}
         return labels[token] || token
+    }
+
+    function flowHeight(count) {
+        var rows = Math.ceil(count / 2)
+        return rows > 0 ? rows * Theme.tapMin + (rows - 1) * chipSpacing : 0
     }
 
     function commit(next) {
@@ -128,7 +134,8 @@ Item {
         Flow {
             id: selectedFlow
             width: parent.width
-            spacing: 6
+            spacing: board.chipSpacing
+            height: board.flowHeight(Math.max(1, board.order.length))
             Repeater {
                 id: selectedItems
                 model: board.order
@@ -182,7 +189,8 @@ Item {
 
         Flow {
             width: parent.width
-            spacing: 6
+            spacing: board.chipSpacing
+            height: board.flowHeight(board.available.length)
             Repeater {
                 model: board.available
                 delegate: TurnOrderChip {

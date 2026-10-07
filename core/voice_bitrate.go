@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 const (
 	voiceMinBitrate   = 12000
@@ -23,6 +26,7 @@ type bitrateDecision struct {
 }
 
 type bitrateController struct {
+	mu                sync.RWMutex
 	min, current, max int
 	lastChange        time.Time
 	stableSince       time.Time
@@ -33,9 +37,15 @@ func newBitrateController() *bitrateController {
 	return &bitrateController{min: voiceMinBitrate, current: voiceStartBitrate, max: voiceMaxBitrate}
 }
 
-func (b *bitrateController) bitrate() int { return b.current }
+func (b *bitrateController) bitrate() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.current
+}
 
 func (b *bitrateController) update(now time.Time, feedback bitrateFeedback) bitrateDecision {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.lastChange.IsZero() {
 		b.lastChange = now.Add(-2 * time.Second)
 	}
@@ -71,6 +81,28 @@ func (b *bitrateController) update(now time.Time, feedback bitrateFeedback) bitr
 		b.stableSince = time.Time{}
 	}
 	return bitrateDecision{Bitrate: b.current}
+}
+
+// Feedback counters are cumulative, but adaptation must describe the interval
+// since the last report. Ignore idle, duplicate and reordered reports, including
+// across the uint32 sequence wrap, rather than treating silence as good traffic.
+type voiceLossWindow struct {
+	previous voiceFeedback
+	started  bool
+}
+
+func (w *voiceLossWindow) observe(feedback voiceFeedback) (float64, bool) {
+	total := uint64(feedback.HighestSequence) + 1
+	lost := uint64(feedback.Lost)
+	if w.started {
+		if !voiceSequenceBefore(w.previous.HighestSequence, feedback.HighestSequence) {
+			return 0, false
+		}
+		total = uint64(feedback.HighestSequence - w.previous.HighestSequence)
+		lost = uint64(feedback.Lost - w.previous.Lost)
+	}
+	w.previous, w.started = feedback, true
+	return float64(min(lost, total)) / float64(total), true
 }
 
 func (b *bitrateController) change(now time.Time, next int, reason string) bitrateDecision {

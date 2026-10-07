@@ -54,6 +54,7 @@ type voicePeer struct {
 	lost          atomic.Uint64
 	highest       atomic.Uint32
 	mu            sync.Mutex
+	receiveWindow voiceReceiveWindow
 	state         string
 	error         *Fault
 	workers       sync.WaitGroup
@@ -96,6 +97,7 @@ func (p *voicePeer) enqueue(frame PCMFrame) {
 func (p *voicePeer) writeLoop() {
 	var sequence uint32
 	var previousTimestamp uint64
+	var timestamp uint64
 	haveTimestamp := false
 	for {
 		select {
@@ -111,21 +113,23 @@ func (p *voicePeer) writeLoop() {
 				p.setError(err)
 				continue
 			}
-			// Preserve capture gaps (including mute) on the receiver's playout
-			// timeline. A restarted adapter may reset its sampling clock to zero.
+			// Packet sequence counts transmission attempts, not capture slots.
+			// Keep gaps on a separate, monotonic sampling clock so mute is not
+			// network loss and an adapter clock reset cannot rewind playback.
 			if haveTimestamp {
 				step := uint64(1)
 				if item.frame.Timestamp > previousTimestamp {
 					step = max(step, (item.frame.Timestamp-previousTimestamp)/uint64(DefaultPCMFormat.FrameSamples))
 				}
-				sequence += uint32(step)
+				timestamp += step * uint64(DefaultPCMFormat.FrameSamples)
 			}
 			previousTimestamp, haveTimestamp = item.frame.Timestamp, true
-			packet, err := marshalVoicePacket(voicePacket{Version: voiceWireVersion, Kind: voiceKindMedia, Sequence: sequence, Timestamp: item.frame.Timestamp, Codec: voiceCodecOpus, Payload: payload})
+			packet, err := marshalVoicePacket(voicePacket{Version: voiceWireVersion, Kind: voiceKindMedia, Sequence: sequence, Timestamp: timestamp, Codec: voiceCodecOpus, Payload: payload})
 			if err != nil {
 				p.setError(err)
 				continue
 			}
+			sequence++
 			if err = p.link.SendVoiceDatagram(packet); err != nil {
 				p.datagramDrops.Add(1)
 				p.setError(err)
@@ -148,18 +152,15 @@ func (p *voicePeer) readLoop() {
 			p.datagramDrops.Add(1)
 			continue
 		}
-		previous := p.highest.Load()
-		if p.received.Load() > 0 && packet.Sequence > previous+1 {
-			p.lost.Add(uint64(packet.Sequence - previous - 1))
-		}
-		if p.received.Load() > 0 && packet.Sequence <= previous {
-			p.reordered.Add(1)
-		}
-		if packet.Sequence > previous {
-			p.highest.Store(packet.Sequence)
-		}
+		p.mu.Lock()
+		p.receiveWindow.observe(packet.Sequence, time.Now())
+		p.highest.Store(p.receiveWindow.highest)
+		p.lost.Store(p.receiveWindow.lost)
+		p.reordered.Store(p.receiveWindow.reordered)
+		p.mu.Unlock()
+		// Jitter slots follow sampling time; network loss follows packet IDs.
+		p.jitter.push(jitterFrame{Sequence: uint32(packet.Timestamp / uint64(DefaultPCMFormat.FrameSamples)), Timestamp: packet.Timestamp, Payload: packet.Payload})
 		p.received.Add(1)
-		p.jitter.push(jitterFrame{Sequence: packet.Sequence, Timestamp: packet.Timestamp, Payload: packet.Payload})
 	}
 }
 
@@ -206,7 +207,10 @@ func (p *voicePeer) feedbackLoop() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			feedback := voiceFeedback{HighestSequence: p.highest.Load(), Lost: uint32(p.lost.Load()), Reordered: uint32(p.reordered.Load()), JitterDepth: uint16(p.jitter.len()), LateFrames: uint32(p.lateFrames.Load())}
+			feedback, received := p.receiveFeedback(time.Now())
+			if !received {
+				continue
+			}
 			packet, err := EncodeVoiceFeedback(feedback.HighestSequence, uint64(time.Now().UnixMilli()), marshalVoiceFeedback(feedback))
 			if err != nil {
 				continue
@@ -219,7 +223,18 @@ func (p *voicePeer) feedbackLoop() {
 	}
 }
 
+func (p *voicePeer) receiveFeedback(now time.Time) (voiceFeedback, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	feedback, received := p.receiveWindow.feedback(now)
+	p.lost.Store(p.receiveWindow.lost)
+	feedback.JitterDepth = uint16(p.jitter.len())
+	feedback.LateFrames = uint32(p.lateFrames.Load())
+	return feedback, received
+}
+
 func (p *voicePeer) feedbackReadLoop() {
+	var loss voiceLossWindow
 	for {
 		data, err := p.link.ReceiveVoiceFeedback(p.ctx)
 		if err != nil {
@@ -235,8 +250,12 @@ func (p *voicePeer) feedbackReadLoop() {
 			p.datagramDrops.Add(1)
 			continue
 		}
+		rate, advanced := loss.observe(feedback)
+		if !advanced {
+			continue
+		}
 		decision := p.bitrate.update(time.Now(), bitrateFeedback{
-			LossRate: lossRate(feedback), JitterDepth: int(feedback.JitterDepth),
+			LossRate: rate, JitterDepth: int(feedback.JitterDepth),
 			TargetJitter: 4, QueueDepth: len(p.out),
 		})
 		if decision.Changed {
@@ -245,14 +264,6 @@ func (p *voicePeer) feedbackReadLoop() {
 			p.mu.Unlock()
 		}
 	}
-}
-
-func lossRate(feedback voiceFeedback) float64 {
-	total := uint64(feedback.HighestSequence) + 1
-	if total == 0 {
-		return 0
-	}
-	return float64(feedback.Lost) / float64(total)
 }
 
 func (p *voicePeer) setError(err error) {
@@ -365,8 +376,12 @@ func (r *voiceRuntime) pullPCM(maxFrames int) []int16 {
 
 func (r *voiceRuntime) bindPeer(peerID, transportID string, generation uint64, link voiceLink) {
 	r.mu.Lock()
+	if r.closed || link.Context().Err() != nil {
+		r.mu.Unlock()
+		return
+	}
 	old := r.peers[peerID]
-	if old != nil && old.transport == transportID && old.generation == generation {
+	if old != nil && (old.link == link || (old.transport == transportID && old.generation > generation)) {
 		r.mu.Unlock()
 		return
 	}
@@ -385,14 +400,18 @@ func (r *voiceRuntime) bindPeer(peerID, transportID string, generation uint64, l
 	}
 }
 
-func (r *voiceRuntime) unbindPeer(peerID string) {
+func (r *voiceRuntime) unbindPeer(peerID string, link voiceLink) {
 	r.mu.Lock()
 	p := r.peers[peerID]
+	// A replacement may reuse both transport ID and generation after signaling
+	// reconnect. Only the exact link that owns this binding can retire it.
+	if p == nil || p.link != link {
+		r.mu.Unlock()
+		return
+	}
 	delete(r.peers, peerID)
 	r.mu.Unlock()
-	if p != nil {
-		p.close()
-	}
+	p.close()
 }
 
 func (r *voiceRuntime) captureLoop() {

@@ -8,6 +8,9 @@
 `PCMSource` / `PCMSink` 是内部接口；gomobile 使用 `PushVoicePCM` / `PullVoicePCM` 批量方法
 传递 PCM，不经过 JSON 事件桥，每次最多处理 4 帧。Android corebridge 通过 `AudioRecord` /
 `AudioTrack` 接入设备。语音成员、传输和媒体统计从 `Snapshot.voice` 读取，事件只作刷新提示。
+语音会话绑定具体 ICE 连接实例，旧线路退出不会解绑已替换的新线路（包括同代次重连）。
+采样时间戳与发送包序号独立，静音间隔保留在播放时钟中，不计入网络丢包；码率按最近反馈区间调整。
+缺包保留最多 8 个包序号、160 ms 的乱序等待窗口，窗口内补齐不计丢包；反馈只覆盖已经确认的序号区间。
 
 ## 宿主接入
 

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -130,11 +131,10 @@ func TestVoicePeerFakePCMPath(t *testing.T) {
 func TestVoiceSenderPreservesCaptureGapsAndReceiverResumes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	link := &fakeVoiceLink{ctx: ctx, sent: make(chan []byte, 1), recv: make(chan []byte)}
+	link := &fakeVoiceLink{ctx: ctx, sent: make(chan []byte, 1), recv: make(chan []byte, 1)}
 	p := newVoicePeer(ctx, "remote", "transport", 1, link, fakeVoiceCodec{})
 	defer p.close()
-	jitter := newJitterBuffer(voiceJitterLimit)
-	for i, timestamp := range []uint64{0, 960, 1920, 3840, 0} {
+	for i, timestamp := range []uint64{0, 960, 1920, 3840, 0, 480000} {
 		p.enqueue(PCMFrame{Timestamp: timestamp, Samples: make([]int16, 960)})
 		select {
 		case data := <-link.sent:
@@ -142,31 +142,152 @@ func TestVoiceSenderPreservesCaptureGapsAndReceiverResumes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := []uint32{0, 1, 2, 4, 5}[i]
-			if packet.Sequence != want {
-				t.Fatalf("sequence=%d want=%d", packet.Sequence, want)
+			wantTimestamp := []uint64{0, 960, 1920, 3840, 4800, 484800}[i]
+			if packet.Sequence != uint32(i) || packet.Timestamp != wantTimestamp {
+				t.Fatalf("packet=%+v want sequence=%d timestamp=%d", packet, i, wantTimestamp)
 			}
+			if i == 3 {
+				p.decodeFrame() // Consume the short mute's missing playback slot.
+			}
+			if i == 5 {
+				for k := 0; k < voiceJitterLimit; k++ {
+					p.decodeFrame() // A long mute exhausts PLC and re-buffers.
+				}
+			}
+			link.recv <- data
+			waitVoiceReceived(t, p, uint64(i+1))
 			if i < 3 {
-				jitter.push(jitterFrame{Sequence: packet.Sequence, Payload: packet.Payload})
 				if i == 2 {
 					for k := 0; k < 3; k++ {
-						jitter.popForPlayback()
+						p.decodeFrame()
 					}
 				}
-			} else if i == 3 {
-				missing, ok := jitter.popForPlayback()
-				if !ok || missing.Sequence != 3 || len(missing.Payload) != 0 {
-					t.Fatal("gap did not produce PLC")
+			} else {
+				if i == 5 {
+					p.decodeFrame() // First startup poll waits for reorder.
 				}
-				jitter.push(jitterFrame{Sequence: packet.Sequence, Payload: packet.Payload})
-				frame, ok := jitter.popForPlayback()
-				if !ok || frame.Sequence != 4 || len(frame.Payload) == 0 {
-					t.Fatal("short pause rejected resumed audio")
+				if samples, ok := p.decodeFrame(); !ok || samples[0] != 100 {
+					t.Fatal("mute or adapter restart rejected resumed audio")
 				}
 			}
 		case <-time.After(time.Second):
 			t.Fatal("sender stalled")
 		}
+	}
+	if p.lost.Load() != 0 || p.decoded.Load() != 6 {
+		t.Fatalf("capture gaps were network loss or audio was skipped: %+v", p.snapshot())
+	}
+}
+
+func waitVoiceReceived(t *testing.T, p *voicePeer, count uint64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for p.received.Load() < count && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if p.received.Load() != count {
+		t.Fatal("voice receiver stalled")
+	}
+}
+
+func TestVoiceReplacementSurvivesOldLinkCleanup(t *testing.T) {
+	for _, generation := range []uint64{1, 2} {
+		t.Run(fmt.Sprint(generation), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			r := newVoiceRuntime(ctx, nil, nil, fakeVoiceCodec{})
+			defer r.close()
+			old := &fakeVoiceLink{ctx: ctx, sent: make(chan []byte, 1), recv: make(chan []byte)}
+			next := &fakeVoiceLink{ctx: ctx, sent: make(chan []byte, 1), recv: make(chan []byte, 3)}
+			r.bindPeer("remote", "transport", 1, old)
+			r.bindPeer("remote", "transport", generation, next)
+			r.unbindPeer("remote", old)
+			if generation > 1 {
+				r.bindPeer("remote", "transport", 1, old) // A delayed old attempt cannot replace the new binding.
+			}
+			peers := r.snapshot()
+			if len(peers) != 1 || peers[0].Generation != generation {
+				t.Fatalf("replacement retired by old link: %+v", peers)
+			}
+			p := r.peers["remote"]
+			p.enqueue(PCMFrame{Samples: make([]int16, 960)})
+			select {
+			case <-next.sent:
+			case <-time.After(time.Second):
+				t.Fatal("replacement stopped sending")
+			}
+			for i := uint32(0); i < 3; i++ {
+				packet, err := EncodeVoiceDatagram(i, uint64(i)*960, []byte{1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				next.recv <- packet
+			}
+			waitVoiceReceived(t, p, 3)
+			if frame := r.mixFrame(0); frame.Samples[0] != 100 {
+				t.Fatal("replacement stopped receiving")
+			}
+			r.unbindPeer("remote", next)
+			if len(r.snapshot()) != 0 {
+				t.Fatal("owning link could not detach")
+			}
+		})
+	}
+}
+
+func TestVoicePacketLossRemainsSeparateFromPlaybackSlots(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	link := &fakeVoiceLink{ctx: ctx, sent: make(chan []byte), recv: make(chan []byte, 3)}
+	p := newVoicePeer(ctx, "remote", "transport", 1, link, fakeVoiceCodec{})
+	defer p.close()
+	for _, packet := range []struct {
+		sequence  uint32
+		timestamp uint64
+	}{
+		{^uint32(0) - 1, 0}, {0, 1920}, {1, 480000},
+	} {
+		data, err := EncodeVoiceDatagram(packet.sequence, packet.timestamp, []byte{1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		link.recv <- data
+	}
+	waitVoiceReceived(t, p, 3)
+	p.receiveFeedback(time.Now().Add(voiceReorderWait))
+	if p.lost.Load() != 1 || p.highest.Load() != 1 {
+		t.Fatalf("wrap or capture gap corrupted network loss: %+v", p.snapshot())
+	}
+}
+
+func TestVoiceReorderedPacketsPlayWithoutReducingBitrate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	link := &fakeVoiceLink{ctx: ctx, sent: make(chan []byte, 1), recv: make(chan []byte, 6)}
+	peer := newVoicePeer(ctx, "remote", "transport", 1, link, fakeVoiceCodec{})
+	defer peer.close()
+	for _, sequence := range []uint32{0, 2, 1, 3, 5, 4} {
+		packet, err := EncodeVoiceDatagram(sequence, uint64(sequence)*960, []byte{1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		link.recv <- packet
+	}
+	waitVoiceReceived(t, peer, 6)
+	for i := 0; i < 6; i++ {
+		if samples, ok := peer.decodeFrame(); !ok || len(samples) != 960 || samples[0] != 100 {
+			t.Fatalf("playback slot %d failed", i)
+		}
+	}
+	feedback, _ := peer.receiveFeedback(time.Now().Add(voiceReorderWait))
+	var loss voiceLossWindow
+	rate, advanced := loss.observe(feedback)
+	decision := peer.bitrate.update(time.Now(), bitrateFeedback{LossRate: rate})
+	if !advanced || rate != 0 || feedback.Lost != 0 || feedback.Reordered != 2 || decision.Bitrate != voiceStartBitrate {
+		t.Fatalf("reordering reduced bitrate: feedback=%+v rate=%v decision=%+v", feedback, rate, decision)
+	}
+	if peer.decoded.Load() != 6 || peer.concealed.Load() != 0 {
+		t.Fatalf("reordered media was lost: %+v", peer.snapshot())
 	}
 }
 

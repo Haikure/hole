@@ -17,6 +17,7 @@ import android.os.Process
 import dev.hole.core.mobile.Engine
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import org.json.JSONObject
 
 /** Android device access; mixing, codecs and network sessions stay in Go. */
 internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCloseable {
@@ -125,19 +126,12 @@ internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCl
     }
 
     private fun captureLoop(input: AudioRecord) {
-        val samples = ByteArray(FRAME_BYTES)
-        var sequence = 0L
-        var timestamp = 0L
-        while (running.get()) {
-            if (!readVoiceFrame(samples) { offset, length -> input.read(samples, offset, length, AudioRecord.READ_BLOCKING) }) {
-                check(!running.get()) { "Android 麦克风读取失败" }
-                return
-            }
-            if (!running.get()) return
-            engine.pushVoicePCM(sequence, timestamp, samples)
-            sequence++
-            timestamp += FRAME_SAMPLES
-        }
+        captureVoiceFrames(
+            samples = ByteArray(FRAME_BYTES),
+            isRunning = running::get,
+            read = { samples -> readVoiceFrame(samples) { offset, length -> input.read(samples, offset, length, AudioRecord.READ_BLOCKING) } },
+            push = engine::pushVoicePCM,
+        )
     }
 
     private fun playbackLoop(output: AudioTrack) {
@@ -208,6 +202,33 @@ internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCl
         const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
         const val INPUT_CHANNELS = AudioFormat.CHANNEL_IN_MONO
         const val OUTPUT_CHANNELS = AudioFormat.CHANNEL_OUT_MONO
+    }
+}
+
+// Keep the device clock advancing while a cold start or reconfiguration replaces
+// the core. Drop unavailable frames instead of replaying stale audio on recovery.
+internal fun captureVoiceFrames(
+    samples: ByteArray,
+    isRunning: () -> Boolean,
+    read: (ByteArray) -> Boolean,
+    push: (Long, Long, ByteArray) -> Unit,
+) {
+    var sequence = 0L
+    var timestamp = 0L
+    while (isRunning()) {
+        if (!read(samples)) {
+            check(!isRunning()) { "Android 麦克风读取失败" }
+            return
+        }
+        if (!isRunning()) return
+        try {
+            push(sequence, timestamp, samples)
+        } catch (failure: Exception) {
+            val code = runCatching { JSONObject(failure.message.orEmpty()).optString("code") }.getOrNull()
+            if (code != "voice_unavailable" && code != "voice_disabled") throw failure
+        }
+        sequence++
+        timestamp += samples.size / 2
     }
 }
 

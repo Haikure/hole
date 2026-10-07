@@ -227,8 +227,8 @@ open class EngineService : Service() {
         try { core.start(request) } catch (failure: Exception) {
             if (failure.message?.contains("already_running") == true) core.applyConfig(request) else throw failure
         }
-        core.startVoiceAudio(request)
         startForegroundCompat(stored.voice.enabled)
+        core.startVoiceAudio(request)
         mutableCommandError.value = null
     }
 
@@ -269,9 +269,9 @@ open class EngineService : Service() {
     }
 
     private fun startForegroundCompat(voice: Boolean = false) {
-        val type = if (Build.VERSION.SDK_INT >= 34) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or if (voice) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
-        } else 0
+        val baseType = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
+        val microphoneType = if (voice && Build.VERSION.SDK_INT >= 30) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
+        val type = baseType or microphoneType
         ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(mutableState.value), type)
         foregroundActive = true
     }

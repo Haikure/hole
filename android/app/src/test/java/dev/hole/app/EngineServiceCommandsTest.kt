@@ -1,6 +1,8 @@
 package dev.hole.app
 
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.Looper
 import androidx.core.content.edit
 import dev.hole.app.config.ConfigRepository
@@ -204,6 +206,27 @@ class EngineServiceCommandsTest {
             repository.update { it.copy(provide = listOf(entry)) }
             until { FixtureEngineService.core.starts.size == 1 && service.state.value.signalState == "joined" }
             assertTrue(service.state.value.runRequested)
+        } finally { controller.destroy() }
+    }
+
+    @Test
+    @Config(sdk = [30, 33, 34])
+    fun voiceRegistersMicrophoneForegroundTypeAndDisablingClearsIt() = runBlocking {
+        val repository = ConfigRepository(context)
+        repository.update { it.copy(voice = it.voice.copy(enabled = true)) }
+        FixtureEngineService.gate.complete(Unit)
+        val controller = Robolectric.buildService(FixtureEngineService::class.java).create()
+        val service = controller.get()
+        try {
+            service.onStartCommand(Intent().setAction(EngineService.ACTION_START_RUN), 0, 1)
+            until { service.foregroundServiceType and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0 }
+            if (Build.VERSION.SDK_INT >= 34) {
+                assertTrue(service.foregroundServiceType and ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE != 0)
+            }
+            repository.update { it.copy(voice = it.voice.copy(enabled = false)) }
+            until { service.foregroundServiceType and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE == 0 }
+            assertTrue(service.state.value.runRequested)
+            assertEquals(null, service.commandError.value)
         } finally { controller.destroy() }
     }
 }

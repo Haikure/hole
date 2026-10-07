@@ -235,8 +235,6 @@ func (p *icePeer) offline(reason string) {
 	}
 	records := append([]peerMappingRecord{}, p.ready.Mappings...)
 	fp := p.ready.PeerFingerprint
-	peerID := p.ready.PeerDevice
-	isVoice := p.ready.Voice
 	p.mu.Unlock()
 	p.stateChanged()
 	if reason == "mapping_removed" || reason == "peer_runtime_changed" || reason == "revoked" || reason == "signal_offline" {
@@ -245,10 +243,10 @@ func (p *icePeer) offline(reason string) {
 		}
 		if active != nil {
 			active.close()
-		}
-		if isVoice {
-			if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
-				voice.unbindPeer(peerID)
+			if active.ready.Voice {
+				if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
+					voice.unbindPeer(active.ready.PeerDevice, active.mux)
+				}
 			}
 		}
 	}
@@ -947,7 +945,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	live.close()
 	if a.ready.Voice {
 		if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
-			voice.unbindPeer(a.ready.PeerDevice)
+			voice.unbindPeer(a.ready.PeerDevice, mux)
 		}
 	}
 	p.mu.Lock()

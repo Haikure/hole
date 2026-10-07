@@ -105,7 +105,7 @@ bool HolePlugin::saveConfig() {
         root.insert(QStringLiteral("turn_state"), turnState.object());
     }
     QSaveFile file(configPath());
-    if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(root).toJson(QJsonDocument::Compact)) < 0 || !file.commit()) {
+    if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(root).toJson(QJsonDocument::Indented)) < 0 || !file.commit()) {
         setError(QStringLiteral("无法保存插件配置"));
         return false;
     }
@@ -234,14 +234,26 @@ void HolePlugin::stop() {
     setState(QStringLiteral("stopping"));
 }
 
-void HolePlugin::applyConfig() {
-    if (!saveConfig()) return;
+bool HolePlugin::applyConfig() {
+    if (!saveConfig()) return false;
     if (!m_process || m_process->state() == QProcess::NotRunning) {
         start();
-        return;
+        return true;
     }
+
+    // A config edit can land while the initial start is waiting for the
+    // bridge hello. Keep the start request pending; sendStart() will use the
+    // newest in-memory config once hello arrives. If start was already sent,
+    // queue the reconfiguration as a separate request without replacing its
+    // pending response tracking.
+    if (m_pendingMethod == QStringLiteral("start")) {
+        if (m_helloReceived) sendStart(QStringLiteral("apply_config"));
+        return true;
+    }
+
     m_pendingMethod = QStringLiteral("apply_config");
-    sendStart(QStringLiteral("apply_config"));
+    if (m_helloReceived) sendStart(m_pendingMethod);
+    return true;
 }
 
 void HolePlugin::refresh() {
