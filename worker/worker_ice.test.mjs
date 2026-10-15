@@ -169,6 +169,34 @@ test('changing relay-only policy resets generation and candidate cache without a
  }
 });
 test('one persisted pair carries multiple mappings and sorted initiator',async()=>{const{record}=await pair();assert.equal(record.mappings.length,2);assert.equal(record.a,'alpha');assert.equal(record.generation,'1')});
+test('same-topology websocket replacement clears blocked transport and cached ICE',async()=>{
+ const {r,a,b,record,socket}=await pair();
+ record.blocked='peer_identity_mismatch';
+ record.ice={alpha:{description:{ufrag:'stale-alpha',pwd:'a'.repeat(22)},candidates:['stale-alpha-candidate'],candidate_bytes:22}};
+ const previous=record.generation,replacement=socket();
+ await r.webSocketMessage(replacement,JSON.stringify(join('alpha',['one','two'])));
+ assert.equal(record.generation,String(BigInt(previous)+1n));
+ assert.deepEqual(record.ice,{});assert.equal(record.blocked,null);
+ assert.equal(replacement.messages.filter(m=>m.type==='transport_ready').at(-1).transport_generation,record.generation);
+ assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).transport_generation,record.generation);
+ assert.equal(replacement.messages.some(m=>m.type==='ice_description'),false);
+ assert.equal(a.closed,true);
+});
+test('same-topology reconnect after close callback clears blocked transport',async()=>{
+ const {r,a,b,record,socket}=await pair();
+ record.blocked='peer_identity_mismatch';
+ record.ice={alpha:{description:{ufrag:'stale-alpha',pwd:'a'.repeat(22)},candidates:['stale-alpha-candidate'],candidate_bytes:22}};
+ const previous=record.generation;
+ a.closed=true;await r.webSocketClose(a);
+ assert.equal(record.online,false);
+ const replacement=socket();
+ await r.webSocketMessage(replacement,JSON.stringify(join('alpha',['one','two'])));
+ assert.equal(record.generation,String(BigInt(previous)+1n));
+ assert.deepEqual(record.ice,{});assert.equal(record.blocked,null);
+ assert.equal(replacement.messages.filter(m=>m.type==='transport_ready').at(-1).transport_generation,record.generation);
+ assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).transport_generation,record.generation);
+ assert.equal(replacement.messages.some(m=>m.type==='ice_description'),false);
+});
 test('concurrent restarts of one generation coalesce',async()=>{
  const {r,a,b,record}=await pair();const message={type:'transport_restart',request_id:'restart',transport_id:record.id,expected_generation:'1',phase:'relay_udp'};
  await r.webSocketMessage(a,JSON.stringify(message));await r.webSocketMessage(b,JSON.stringify(message));

@@ -121,6 +121,17 @@ export class RoomICE {
     if (next !== null && current !== next) await this.state.storage.setAlarm(next);
     else if (next === null && current != null) await this.state.storage.deleteAlarm?.();
   }
+  async markOfflineForReconnect(name) {
+    let changed = false;
+    for (const record of this.records.values()) {
+      if (!record.online || (record.a !== name && record.b !== name)) continue;
+      record.online = false;
+      record.expires_at = Date.now() + OFFLINE_RETENTION_MS;
+      await this.persist(record);
+      changed = true;
+    }
+    if (changed) await this.scheduleCleanup();
+  }
   async expireOffline() {
     const now = Date.now();
     for (const [key, record] of this.records) {
@@ -155,6 +166,15 @@ export class RoomICE {
     } else if (record.voice !== voice || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
       record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
       record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; record.voice = voice; changed = true;
+      resetPath = true;
+    } else if (!record.online) {
+      // A transport that went offline cannot reuse its generation: the
+      // reconnecting runtime may have new ICE credentials even when its
+      // authenticated runtime identity and certificate are unchanged.
+      record.generation = (BigInt(record.generation) + 1n).toString();
+      record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
+      record.blocked = null;
+      changed = true;
       resetPath = true;
     }
     if (!same(record.mappings, mappings)) changed = true;

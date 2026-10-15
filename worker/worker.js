@@ -205,6 +205,13 @@ export class Room {
       // 清空 attachment 让后续重建把它排除掉。
       detach(existing.ws);
       this.members.delete(member.device_name);
+      // A same-runtime signal reconnect can replace its WebSocket before the
+      // close callback marks the ICE transport offline. Retire that transport
+      // state now so reconcile creates a fresh generation and ICE candidate
+      // cache for the replacement socket.
+      const sameMappings = JSON.stringify(existing.member.provide.map(item => item.id).sort()) === JSON.stringify(member.provide.map(item => item.id).sort()) &&
+        JSON.stringify(existing.member.consume.map(item => item.id).sort()) === JSON.stringify(member.consume.map(item => item.id).sort());
+      if (sameMappings) await this.ice.markOfflineForReconnect(member.device_name);
       // 重连往往快于运行时对旧连接断开的感知（休眠恢复后尤其如此），
       // 对端可能还挂着这条"僵尸"成员记录，配对 key 一直被视为 active。
       // 主动清掉与该设备相关的已通知映射，让 reconcile 重新下发 ready，
