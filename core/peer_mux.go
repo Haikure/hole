@@ -493,7 +493,29 @@ func (p *muxPeer) readDatagrams() {
 	}
 }
 
-func (p *muxPeer) SendVoiceDatagram(data []byte) error {
+// quic-go's DATAGRAM send blocks when its queue fills and has no context API.
+// Retire a cancelled voice sender's transport to unblock that call. Application
+// sessions survive the path replacement; never leave voice shutdown waiting for
+// congestion to clear while its caller holds the Engine lock.
+type voiceDatagramSender interface {
+	SendDatagram([]byte) error
+	CloseWithError(quic.ApplicationErrorCode, string) error
+}
+
+func sendVoiceDatagram(ctx context.Context, conn voiceDatagramSender, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.CloseWithError(0, "voice sender cancelled") })
+	defer stop()
+	err := conn.SendDatagram(data)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+func (p *muxPeer) SendVoiceDatagram(ctx context.Context, data []byte) error {
 	if !p.voiceEnabled {
 		return errors.New("voice channel is not authorized")
 	}
@@ -507,7 +529,7 @@ func (p *muxPeer) SendVoiceDatagram(data []byte) error {
 	if p.ctx.Err() != nil {
 		return p.ctx.Err()
 	}
-	return p.conn.SendDatagram(data)
+	return sendVoiceDatagram(ctx, p.conn, data)
 }
 
 func (p *muxPeer) ReceiveVoiceDatagram(ctx context.Context) ([]byte, error) {
@@ -524,7 +546,7 @@ func (p *muxPeer) ReceiveVoiceDatagram(ctx context.Context) ([]byte, error) {
 	}
 }
 
-func (p *muxPeer) SendVoiceFeedback(data []byte) error {
+func (p *muxPeer) SendVoiceFeedback(ctx context.Context, data []byte) error {
 	if !p.voiceEnabled {
 		return errors.New("voice channel is not authorized")
 	}
@@ -538,7 +560,7 @@ func (p *muxPeer) SendVoiceFeedback(data []byte) error {
 	if p.ctx.Err() != nil {
 		return p.ctx.Err()
 	}
-	return p.conn.SendDatagram(data)
+	return sendVoiceDatagram(ctx, p.conn, data)
 }
 
 func (p *muxPeer) ReceiveVoiceFeedback(ctx context.Context) ([]byte, error) {

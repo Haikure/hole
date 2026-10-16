@@ -66,12 +66,14 @@ type fakeVoiceLink struct {
 	recv chan []byte
 }
 
-func (l *fakeVoiceLink) SendVoiceDatagram(data []byte) error {
+func (l *fakeVoiceLink) SendVoiceDatagram(ctx context.Context, data []byte) error {
 	select {
 	case l.sent <- data:
 		return nil
 	case <-l.ctx.Done():
 		return l.ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 func (l *fakeVoiceLink) ReceiveVoiceDatagram(ctx context.Context) ([]byte, error) {
@@ -82,7 +84,7 @@ func (l *fakeVoiceLink) ReceiveVoiceDatagram(ctx context.Context) ([]byte, error
 		return nil, ctx.Err()
 	}
 }
-func (l *fakeVoiceLink) SendVoiceFeedback([]byte) error { return nil }
+func (l *fakeVoiceLink) SendVoiceFeedback(context.Context, []byte) error { return nil }
 func (l *fakeVoiceLink) ReceiveVoiceFeedback(ctx context.Context) ([]byte, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()

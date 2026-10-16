@@ -9,9 +9,9 @@ import (
 )
 
 type voiceLink interface {
-	SendVoiceDatagram([]byte) error
+	SendVoiceDatagram(context.Context, []byte) error
 	ReceiveVoiceDatagram(context.Context) ([]byte, error)
-	SendVoiceFeedback([]byte) error
+	SendVoiceFeedback(context.Context, []byte) error
 	ReceiveVoiceFeedback(context.Context) ([]byte, error)
 	Context() context.Context
 }
@@ -130,7 +130,7 @@ func (p *voicePeer) writeLoop() {
 				continue
 			}
 			sequence++
-			if err = p.link.SendVoiceDatagram(packet); err != nil {
+			if err = p.link.SendVoiceDatagram(p.ctx, packet); err != nil {
 				p.datagramDrops.Add(1)
 				p.setError(err)
 			} else {
@@ -215,7 +215,7 @@ func (p *voicePeer) feedbackLoop() {
 			if err != nil {
 				continue
 			}
-			if err := p.link.SendVoiceFeedback(packet); err != nil {
+			if err := p.link.SendVoiceFeedback(p.ctx, packet); err != nil {
 				p.datagramDrops.Add(1)
 				return
 			}

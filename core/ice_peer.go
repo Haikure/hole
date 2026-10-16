@@ -237,16 +237,19 @@ func (p *icePeer) offline(reason string) {
 	fp := p.ready.PeerFingerprint
 	p.mu.Unlock()
 	p.stateChanged()
-	if reason == "mapping_removed" || reason == "peer_runtime_changed" || reason == "revoked" || reason == "signal_offline" {
+	revoked := reason == "mapping_removed" || reason == "peer_runtime_changed" || reason == "revoked"
+	if revoked {
 		for _, r := range records {
 			p.coordinator.sessions.terminate(r.ID, fp)
 		}
-		if active != nil {
-			active.close()
-			if active.ready.Voice {
-				if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
-					voice.unbindPeer(active.ready.PeerDevice, active.mux)
-				}
+	}
+	// Signaling reconnect retires the media path, but authenticated application
+	// sessions still belong to the unchanged mapping and can resume on its replacement.
+	if (revoked || reason == "signal_offline") && active != nil {
+		active.close()
+		if active.ready.Voice {
+			if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
+				voice.unbindPeer(active.ready.PeerDevice, active.mux)
 			}
 		}
 	}
