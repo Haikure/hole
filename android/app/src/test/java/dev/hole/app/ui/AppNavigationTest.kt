@@ -33,6 +33,13 @@ class AppNavigationTest {
         }
     }
 
+    @Test fun settingsHubOpensTheReleaseUpdatePage() {
+        var route = ""
+        compose.setContent { HoleTheme(ThemeMode.LIGHT, false) { SettingsHub { route = it } } }
+        compose.onNodeWithText("检查更新").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("release-update", route) }
+    }
+
     @Test fun draggingTheLensCommitsDestinationOnRelease() {
         var route by mutableStateOf("home")
         compose.setContent { HoleTheme(ThemeMode.LIGHT, false) {

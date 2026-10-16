@@ -45,6 +45,7 @@ import dev.hole.app.ui.VoiceScreen
 import dev.hole.app.ui.AppNavigation
 import dev.hole.app.ui.FloatingAppFrame
 import dev.hole.app.ui.SettingsHub
+import dev.hole.app.ui.ReleaseUpdateScreen
 import dev.hole.app.ui.primaryRoutes
 import dev.hole.app.ui.showUndoSnackbar
 import dev.hole.app.ui.HoleScaffold
@@ -261,6 +262,7 @@ private fun AppRoot(
       pageState.SaveableStateProvider(page) {
        when {
         page == "settings" -> SettingsHub(::navigate)
+        page == "release-update" -> ReleaseUpdateScreen(onBack = { goBack() })
         page == "appearance" -> HoleScaffold(title = "外观", navigationIcon = { HoleBackButton { goBack() } }) { insets ->
             Column(Modifier.padding(insets).verticalScroll(rememberScrollState()).padding(20.dp)) {
                 ThemeSection(

@@ -51,6 +51,7 @@ fun SettingsHub(onNavigate: (String) -> Unit) {
             item { HoleSettingsGroup("应用") {
                 SettingsLink("外观", "颜色与显示模式", Icons.Default.Edit) { onNavigate("appearance") }
                 SettingsLink("配置文件", "导入与导出", Icons.Default.List) { onNavigate("transfer") }
+                SettingsLink("检查更新", "获取最新正式发行版", Icons.Default.Download) { onNavigate("release-update") }
             } }
         }
     }
