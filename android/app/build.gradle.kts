@@ -4,6 +4,9 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+val releaseVersions = groovy.json.JsonSlurper().parse(rootProject.file("../versions.json")) as Map<*, *>
+val androidVersion = (releaseVersions["frontends"] as Map<*, *>)["android"] as Map<*, *>
+
 val signingValues = listOf("HOLE_SIGNING_STORE_FILE", "HOLE_SIGNING_STORE_PASSWORD", "HOLE_SIGNING_KEY_ALIAS", "HOLE_SIGNING_KEY_PASSWORD")
     .associateWith { providers.environmentVariable(it).orNull }
 val releaseSigningConfigured = signingValues.values.all { !it.isNullOrBlank() }
@@ -24,8 +27,8 @@ android {
         applicationId = "dev.hole.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.3.8"
+        versionCode = (androidVersion["version_code"] as Number).toInt()
+        versionName = androidVersion["version"] as String
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     buildFeatures { compose = true; buildConfig = true }

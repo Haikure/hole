@@ -236,7 +236,7 @@ GUI 使用 Rust stable、Cargo 和 Slint；具体 Rust toolchain、Slint 版本�
 - 桌面发布包内嵌匹配架构 Go 宿主：Linux 使用 memfd，Windows 使用私有临时文件并管理回收。
   开发构建保留独立宿主查找与显式路径覆盖。
   新交付进入独立 `dist/desktop/`，保留原 CLI/APK 留存包。
-- 核心版本沿用 `scripts/build_meta.py`；桌面包另记录 GUI、桥接协议、Rust/Slint 版本及文件校验和。
+- 核心版本取自根目录 `versions.json`，并与 CLI / Android AAR 一致；桌面 GUI 版本独立维护。桌面包另记录桥接协议、Rust/Slint 版本及文件校验和。
 - 评估 Windows 运行库、Slint 图形后端、Linux X11/Wayland 与最低发行版依赖；签名仅使用维护者提供的密钥。
 - 发布前核对 Slint crates、渲染后端及分发方式对应的许可要求，仓库许可证由维护者单独决定。
 - 分开记录 Go/Worker 回归、Rust 单元测试、Slint UI/集成测试、Release 打包和真实系统验收结果。

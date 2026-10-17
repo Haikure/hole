@@ -17,8 +17,8 @@ Material 3 固定为 `1.5.0-alpha29`，以使用公开的 Expressive API。旧�
 | [wear](wear/README.md) | 共用手机源码的 Wear OS 安装包，独立设备声明和 ABI 选择 |
 | `corebridge` | Go AAR 构建、Kotlin 接口、Android Network / DNS / socket 适配 |
 
-当前手机版本为 **0.3.7 / versionCode 9**，包名 `dev.hole.app`，仅打包 `arm64-v8a`。
-最低 Android 8.0（API 26），compileSdk 37，targetSdk 36；版本以 [app/build.gradle.kts](app/build.gradle.kts) 为准。
+手机与 Wear OS 共用 Android 前端版本，统一定义在仓库根目录的 [versions.json](../versions.json)；Gradle 两个模块都直接读取该配置。
+包名为 `dev.hole.app`，手机仅打包 `arm64-v8a`。最低 Android 8.0（API 26），compileSdk 37，targetSdk 36。
 
 ## 构建
 

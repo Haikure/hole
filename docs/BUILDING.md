@@ -1,7 +1,7 @@
 # 构建、签名与验证
 
 仓库根目录的 `build.sh` 是统一发布构建入口。只生成 Release，不部署 Worker、不安装到设备，
-也不创建或替换签名密钥。CLI、桌面 Go 桥接和 Android 构建共用 `scripts/build_meta.py` 生成核心版本。
+也不创建或替换签名密钥。核心版本和各前端版本集中维护在仓库根目录的 `versions.json`。
 
 ## 工具链
 
@@ -66,6 +66,13 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 | `--signing-config FILE` | 签名环境文件，默认仓库 `signing.env` |
 | `--offline` | 只使用已缓存 Go / Cargo / Gradle 依赖；缓存缺项时报告错误 |
 | `-h` / `--help` | 显示帮助；无参数时同样显示帮助 |
+
+## 版本号
+
+编辑根目录 `versions.json`：`core.version` 是共享核心版本，CLI、独立 `desktop-core` 和 Android AAR 始终使用同一个值；Android 手机与 Wear OS 共用 `frontends.android` 的版本名和版本码。桌面 GUI 与 PenMods 插件各自维护前端版本。
+修改后运行 `python3 scripts/sync_versions.py`，同步 Cargo package/lock 元数据以及 PenMods 的 `xmake.lua` 和 `metadata.json`。Android Gradle 配置直接读取该清单。桌面 GUI 与 PenMods 正式构建会先检查同步状态；也可手动运行 `python3 scripts/sync_versions.py --check`。
+
+核心构建标识由提交标识和共享核心源码/依赖摘要自动生成，和手动维护的核心版本分开记录；Android APK 验证会同时核对核心版本与构建标识。
 
 显式指定的输出目录和配置文件相对调用目录解析；密钥库相对路径固定相对仓库根目录。
 CLI / 桌面桥接的交叉编译变量不传入 Android 绑定。不同目标、系统和架构的产物互不覆盖。

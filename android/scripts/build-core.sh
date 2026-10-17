@@ -33,10 +33,11 @@ OUTPUT=$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")
 WORK=$(mktemp -d "$(dirname "$OUTPUT")/.core-build.XXXXXXXX")
 trap 'rm -rf -- "$WORK"' EXIT
 CORE_VERSION=$(python3 "$ROOT/scripts/build_meta.py" version)
+CORE_BUILD_ID=$(python3 "$ROOT/scripts/build_meta.py" build-id)
 cd "$ROOT/android/corebridge/gobuild"
 gomobile bind \
   -target=android/arm,android/arm64 -androidapi=26 -javapkg=dev.hole.core \
-  -trimpath -ldflags="-s -w -X hole/core.CoreVersion=$CORE_VERSION -extldflags=-Wl,-z,max-page-size=16384" \
+  -trimpath -ldflags="-s -w -X hole/core.CoreVersion=$CORE_VERSION -X hole/core.CoreBuildID=$CORE_BUILD_ID -extldflags=-Wl,-z,max-page-size=16384" \
   -o "$WORK/holecore.aar" hole/mobile
 mv "$WORK/holecore.aar" "$OUTPUT"
-printf 'AAR: %s\nCore: %s\nx/mobile: %s\n' "$OUTPUT" "$CORE_VERSION" "$MOBILE_VERSION"
+printf 'AAR: %s\nCore: %s (%s)\nx/mobile: %s\n' "$OUTPUT" "$CORE_VERSION" "$CORE_BUILD_ID" "$MOBILE_VERSION"

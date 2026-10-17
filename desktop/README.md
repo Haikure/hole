@@ -125,7 +125,7 @@ Windows 设备或 Android 跨端通话验收。
 | --- | --- |
 | `bridge_version` | 当前桌面控制协议版本，1 |
 | `api_version` | 当前共享核心 API 版本，1 |
-| `core_version` | 与 CLI / AAR 相同的核心版本标识，不是桌面源码摘要 |
+| `core_version` | 来自根目录 `versions.json`，与 CLI / Android AAR 相同 |
 | `methods` | 支持的方法列表 |
 | `limits` | 请求/配置文档/输出字节上限、队列容量、写入期限 |
 
@@ -243,8 +243,8 @@ GUI 先释放旧设备，再重配并重新开启音频扩展；播放端也用�
 {"snapshot":{"api_version":1,"engine_state":"stopped"},"bridge_events_dropped":"0"}
 ```
 
-上例只展示结构；实际 `snapshot` 包含完整 `core.Snapshot`，包括映射、对端传输、网络、
-流量、RTT、代次和状态。快照不返回配置密码；GUI 自行持有与保存用户配置。
+上例只展示结构；实际 `snapshot` 包含完整 `core.Snapshot`，其中 `core_version` 为统一维护的核心版本，`core_build_id` 为构建标识，还包括映射、
+对端传输、网络、流量、RTT、代次和状态。快照不返回配置密码；GUI 自行持有与保存用户配置。
 
 事件通知：
 

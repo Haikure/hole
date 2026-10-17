@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Shared, archive-friendly source identity and release checksums."""
+"""Shared release versions, source identity and checksums."""
 import hashlib
+import json
+import re
 from pathlib import Path
 import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSION_FILE = ROOT / "versions.json"
+SEMVER = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\Z")
 
 
 def sha256(path):
@@ -29,7 +33,26 @@ def source_commit(short=False):
         return "unknown"
 
 
+def versions():
+    with VERSION_FILE.open(encoding="utf-8") as stream:
+        return json.load(stream)
+
+
 def core_version():
+    version = versions()["core"]["version"]
+    if not isinstance(version, str) or not SEMVER.fullmatch(version):
+        raise ValueError("versions.json core.version must be a semantic version")
+    return version
+
+
+def frontend_version(name):
+    version = versions()["frontends"][name]["version"]
+    if not isinstance(version, str) or not SEMVER.fullmatch(version):
+        raise ValueError(f"versions.json frontends.{name}.version must be a semantic version")
+    return version
+
+
+def core_build_id():
     sources = sorted([*ROOT.glob("core/**/*.go"), *ROOT.glob("mobile/**/*.go")])
     sources = [path for path in sources if not path.name.endswith("_test.go")]
     sources += [ROOT / name for name in (
@@ -49,7 +72,9 @@ def write_checksum(path):
 if __name__ == "__main__":
     if sys.argv[1:] == ["version"]:
         print(core_version())
+    elif sys.argv[1:] == ["build-id"]:
+        print(core_build_id())
     elif len(sys.argv) == 3 and sys.argv[1] == "checksum":
         write_checksum(sys.argv[2])
     else:
-        sys.exit("Usage: build_meta.py version | checksum FILE")
+        sys.exit("Usage: build_meta.py version | build-id | checksum FILE")

@@ -72,7 +72,10 @@ class BuildTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name) / "source tree"
         self.root.mkdir()
-        for relative in ("build.sh", "scripts/build-env.sh", "scripts/build_meta.py"):
+        for relative in (
+            "build.sh", "scripts/build-env.sh", "scripts/build_meta.py", "scripts/sync_versions.py", "versions.json",
+            "desktop/gui/Cargo.toml", "desktop/gui/Cargo.lock", "penmods/xmake.lua", "penmods/metadata.json",
+        ):
             target = self.root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, target)
@@ -87,8 +90,7 @@ class BuildTests(unittest.TestCase):
             target.write_text(TOOL)
             target.chmod(0o755)
         gui = self.root / "desktop/gui"
-        gui.mkdir(parents=True)
-        (gui / "Cargo.toml").write_text("[package]\nname = 'hole-desktop'\n")
+        gui.mkdir(parents=True, exist_ok=True)
         wrapper = self.root / "android/gradlew"
         wrapper.write_text(TOOL)
         wrapper.chmod(0o755)
@@ -124,7 +126,7 @@ class BuildTests(unittest.TestCase):
         return [call for call in calls if tool is None or call["tool"] == tool]
 
     def prepare_penmods(self):
-        shutil.copytree(ROOT / "penmods", self.root / "penmods", ignore=shutil.ignore_patterns("build", ".xmake"))
+        shutil.copytree(ROOT / "penmods", self.root / "penmods", ignore=shutil.ignore_patterns("build", ".xmake"), dirs_exist_ok=True)
         xmake = self.root / "tools/xmake"
         xmake.write_text(TOOL)
         xmake.chmod(0o755)
@@ -419,21 +421,22 @@ class BuildTests(unittest.TestCase):
         self.invoke("android", success=False, FAIL_GRADLE="1")
         self.assertFalse(self.calls("verify"))
 
-    def test_core_version_works_in_source_archive(self):
+    def test_core_version_and_build_id_work_in_source_archive(self):
         spec = importlib.util.spec_from_file_location("fixture_build_meta", self.root / "scripts/build_meta.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        self.assertRegex(module.core_version(), r"^unknown-worktree-[0-9a-f]{12}$")
-        previous = module.core_version()
+        self.assertEqual("0.3.5", module.core_version())
+        self.assertRegex(module.core_build_id(), r"^unknown-worktree-[0-9a-f]{12}$")
+        previous = module.core_build_id()
         (self.root / "core/core_test.go").write_text("excluded test\n")
-        self.assertEqual(previous, module.core_version())
+        self.assertEqual(previous, module.core_build_id())
         for relative in ("desktop/bridge.go", "cmd/hole-desktop-core/main.go", "desktop/gui/Main.qml"):
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("desktop-only fixture\n")
-        self.assertEqual(previous, module.core_version(), "desktop changes invalidated the shared AAR source identity")
+        self.assertEqual(previous, module.core_build_id(), "desktop changes invalidated the shared AAR source identity")
         (self.root / "core/core.go").write_text("changed core\n")
-        self.assertNotEqual(previous, module.core_version())
+        self.assertNotEqual(previous, module.core_build_id())
 
 
 if __name__ == "__main__":

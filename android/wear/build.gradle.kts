@@ -4,6 +4,9 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+val releaseVersions = groovy.json.JsonSlurper().parse(rootProject.file("../versions.json")) as Map<*, *>
+val androidVersion = (releaseVersions["frontends"] as Map<*, *>)["android"] as Map<*, *>
+
 val signingValues = listOf("HOLE_SIGNING_STORE_FILE", "HOLE_SIGNING_STORE_PASSWORD", "HOLE_SIGNING_KEY_ALIAS", "HOLE_SIGNING_KEY_PASSWORD")
     .associateWith { providers.environmentVariable(it).orNull }
 val releaseSigningConfigured = signingValues.values.all { !it.isNullOrBlank() }
@@ -11,7 +14,7 @@ val coreBridgeProject = evaluationDependsOn(":corebridge")
 val coreBinding = coreBridgeProject.tasks.named("bindGoCore")
 
 android {
-    // 相同包名允许手表上的旧版覆盖升级；手机 APK 的构建任务和 ABI 保持不变。
+    // 手机和手表共用 Android 前端版本；这里只有设备声明和 ABI 不同。
     namespace = "dev.hole.app"
     compileSdk = 37
     buildToolsVersion = "36.0.0"
@@ -20,8 +23,8 @@ android {
         applicationId = "dev.hole.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.3.7"
+        versionCode = (androidVersion["version_code"] as Number).toInt()
+        versionName = androidVersion["version"] as String
         // 很多 Wear OS 设备是 64 位 SoC + 32 位 Android 用户空间。
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
     }

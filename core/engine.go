@@ -519,7 +519,7 @@ func (e *Engine) publishLocked(event Event) {
 func (e *Engine) Snapshot() Snapshot {
 	e.mu.Lock()
 	s := Snapshot{
-		APIVersion: APIVersion, SessionProtocol: sessionProtocol, CoreVersion: CoreVersion,
+		APIVersion: APIVersion, SessionProtocol: sessionProtocol, CoreVersion: CoreVersion, CoreBuildID: CoreBuildID,
 		Configured: e.request != nil, RunRequested: e.requested,
 		EngineState: e.state, SignalState: e.signal, Generation: e.generation,
 		EventsDropped:       e.dropped,

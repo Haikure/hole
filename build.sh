@@ -155,6 +155,7 @@ resolve_desktop_target() {
 }
 
 if (( BUILD_DESKTOP )); then resolve_desktop_target; fi
+if (( BUILD_DESKTOP )); then python3 "$ROOT/scripts/sync_versions.py" --check; fi
 mkdir -p "$OUTPUT"
 
 build_cli() (
@@ -168,10 +169,11 @@ build_cli() (
   work=$(mktemp -d "$HOLE_CACHE_ROOT/tmp/cli.XXXXXXXX")
   trap 'rm -rf -- "$work"' EXIT
   version=$(python3 "$ROOT/scripts/build_meta.py" version)
+  build_id=$(python3 "$ROOT/scripts/build_meta.py" build-id)
   printf '\n[CLI] %s/%s · Release / stripped\n' "$local_os" "$local_arch"
   GOOS="$local_os" GOARCH="$local_arch" CGO_ENABLED=0 \
     go build -mod=readonly -trimpath -buildvcs=false \
-    -ldflags="-s -w -X hole/core.CoreVersion=$version" -o "$work/$name" .
+    -ldflags="-s -w -X hole/core.CoreVersion=$version -X hole/core.CoreBuildID=$build_id" -o "$work/$name" .
   mv "$work/$name" "$OUTPUT/cli/$name"
   python3 "$ROOT/scripts/build_meta.py" checksum "$OUTPUT/cli/$name"
   printf 'CLI: %s\n' "$OUTPUT/cli/$name"
@@ -192,10 +194,11 @@ build_desktop_core() (
   work=$(mktemp -d "$HOLE_CACHE_ROOT/tmp/desktop-core.XXXXXXXX")
   trap 'rm -rf -- "$work"' EXIT
   version=$(python3 "$ROOT/scripts/build_meta.py" version)
+  build_id=$(python3 "$ROOT/scripts/build_meta.py" build-id)
   printf '\n[Desktop Core] %s/%s · Release / stripped\n' "$local_os" "$local_arch"
   GOOS="$local_os" GOARCH="$local_arch" CGO_ENABLED=0 \
     go build -mod=readonly -trimpath -buildvcs=false \
-    -ldflags="-s -w -X hole/core.CoreVersion=$version" -o "$work/$name" ./cmd/hole-desktop-core
+    -ldflags="-s -w -X hole/core.CoreVersion=$version -X hole/core.CoreBuildID=$build_id" -o "$work/$name" ./cmd/hole-desktop-core
   mv "$work/$name" "$OUTPUT/desktop-core/$name"
   python3 "$ROOT/scripts/build_meta.py" checksum "$OUTPUT/desktop-core/$name"
   printf 'Desktop Core: %s\n' "$OUTPUT/desktop-core/$name"

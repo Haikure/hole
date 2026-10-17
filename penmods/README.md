@@ -1,6 +1,6 @@
 # Hole PenMods 插件
 
-当前插件版本为 **0.1.1**，`metadata.json` 与 `xmake.lua` 使用相同版本号。
+插件版本统一维护在仓库根目录的 [versions.json](../versions.json)。修改后运行 `python3 scripts/sync_versions.py`，同步 `metadata.json`、`xmake.lua`、桌面 Cargo 元数据和锁文件。
 
 这个目录构建适用于 PenMods 的 `hole_plugin` 插件。插件使用 PenMods 的标准插件生命周期，启动同目录的 `hole-desktop-core` 子进程，通过 stdin/stdout 的 JSON-RPC 协议复用 `core.Engine`。
 
@@ -43,7 +43,7 @@ QT=/path/to/qt CROSS=aarch64-linux-gnu.2.27 ./penmods/build.sh
 
 脚本先调用根目录 `build.sh desktop-core --os linux --arch arm64` 构建核心，再使用 xmake
 构建 Release `libhole_plugin.so`。核心使用 `CGO_ENABLED=0`、`-mod=readonly`、`-trimpath`、
-`-s -w`，并通过 `scripts/build_meta.py` 写入与 CLI / Android 一致的核心版本标识。
+`-s -w`，并通过 `scripts/build_meta.py` 写入与 CLI / 桌面核心 / Android AAR 一致的核心版本号和构建标识。
 每次打包都从当前源码构建核心并复制 QML；仅复制 QML 不会更新设备上的核心程序。
 最终输出到：
 
@@ -83,7 +83,7 @@ xmake build hole_plugin
 只有启用手动 TURN 的 ICE 模式才向核心传入手动凭据。旧配置没有 `turn_state` 时从 `config.turn` 读取；
 旧版本已经清空并保存的内容无法自动找回，需要重新填写。`config.json` 含明文凭据，请妥善保管，不要公开分享。
 升级时保留设备上的 `config.json`，同时更新核心程序、插件库和 QML 文件。运行状态中的
-“核心版本”可用于核对源码版本，`hole-desktop-core.sha256` 可用于核对核心文件是否完整复制。
+“核心版本”显示统一维护的核心版本号；Android APK 构建清单还记录核心构建标识。`hole-desktop-core.sha256` 可用于核对核心文件是否完整复制。
 
 ## 本地验证
 

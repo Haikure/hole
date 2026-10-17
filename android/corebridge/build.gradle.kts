@@ -29,10 +29,13 @@ val bindGoCore by tasks.registering(Exec::class) {
     inputs.files(rootProject.file("../go.mod"), rootProject.file("../go.sum"))
     inputs.files(fileTree("gobuild") { include("*.go", "go.mod", "go.sum") })
     inputs.file(rootProject.file("scripts/build-core.sh"))
-    inputs.files(rootProject.file("../scripts/build-env.sh"), rootProject.file("../scripts/build_meta.py"))
+    inputs.files(rootProject.file("../scripts/build-env.sh"), rootProject.file("../scripts/build_meta.py"), rootProject.file("../versions.json"))
     inputs.file(rootProject.file("../core/compat/anet/go.mod"))
     inputs.property("coreVersion", providers.exec {
         commandLine("python3", rootProject.file("../scripts/build_meta.py").absolutePath, "version")
+    }.standardOutput.asText.map { it.trim() })
+    inputs.property("coreBuildID", providers.exec {
+        commandLine("python3", rootProject.file("../scripts/build_meta.py").absolutePath, "build-id")
     }.standardOutput.asText.map { it.trim() })
     outputs.file(aar)
 }

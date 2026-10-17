@@ -1,7 +1,7 @@
 # Wear OS 客户端
 
 独立运行的 Wear OS 安装包，复用手机端 Kotlin 源码、资源、配置、前台服务及 Go 核心。
-当前版本为 **0.3.7 / versionCode 10**，版本定义见 [build.gradle.kts](build.gradle.kts)。
+Wear OS 与手机共用 [versions.json](../../versions.json) 中的 Android 前端版本和 `versionCode`。
 
 ## 与手机包的区别
 
@@ -27,7 +27,8 @@
 # 查看手表的系统版本与 ABI
 adb -s SERIAL shell getprop ro.build.version.sdk
 adb -s SERIAL shell getprop ro.product.cpu.abilist
-adb -s SERIAL install -r dist/wear/hole-0.3.7-wear-release.apk
+android_version="$(python3 -c 'import json; print(json.load(open("versions.json"))["frontends"]["android"]["version"])')"
+adb -s SERIAL install -r "dist/wear/hole-${android_version}-wear-release.apk"
 ```
 
 输出在 `dist/wear/`，不覆盖 `dist/android/` 中的手机产物：

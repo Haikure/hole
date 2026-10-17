@@ -22,7 +22,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
-from build_meta import core_version, source_commit
+from build_meta import core_build_id, core_version, source_commit, versions
 
 APK_ABIS = {"app": ("arm64-v8a",), "wear": ("armeabi-v7a", "arm64-v8a")}
 CORE_ABIS = {"armeabi-v7a", "arm64-v8a"}
@@ -184,6 +184,9 @@ def main():
         assert not debuggable, "Release APK must not be debuggable"
     package, version_code, version_name = re.search(r"package: name='([^']+)' versionCode='(\d+)' versionName='([^']+)'", badging).groups()
     assert package == "dev.hole.app" and int(version_code) > 0, "Unexpected package/version"
+    android_version = versions()["frontends"]["android"]
+    assert version_name == android_version["version"] and int(version_code) == android_version["version_code"], \
+        "APK version differs from versions.json"
     assert re.search(r"^(?:sdkVersion|minSdkVersion):'26'$", badging, re.M) and "targetSdkVersion:'36'" in badging
     if args.previous:
         assert certificate == cert(signer, args.previous), "Previous APK signing certificate differs"
@@ -191,6 +194,7 @@ def main():
         previous_package, previous_code = re.search(r"package: name='([^']+)' versionCode='(\d+)'", previous).groups()
         assert package == previous_package and int(version_code) > int(previous_code)
     expected_core = core_version()
+    expected_core_build_id = core_build_id()
     libraries = []
     dex_files = []
     with zipfile.ZipFile(apk) as archive:
@@ -208,6 +212,7 @@ def main():
                 check_stripped(data, name)
             if name.endswith("/libgojni.so"):
                 assert expected_core.encode() in data, f"AAR/APK Core is stale: expected {expected_core}"
+                assert expected_core_build_id.encode() in data, f"AAR/APK Core build is stale: expected {expected_core_build_id}"
             libraries.append(dict(path=name, load_alignments=alignments))
     assert {item["path"].split("/")[1] for item in libraries} == expected_abis, "APK ABI set differs from the selected module"
     assert {item["path"].split("/")[1] for item in libraries if item["path"].endswith("/libgojni.so")} == expected_abis, "Go JNI core missing for an APK ABI"
@@ -259,7 +264,8 @@ def main():
         version_name=version_name, version_code=int(version_code), variant=args.variant, apk=delivered.name,
         apk_sha256=sha(delivered), signer_sha256=certificate,
         apk_bytes=delivered.stat().st_size, abis=list(APK_ABIS[args.module]), device_manifest=device_manifest, optimization=optimization,
-        core_version=expected_core, aar_sha256=sha(ROOT / "android/corebridge/libs/holecore.aar"),
+        core_version=expected_core, core_build_id=expected_core_build_id,
+        aar_sha256=sha(ROOT / "android/corebridge/libs/holecore.aar"),
         default_stun="stun:stun.cloudflare.com:3478",
         protocols=dict(ice="ice-quic-mux-v1", alpn="hole-ice-mux-v1", application_session=2, legacy="legacy-ipv6-quic-v2"),
         worker_sources={name: sha(ROOT / name) for name in ("worker.js", "worker_ice.mjs", "wrangler.toml") if (ROOT / name).is_file()},

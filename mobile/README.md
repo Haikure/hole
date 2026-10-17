@@ -54,6 +54,7 @@ Android 使用带 `NetworkBinding` 的构造方法；旧 `newEngine` 和 `newEng
   `decoded_frames`、`concealed_frames` 分别记录成功发送、收到、解码与 PLC / 静音补帧。
   这些 64 位计数仍使用十进制字符串。字段为 API 1 的兼容扩展，旧快照缺失时不得推断媒体活跃。
 - 错误以含 `code`、`message` 的 JSON 传出。状态快照与事件不包含凭据。
+- 快照中的 `core_version` 是统一维护的核心版本号；`core_build_id` 是提交及共享核心源码/依赖摘要，用于定位具体构建。
 - `EventSink.onEvent` 在 Go 后台线程执行，应及时返回；生命周期命令调度到其他线程。
 - Android 只接收结构化事件，桥接层过滤原始日志；`stop` 返回后不再交付旧回调。
 - `renominateTransports()` 只请求对已有 ICE active 路径建立新代次；系统网络变化仍用
@@ -87,6 +88,6 @@ Network handle 使用十进制字符串。失效网络返回明确错误，不�
 
 `android/corebridge/gobuild` 是独立绑定模块，锁定 x/mobile 及所需依赖并通过 `replace hole` 引用当前源码。
 `build-core.sh` 固定 `-androidapi=26` 和 `-javapkg=dev.hole.core`，生成 ARM32 / ARM64 AAR，
-开启 Go strip 与 16 KiB ELF 对齐。Gradle 跟踪源码、锁文件、构建脚本和核心版本。
+开启 Go strip 与 16 KiB ELF 对齐。Gradle 跟踪源码、锁文件、构建脚本和根目录 `versions.json` 中的核心版本。
 
 详细工具链和双依赖图测试见 [构建指南](../docs/BUILDING.md)。

@@ -90,12 +90,12 @@ consume:
 | `-transport auto` | 优先 ICE，允许与仅支持 IPv6 协议的对端互通 |
 | `-transport ice` / `ipv6` | 仅使用指定传输 |
 | `-debug` | 输出调试日志 |
-| `-version` | 显示共享核心的提交标识与源码摘要 |
+| `-version` | 显示统一维护的共享核心版本号 |
 
 启动后的日志类似：
 
 ```text
-21:11:20 INFO  hole 01d65b1 设备 desktop
+21:11:20 INFO  hole <core-version> 设备 desktop
 21:11:21 INFO  已加入房间
 21:11:41 INFO  laptop: 已连接 直连/IPv4 320ms
 21:11:41 INFO  ssh: 映射已就绪，对端 laptop (tcp)

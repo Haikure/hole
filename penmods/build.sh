@@ -7,12 +7,13 @@ OUT=${OUT:-$ROOT/dist/penmods/hole_plugin}
 QT=${QT:-/home/haiku/program/qt}
 CROSS=${CROSS:-aarch64-linux-gnu.2.27}
 
+python3 "$ROOT/scripts/sync_versions.py" --check
 mkdir -p "$OUT"
 
 source "$ROOT/scripts/build-env.sh"
 
-# Keep the packaged core on the same release flags and source identity as CLI
-# and Android. Explicit targets override any inherited desktop build settings.
+# Keep the packaged core version and build identity equal to CLI and Android.
+# Explicit targets override any inherited desktop build settings.
 "$ROOT/build.sh" desktop-core --os linux --arch arm64 --output "$HERE/build"
 
 (

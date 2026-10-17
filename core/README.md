@@ -87,4 +87,4 @@ go vet ./...
 
 根 `go.mod` 与 `android/corebridge/gobuild/go.mod` 分别锁定 CLI 和绑定依赖图；
 两者共用本包源码及 [anet 兼容模块](compat/anet/README.md)。
-`CoreVersion` 由统一构建脚本注入提交标识与源码/依赖摘要。
+`CoreVersion` 从仓库根目录 `versions.json` 注入，CLI、独立 `desktop-core` 和 Android AAR 共用该值。构建脚本另注入由提交标识及核心源码/依赖摘要生成的 `CoreBuildID`，供 APK 检查和构建追踪使用。

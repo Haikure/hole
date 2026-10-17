@@ -82,6 +82,7 @@ type Snapshot struct {
 	APIVersion          int                     `json:"api_version"`
 	SessionProtocol     int                     `json:"session_protocol"`
 	CoreVersion         string                  `json:"core_version"`
+	CoreBuildID         string                  `json:"core_build_id,omitempty"`
 	Configured          bool                    `json:"configured"`
 	RunRequested        bool                    `json:"run_requested"`
 	EngineState         string                  `json:"engine_state"`
@@ -100,8 +101,9 @@ type Snapshot struct {
 	Voice               VoiceSnapshot           `json:"voice"`
 }
 
-// CoreVersion can be set by the CLI/AAR build using -ldflags -X.
+// CoreVersion and CoreBuildID are injected by release builds.
 var CoreVersion = "development"
+var CoreBuildID = "development"
 
 func classifyError(err error) *Fault {
 	var fault *Fault
