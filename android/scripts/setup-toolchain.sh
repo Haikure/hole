@@ -171,6 +171,7 @@ printf '%s\n' "$MOBILE_VERSION" > "$PREFIX/x-mobile.version"
 "$GO_BIN" get "golang.org/x/mobile/cmd/gomobile@$MOBILE_VERSION" "golang.org/x/mobile/cmd/gobind@$MOBILE_VERSION"
 "$GO_BIN" install golang.org/x/mobile/cmd/gomobile golang.org/x/mobile/cmd/gobind
 "$GOBIN/gomobile" init
+"$GO_BIN" install "golang.org/x/mobile/cmd/gobind@$MOBILE_VERSION"
 
 [[ -f "$ANDROID_HOME/platforms/android-$SDK_API/android.jar" ]] || die 'SDK Platform 检查失败。'
 [[ -x "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/aapt2" ]] || die 'Build-Tools 检查失败。'

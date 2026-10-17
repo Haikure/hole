@@ -44,6 +44,7 @@ env:
   CARGO_TERM_COLOR: always
   GOTOOLCHAIN: local
   GOWORK: off
+  PYTHONUTF8: '1'
 
 jobs:
   plan:
@@ -138,21 +139,21 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.26.4'
           cache: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
 
       - name: Cache project build data
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .cache/go-build
@@ -195,6 +196,8 @@ jobs:
       - name: Set up MSVC environment
         if: ${{ runner.os == 'Windows' && matrix.target == 'desktop' }}
         uses: ilammy/msvc-dev-cmd@v1
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
         with:
           arch: ${{ matrix.msvc_arch }}
 
@@ -209,7 +212,7 @@ jobs:
           test -d "${{ matrix.artifact_path }}"
 
       - name: Upload target artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}
           path: ${{ matrix.artifact_path }}
@@ -224,27 +227,27 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.26.4'
           cache: false
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358'
 
@@ -257,7 +260,7 @@ jobs:
           printf 'HOLE_TOOLCHAIN_ENV=%s\n' "$toolchain_env" >> "$GITHUB_ENV"
 
       - name: Cache project build data
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .cache/bin
@@ -283,8 +286,13 @@ jobs:
           printf 'GOBIN=%s\n' "$GOBIN" >> "$GITHUB_ENV"
           printf '%s\n' "$GOBIN" >> "$GITHUB_PATH"
           go install "golang.org/x/mobile/cmd/gomobile@$MOBILE_VERSION"
+          "$GOBIN/gomobile" init
           go install "golang.org/x/mobile/cmd/gobind@$MOBILE_VERSION"
-          gomobile init
+          for binary in gomobile gobind; do
+            test "$(command -v "$binary")" = "$GOBIN/$binary"
+            info=$(go version -m "$GOBIN/$binary")
+            [[ "$info" == *$'\tmod\tgolang.org/x/mobile\t'"$MOBILE_VERSION"$'\t'* ]]
+          done
 
       - name: Prepare Android signing key
         shell: bash
@@ -314,11 +322,15 @@ jobs:
           HOLE_SIGNING_KEY_PASSWORD: ${{ secrets.HOLE_SIGNING_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          export GOBIN="$GITHUB_WORKSPACE/.cache/bin"
+          export PATH="$GOBIN:$PATH"
+          test "$(command -v gomobile)" = "$GOBIN/gomobile"
+          test "$(command -v gobind)" = "$GOBIN/gobind"
           bash ./build.sh android --output dist
           test -d dist/android
 
       - name: Upload Android artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: hole-android-arm64
           path: dist/android
