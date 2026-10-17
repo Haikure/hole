@@ -7,8 +7,9 @@
 
 CLI / `desktop-core` 需要 Bash、Python 3 和 Go 1.26+；桌面桥接不需要 Qt、Slint 或 CGo。
 完整 `desktop` 目标还需要 Rust stable / Cargo。桌面 GUI 支持 Linux、Windows 的 AMD64 / ARM64；
-Linux 语音设备适配通过 CPAL / ALSA 构建，需要 `pkg-config` 与 ALSA 开发包（Debian / Ubuntu 为
-`libasound2-dev`）；运行环境需系统 ALSA 库及默认音频设备。Windows 使用系统 WASAPI。
+Linux 桌面 GUI 与语音设备适配通过 Slint / fontconfig 和 CPAL / ALSA 构建，需要 `pkg-config`、
+Fontconfig 和 ALSA 开发包（Debian / Ubuntu 为 `libfontconfig1-dev`、`libasound2-dev`）；运行环境需系统
+ALSA 库及默认音频设备。Windows 使用系统 WASAPI。
 交叉构建需提前安装对应 Rust target 和平台 linker / sysroot（Linux 含目标 ALSA 库），构建脚本不会自动安装 Rust 工具链或系统音频开发包。
 项目 Android 构建固定使用 Go 1.26.4。
 

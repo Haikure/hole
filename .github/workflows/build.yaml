@@ -180,7 +180,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev
+          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev libfontconfig1-dev
 
       - name: Set up Rust
         if: ${{ matrix.target == 'desktop' && matrix.rust_target == '' }}
@@ -245,16 +245,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK and NDK versions used by the project
-        shell: bash
-        run: |
-          set -euo pipefail
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-37.0" \
-            "build-tools;36.0.0" \
-            "ndk;28.2.13676358"
+        with:
+          packages: 'platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358'
 
       - name: Pin the Android environment to this runner
         shell: bash
