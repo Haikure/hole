@@ -201,6 +201,31 @@ jobs:
         with:
           arch: ${{ matrix.msvc_arch }}
 
+      - name: Configure MSVC linkers for Cargo
+        if: ${{ runner.os == 'Windows' && matrix.target == 'desktop' }}
+        shell: pwsh
+        env:
+          MSVC_ARCH: ${{ matrix.msvc_arch }}
+        run: |
+          $tools = $env:VCToolsInstallDir
+          if ([string]::IsNullOrWhiteSpace($tools)) {
+            throw 'VCToolsInstallDir was not provided by the MSVC setup action.'
+          }
+
+          $hostLinker = Join-Path $tools 'bin\Hostx64\x64\link.exe'
+          if (-not (Test-Path -LiteralPath $hostLinker)) {
+            throw "MSVC x64 linker was not found: $hostLinker"
+          }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$hostLinker" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          if ($env:MSVC_ARCH -eq 'x64_arm64') {
+            $targetLinker = Join-Path $tools 'bin\Hostx64\arm64\link.exe'
+            if (-not (Test-Path -LiteralPath $targetLinker)) {
+              throw "MSVC ARM64 linker was not found: $targetLinker"
+            }
+            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$targetLinker" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
       - name: Build target
         shell: bash
         run: |
@@ -212,7 +237,7 @@ jobs:
           test -d "${{ matrix.artifact_path }}"
 
       - name: Upload target artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}
           path: ${{ matrix.artifact_path }}
@@ -330,7 +355,7 @@ jobs:
           test -d dist/android
 
       - name: Upload Android artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: hole-android-arm64
           path: dist/android
