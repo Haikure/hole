@@ -1,0 +1,335 @@
+name: Build release artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      type:
+        description: 构建类型；all 会构建 Android、desktop、desktop-core 和 cli
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - android
+          - desktop
+          - desktop-core
+          - cli
+      arch:
+        description: 非 Android 目标架构；Android 始终固定为 arm64
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - amd64
+          - arm64
+      os:
+        description: 非 Android 目标系统；选择 android 时忽略此项
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - linux
+          - windows
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  GOTOOLCHAIN: local
+  GOWORK: off
+
+jobs:
+  plan:
+    name: Resolve build matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      has_targets: ${{ steps.matrix.outputs.has_targets }}
+      android: ${{ steps.matrix.outputs.android }}
+    steps:
+      - name: Resolve requested targets
+        id: matrix
+        shell: bash
+        env:
+          BUILD_TYPE: ${{ inputs.type }}
+          BUILD_ARCH: ${{ inputs.arch }}
+          BUILD_OS: ${{ inputs.os }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          build_type = os.environ["BUILD_TYPE"]
+          build_arch = os.environ["BUILD_ARCH"]
+          build_os = os.environ["BUILD_OS"]
+
+          if build_type not in {"all", "android", "desktop", "desktop-core", "cli"}:
+              raise SystemExit(f"unsupported type: {build_type}")
+          if build_arch not in {"all", "amd64", "arm64"}:
+              raise SystemExit(f"unsupported arch: {build_arch}")
+          if build_os not in {"all", "linux", "windows"}:
+              raise SystemExit(f"unsupported os: {build_os}")
+
+          targets = ("desktop", "desktop-core", "cli")
+          systems = ("linux", "windows") if build_os == "all" else (build_os,)
+          architectures = ("amd64", "arm64") if build_arch == "all" else (build_arch,)
+          matrix = []
+
+          for target in targets:
+              if build_type not in {"all", target}:
+                  continue
+              for target_os in systems:
+                  for target_arch in architectures:
+                      if target_os == "linux" and target_arch == "arm64":
+                          runner = "ubuntu-24.04-arm"
+                      elif target_os == "linux":
+                          runner = "ubuntu-24.04"
+                      else:
+                          runner = "windows-latest"
+
+                      if target == "desktop":
+                          artifact_path = f"dist/desktop/{target_os}-{target_arch}"
+                      elif target == "desktop-core":
+                          artifact_path = "dist/desktop-core"
+                      else:
+                          artifact_path = "dist/cli"
+
+                      matrix.append({
+                          "target": target,
+                          "os": target_os,
+                          "arch": target_arch,
+                          "runner": runner,
+                          "rust_target": (
+                              "aarch64-pc-windows-msvc"
+                              if target == "desktop" and target_os == "windows" and target_arch == "arm64"
+                              else ""
+                          ),
+                          "msvc_arch": (
+                              "x64_arm64"
+                              if target_os == "windows" and target_arch == "arm64"
+                              else "x64"
+                              if target_os == "windows"
+                              else ""
+                          ),
+                          "artifact_path": artifact_path,
+                      })
+
+          result = {"include": matrix}
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"matrix={json.dumps(result, separators=(',', ':'))}\n")
+              output.write(f"has_targets={str(bool(matrix)).lower()}\n")
+              output.write(f"android={str(build_type in {'all', 'android'}).lower()}\n")
+          PY
+
+  build:
+    name: ${{ matrix.target }} / ${{ matrix.os }} / ${{ matrix.arch }}
+    needs: plan
+    if: ${{ needs.plan.outputs.has_targets == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.4'
+          cache: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Cache project build data
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/go-build
+            .cache/go/pkg/mod
+            .cache/cargo-home
+            .cache/cargo-target
+          key: hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('go.sum', 'desktop/gui/Cargo.lock', 'versions.json') }}
+          restore-keys: |
+            hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-
+
+      - name: Make python3 available on Windows
+        if: ${{ runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v python3 >/dev/null 2>&1; then
+            mkdir -p .ci-bin
+            printf '%s\n' '#!/usr/bin/env bash' 'exec python "$@"' > .ci-bin/python3
+            chmod +x .ci-bin/python3
+            echo "$PWD/.ci-bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Install Linux desktop dependencies
+        if: ${{ runner.os == 'Linux' && matrix.target == 'desktop' }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev
+
+      - name: Set up Rust
+        if: ${{ matrix.target == 'desktop' && matrix.rust_target == '' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Rust target
+        if: ${{ matrix.target == 'desktop' && matrix.rust_target != '' }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Set up MSVC environment
+        if: ${{ runner.os == 'Windows' && matrix.target == 'desktop' }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Build target
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./build.sh "${{ matrix.target }}" \
+            --os "${{ matrix.os }}" \
+            --arch "${{ matrix.arch }}" \
+            --output dist
+          test -d "${{ matrix.artifact_path }}"
+
+      - name: Upload target artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  android:
+    name: android / arm64
+    needs: plan
+    if: ${{ needs.plan.outputs.android == 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.4'
+          cache: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK versions used by the project
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-37.0" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358"
+
+      - name: Pin the Android environment to this runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain_env="$RUNNER_TEMP/hole-toolchain.env"
+          : > "$toolchain_env"
+          printf 'HOLE_TOOLCHAIN_ENV=%s\n' "$toolchain_env" >> "$GITHUB_ENV"
+
+      - name: Cache project build data
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/bin
+            .cache/go
+            .cache/go-build
+            .cache/gradle
+            .cache/gradle-project
+            .cache/kotlin
+          key: hole-android-arm64-${{ hashFiles('go.sum', 'android/corebridge/gobuild/go.sum', 'android/gradle/libs.versions.toml', 'android/gradle/wrapper/gradle-wrapper.properties', 'versions.json') }}
+          restore-keys: |
+            hole-android-arm64-
+
+      - name: Install gomobile and gobind
+        shell: bash
+        env:
+          MOBILE_VERSION: v0.0.0-20260908204917-8b95e45f8d3e
+        run: |
+          set -euo pipefail
+          source scripts/build-env.sh
+          export GOBIN="$HOLE_ROOT/.cache/bin"
+          export PATH="$GOBIN:$PATH"
+          mkdir -p "$GOBIN"
+          printf 'GOBIN=%s\n' "$GOBIN" >> "$GITHUB_ENV"
+          printf '%s\n' "$GOBIN" >> "$GITHUB_PATH"
+          go install "golang.org/x/mobile/cmd/gomobile@$MOBILE_VERSION"
+          go install "golang.org/x/mobile/cmd/gobind@$MOBILE_VERSION"
+          gomobile init
+
+      - name: Prepare Android signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.HOLE_SIGNING_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.HOLE_SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.HOLE_SIGNING_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.HOLE_SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            [[ -n "${!name:-}" ]] || {
+              echo "缺少 GitHub Actions secret：$name 对应的 Android 签名设置" >&2
+              exit 1
+            }
+          done
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/hole-release.keystore"
+          chmod 600 "$RUNNER_TEMP/hole-release.keystore"
+          test -s "$RUNNER_TEMP/hole-release.keystore"
+          printf 'HOLE_SIGNING_STORE_FILE=%s\n' "$RUNNER_TEMP/hole-release.keystore" >> "$GITHUB_ENV"
+
+      - name: Build Android release
+        shell: bash
+        env:
+          HOLE_SIGNING_STORE_PASSWORD: ${{ secrets.HOLE_SIGNING_STORE_PASSWORD }}
+          HOLE_SIGNING_KEY_ALIAS: ${{ secrets.HOLE_SIGNING_KEY_ALIAS }}
+          HOLE_SIGNING_KEY_PASSWORD: ${{ secrets.HOLE_SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bash ./build.sh android --output dist
+          test -d dist/android
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hole-android-arm64
+          path: dist/android
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

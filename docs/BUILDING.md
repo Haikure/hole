@@ -67,6 +67,24 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 | `--offline` | 只使用已缓存 Go / Cargo / Gradle 依赖；缓存缺项时报告错误 |
 | `-h` / `--help` | 显示帮助；无参数时同样显示帮助 |
 
+## GitHub Actions 手动构建
+
+`.github/workflows/build.yaml` 只接受 `workflow_dispatch`。默认 `type=all` 会并行构建：
+
+- Android 手机 ARM64；
+- `desktop` 的 Linux / Windows AMD64 / ARM64；
+- `desktop-core` 的 Linux / Windows AMD64 / ARM64；
+- `cli` 的 Linux / Windows AMD64 / ARM64。
+
+`type` 可以改为单一目标；`arch` 和 `os` 会筛选 CLI / 桌面矩阵。选择 `android` 时始终只构建手机 ARM64，并忽略 `arch` 和 `os`。每个矩阵任务单独上传一个 Artifact，名称包含目标、系统和架构。工作流设置 `compression-level: 0`，保留未压缩的文件内容；GitHub 下载接口仍会为 Artifact 提供归档容器。
+
+Android Release 构建需要在仓库或组织中配置以下 Actions secrets：
+
+- `HOLE_SIGNING_KEYSTORE_BASE64`：已有 Release keystore 的 Base64 内容；
+- `HOLE_SIGNING_STORE_PASSWORD`、`HOLE_SIGNING_KEY_ALIAS`、`HOLE_SIGNING_KEY_PASSWORD`：对应签名设置。
+
+工作流只在运行器临时目录解码 keystore，不生成或替换签名密钥。Linux ARM64 桌面任务使用 `ubuntu-24.04-arm` 运行器，Windows ARM64 GUI 使用 Windows 运行器上的 `aarch64-pc-windows-msvc` Rust target。工作流不调用 `penmods/build.sh`。
+
 ## 版本号
 
 编辑根目录 `versions.json`：`core.version` 是共享核心版本，CLI、独立 `desktop-core` 和 Android AAR 始终使用同一个值；Android 手机与 Wear OS 共用 `frontends.android` 的版本名和版本码。桌面 GUI 与 PenMods 插件各自维护前端版本。
