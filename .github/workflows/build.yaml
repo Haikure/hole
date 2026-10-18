@@ -1,6 +1,9 @@
 name: Build release artifacts
 
 on:
+  push:
+    tags:
+      - '*'
   workflow_dispatch:
     inputs:
       type:
@@ -59,9 +62,9 @@ jobs:
         id: matrix
         shell: bash
         env:
-          BUILD_TYPE: ${{ inputs.type }}
-          BUILD_ARCH: ${{ inputs.arch }}
-          BUILD_OS: ${{ inputs.os }}
+          BUILD_TYPE: ${{ inputs.type || 'all' }}
+          BUILD_ARCH: ${{ inputs.arch || 'all' }}
+          BUILD_OS: ${{ inputs.os || 'all' }}
         run: |
           python3 - <<'PY'
           import json
@@ -368,3 +371,65 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+
+  release:
+    name: Publish GitHub release
+    needs:
+      - build
+      - android
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: hole-*
+          path: artifacts
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          while IFS= read -r -d '' file; do
+            relative=${file#artifacts/}
+            artifact_name=${relative%%/*}
+            filename=${file##*/}
+
+            case "$artifact_name" in
+              hole-desktop-core-*)
+                asset_name="$filename"
+                ;;
+              hole-desktop-*)
+                asset_name="${artifact_name}${filename#hole-desktop}"
+                ;;
+              *)
+                asset_name="$filename"
+                ;;
+            esac
+
+            destination="release-assets/$asset_name"
+            if [[ -e "$destination" ]]; then
+              echo "重复的 Release 资产名：$asset_name" >&2
+              exit 1
+            fi
+            cp "$file" "$destination"
+          done < <(find artifacts -type f -print0)
+
+          test -n "$(find release-assets -maxdepth 1 -type f -print -quit)"
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*

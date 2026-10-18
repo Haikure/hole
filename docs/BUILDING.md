@@ -68,9 +68,11 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 | `--offline` | 只使用已缓存 Go / Cargo / Gradle 依赖；缓存缺项时报告错误 |
 | `-h` / `--help` | 显示帮助；无参数时同样显示帮助 |
 
-## GitHub Actions 手动构建
+## GitHub Actions 构建与发布
 
-`.github/workflows/build.yaml` 只接受 `workflow_dispatch`。默认 `type=all` 会并行构建：
+`.github/workflows/build.yaml` 支持手动构建和版本 tag 推送。手动运行只上传 Artifact，不创建 GitHub Release；推送任意 tag
+时使用完整构建矩阵，并在所有构建成功后创建同名 GitHub Release，说明内容来自仓库根目录的 `CHANGELOG.md`。
+默认 `type=all` 会并行构建：
 
 - Android 手机 ARM64；
 - `desktop` 的 Linux / Windows AMD64 / ARM64；
