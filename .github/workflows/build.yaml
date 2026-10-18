@@ -353,12 +353,18 @@ jobs:
           test "$(command -v gobind)" = "$GOBIN/gobind"
           bash ./build.sh android --output dist
           test -d dist/android
+          apk_count=$(find dist/android -maxdepth 1 -type f -name '*.apk' | wc -l)
+          if [[ "$apk_count" -ne 1 ]]; then
+            echo "期望 dist/android 中恰好有一个 APK，实际为 $apk_count 个" >&2
+            find dist/android -maxdepth 1 -type f -printf '%f\n' | sort >&2
+            exit 1
+          fi
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v6
         with:
           name: hole-android-arm64
-          path: dist/android
+          path: "dist/android/*.apk"
           if-no-files-found: error
           compression-level: 0
           retention-days: 30

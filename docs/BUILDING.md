@@ -77,7 +77,7 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 - `desktop-core` 的 Linux / Windows AMD64 / ARM64；
 - `cli` 的 Linux / Windows AMD64 / ARM64。
 
-`type` 可以改为单一目标；`arch` 和 `os` 会筛选 CLI / 桌面矩阵。选择 `android` 时始终只构建手机 ARM64，并忽略 `arch` 和 `os`。每个矩阵任务单独上传一个 Artifact，名称包含目标、系统和架构。工作流设置 `compression-level: 0`，保留未压缩的文件内容；GitHub 下载接口仍会为 Artifact 提供归档容器。
+`type` 可以改为单一目标；`arch` 和 `os` 会筛选 CLI / 桌面矩阵。选择 `android` 时始终只构建手机 ARM64，并忽略 `arch` 和 `os`。每个矩阵任务单独上传一个 Artifact，名称包含目标、系统和架构；Android Artifact 只包含唯一的 `.apk`，不包含 mapping、构建清单或校验和文件。工作流设置 `compression-level: 0`，保留未压缩的文件内容；GitHub 下载接口仍会为 Artifact 提供归档容器。
 
 Android Release 构建需要在仓库或组织中配置以下 Actions secrets：
 
