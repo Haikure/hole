@@ -72,6 +72,7 @@ data class VoiceSnapshot(
     val captureState: String = "waiting", val capturedFrames: String = "0", val mixedFrames: String = "0",
     val audioState: String = "stopped", val playbackFrames: String = "0", val audioError: String? = null,
     val audioRoute: String = "", val aecEnabled: Boolean = false, val nsEnabled: Boolean = false,
+    val microphoneRoute: String = "",
 )
 
 data class CoreSnapshot(

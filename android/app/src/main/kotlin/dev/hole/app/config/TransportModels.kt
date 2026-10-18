@@ -58,9 +58,10 @@ fun ConnectionSettings.coreTurn(credential: String) = if (turn.mode == "manual")
 fun migrateStoredConfig(config: StoredConfig, version: Int): StoredConfig {
     require(version in 1..2) { "配置格式版本不受支持，保留原文件" }
     val old = config.connection.copy(turn = config.connection.turn.copy(order = normalizedTurnOrder(config.connection.turn.order)))
-    if (version == 2) return config.copy(schemaVersion = 2, connection = old)
+    val voice = config.voice.copy(microphoneSource = normalizeMicrophoneSource(config.voice.microphoneSource))
+    if (version == 2) return config.copy(schemaVersion = 2, connection = old, voice = voice)
     // Existing explicit IPv6 addresses and local ws fixtures retain their old
     // semantics. Ordinary WSS configurations gain ICE with explicit fallback.
     val mode = if (old.candidateAddresses.isNotEmpty() || old.serverUrl.startsWith("ws://")) "legacy" else "auto"
-    return config.copy(schemaVersion = 2, connection = old.copy(connectionMode = mode))
+    return config.copy(schemaVersion = 2, connection = old.copy(connectionMode = mode), voice = voice)
 }

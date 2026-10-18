@@ -14,6 +14,13 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26])
 class VoiceAudioTest {
+    @Test fun microphoneSourceDefaultsToAutomaticAndRejectsUnknownValues() {
+        assertEquals(MICROPHONE_SOURCE_AUTO, normalizeMicrophoneSource(""))
+        assertEquals(MICROPHONE_SOURCE_AUTO, normalizeMicrophoneSource("unknown"))
+        assertEquals(MICROPHONE_SOURCE_PHONE, normalizeMicrophoneSource(MICROPHONE_SOURCE_PHONE))
+        assertEquals(MICROPHONE_SOURCE_HEADSET, normalizeMicrophoneSource(MICROPHONE_SOURCE_HEADSET))
+    }
+
     @Test fun shortReadsKeepEveryByteInTheFrame() {
         val source = ByteArray(1920) { (it % 251).toByte() }
         val frame = ByteArray(source.size)

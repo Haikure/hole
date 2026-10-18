@@ -19,8 +19,22 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONObject
 
+internal const val MICROPHONE_SOURCE_AUTO = "auto"
+internal const val MICROPHONE_SOURCE_PHONE = "phone"
+internal const val MICROPHONE_SOURCE_HEADSET = "headset"
+
+internal fun normalizeMicrophoneSource(source: String): String = when (source) {
+    MICROPHONE_SOURCE_PHONE, MICROPHONE_SOURCE_HEADSET -> source
+    else -> MICROPHONE_SOURCE_AUTO
+}
+
 /** Android device access; mixing, codecs and network sessions stay in Go. */
-internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCloseable {
+internal class VoiceAudio(
+    context: Context,
+    private val engine: Engine,
+    requestedMicrophoneSource: String = MICROPHONE_SOURCE_AUTO,
+) : AutoCloseable {
+    val microphoneSource = normalizeMicrophoneSource(requestedMicrophoneSource)
     private val manager = context.getSystemService(AudioManager::class.java)
     private val running = AtomicBoolean(false)
     private val played = AtomicLong()
@@ -32,10 +46,13 @@ internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCl
     private var outputThread: Thread? = null
     private var previousMode: Int? = null
     private var previousSpeaker = false
+    private var previousBluetoothSco = false
+    private var startedBluetoothSco = false
     private var previousDevice: AudioDeviceInfo? = null
     private var routeRegistered = false
     @Volatile private var audioError: String? = null
     @Volatile private var route = ""
+    @Volatile private var inputRoute = ""
     @Volatile private var aecEnabled = false
     @Volatile private var nsEnabled = false
     private val devices = object : AudioDeviceCallback() {
@@ -52,6 +69,7 @@ internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCl
         try {
             previousMode = manager.mode
             previousSpeaker = manager.isSpeakerphoneOn
+            previousBluetoothSco = manager.isBluetoothScoOn
             if (Build.VERSION.SDK_INT >= 31) previousDevice = manager.communicationDevice
             manager.mode = AudioManager.MODE_IN_COMMUNICATION
             refreshRoute()
@@ -65,6 +83,7 @@ internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCl
                 .setBufferSizeInBytes(maxOf(minInput, FRAME_BYTES * 4))
                 .build().also { recorder = it }
             check(input.state == AudioRecord.STATE_INITIALIZED) { "Android 麦克风初始化失败" }
+            refreshRoute()
             aec = runCatching { if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(input.audioSessionId) else null }.getOrNull()
             aecEnabled = runCatching { aec?.let { it.setEnabled(true) == 0 && it.enabled } == true }.getOrDefault(false)
             ns = runCatching { if (NoiseSuppressor.isAvailable()) NoiseSuppressor.create(input.audioSessionId) else null }.getOrNull()
@@ -78,6 +97,7 @@ internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCl
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build().also { track = it }
             check(output.state == AudioTrack.STATE_INITIALIZED) { "Android 扬声器初始化失败" }
+            refreshRoute()
             input.startRecording()
             check(input.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Android 麦克风启动失败" }
             output.play()
@@ -93,23 +113,84 @@ internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCl
     @Suppress("DEPRECATION")
     private fun refreshRoute() {
         if (!running.get()) return
+        val inputDevices = manager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
+        val preferredInput = chooseMicrophoneDevice(inputDevices)
+        val preferredOutput: AudioDeviceInfo?
+        val actualOutput: AudioDeviceInfo?
+
         if (Build.VERSION.SDK_INT >= 31) {
             val available = manager.availableCommunicationDevices
-            val external = available.filter { it.type != AudioDeviceInfo.TYPE_BUILTIN_SPEAKER && it.type != AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
-            val device = external.firstOrNull { it.id == manager.communicationDevice?.id }
+            val external = available.filter(::isCommunicationOutput)
+            val current = manager.communicationDevice
+            val target = external.firstOrNull { it.id == current?.id }
                 ?: external.firstOrNull()
                 ?: available.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
                 ?: available.firstOrNull()
-            if (device != null && manager.setCommunicationDevice(device)) route = device.productName.toString()
+            if (target != null && target.id != current?.id) runCatching { manager.setCommunicationDevice(target) }
+            actualOutput = manager.communicationDevice ?: target
+            preferredOutput = actualOutput
         } else {
-            val wired = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
-                it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET || it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                    it.type == AudioDeviceInfo.TYPE_USB_HEADSET || it.type == AudioDeviceInfo.TYPE_USB_DEVICE
+            val outputs = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
+            val external = outputs.filter(::isCommunicationOutput)
+            val bluetooth = external.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+            if (bluetooth != null) {
+                if (!manager.isBluetoothScoOn) {
+                    runCatching { manager.startBluetoothSco() }
+                    startedBluetoothSco = true
+                }
+                manager.isBluetoothScoOn = true
+            } else if (startedBluetoothSco && manager.isBluetoothScoOn && !previousBluetoothSco) {
+                runCatching { manager.stopBluetoothSco() }
+                manager.isBluetoothScoOn = false
+                startedBluetoothSco = false
             }
-            manager.isSpeakerphoneOn = !wired && !manager.isBluetoothScoOn
-            route = if (manager.isSpeakerphoneOn) "扬声器" else "系统通话设备"
+            manager.isSpeakerphoneOn = external.isEmpty() && !manager.isBluetoothScoOn
+            preferredOutput = bluetooth ?: external.firstOrNull()
+            actualOutput = preferredOutput
+        }
+
+        val inputApplied = preferredInput?.let { recorder?.setPreferredDevice(it) ?: true } ?: false
+        track?.let { output -> preferredOutput?.let { output.setPreferredDevice(it) } }
+        inputRoute = preferredInput?.let { deviceLabel(it, "系统麦克风") }
+            ?: "系统麦克风"
+        route = actualOutput?.let { deviceLabel(it, "系统通话设备") }
+            ?: if (manager.isSpeakerphoneOn) "扬声器" else "系统通话设备"
+        if (preferredInput != null && recorder != null && !inputApplied) inputRoute = "系统麦克风"
+    }
+
+    private fun chooseMicrophoneDevice(devices: List<AudioDeviceInfo>): AudioDeviceInfo? {
+        val headset = devices.firstOrNull { it.isSource && isHeadsetDevice(it) }
+        val phone = devices.firstOrNull { it.isSource && it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+        return when (microphoneSource) {
+            MICROPHONE_SOURCE_HEADSET -> headset ?: phone
+            MICROPHONE_SOURCE_PHONE -> phone ?: headset
+            else -> headset ?: phone
         }
     }
+
+    private fun isCommunicationOutput(device: AudioDeviceInfo): Boolean = when (device.type) {
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        AudioDeviceInfo.TYPE_USB_HEADSET,
+        AudioDeviceInfo.TYPE_USB_DEVICE,
+        AudioDeviceInfo.TYPE_BLE_HEADSET,
+        -> true
+        else -> false
+    }
+
+    private fun isHeadsetDevice(device: AudioDeviceInfo): Boolean = when (device.type) {
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        AudioDeviceInfo.TYPE_USB_HEADSET,
+        AudioDeviceInfo.TYPE_USB_DEVICE,
+        AudioDeviceInfo.TYPE_BLE_HEADSET,
+        -> true
+        else -> false
+    }
+
+    private fun deviceLabel(device: AudioDeviceInfo, fallback: String): String =
+        device.productName.toString().takeIf { it.isNotBlank() } ?: fallback
 
     private fun audioLoop(block: () -> Unit) {
         try {
@@ -155,6 +236,7 @@ internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCl
         audioState = if (audioError != null) "error" else if (running.get()) "running" else "stopped",
         audioError = audioError, playbackFrames = played.get().toString(),
         audioRoute = route, aecEnabled = aecEnabled, nsEnabled = nsEnabled,
+        microphoneRoute = inputRoute,
     )
 
     fun isRunning(): Boolean = running.get()
@@ -186,6 +268,8 @@ internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCl
                     manager.clearCommunicationDevice()
                     previousDevice?.let { manager.setCommunicationDevice(it) }
                 } else {
+                    if (startedBluetoothSco && !previousBluetoothSco) manager.stopBluetoothSco()
+                    manager.isBluetoothScoOn = previousBluetoothSco
                     manager.isSpeakerphoneOn = previousSpeaker
                 }
             }
@@ -193,6 +277,7 @@ internal class VoiceAudio(context: Context, private val engine: Engine) : AutoCl
         }
         previousMode = null
         previousDevice = null
+        startedBluetoothSco = false
     }
 
     private companion object {

@@ -299,6 +299,7 @@ private fun AppRoot(
             commandError = commandError,
             microphoneGranted = Build.VERSION.SDK_INT < 23 || ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
             onVoiceEnabledChange = model::setVoiceEnabled,
+            onMicrophoneSourceChange = model::setMicrophoneSource,
             onMutedChange = model::setVoiceMuted,
             onRequestMicrophone = requestVoicePermission,
             onBack = { goBack() },

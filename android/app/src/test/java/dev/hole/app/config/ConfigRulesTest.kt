@@ -121,6 +121,7 @@ class ConfigRulesTest {
                 ProvideEntry("p2", id = "disabled", protocol = "udp", host = "127.0.0.1", port = 53, enabled = false),
             ),
             consume = listOf(ConsumeEntry("c1", id = "remote_web", host = "::1", port = 18080, enabled = true)),
+            voice = VoiceSettings(enabled = true, microphoneSource = MICROPHONE_SOURCE_HEADSET),
         )
         val request = toStartRequest(stored, password = "PW", token = "TOKEN")
         assertEquals(1, request.apiVersion)
@@ -129,13 +130,16 @@ class ConfigRulesTest {
         assertEquals(1, request.config.provide.size) // 停用项被过滤
         assertEquals("tcp://127.0.0.1:22", request.config.provide[0].service)
         assertEquals("[::1]:18080", request.config.consume[0].expose)
+        assertTrue(request.config.voice.enabled)
 
         val json = Json.encodeToString(request)
         val decoded: StartRequest = Json.decodeFromString(json)
         assertEquals(request, decoded)
         assertTrue(json.contains("\"provide\":[{")) 
         assertTrue(json.contains("\"session_timeout\":\"10m\""))
-        assertTrue(!json.contains("enabled") && !json.contains("entryId")) // 宿主字段不进入核心配置
+        assertFalse(json.contains("microphoneSource"))
+        assertFalse(json.contains("microphone_source"))
+        assertFalse(json.contains("entryId")) // 宿主字段不进入核心配置
     }
 
     @Test

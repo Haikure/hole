@@ -11,7 +11,7 @@ interface CoreController : AutoCloseable {
     suspend fun applyConfig(requestJSON: String)
     suspend fun networkChanged(eventJSON: String)
     suspend fun renominateTransports()
-    suspend fun startVoiceAudio(requestJSON: String) {}
+    suspend fun startVoiceAudio(requestJSON: String, microphoneSource: String = "auto") {}
     suspend fun stopVoiceAudio() {}
     suspend fun setVoiceMuted(muted: Boolean) {}
     /** UI visibility affects telemetry frequency, never connection lifetime. */

@@ -68,6 +68,28 @@ data class StoredConfig(
 @Serializable
 data class VoiceSettings(
     val enabled: Boolean = false,
+    // Android-only audio input preference. The shared core only receives enabled.
+    val microphoneSource: String = MICROPHONE_SOURCE_AUTO,
+)
+
+const val MICROPHONE_SOURCE_AUTO = "auto"
+const val MICROPHONE_SOURCE_PHONE = "phone"
+const val MICROPHONE_SOURCE_HEADSET = "headset"
+
+val microphoneSourceOptions = listOf(
+    MICROPHONE_SOURCE_AUTO to "自动",
+    MICROPHONE_SOURCE_PHONE to "手机",
+    MICROPHONE_SOURCE_HEADSET to "耳机",
+)
+
+fun normalizeMicrophoneSource(source: String): String = when (source) {
+    MICROPHONE_SOURCE_PHONE, MICROPHONE_SOURCE_HEADSET -> source
+    else -> MICROPHONE_SOURCE_AUTO
+}
+
+@Serializable
+data class CoreVoiceSettings(
+    val enabled: Boolean = false,
 )
 
 // ---- 交给 Go 核心的有效配置（mobile facade API 1 请求格式，字段名与 mobile/README.md 一致）----
@@ -99,7 +121,7 @@ data class CoreConfig(
     val transport: CoreTransport = CoreTransport(),
     val ice: IceSettings = IceSettings(),
     val turn: CoreTurn = CoreTurn(),
-    val voice: VoiceSettings = VoiceSettings(),
+    val voice: CoreVoiceSettings = CoreVoiceSettings(),
 )
 
 @Serializable

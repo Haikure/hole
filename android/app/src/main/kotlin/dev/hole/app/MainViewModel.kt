@@ -18,6 +18,7 @@ import dev.hole.app.config.ImportPreview
 import dev.hole.app.config.StoredConfig
 import dev.hole.app.config.IceSettings
 import dev.hole.app.config.TurnSettings
+import dev.hole.app.config.normalizeMicrophoneSource
 import dev.hole.app.config.ThemeMode
 import dev.hole.app.config.ThemeStyle
 import dev.hole.app.config.withDynamicColor
@@ -232,6 +233,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setVoiceEnabled(enabled: Boolean) = viewModelScope.launch {
         save { it.copy(voice = it.voice.copy(enabled = enabled)) }
+    }
+
+    fun setMicrophoneSource(source: String) = viewModelScope.launch {
+        val normalized = normalizeMicrophoneSource(source)
+        save { it.copy(voice = it.voice.copy(microphoneSource = normalized)) }
     }
 
     fun setVoiceMuted(muted: Boolean) {

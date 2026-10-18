@@ -74,7 +74,8 @@ class CoreClient(context: Context) : CoreController {
         withContext(Dispatchers.IO) { try { engine.renominateTransports() } finally { sampler.wake() } }
     }
 
-    override suspend fun startVoiceAudio(requestJSON: String): Unit = lifecycle.withLock {
+    override suspend fun startVoiceAudio(requestJSON: String, microphoneSource: String): Unit = lifecycle.withLock {
+        val source = normalizeMicrophoneSource(microphoneSource)
         val enabled = JSONObject(requestJSON).optJSONObject("config")?.optJSONObject("voice")?.optBoolean("enabled", false) == true
         withContext(Dispatchers.IO) {
             if (!enabled) {
@@ -85,10 +86,10 @@ class CoreClient(context: Context) : CoreController {
             if (appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 error("voice_microphone_permission_required: 请先授予麦克风权限")
             }
-            if (voiceAudio?.isRunning() == true) return@withContext
+            if (voiceAudio?.isRunning() == true && voiceAudio?.microphoneSource == source) return@withContext
             voiceAudio?.close()
             voiceAudio = null
-            voiceAudio = VoiceAudio(appContext, engine).also { it.start() }
+            voiceAudio = VoiceAudio(appContext, engine, source).also { it.start() }
             sampler.wake()
         }
     }

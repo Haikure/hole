@@ -228,7 +228,7 @@ open class EngineService : Service() {
             if (failure.message?.contains("already_running") == true) core.applyConfig(request) else throw failure
         }
         startForegroundCompat(stored.voice.enabled)
-        core.startVoiceAudio(request)
+        core.startVoiceAudio(request, stored.voice.microphoneSource)
         mutableCommandError.value = null
     }
 

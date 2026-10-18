@@ -29,6 +29,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.hole.app.ConfigUiState
+import dev.hole.app.config.microphoneSourceOptions
+import dev.hole.app.config.normalizeMicrophoneSource
 import dev.hole.corebridge.CoreSnapshot
 import dev.hole.corebridge.VoiceMemberSnapshot
 import dev.hole.corebridge.VoicePeerSnapshot
@@ -40,6 +42,7 @@ fun VoiceScreen(
     commandError: String? = null,
     microphoneGranted: Boolean = false,
     onVoiceEnabledChange: (Boolean) -> Unit,
+    onMicrophoneSourceChange: (String) -> Unit = {},
     onMutedChange: (Boolean) -> Unit,
     onRequestMicrophone: () -> Unit,
     onBack: () -> Unit,
@@ -82,6 +85,22 @@ fun VoiceScreen(
                             )
                         }
                         HoleHelp("通话说明", "使用本机麦克风和扬声器与当前房间成员通话，需要先启动连接。")
+                        if (configState.loaded) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("麦克风来源", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                                HoleSingleChoice(
+                                    microphoneSourceOptions,
+                                    normalizeMicrophoneSource(configState.config.voice.microphoneSource),
+                                    onMicrophoneSourceChange,
+                                    Modifier.fillMaxWidth(),
+                                )
+                                Text(
+                                    "自动会在耳机有麦克风时优先使用耳机，否则使用手机麦克风。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                         if (!microphoneGranted && configState.config.voice.enabled) {
                             HoleButton("开启麦克风权限", onRequestMicrophone, secondary = true)
                         }
@@ -109,7 +128,10 @@ fun VoiceScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             if (voice.audioState == "running") {
-                                Text("${voice.audioRoute.ifBlank { "系统通话设备" }} · 回声消除${if (voice.aecEnabled) "已启用" else "不可用"} · 降噪${if (voice.nsEnabled) "已启用" else "不可用"}", style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    "输出 ${voice.audioRoute.ifBlank { "系统通话设备" }} · 麦克风 ${voice.microphoneRoute.ifBlank { "系统麦克风" }} · 回声消除${if (voice.aecEnabled) "已启用" else "不可用"} · 降噪${if (voice.nsEnabled) "已启用" else "不可用"}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
                             }
                             voice.audioError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                         }

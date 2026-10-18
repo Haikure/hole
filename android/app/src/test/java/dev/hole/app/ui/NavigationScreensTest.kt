@@ -71,6 +71,7 @@ class NavigationScreensTest {
     @Test
     fun voiceScreenShowsSnapshotAndRoutesMuteAction() {
         var muted: Boolean? = null
+        var microphoneSource: String? = null
         val snapshot = CoreSnapshot(
             runRequested = true,
             voice = VoiceSnapshot(
@@ -87,13 +88,16 @@ class NavigationScreensTest {
                     snapshot = snapshot,
                     configState = ConfigUiState(loaded = true, config = StoredConfig(voice = dev.hole.app.config.VoiceSettings(enabled = true))),
                     microphoneGranted = true,
-                    onVoiceEnabledChange = {}, onMutedChange = { muted = it }, onRequestMicrophone = {}, onBack = {},
+                    onVoiceEnabledChange = {}, onMicrophoneSourceChange = { microphoneSource = it },
+                    onMutedChange = { muted = it }, onRequestMicrophone = {}, onBack = {},
                 )
             }
         }
         compose.onNodeWithText("语音混音运行中").assertExists()
         compose.onNodeWithText("静音").performClick()
         compose.runOnIdle { assertEquals(true, muted) }
+        compose.onNodeWithText("耳机").performClick()
+        compose.runOnIdle { assertEquals("headset", microphoneSource) }
         compose.onNodeWithTag("voice-screen").performScrollToNode(hasText("laptop"))
         compose.runOnIdle { assertTrue(compose.onAllNodesWithText("laptop").fetchSemanticsNodes().isNotEmpty()) }
         compose.onNodeWithTag("voice-screen").performScrollToNode(hasText("已连接 · direct · 24000 bit/s"))
