@@ -1,10 +1,11 @@
 import { Theme } from "../theme.slint";
 import { App } from "../state.slint";
 import { Icon, Icons } from "../icons.slint";
-import { Card, SectionTitle, Label, Hint, Btn, Field, Choice, SwitchRow, Notice, PageHeader, PageBody, Dialog, KVRow } from "../controls.slint";
+import { Card, SectionTitle, Label, Hint, Btn, Field, Choice, SwitchRow, Notice, PageHeader, PageBody, Dialog, KVRow, AdaptivePair } from "../controls.slint";
 
 export component ExchangePage inherits VerticalLayout {
     spacing: 0px;
+    in property <bool> wide: false;
     callback open-page(string);
     property <bool> include-secrets: false;
     property <string> export-path;
@@ -16,11 +17,12 @@ export component ExchangePage inherits VerticalLayout {
         title: "导入与导出";
         subtitle: "CLI YAML 与 Android / 桌面互通；完整备份保留停用项、顺序、外观与恢复选项。";
         Btn { text: "返回设置"; clicked => { root.open-page("settings"); } }
-    }
+}
     PageBody {
-        HorizontalLayout {
-            spacing: Theme.space-4;
-            Card {
+        AdaptivePair {
+            wide: root.wide; first-height: first.preferred-height; second-height: second.preferred-height;
+            first := Card {
+                x: 0px; y: 0px; width: root.wide ? (parent.width - 16px) / 2 : parent.width; height: self.preferred-height;
                 horizontal-stretch: 1;
                 SectionTitle { text: "导出"; }
                 SwitchRow { title: "包含连接凭据"; summary: "默认关闭。开启后文件包含明文信令密码、房间密码和手动 TURN 凭据。"; checked: root.include-secrets; toggled(v) => { root.include-secrets = v; } }
@@ -33,7 +35,9 @@ export component ExchangePage inherits VerticalLayout {
                     Btn { text: "导出完整备份"; enabled: App.config-loaded && !App.exchange-busy; clicked => { App.export-file(root.export-path, "backup", root.include-secrets); } }
                 }
             }
-            Card {
+            second := Card {
+                x: root.wide ? (parent.width + 16px) / 2 : 0px; y: root.wide ? 0px : first.height + 16px;
+                width: first.width; height: self.preferred-height;
                 horizontal-stretch: 1;
                 SectionTitle { text: "导入"; }
                 Hint { text: "先检查导入预览，再确认替换。确认后停止当前连接；检查服务器与凭据后手动开启，不自动连接新配置。"; }
@@ -54,7 +58,9 @@ export component ExchangePage inherits VerticalLayout {
         if App.exchange-message != "" : Notice { text: App.exchange-message; kind: "info"; }
     }
 
-    if App.import-preview.visible : Dialog {
+}
+
+export component ImportDialog inherits Dialog {
         title: "确认替换配置";
         dismissed => { App.cancel-import(); }
         KVRow { key: "来源"; value: App.import-preview.kind-label; }
@@ -72,4 +78,3 @@ export component ExchangePage inherits VerticalLayout {
             Btn { text: "停止连接并替换"; kind: "primary"; enabled: !App.exchange-busy; clicked => { App.confirm-import(); } }
         }
     }
-}

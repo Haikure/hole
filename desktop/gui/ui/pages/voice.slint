@@ -1,7 +1,7 @@
 import { Theme } from "../theme.slint";
 import { App } from "../state.slint";
 import { Icon, Icons } from "../icons.slint";
-import { Card, SectionTitle, Hint, Btn, Badge, EmptyState, Notice, PageHeader, PageBody, Toggle, Divider } from "../controls.slint";
+import { Card, SectionTitle, Hint, Btn, Badge, EmptyState, Notice, PageHeader, PageBody, Toggle, Divider, Disclosure } from "../controls.slint";
 
 export component VoicePage inherits VerticalLayout {
     spacing: 0px;
@@ -55,7 +55,7 @@ export component VoicePage inherits VerticalLayout {
                 enabled: !App.status.busy && App.voice.available;
                 clicked => { App.retry-voice-audio(); }
             }
-            if App.voice.running : Hint { text: App.voice.stats; }
+            if App.voice.running : Disclosure { open-label: "音频统计"; Hint { text: App.voice.stats; } }
             if !App.voice.available && App.status.bridge-ready : Hint { text: "当前核心宿主不支持桌面语音，请使用与 GUI 配套的新版宿主。"; }
         }
         SectionTitle { text: "房间成员 · " + App.voice-members.length; subtitle: "开启语音的成员会自动建立通话线路。"; }
@@ -84,8 +84,7 @@ export component VoicePage inherits VerticalLayout {
                 Badge { text: peer.state; }
             }
             Hint { text: peer.media + " · " + peer.path + " · " + peer.bitrate; }
-            Hint { text: peer.stats; }
-            Hint { text: peer.buffering; }
+            Disclosure { open-label: "线路统计与缓冲详情"; Hint { text: peer.stats; } Hint { text: peer.buffering; } }
             if peer.error != "" : Notice { text: peer.error; kind: "bad"; }
         }
     }

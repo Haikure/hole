@@ -1,5 +1,5 @@
 // 中性现代仪表盘风格的基础控件。所有控件只引用 Theme token。
-import { LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+import { TextEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icons.slint";
 import { KV } from "models.slint";
@@ -7,10 +7,13 @@ import { KV } from "models.slint";
 // ---------- 容器 ----------
 
 export component Card inherits Rectangle {
+    clip: true;
     in property <length> inset: Theme.space-4;
+    in property <length> spacing: Theme.space-3;
     in property <bool> outlined: true;
     in property <bool> tinted: false;
     background: tinted ? Theme.accent-soft : Theme.surface;
+    Rectangle { x: 20px; y: 1px; width: parent.width - 40px; height: 1px; background: @linear-gradient(90deg, transparent, Theme.surface-hover, transparent); }
     border-radius: Theme.radius-lg;
     border-width: 1px;
     border-color: tinted ? Theme.accent-soft : Theme.border;
@@ -19,7 +22,7 @@ export component Card inherits Rectangle {
     drop-shadow-color: outlined ? transparent : Theme.shadow;
     VerticalLayout {
         padding: root.inset;
-        spacing: Theme.space-3;
+        spacing: root.spacing;
         @children
     }
 }
@@ -65,70 +68,60 @@ export component Divider inherits Rectangle {
 
 export component Btn inherits Rectangle {
     in property <string> text;
-    // primary | secondary | ghost | danger
     in property <string> kind: "secondary";
     in property <bool> enabled: true;
     in property <string> icon;
     in property <bool> compact: false;
     callback clicked();
-
+    public function focus-button() { focus.focus(); }
     property <bool> primary: kind == "primary";
     property <bool> danger: kind == "danger";
     property <bool> ghost: kind == "ghost";
-    property <color> fg: !enabled ? Theme.text-faint
-        : primary ? Theme.on-accent
-        : danger ? #FFFFFF
-        : ghost ? Theme.text-muted : Theme.text;
-
-    height: compact ? 32px : 38px;
+    property <float> animated-press: area.pressed || focus.pressing ? 0.95 : 1;
+    property <float> press: Theme.reduce-motion ? (area.pressed || focus.pressing ? 0.95 : 1) : animated-press;
+    animate animated-press { duration: Theme.reduce-motion ? 0ms : 220ms; easing: cubic-bezier(0.2, 1.4, 0.4, 1); }
+    property <color> fg: !enabled ? Theme.text-faint : primary ? Theme.on-accent : danger ? #FFFFFF : ghost ? Theme.text-muted : Theme.text;
+    height: compact ? 32px : 40px;
     min-width: compact ? 32px : 84px;
+    preferred-width: content.preferred-width + (compact ? 12px : 28px);
     horizontal-stretch: 0;
-    border-radius: Theme.radius-lg;
-    border-width: primary || ghost ? 0px : 1px;
-    border-color: !enabled ? Theme.border : danger ? Theme.bad-solid : Theme.border-strong;
-    background: !enabled ? (ghost ? transparent : Theme.surface-alt)
-        : area.pressed ? (primary ? Theme.accent.darker(18%) : danger ? Theme.bad-solid.darker(12%) : Theme.surface-hover.darker(4%))
-        : area.has-hover ? (primary ? Theme.accent.brighter(8%) : danger ? Theme.bad-solid.brighter(6%) : Theme.surface-hover)
-        : primary ? Theme.accent : danger ? Theme.bad-solid : ghost ? transparent : Theme.surface;
-    animate background { duration: Theme.motion-fast; }
-    accessible-role: button;
-    accessible-label: text;
-    accessible-enabled: enabled;
-    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    accessible-role: button; accessible-label: text; accessible-enabled: enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: focus;
-
     focus := FocusScope {
+        property <bool> pressing: false;
         enabled: root.enabled;
         key-pressed(event) => {
-            if (event.text == Key.Return || event.text == " ") { root.clicked(); return accept; }
+            if event.text == Key.Return || event.text == " " { self.pressing = true; return accept; }
+            return reject;
+        }
+        key-released(event) => {
+            if event.text == Key.Return || event.text == " " {
+                if self.pressing { self.pressing = false; root.clicked(); }
+                return accept;
+            }
             return reject;
         }
     }
     Rectangle {
-        // 键盘焦点环
-        border-radius: Theme.radius-lg;
-        border-width: focus.has-focus ? 2px : 0px;
-        border-color: Theme.accent;
+        x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+        width: root.width * root.press; height: root.height * root.press;
+        border-radius: root.primary ? self.height / 2 : Theme.radius;
+        border-width: root.primary || root.ghost ? 0px : 1px;
+        border-color: !root.enabled ? Theme.border : root.danger ? Theme.bad-solid : Theme.border-strong;
+        background: !root.enabled ? (root.ghost ? transparent : Theme.surface-alt)
+            : area.has-hover ? (root.primary ? Theme.accent.brighter(8%) : root.danger ? Theme.bad-solid.brighter(6%) : Theme.surface-hover)
+            : root.primary ? Theme.accent : root.danger ? Theme.bad-solid : root.ghost ? transparent : Theme.surface;
+        animate background { duration: Theme.motion-fast; }
     }
-    HorizontalLayout {
-        padding-left: compact ? 6px : 14px;
-        padding-right: compact ? 6px : 14px;
-        spacing: 6px;
-        alignment: center;
-        if root.icon != "" : Icon { name: root.icon; tint: root.fg; size: 16px; y: (parent.height - self.height) / 2; }
-        if root.text != "" : Text {
-            text: root.text;
-            color: root.fg;
-            font-size: Theme.font-body;
-            font-weight: 500;
-            vertical-alignment: center;
-        }
+    content := HorizontalLayout {
+        padding-left: root.compact ? 6px : 14px; padding-right: root.compact ? 6px : 14px;
+        spacing: 6px; alignment: center;
+        if root.icon != "" : Icon { name: root.icon; tint: root.fg; size: 16px * root.press; y: (parent.height - self.height) / 2; }
+        if root.text != "" : Text { text: root.text; color: root.fg; font-size: Theme.font-body * root.press; font-weight: 500; vertical-alignment: center; }
     }
-    area := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
-        clicked => { root.clicked(); }
-    }
+    Rectangle { border-radius: root.primary ? self.height / 2 : Theme.radius; border-width: focus.has-focus ? 2px : 0px; border-color: Theme.accent; }
+    area := TouchArea { enabled: root.enabled; mouse-cursor: root.enabled ? pointer : default; clicked => { focus.focus(); root.clicked(); } }
 }
 
 export component IconBtn inherits Btn {
@@ -187,7 +180,7 @@ export component Toggle inherits Rectangle {
     TouchArea {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? pointer : default;
-        clicked => { root.checked = !root.checked; root.toggled(root.checked); }
+        clicked => { focus.focus(); root.checked = !root.checked; root.toggled(root.checked); }
     }
 }
 
@@ -219,6 +212,42 @@ export component SwitchRow inherits Rectangle {
 
 // ---------- 输入 ----------
 
+export component InputBox inherits Rectangle {
+    accessible-role: text-input;
+    accessible-value: text;
+    accessible-enabled: enabled;
+    accessible-action-set-value(v) => { text = v; edited(v); }
+    in property <bool> focus-request;
+    changed focus-request => { input.focus(); }
+    in-out property <string> text;
+    in property <string> placeholder-text;
+    in property <bool> enabled: true;
+    in property <bool> secret: false;
+    in property <bool> invalid: false;
+    in property <length> font-size: Theme.font-body;
+    callback edited(string);
+    height: 40px; min-width: 96px;
+    border-radius: Theme.radius;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: invalid ? Theme.bad : input.has-focus ? Theme.accent : Theme.border;
+    background: enabled ? Theme.surface-alt : Theme.sidebar;
+    forward-focus: input;
+    Text {
+        x: 12px; width: parent.width - 24px; height: parent.height;
+        visible: root.text == "";
+        text: root.placeholder-text; font-size: root.font-size; color: Theme.text-faint; vertical-alignment: center; overflow: elide;
+    }
+    input := TextInput {
+        x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px;
+        text <=> root.text; enabled: root.enabled;
+        single-line: true; input-type: root.secret ? InputType.password : InputType.text;
+        font-size: root.font-size; color: root.enabled ? Theme.text : Theme.text-faint;
+        selection-background-color: Theme.accent; selection-foreground-color: Theme.on-accent;
+        vertical-alignment: center;
+        edited => { root.edited(self.text); }
+    }
+}
+
 export component Field inherits VerticalLayout {
     alignment: start;
     in property <string> label;
@@ -231,6 +260,10 @@ export component Field inherits VerticalLayout {
     in property <bool> multiline: false;
     in property <int> lines: 3;
     callback edited(string);
+    in property <bool> focus-request;
+    changed focus-request => { request-focus = !request-focus; }
+    property <bool> request-focus: false;
+    public function focus-input() { request-focus = !request-focus; }
     spacing: 4px;
     property <bool> reveal: false;
 
@@ -241,14 +274,16 @@ export component Field inherits VerticalLayout {
         color: Theme.text-muted;
     }
     if !root.multiline : HorizontalLayout {
-        height: 36px;
+        height: 40px;
         spacing: Theme.space-2;
-        edit := LineEdit {
+        edit := InputBox {
+            focus-request: root.request-focus;
             text <=> root.text;
             enabled: root.enabled;
             accessible-label: root.label;
             placeholder-text: root.placeholder;
-            input-type: (root.secret && !root.reveal) ? InputType.password : InputType.text;
+            secret: root.secret && !root.reveal;
+            invalid: root.error != "";
             font-size: Theme.font-body;
             edited(t) => { root.edited(t); }
         }
@@ -281,7 +316,10 @@ export component Choice inherits Rectangle {
     in-out property <string> selected;
     in property <bool> enabled: true;
     callback changed(string);
-    function choose(value: string) { selected = value; changed(value); }
+    property <bool> focus-request;
+    public function focus-choice() { focus-request = !focus-request; }
+    in property <bool> controlled: false;
+    function choose(value: string) { if !controlled { selected = value; } changed(value); }
     height: 36px;
     border-radius: Theme.radius-lg;
     background: Theme.surface-alt;
@@ -292,8 +330,10 @@ export component Choice inherits Rectangle {
         spacing: 2px;
         for value[i] in root.values : Rectangle {
             property <bool> active: value == root.selected;
+            property <bool> focus-request: root.focus-request;
+            changed focus-request => { if active { focus.focus(); } }
             border-radius: Theme.radius-sm;
-            background: active ? Theme.surface : ta.has-hover ? Theme.surface-hover : transparent;
+            background: active ? Theme.accent-soft : ta.has-hover ? Theme.surface-hover : transparent;
             border-width: active ? 1px : 0px;
             border-color: Theme.border-strong;
             drop-shadow-blur: active ? 3px : 0px;
@@ -301,7 +341,7 @@ export component Choice inherits Rectangle {
             drop-shadow-color: Theme.shadow;
             animate background { duration: Theme.motion-fast; }
             horizontal-stretch: 1;
-            min-width: 68px;
+            min-width: 48px;
             accessible-role: tab;
             accessible-label: root.labels[i];
             accessible-checked: active;
@@ -326,14 +366,14 @@ export component Choice inherits Rectangle {
                 text: root.labels[i];
                 font-size: Theme.font-body;
                 font-weight: active ? 600 : 400;
-                color: !root.enabled ? Theme.text-faint : active ? Theme.text : Theme.text-muted;
+                color: !root.enabled ? Theme.text-faint : active ? Theme.on-container : Theme.text-muted;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
             ta := TouchArea {
                 enabled: root.enabled;
                 mouse-cursor: pointer;
-                clicked => { root.choose(value); }
+                clicked => { focus.focus(); root.choose(value); }
             }
         }
     }
@@ -370,6 +410,40 @@ export component Badge inherits Rectangle {
 }
 
 // 指标卡：小标签 + 大数值 + 说明，仪表盘风格的数字看板。
+export component AnimatedNumber inherits Rectangle {
+    in property <string> value;
+    in property <length> font-size: Theme.font-xl;
+    property <string> previous;
+    property <string> displayed;
+    init => { displayed = value; }
+    property <duration> elapsed: 220ms;
+    property <bool> updating: false;
+    changed value => {
+        previous = displayed; displayed = value; elapsed = 0ms;
+        updating = !Theme.reduce-motion && Theme.window-visible && Theme.active-page == "overview";
+    }
+    Timer {
+        interval: 16ms;
+        running: root.updating && !Theme.reduce-motion && Theme.window-visible && Theme.active-page == "overview";
+        triggered => { root.elapsed += 16ms; if root.elapsed >= 220ms { root.updating = false; } }
+    }
+    height: font-size + 8px;
+    clip: true;
+    Text {
+        text: root.previous; font-family: "monospace"; font-size: root.font-size; font-weight: 600;
+        color: Theme.text; opacity: root.updating && !Theme.reduce-motion && Theme.window-visible && Theme.active-page == "overview" ? max(0, 1 - root.elapsed / 180ms) : 0;
+        y: -8px * min(1, root.elapsed / 180ms);
+        overflow: elide;
+    }
+    current := Text {
+        text: root.displayed; font-family: "monospace"; font-size: root.font-size; font-weight: 600; color: Theme.text;
+        opacity: root.updating && !Theme.reduce-motion && Theme.window-visible && Theme.active-page == "overview" ? min(1, root.elapsed / 220ms) : 1;
+        y: root.updating && !Theme.reduce-motion && Theme.window-visible && Theme.active-page == "overview" ? 8px * (1 - min(1, root.elapsed / 220ms)) : 0px;
+        overflow: elide;
+    }
+}
+
+
 export component StatTile inherits Rectangle {
     in property <string> label;
     in property <string> value;
@@ -393,13 +467,7 @@ export component StatTile inherits Rectangle {
             }
             Text { text: root.label; font-size: Theme.font-sm; color: Theme.text-muted; overflow: elide; }
         }
-        Text {
-            text: root.value;
-            font-size: Theme.font-xl;
-            font-weight: 600;
-            color: Theme.text;
-            overflow: elide;
-        }
+        AnimatedNumber { value: root.value; }
         if root.caption != "" : Text { text: root.caption; font-size: Theme.font-xs; color: Theme.text-faint; overflow: elide; }
     }
 }
@@ -451,11 +519,11 @@ export component Disclosure inherits VerticalLayout {
     }
     Rectangle {
         clip: true;
-        height: root.expanded ? body.preferred-height : 0px;
-        animate height { duration: Theme.motion; easing: ease-out; }
+        property <length> animated-height: root.expanded ? body.preferred-height : 0px;
+        height: Theme.reduce-motion ? (root.expanded ? body.preferred-height : 0px) : animated-height;
+        animate animated-height { duration: Theme.motion; easing: ease-out; }
         body := VerticalLayout {
             spacing: Theme.space-2;
-            visible: root.expanded;
             @children
         }
     }
@@ -541,9 +609,9 @@ export component Notice inherits Rectangle {
 export component PageHeader inherits HorizontalLayout {
     in property <string> title;
     in property <string> subtitle;
-    padding-left: 28px;
-    padding-right: 28px;
-    padding-top: 28px;
+    padding-left: 24px;
+    padding-right: 24px;
+    padding-top: 24px;
     padding-bottom: Theme.space-5;
     spacing: Theme.space-3;
     alignment: space-between;
@@ -564,9 +632,9 @@ export component PageHeader inherits HorizontalLayout {
 export component PageBody inherits ScrollView {
     vertical-stretch: 1;
     VerticalLayout {
-        padding-left: 28px;
-        padding-right: 28px;
-        padding-bottom: 28px;
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-bottom: 24px;
         padding-top: Theme.space-2;
         spacing: Theme.space-4;
         alignment: start;
@@ -577,12 +645,16 @@ export component PageBody inherits ScrollView {
 // ---------- 对话框与提示 ----------
 
 export component Dialog inherits Rectangle {
+    init => { dialog-keys.focus(); }
+    forward-focus: dialog-keys;
     in property <string> title;
     in property <length> dialog-width: 460px;
     callback dismissed();
     background: Theme.scrim;
     TouchArea { clicked => { root.dismissed(); } }
     Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
         width: min(root.dialog-width, root.width - 48px);
         height: min(inner.preferred-height, root.height - 48px);
         border-radius: Theme.radius-lg;
@@ -592,6 +664,11 @@ export component Dialog inherits Rectangle {
         drop-shadow-blur: 28px;
         drop-shadow-color: Theme.shadow;
         TouchArea { }
+        dialog-keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.dismissed(); return accept; }
+            return reject;
+        }
         inner := VerticalLayout {
             padding: Theme.space-5;
             spacing: Theme.space-4;
@@ -602,11 +679,14 @@ export component Dialog inherits Rectangle {
             }
             @children
         }
+        }
     }
 }
 
 export component Toast inherits Rectangle {
     in property <string> text;
+    property <string> content;
+    changed text => { if text != "" { content = text; } }
     in property <string> kind: "info";
     in property <bool> undo: false;
     callback undo-clicked();
@@ -624,7 +704,7 @@ export component Toast inherits Rectangle {
         padding-bottom: Theme.space-2;
         spacing: Theme.space-3;
         Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.kind-color(root.kind).brighter(30%); y: (parent.height - self.height) / 2; }
-        Text { text: root.text; color: #F3F4F6; font-size: Theme.font-body; vertical-alignment: center; max-width: 420px; wrap: word-wrap; }
+        Text { text: root.content; color: #F3F4F6; font-size: Theme.font-body; vertical-alignment: center; max-width: 420px; wrap: word-wrap; }
         if root.undo : Rectangle {
             width: t.preferred-width + 16px; height: 26px; border-radius: 6px;
             background: ua.has-hover ? #FFFFFF22 : transparent;
@@ -638,6 +718,83 @@ export component Toast inherits Rectangle {
             y: (parent.height - self.height) / 2;
             Icon { name: Icons.close; tint: #D1D5DB; size: 14px; }
             ca := TouchArea { mouse-cursor: pointer; clicked => { root.closed(); } }
+        }
+    }
+}
+
+ // 退场页面保持绘制但屏蔽指针及键盘；隐藏后组件不参与布局。
+export component PageLayer inherits Rectangle {
+    in property <bool> shown;
+    in property <bool> retiring;
+    in property <bool> interactive: true;
+    in property <bool> focus-on-show: true;
+    in property <float> progress: 1;
+    in property <float> exit-progress: 0;
+    in property <bool> secondary;
+    in property <float> direction: 1;
+    property <float> eased: 1 - (1 - progress) * (1 - progress) * (1 - progress);
+    visible: shown || (retiring && exit-progress > 0);
+    opacity: shown ? progress : exit-progress;
+    x: !Theme.reduce-motion && secondary ? (shown ? (1 - eased) : -(1 - exit-progress)) * direction * 48px : 0px;
+    y: !Theme.reduce-motion && !secondary && shown ? (1 - eased) * 8px : 0px;
+    changed shown => { if shown && focus-on-show { layer-focus.focus(); } }
+    layer-focus := FocusScope {
+        enabled: root.shown && root.interactive;
+        focus-on-tab-navigation: false;
+        capture-key-pressed(event) => { if !root.shown || !root.interactive { return accept; } return reject; }
+        capture-key-released(event) => { if !root.shown || !root.interactive { return accept; } return reject; }
+        @children
+    }
+    if !root.shown || !root.interactive : TouchArea { }
+}
+
+// 两列在窗口 1120px 起启用；子项通过 slot 自行定位，保留一个组件实例。
+export component AdaptivePair inherits Rectangle {
+    in property <bool> wide;
+    in property <length> first-height;
+    in property <length> second-height;
+    height: wide ? max(first-height, second-height) : first-height + second-height + 16px;
+    @children
+}
+
+// 输入动画只保留最新值；动画时钟由条件绑定启动，结束后不再读时钟。
+// 固定 400px 右侧编辑面板；退场继续绘制，遮罩和面板仅在打开时接收输入。
+export component Drawer inherits Rectangle {
+    in property <bool> open;
+    in property <string> title;
+    callback dismissed();
+    callback focus-requested();
+    property <length> offset: open ? 0px : 400px;
+    animate offset { duration: Theme.reduce-motion ? 0ms : 240ms; easing: ease-out; }
+    visible: open || offset < 400px;
+    changed open => { if open { keys.focus(); root.focus-requested(); } }
+    Rectangle {
+        background: Theme.scrim;
+        opacity: 1 - root.offset / 400px;
+        TouchArea { enabled: root.open; clicked => { root.dismissed(); } }
+    }
+    Rectangle {
+        x: root.width - self.width + (Theme.reduce-motion ? (root.open ? 0px : 400px) : root.offset);
+        width: 400px; height: root.height;
+        background: Theme.surface; border-radius: Theme.radius-lg;
+        drop-shadow-blur: 24px; drop-shadow-color: Theme.shadow;
+        TouchArea { }
+        keys := FocusScope {
+            enabled: root.open;
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.dismissed(); return accept; }
+                return reject;
+            }
+            VerticalLayout {
+                HorizontalLayout {
+                    padding: 20px; spacing: 12px; alignment: space-between;
+                    Text { text: root.title; font-size: Theme.font-lg; color: Theme.text; font-weight: 600; }
+                    IconBtn { icon: Icons.close; label: "关闭编辑面板"; clicked => { root.dismissed(); } }
+                }
+                ScrollView {
+                    VerticalLayout { padding: 24px; padding-top: 0px; spacing: 16px; alignment: start; @children }
+                }
+            }
         }
     }
 }

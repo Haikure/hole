@@ -3,6 +3,10 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod config;
+mod motion;
+mod visual_fixtures;
+#[cfg(test)]
+mod ui_tests;
 mod controller;
 mod voice_audio;
 mod core_client;
@@ -53,6 +57,7 @@ fn main() {
 
     let controller = Rc::new(Controller::start(&window, shared.clone()));
     bind_callbacks(&window, controller.clone(), shared.clone());
+    motion::bind(&window);
     {
         let weak = window.as_weak();
         window.window().on_close_requested(move || {
@@ -210,6 +215,8 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
         let shared = shared.clone();
         let weak = window.as_weak();
         app.on_toggle_run(move |on| {
+            let Some(w) = weak.upgrade() else { return };
+            if w.global::<App>().get_status().busy { return; }
             if on {
                 let s = shared.lock().unwrap();
                 if let Some(e) = config::find_connection_error(&s.config.connection, &s.secrets) {
@@ -221,8 +228,12 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
                     }
                     return;
                 }
+                let app = w.global::<App>();
+                let mut status = app.get_status(); status.busy = true; app.set_status(status);
                 c.send(Command::Start);
             } else {
+                let app = w.global::<App>();
+                let mut status = app.get_status(); status.busy = true; app.set_status(status);
                 c.send(Command::Stop);
             }
         });
@@ -243,6 +254,8 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
         let weak = window.as_weak();
         window.on_hide_to_tray(move || {
             if let Some(w) = weak.upgrade() {
+                w.global::<Theme>().set_window_visible(false);
+                w.global::<Theme>().invoke_finish_motion();
                 let _ = w.hide();
             }
         });
@@ -654,38 +667,61 @@ fn screenshot_mode(window: &MainWindow) {
             window.window().set_size(slint::LogicalSize::new(width as f32, height as f32));
         }
     }
-    let pages = ["overview", "mappings", "devices", "voice", "diagnostics", "settings", "transport", "exchange"];
+    let pages = match screenshot_pages(&std::env::var("HOLE_DESKTOP_SCREENSHOT_PAGES").unwrap_or_default()) {
+        Ok(pages) => pages, Err(error) => { eprintln!("{error}"); std::process::exit(2); }
+    };
+    let scenario = std::env::var("HOLE_DESKTOP_SCREENSHOT_SCENARIO").unwrap_or_default();
     let dir = std::env::var("HOLE_DESKTOP_SCREENSHOT_DIR").unwrap_or_default();
     let weak = window.as_weak();
     let index = Rc::new(std::cell::Cell::new(0usize));
     let timer = Rc::new(Timer::default());
-    let timer_clone = timer.clone();
-    timer.start(TimerMode::Repeated, Duration::from_millis(1500), move || {
+    let timer_weak = Rc::downgrade(&timer);
+    timer.start(TimerMode::Repeated, Duration::from_millis(800), move || {
         let Some(w) = weak.upgrade() else { return };
         let i = index.get();
-        if i > 0 {
-            let name = pages[i - 1];
+        if i >= pages.len() { return; }
+        w.invoke_open_page(pages[i].into());
+        visual_fixtures::apply(&w, &scenario);
+        let weak = weak.clone();
+        let path = format!("{dir}/{}.ppm", pages[i]);
+        let final_page = i + 1 == pages.len();
+        let timer = timer_weak.clone();
+        // 给 changed 回调、字体布局、数字和页面入场留出完整一帧及 320ms。
+        Timer::single_shot(Duration::from_millis(480), move || {
+            let Some(w) = weak.upgrade() else { return };
             match w.window().take_snapshot() {
                 Ok(buffer) => {
                     let (width, height) = (buffer.width(), buffer.height());
                     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-                    for px in buffer.as_slice() {
-                        ppm.extend_from_slice(&[px.r, px.g, px.b]);
-                    }
-                    let _ = std::fs::write(format!("{dir}/{name}.ppm"), ppm);
+                    for px in buffer.as_slice() { ppm.extend_from_slice(&[px.r, px.g, px.b]); }
+                    if let Err(error) = std::fs::write(&path, ppm) { eprintln!("截图写入失败：{path}: {error}"); }
                 }
-                Err(e) => eprintln!("截图 {name} 失败：{e}"),
+                Err(error) => eprintln!("截图失败：{path}: {error}"),
             }
-        }
-        if i >= pages.len() {
-            timer_clone.stop();
-            let _ = slint::quit_event_loop();
-            return;
-        }
-        w.set_page(pages[i].into());
+            if final_page {
+                if let Some(timer) = timer.upgrade() { timer.stop(); }
+                let _ = slint::quit_event_loop();
+            }
+        });
         index.set(i + 1);
     });
-    std::mem::forget(timer);
+    // 事件循环退出后回收定时器；回调只持有 Weak，不构成引用环。
+    SCREENSHOT_TIMER.with(|slot| *slot.borrow_mut() = Some(timer));
+}
+
+thread_local! { static SCREENSHOT_TIMER: std::cell::RefCell<Option<Rc<Timer>>> = const { std::cell::RefCell::new(None) }; }
+
+const SCREENSHOT_PAGES: &[&str] = &["overview", "mappings", "devices", "runtime", "voice", "diagnostics", "settings", "transport", "appearance", "behavior", "exchange"];
+
+fn screenshot_pages(value: &str) -> Result<Vec<&'static str>, String> {
+    if value.is_empty() { return Ok(SCREENSHOT_PAGES.to_vec()); }
+    let mut pages = Vec::new();
+    for name in value.split(',') {
+        let page = SCREENSHOT_PAGES.iter().copied().find(|page| *page == name)
+            .ok_or_else(|| format!("未知截图页面：{name}"))?;
+        if !pages.contains(&page) { pages.push(page); }
+    }
+    Ok(pages)
 }
 
 fn screenshot_size(value: &str) -> Option<(u32, u32)> {
@@ -697,6 +733,13 @@ fn screenshot_size(value: &str) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod screenshot_tests {
+    #[test]
+    fn screenshot_routes_are_named_and_include_all_categories() {
+        let pages = super::screenshot_pages("").unwrap();
+        for required in ["overview", "runtime", "appearance", "behavior", "exchange"] { assert!(pages.contains(&required)); }
+        assert_eq!(super::screenshot_pages("voice,overview,voice").unwrap(), vec!["voice", "overview"]);
+        assert!(super::screenshot_pages("unknown").is_err());
+    }
     #[test]
     fn sizes_respect_window_minimum_and_reject_invalid_input() {
         assert_eq!(super::screenshot_size("860x560"), Some((860, 560)));

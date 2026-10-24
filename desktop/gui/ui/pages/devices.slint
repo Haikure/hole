@@ -1,7 +1,7 @@
 import { Theme } from "../theme.slint";
 import { App } from "../state.slint";
 import { Icon, Icons } from "../icons.slint";
-import { Card, SectionTitle, Label, Hint, Btn, Badge, KVRow, KVList, Disclosure, EmptyState, Notice, PageHeader, PageBody, Divider } from "../controls.slint";
+import { Card, SectionTitle, Label, Hint, Btn, Badge, KVRow, KVList, Disclosure, EmptyState, Notice, PageHeader, PageBody, Divider, AdaptivePair } from "../controls.slint";
 import { PeerRow, MappingRow } from "../models.slint";
 
 component PeerCard inherits Card {
@@ -54,24 +54,66 @@ component RuntimeMappingCard inherits Card {
     }
 }
 
+component PeerListRow inherits Rectangle {
+    in property <PeerRow> peer;
+    in property <bool> selected;
+    callback activated();
+    height: 64px; border-radius: Theme.radius;
+    background: selected ? Theme.accent-soft : area.has-hover ? Theme.surface-hover : transparent;
+    accessible-role: button; accessible-label: peer.peer-id; accessible-action-default => { root.activated(); }
+    forward-focus: focus;
+    focus := FocusScope { key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.activated(); return accept; } return reject; } }
+    border-width: focus.has-focus ? 2px : 0px; border-color: Theme.accent;
+    VerticalLayout { padding: 12px; spacing: 4px;
+        Text { text: peer.peer-id; font-size: Theme.font-body; font-weight: 600; color: root.selected ? Theme.on-container : Theme.text; overflow: elide; }
+        Text { text: peer.state-label + " · " + peer.rtt; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
+    }
+    area := TouchArea { clicked => { focus.focus(); root.activated(); } }
+}
+
 export component DevicesPage inherits VerticalLayout {
     spacing: 0px;
+    in property <bool> runtime: false;
+    in property <bool> wide: false;
+    property <int> selected: 0;
     PageHeader {
-        title: "设备与线路";
+        title: root.runtime ? "运行详情" : "设备";
         subtitle: "查看对端设备、连接质量和可用服务。";
-        Btn { text: "重新连接"; icon: Icons.transport; enabled: App.status.run-requested; clicked => { App.reconnect(); } }
+        Btn { text: "重新连接"; icon: Icons.transport; enabled: App.status.run-requested && !App.status.busy; clicked => { App.reconnect(); } }
     }
     PageBody {
-        if App.peers.length == 0 : EmptyState {
+        if !root.runtime && App.peers.length == 0 : EmptyState {
             icon: Icons.devices;
             title: App.status.run-requested ? "暂无已配对的设备" : "连接尚未开启";
             description: App.status.run-requested ? "双方使用相同房间，并启用匹配的提供 / 使用服务后，这里会显示直连或中继、延迟与流量。" : "连接开启后显示每台对端设备实际使用的线路。";
         }
-        for peer in App.peers : PeerCard { peer: peer; }
+        if !root.runtime && App.peers.length > 0 : AdaptivePair {
+            wide: root.wide; first-height: list.preferred-height; second-height: details.preferred-height;
+            list := Card {
+                x: 0px; y: 0px; width: root.wide ? (parent.width - 16px) / 2 : parent.width; height: self.preferred-height;
+                SectionTitle { text: "房间设备 · " + App.peers.length; }
+                for peer[i] in App.peers : PeerListRow {
+                    peer: peer; selected: min(root.selected, App.peers.length - 1) == i;
+                    activated => { root.selected = i; }
+                }
+            }
+            details := VerticalLayout {
+                x: root.wide ? (parent.width + 16px) / 2 : 0px; y: root.wide ? 0px : list.height + 16px;
+                width: list.width; height: self.preferred-height; spacing: 0px;
+                for peer[i] in App.peers : PeerCard { peer: peer; visible: i == min(root.selected, App.peers.length - 1); height: self.visible ? self.preferred-height : 0px; }
+            }
+        }
+        if root.runtime : Card {
+            SectionTitle { text: App.status.title; subtitle: App.status.engine-label + " · " + App.status.signal-label; }
+            KVRow { key: "运行时长"; value: App.status.uptime; }
+            KVRow { key: "TCP / UDP 会话"; value: App.status.tcp-sessions + " / " + App.status.udp-sessions; }
+            KVRow { key: "设备 / 可用通道"; value: App.status.peers-active + " / " + App.status.active-channels; }
+            if App.status.error != "" : Notice { text: App.status.error; kind: "bad"; }
+        }
 
-        SectionTitle { text: "服务明细 · " + App.runtime-mappings.length; subtitle: "运行中的映射通道；停止后清空。"; }
-        if App.runtime-mappings.length == 0 : Hint { text: App.status.run-requested ? "尚未启用服务。可以在“映射”页添加提供服务或使用服务。" : "开启连接后显示每条映射的通道状态与会话统计。"; }
-        for mapping in App.runtime-mappings : RuntimeMappingCard { mapping: mapping; }
+        if root.runtime : SectionTitle { text: "服务明细 · " + App.runtime-mappings.length; subtitle: "运行中的映射通道；停止后清空。"; }
+        if root.runtime && App.runtime-mappings.length == 0 : Hint { text: App.status.run-requested ? "尚未启用服务。可以在“服务”页添加提供服务或使用服务。" : "开启连接后显示每条映射的通道状态与会话统计。"; }
+        for mapping in App.runtime-mappings : RuntimeMappingCard { mapping: mapping; visible: root.runtime; height: self.visible ? self.preferred-height : 0px; }
         Hint { text: "统计来自当前连接状态；线路流量包含协议开销，不作为中继账单。接入类型按实际选中的 TURN 连接显示，不按候选地址端口猜测。"; }
     }
 }

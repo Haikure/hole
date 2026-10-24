@@ -1,266 +1,292 @@
-// 应用窗口：侧边栏 + 顶栏面包屑 + 内容区的桌面布局，页面路由与全局对话框。
+// 五项导航、兼容路由、同源运行状态与仅展示用途的路由动画。
 import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { App } from "state.slint";
 import { Icon, Icons } from "icons.slint";
-import { Btn, Toggle, Badge, Dialog, Toast, Label, Hint, IconBtn } from "controls.slint";
+import { Btn, Badge, Dialog, Toast, Label, Hint, Choice, PageLayer } from "controls.slint";
 import { OverviewPage } from "pages/overview.slint";
 import { MappingsPage } from "pages/mappings.slint";
 import { DevicesPage } from "pages/devices.slint";
 import { VoicePage } from "pages/voice.slint";
-import { VoiceStatus, VoiceMemberRow, VoicePeerRow } from "models.slint";
-export { VoiceStatus, VoiceMemberRow, VoicePeerRow }
 import { DiagnosticsPage } from "pages/diagnostics.slint";
 import { SettingsPage } from "pages/settings.slint";
 import { TransportPage } from "pages/transport.slint";
-import { ExchangePage } from "pages/exchange.slint";
-import { KV, Status, MappingRow, PeerRow, EventRow, ConnectionForm, TransportForm, Prefs, MappingForm, ImportPreview, HostInfo } from "models.slint";
-
-export { App, Theme, KV, Status, MappingRow, PeerRow, EventRow, ConnectionForm, TransportForm, Prefs, MappingForm, ImportPreview, HostInfo }
+import { ExchangePage, ImportDialog } from "pages/exchange.slint";
+import { VoiceStatus, VoiceMemberRow, VoicePeerRow, KV, Status, MappingRow, PeerRow, EventRow, ConnectionForm, TransportForm, Prefs, MappingForm, ImportPreview, HostInfo } from "models.slint";
+export { App, Theme, VoiceStatus, VoiceMemberRow, VoicePeerRow, KV, Status, MappingRow, PeerRow, EventRow, ConnectionForm, TransportForm, Prefs, MappingForm, ImportPreview, HostInfo }
 
 component NavItem inherits Rectangle {
     in property <string> label;
     in property <string> icon;
     in property <bool> active;
     callback clicked();
-    min-height: 34px;
-    preferred-height: 40px;
-    max-height: 40px;
-    vertical-stretch: 0;
-    border-radius: Theme.radius-lg;
-    background: active ? Theme.accent-soft : ta.has-hover ? Theme.surface-hover : transparent;
-    animate background { duration: Theme.motion-fast; }
+    callback step(int);
+    in property <bool> follow-focus;
+    changed active => { if active && follow-focus { focus.focus(); } }
+    height: 48px;
+    border-radius: 24px;
+    background: ta.has-hover ? Theme.surface-hover : transparent;
     accessible-role: tab;
     accessible-label: label;
     accessible-checked: active;
     accessible-action-default => { root.clicked(); }
     forward-focus: focus;
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 10px;
-        spacing: 10px;
-        Icon { name: root.icon; tint: root.active ? Theme.accent : Theme.text-muted; size: 17px; y: (parent.height - self.height) / 2; }
-        Text {
-            text: root.label;
-            font-size: Theme.font-body;
-            font-weight: root.active ? 600 : 500;
-            color: root.active ? Theme.accent : Theme.text;
-            vertical-alignment: center;
-        }
+        padding-left: 16px; padding-right: 12px; spacing: 12px;
+        Icon { name: root.icon; tint: root.active ? Theme.on-container : Theme.text-muted; size: 20px; y: (parent.height - self.height) / 2; }
+        Text { text: root.label; font-size: Theme.font-body; font-weight: root.active ? 600 : 400; color: root.active ? Theme.on-container : Theme.text; vertical-alignment: center; }
     }
     focus := FocusScope {
         key-pressed(event) => {
-            if (event.text == Key.Return || event.text == " ") { root.clicked(); return accept; }
+            if event.text == Key.Return || event.text == " " { root.clicked(); return accept; }
+            if event.text == Key.DownArrow { root.step(1); return accept; }
+            if event.text == Key.UpArrow { root.step(-1); return accept; }
             return reject;
         }
     }
-    Rectangle {
-        border-radius: Theme.radius-lg;
-        border-width: focus.has-focus ? 2px : 0px;
-        border-color: Theme.accent;
-    }
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Rectangle { border-radius: 24px; border-width: focus.has-focus ? 2px : 0px; border-color: Theme.accent; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
 }
 
 export component MainWindow inherits Window {
     title: "hole";
-    preferred-width: 1180px;
-    preferred-height: 780px;
-    min-width: 860px;
-    min-height: 560px;
+    preferred-width: 1180px; preferred-height: 780px;
+    min-width: 860px; min-height: 560px;
     background: Theme.bg;
     default-font-size: Theme.font-body;
     icon: @image-url("assets/app-icon.png");
-
     in-out property <string> page: "overview";
+    in-out property <string> previous-page;
+    in-out property <float> nav-position: 0;
+    in-out property <float> nav-velocity: 0;
+    in-out property <float> transition-in: 1;
+    in-out property <float> transition-out: 0;
+    in-out property <bool> transition-secondary: false;
+    in-out property <float> transition-direction: 1;
+    changed page => { Theme.active-page = page; }
+    property <bool> nav-keyboard: false;
     property <string> pending-page;
     property <bool> ask-discard: false;
     property <bool> ask-quit: false;
+    property <bool> modal: ask-discard || ask-quit || App.import-preview.visible || mappings.editing;
+    property <[string]> primary-routes: ["overview", "mappings", "devices", "voice", "settings"];
+    callback animate-navigation(int, bool, bool);
+    callback hide-to-tray();
+    out property <bool> wide: self.width >= 1120px;
 
-    // 由 Rust 调用：system | light | dark
     public function apply-theme-mode(mode: string) {
         Palette.color-scheme = mode == "dark" ? ColorScheme.dark : mode == "light" ? ColorScheme.light : ColorScheme.unknown;
     }
-    public function apply-accent(name: string) {
-        if (name == "teal") { Theme.accent-light = #0F766E; Theme.accent-dark = #5EEAD4; }
-        else if (name == "violet") { Theme.accent-light = #7C3AED; Theme.accent-dark = #C4B5FD; }
-        else if (name == "amber") { Theme.accent-light = #B45309; Theme.accent-dark = #FCD34D; }
-        else if (name == "rose") { Theme.accent-light = #BE123C; Theme.accent-dark = #FDA4AF; }
-        else { Theme.accent-light = #2563EB; Theme.accent-dark = #60A5FA; }
-    }
+    public function apply-accent(name: string) { Theme.palette = name; }
     public function request-quit() { ask-quit = true; }
-    /// 窗口关闭按钮：运行中弹确认，否则直接退出。由 Rust 的 on_close_requested 调用。
     public function handle-close() {
-        if (App.status.run-requested) { ask-quit = true; } else { App.quit-and-stop(); }
+        if App.status.run-requested || page-dirty() { ask-quit = true; } else { App.quit-and-stop(); }
     }
-    callback hide-to-tray();
-
+    pure public function primary-index(p: string) -> int {
+        if p == "overview" { return 0; }
+        if p == "mappings" { return 1; }
+        if p == "devices" || p == "runtime" || p == "diagnostics" { return 2; }
+        if p == "voice" { return 3; }
+        return 4;
+    }
     pure public function page-title(p: string) -> string {
-        if p == "overview" { return "连接"; }
-        if p == "mappings" { return "映射"; }
+        if p == "overview" { return "首页"; }
+        if p == "mappings" { return "服务"; }
         if p == "devices" { return "设备"; }
-        if p == "voice" { return "语音"; }
+        if p == "runtime" { return "运行详情"; }
         if p == "diagnostics" { return "诊断"; }
-        if p == "settings" { return "设置"; }
+        if p == "voice" { return "语音"; }
         if p == "transport" { return "连接方式"; }
-        if p == "exchange" { return "导入导出"; }
-        return "";
+        if p == "appearance" { return "外观"; }
+        if p == "behavior" { return "桌面行为"; }
+        if p == "exchange" { return "配置文件"; }
+        return "房间与身份";
     }
-
-    function page-dirty() -> bool {
-        if (page == "settings") { return settings.dirty; }
-        if (page == "transport") { return transport.dirty; }
+    pure public function page-dirty() -> bool {
+        if page == "mappings" { return mappings.dirty; }
+        if page == "settings" { return settings.dirty; }
+        if page == "transport" { return transport.dirty; }
         return false;
     }
-    function navigate(target: string) {
-        if (target == page) { return; }
-        if (page-dirty()) { pending-page = target; ask-discard = true; return; }
+    function commit-navigation(target: string) {
+        previous-page = page;
         page = target;
+        animate-navigation(primary-index(target), primary-index(previous-page) == primary-index(target), target == "devices" || target == "settings");
     }
-    function discard-and-go() {
-        if (page == "settings") { settings.reset(); }
-        if (page == "transport") { transport.reset(); }
+    public function open-page(target: string) { nav-keyboard = false; navigate(target); }
+    function navigate(target: string) {
+        if target == page { return; }
+        if page-dirty() { pending-page = target; ask-discard = true; return; }
+        if page == "mappings" && mappings.editing { mappings.discard(); }
+        commit-navigation(target);
+    }
+    function step-navigation(delta: int) {
+        nav-keyboard = true;
+        navigate(primary-routes[mod(primary-index(page) + delta + 5, 5)]);
+    }
+    function cancel-discard() {
         ask-discard = false;
-        page = pending-page;
+        if page == "mappings" { mappings.focus-editor(); }
+        if page == "settings" { settings.focus-editor(); }
+        if page == "transport" { transport.focus-editor(); }
+    }
+    public function discard-and-go() {
+        if page == "mappings" { mappings.discard(); }
+        if page == "settings" { settings.reset(); }
+        if page == "transport" { transport.reset(); }
+        ask-discard = false;
+        commit-navigation(pending-page);
     }
 
+    forward-focus: keyboard;
+    keyboard := FocusScope {
+        capture-key-pressed(event) => {
+            if event.modifiers.control && !root.modal {
+                if event.text == "s" && root.page == "settings" { settings.save(); return accept; }
+                if event.text == "s" && root.page == "transport" { transport.save(); return accept; }
+                if event.text == "1" { root.navigate("overview"); return accept; }
+                if event.text == "2" { root.navigate("mappings"); return accept; }
+                if event.text == "3" { root.navigate("devices"); return accept; }
+                if event.text == "4" { root.navigate("voice"); return accept; }
+                if event.text == "5" { root.navigate("settings"); return accept; }
+            }
+            if event.text == Key.Escape && !root.modal && root.primary-index(root.page) >= 2 {
+                if root.primary-index(root.page) == 2 && root.page != "devices" { root.navigate("devices"); return accept; }
+                if root.primary-index(root.page) == 4 && root.page != "settings" { root.navigate("settings"); return accept; }
+            }
+            return reject;
+        }
     HorizontalLayout {
-        // ---- 侧边栏 ----
         Rectangle {
-            width: Theme.sidebar-width;
-            background: Theme.sidebar;
-            Rectangle { x: parent.width - 1px; width: 1px; background: Theme.border; }
+            width: Theme.sidebar-width; background: Theme.sidebar;
             VerticalLayout {
-                padding: 14px;
-                spacing: 3px;
+                padding: 12px; spacing: 12px;
                 HorizontalLayout {
-                    padding-left: 4px;
-                    padding-right: 4px;
-                    padding-top: 4px;
-                    padding-bottom: 22px;
-                    spacing: 11px;
-                    Rectangle {
-                        width: 36px; height: 36px;
-                        clip: true;
-                        border-radius: 10px;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        y: (parent.height - self.height) / 2;
-                        Image {
-                            source: @image-url("assets/app-icon.png");
-                            width: parent.width;
-                            height: parent.height;
-                        }
-                    }
+                    padding: 8px; padding-top: 12px; padding-bottom: 16px; spacing: 12px;
+                    Image { source: @image-url("assets/app-icon.png"); width: 36px; height: 36px; }
                     VerticalLayout {
-                        alignment: center;
-                        spacing: 1px;
-                        Text { text: "hole"; font-size: 18px; font-weight: 700; color: Theme.text; }
+                        alignment: center; spacing: 2px;
+                        Text { text: "hole"; font-size: 20px; font-weight: 700; color: Theme.text; }
                         Text { text: App.connection.device-name == "" ? "本机" : App.connection.device-name; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
                     }
                 }
-                NavItem { label: "连接"; icon: Icons.overview; active: root.page == "overview"; clicked => { root.navigate("overview"); } }
-                NavItem { label: "服务"; icon: Icons.mappings; active: root.page == "mappings"; clicked => { root.navigate("mappings"); } }
-                NavItem { label: "设备"; icon: Icons.devices; active: root.page == "devices"; clicked => { root.navigate("devices"); } }
-                NavItem { label: "语音"; icon: Icons.microphone; active: root.page == "voice"; clicked => { root.navigate("voice"); } }
-                NavItem { label: "诊断"; icon: Icons.diagnostics; active: root.page == "diagnostics"; clicked => { root.navigate("diagnostics"); } }
-                Rectangle { height: 14px; }
-                Text { text: "配置"; font-size: Theme.font-xs; font-weight: 600; color: Theme.text-faint; x: 12px; }
-                NavItem { label: "设置"; icon: Icons.settings; active: root.page == "settings"; clicked => { root.navigate("settings"); } }
-                NavItem { label: "连接方式"; icon: Icons.transport; active: root.page == "transport"; clicked => { root.navigate("transport"); } }
-                NavItem { label: "导入导出"; icon: Icons.exchange; active: root.page == "exchange"; clicked => { root.navigate("exchange"); } }
-                Rectangle { vertical-stretch: 1; }
-                // 侧栏底部：运行状态与总开关
                 Rectangle {
-                    background: transparent;
+                    height: 272px;
+                    property <float> stretch: min(abs(root.nav-velocity) / 8, 1) * 0.25;
+                    Rectangle {
+                        x: parent.stretch * 8px;
+                        y: root.nav-position * 56px - parent.stretch * 12px;
+                        width: parent.width - parent.stretch * 16px;
+                        height: 48px + parent.stretch * 24px;
+                        border-radius: self.height / 2;
+                        clip: true;
+                        background: Theme.accent-soft;
+                    }
+                    for label[i] in ["首页", "服务", "连接", "语音", "设置"] : NavItem {
+                        y: i * 56px; width: parent.width;
+                        label: label;
+                        icon: i == 0 ? Icons.overview : i == 1 ? Icons.mappings : i == 2 ? Icons.devices : i == 3 ? Icons.microphone : Icons.settings;
+                        active: root.primary-index(root.page) == i;
+                        follow-focus: root.nav-keyboard;
+                        clicked => { root.nav-keyboard = true; root.navigate(root.primary-routes[i]); }
+                        step(delta) => { root.step-navigation(delta); }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+                Rectangle {
+                    height: 154px; border-radius: Theme.radius-lg; clip: true;
+                    background: Theme.surface;
+                    border-width: 1px; border-color: Theme.border;
                     VerticalLayout {
-                        padding: 6px;
-                        spacing: 10px;
-                        HorizontalLayout {
-                            alignment: space-between;
-                            HorizontalLayout {
-                                spacing: 8px;
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.kind-color(App.status.kind); y: (parent.height - self.height) / 2; }
-                                Text { text: App.status.run-requested ? "正在转发" : "已停止"; font-size: Theme.font-body; font-weight: 600; color: Theme.text; vertical-alignment: center; }
-                            }
-                            Toggle {
-                                y: (parent.height - self.height) / 2;
-                                checked: App.status.run-requested;
-                                enabled: App.config-loaded && App.status.bridge-ready && !App.status.busy;
-                                label: "运行转发";
-                                toggled(v) => { App.toggle-run(v); }
-                            }
-                        }
-                        Text {
-                            text: App.status.busy ? "正在处理…"
-                                : App.status.run-requested ? App.status.uptime
-                                : !App.status.bridge-ready ? "核心桥接未就绪"
-                                : !App.config-loaded ? "先完成连接设置"
-                                : "随时可以开启连接";
-                            font-size: Theme.font-xs;
-                            color: Theme.text-faint;
-                            overflow: elide;
+                        padding: 14px; spacing: 8px;
+                        Badge { text: App.status.engine-label == "" ? "正在加载核心" : App.status.engine-label; kind: App.status.kind; }
+                        Text { text: App.status.signal-label + (App.status.run-requested ? " · " + App.status.peers-active + " 台设备" : ""); font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
+                        Text { text: App.status.busy ? "正在处理…" : App.status.run-requested ? App.status.uptime : "准备好后开启连接"; font-size: Theme.font-xs; color: Theme.text-faint; overflow: elide; }
+                        Btn {
+                            text: App.status.busy ? "处理中…" : App.status.run-requested ? "停止连接" : "启动连接";
+                            icon: Icons.power; kind: App.status.run-requested ? "secondary" : "primary";
+                            enabled: App.config-loaded && App.status.bridge-ready && !App.status.busy;
+                            clicked => { App.toggle-run(!App.status.run-requested); }
                         }
                     }
                 }
                 Btn { kind: "ghost"; text: "退出并停止"; icon: Icons.power; clicked => { root.request-quit(); } }
             }
         }
-
-        // ---- 顶栏 + 内容区 ----
-        VerticalLayout {
-
+        Rectangle {
+            horizontal-stretch: 1; clip: true;
             Rectangle {
-                horizontal-stretch: 1;
-                clip: true;
-                background: Theme.bg;
-                if root.page == "overview" : OverviewPage { open-page(p) => { root.navigate(p); } }
-                if root.page == "mappings" : MappingsPage { }
-                if root.page == "devices" : DevicesPage { }
-                if root.page == "voice" : VoicePage { }
-                if root.page == "diagnostics" : DiagnosticsPage { }
-                settings := SettingsPage { visible: root.page == "settings"; open-page(p) => { root.navigate(p); } }
-                transport := TransportPage { visible: root.page == "transport"; open-page(p) => { root.navigate(p); } }
-                if root.page == "exchange" : ExchangePage { open-page(p) => { root.navigate(p); } }
+                width: min(parent.width, 1280px);
+                x: (parent.width - self.width) / 2;
+                VerticalLayout {
+                    spacing: 0px;
+                    if root.primary-index(root.page) == 2 : Rectangle {
+                        height: 64px;
+                        HorizontalLayout {
+                            padding-left: 24px; padding-right: 24px; padding-top: 16px; padding-bottom: 8px;
+                            Choice { controlled: true; values: ["devices", "runtime", "diagnostics"]; labels: ["设备", "运行详情", "诊断"]; selected: root.page; changed(p) => { root.navigate(p); } }
+                        }
+                    }
+                    if root.primary-index(root.page) == 4 : Rectangle {
+                        height: 64px;
+                        HorizontalLayout {
+                            padding-left: 24px; padding-right: 24px; padding-top: 16px; padding-bottom: 8px;
+                            Choice { controlled: true; values: ["settings", "transport", "appearance", "behavior", "exchange"]; labels: ["房间与身份", "连接方式", "外观", "桌面行为", "配置文件"]; selected: root.page; changed(p) => { root.navigate(p); } }
+                        }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1; clip: true;
+                        PageLayer { shown: root.page == "overview"; retiring: root.previous-page == "overview"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : OverviewPage { wide: root.wide; open-page(p) => { root.open-page(p); } } }
+                        PageLayer { shown: root.page == "devices"; retiring: root.previous-page == "devices"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : DevicesPage { wide: root.wide; } }
+                        PageLayer { shown: root.page == "runtime"; retiring: root.previous-page == "runtime"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : DevicesPage { runtime: true; wide: root.wide; } }
+                        PageLayer { shown: root.page == "diagnostics"; retiring: root.previous-page == "diagnostics"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : DiagnosticsPage { wide: root.wide; } }
+                        PageLayer { shown: root.page == "voice"; retiring: root.previous-page == "voice"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : VoicePage { } }
+                        PageLayer { shown: root.page == "settings"; retiring: root.previous-page == "settings"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard;
+                            settings := SettingsPage { open-page(p) => { root.open-page(p); } }
+                        }
+                        PageLayer { shown: root.page == "appearance"; retiring: root.previous-page == "appearance"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : SettingsPage { section: "appearance"; open-page(p) => { root.open-page(p); } } }
+                        PageLayer { shown: root.page == "behavior"; retiring: root.previous-page == "behavior"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : SettingsPage { section: "behavior"; open-page(p) => { root.open-page(p); } } }
+                        PageLayer { shown: root.page == "transport"; retiring: root.previous-page == "transport"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard;
+                            transport := TransportPage { wide: root.wide; open-page(p) => { root.open-page(p); } }
+                        }
+                        PageLayer { shown: root.page == "exchange"; retiring: root.previous-page == "exchange"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : ExchangePage { wide: root.wide; open-page(p) => { root.open-page(p); } } }
+                        // 服务页保持实例，草稿与编辑面板不会因路由动画重新初始化。
+                        PageLayer { shown: root.page == "mappings"; retiring: root.previous-page == "mappings"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.ask-discard && !root.ask-quit; focus-on-show: !root.nav-keyboard;
+                            mappings := MappingsPage { }
+                        }
+                    }
+                }
             }
         }
     }
-
-    // ---- 全局提示 ----
-    if App.toast != "" : Toast {
-        x: parent.width - self.width - Theme.space-5;
-        y: parent.height - self.height - Theme.space-5;
-        text: App.toast;
-        kind: App.toast-kind;
-        undo: App.undo-available;
-        undo-clicked => { App.undo-delete(); }
-        closed => { App.dismiss-toast(); }
+    Toast {
+        x: parent.width - self.width - 24px;
+        y: parent.height - self.height - 24px + (1 - self.opacity) * 8px;
+        text: App.toast; kind: App.toast-kind; undo: App.undo-available;
+        opacity: App.toast == "" ? 0 : 1;
+        visible: self.opacity > 0;
+        animate opacity { duration: Theme.reduce-motion ? 0ms : (App.toast == "" ? 140ms : 180ms); }
+        undo-clicked => { App.undo-delete(); } closed => { App.dismiss-toast(); }
     }
-
+    if App.import-preview.visible : ImportDialog { }
     if root.ask-discard : Dialog {
-        title: "放弃未保存的修改？";
-        dialog-width: 380px;
-        dismissed => { root.ask-discard = false; }
+        title: "放弃未保存的修改？"; dialog-width: 380px;
+        dismissed => { root.cancel-discard(); }
         Label { text: "当前页面有尚未保存的更改。离开后这些修改会丢失。"; muted: true; }
-        HorizontalLayout {
-            spacing: Theme.space-2;
-            alignment: end;
-            Btn { text: "继续编辑"; clicked => { root.ask-discard = false; } }
+        HorizontalLayout { spacing: 8px; alignment: end;
+            Btn { text: "继续编辑"; clicked => { root.cancel-discard(); } }
             Btn { text: "放弃"; kind: "danger"; clicked => { root.discard-and-go(); } }
         }
     }
-
     if root.ask-quit : Dialog {
-        title: "退出 hole？";
-        dialog-width: 420px;
+        title: "退出 hole？"; dialog-width: 420px;
         dismissed => { root.ask-quit = false; }
-        Label { text: App.status.run-requested ? (App.host.tray-available ? "退出会停止所有映射并关闭核心；已建立的应用连接将中断。也可以只隐藏窗口，让转发在后台继续。" : "退出会停止所有映射并关闭核心；已建立的应用连接将中断。") : "转发已停止，退出将关闭核心宿主。"; muted: true; }
-        HorizontalLayout {
-            spacing: Theme.space-2;
-            alignment: end;
+        Label { text: root.page-dirty() ? "退出会放弃未保存的修改并停止连接。" : App.status.run-requested ? "退出会停止全部服务并关闭核心，已建立的连接将中断。" : "转发已停止，退出将关闭核心宿主。"; muted: true; }
+        HorizontalLayout { spacing: 8px; alignment: end;
             Btn { text: "取消"; clicked => { root.ask-quit = false; } }
             if App.status.run-requested && App.host.tray-available : Btn { text: "仅隐藏窗口"; clicked => { root.ask-quit = false; root.hide-to-tray(); } }
             Btn { text: "退出并停止"; kind: "danger"; clicked => { root.ask-quit = false; App.quit-and-stop(); } }
         }
+    }
     }
 }

@@ -1,6 +1,5 @@
-// 桌面设计系统 token：中性现代仪表盘风格——浅色内容画布、白色卡片、
-// 清晰的层级与留白，借鉴 Web 控制台的排版与组件密度，不绑定任何品牌配色。
-// 侧栏与内容区跟随明暗模式；页面与控件只引用这里的 token，不直接写颜色字面量。
+// 与 Android HoleTheme 的五组调色板、表面层级和圆角保持一致。
+// teal / violet 保留桌面标识，分别对应 Android 的 green / purple。
 import { Palette } from "std-widgets.slint";
 
 export global Theme {
@@ -8,26 +7,32 @@ export global Theme {
     out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
 
     // 强调色：系统未提供时回落默认蓝色；Rust 侧可按用户偏好覆盖。
-    in-out property <color> accent-light: #2563EB;
-    in-out property <color> accent-dark: #60A5FA;
+    in-out property <string> palette: "blue";
+    out property <color> accent-light: palette == "teal" ? #386B4B : palette == "violet" ? #66508D : palette == "rose" ? #98445F : palette == "amber" ? #805610 : #435E91;
+    out property <color> accent-dark: palette == "teal" ? #9BD5A9 : palette == "violet" ? #D0B9FF : palette == "rose" ? #FFB1C7 : palette == "amber" ? #F2BF6B : #ADC6FF;
     out property <color> accent: dark ? accent-dark : accent-light;
-    out property <color> accent-soft: dark ? #17324E : #EAF2FF;
-    out property <color> on-accent: #FFFFFF;
+    out property <color> accent-soft: dark
+        ? (palette == "teal" ? #31583D : palette == "violet" ? #503B78 : palette == "rose" ? #79334A : palette == "amber" ? #634400 : #294677)
+        : (palette == "teal" ? #D0EAD4 : palette == "violet" ? #E9DDFF : palette == "rose" ? #FFD9E2 : palette == "amber" ? #FFDDA8 : #D8E2FF);
+    out property <color> on-accent: !dark ? #FFFFFF : palette == "teal" ? #173622 : palette == "violet" ? #35205C : palette == "rose" ? #5A1930 : palette == "amber" ? #442C00 : #102F60;
+    out property <color> on-container: dark
+        ? (palette == "teal" ? #C0F0C9 : palette == "violet" ? #EBDDFF : palette == "rose" ? #FFD9E2 : palette == "amber" ? #FFDDA8 : #D8E2FF)
+        : (palette == "teal" ? #102617 : palette == "violet" ? #24163E : palette == "rose" ? #3D071B : palette == "amber" ? #2A1800 : #001A40);
 
     // 内容区表面层级
-    out property <color> bg: dark ? #191B1E : #FDFDFC;
-    out property <color> sidebar: dark ? #141619 : #F1F2F0;
-    out property <color> surface: dark ? #20242B : #FFFFFF;
-    out property <color> surface-alt: dark ? #272C34 : #F6F8FA;
-    out property <color> surface-hover: dark ? #2D333D : #EDF1F5;
-    out property <color> border: dark ? #303640 : #E1E5E9;
-    out property <color> border-strong: dark ? #454D58 : #C8D0D9;
+    out property <color> bg: dark ? #121216 : #FAF9FC;
+    out property <color> sidebar: dark ? #1C1B20 : #F3F2F7;
+    out property <color> surface: dark ? #201F25 : #FFFFFF;
+    out property <color> surface-alt: dark ? #2B2930 : #EEEEF3;
+    out property <color> surface-hover: dark ? #35333B : #E8E7ED;
+    out property <color> border: dark ? #48454F : #CBC9D2;
+    out property <color> border-strong: dark ? #899691 : #78847F;
     out property <color> shadow: dark ? #00000040 : #172B4010;
     out property <color> scrim: dark ? #000000A6 : #1A2B3D5C;
 
     // 文字
-    out property <color> text: dark ? #E8ECF1 : #202833;
-    out property <color> text-muted: dark ? #A4AFBC : #596675;
+    out property <color> text: dark ? #E5E1E9 : #1B1B20;
+    out property <color> text-muted: dark ? #CBC5D1 : #48474F;
     out property <color> text-faint: dark ? #778391 : #84909D;
 
     // 状态色：只用于状态，不作为序列色；总是配合文字或图标。
@@ -50,32 +55,36 @@ export global Theme {
     out property <color> grid: dark ? #2F343D : #E8EBEF;
 
     // 尺寸
-    out property <length> radius-sm: 4px;
-    out property <length> radius: 6px;
-    out property <length> radius-lg: 8px;
+    out property <length> radius-sm: 8px;
+    out property <length> radius: 12px;
+    out property <length> radius-lg: 20px;
     out property <length> space-1: 4px;
     out property <length> space-2: 8px;
     out property <length> space-3: 12px;
     out property <length> space-4: 16px;
     out property <length> space-5: 24px;
     out property <length> space-6: 32px;
-    out property <length> sidebar-width: 192px;
+    out property <length> sidebar-width: 208px;
     out property <length> topbar-height: 56px;
 
     // 字号
-    out property <length> font-xs: 11px;
-    out property <length> font-sm: 13px;
+    out property <length> font-xs: 12px;
+    out property <length> font-sm: 12px;
     out property <length> font-body: 14px;
     out property <length> font-md: 14px;
-    out property <length> font-lg: 16px;
+    out property <length> font-lg: 18px;
     out property <length> font-xl: 20px;
-    out property <length> font-display: 24px;
+    out property <length> font-display: 28px;
 
     // 动效
     in-out property <bool> reduce-motion: false;
-    out property <duration> motion-fast: reduce-motion ? 0ms : 120ms;
-    out property <duration> motion: reduce-motion ? 0ms : 200ms;
-    out property <duration> motion-slow: reduce-motion ? 0ms : 280ms;
+    in-out property <bool> window-visible: true;
+    in-out property <string> active-page: "overview";
+    callback finish-motion();
+    changed reduce-motion => { if reduce-motion { finish-motion(); } }
+    out property <duration> motion-fast: reduce-motion ? 0ms : 140ms;
+    out property <duration> motion: reduce-motion ? 0ms : 220ms;
+    out property <duration> motion-slow: reduce-motion ? 0ms : 320ms;
 
     pure public function kind-color(kind: string) -> color {
         if kind == "good" { return good; }

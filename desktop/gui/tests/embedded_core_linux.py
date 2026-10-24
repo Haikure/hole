@@ -11,6 +11,8 @@ import sys
 import tempfile
 import time
 
+from ui_driver import PAGES
+
 
 def live(pid):
     try:
@@ -71,7 +73,7 @@ def main():
                 _, error = process.communicate(timeout=30)
                 if not crash:
                     assert process.returncode == 0, error.decode(errors="replace")
-                    assert len(list(shots.glob("*.ppm"))) == 8, "GUI screenshot cycle did not complete"
+                    assert PAGES <= {path.stem for path in shots.glob("*.ppm")}, "GUI screenshot cycle missed required pages"
                 deadline = time.monotonic() + 5
                 while live(core_pid) and time.monotonic() < deadline:
                     time.sleep(0.05)
@@ -82,7 +84,7 @@ def main():
                     process.communicate(timeout=5)
                 if core_pid and live(core_pid):
                     os.kill(core_pid, 15)
-    print("PASS: copied GUI only, memfd execution, eight pages, graceful shutdown, and crash EOF cleanup")
+    print("PASS: copied GUI only, memfd execution, named pages, graceful shutdown, and crash EOF cleanup")
 
 
 if __name__ == "__main__":

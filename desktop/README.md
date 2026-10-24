@@ -76,7 +76,25 @@ HOLE_EMBED_CORE="$HOLE_ROOT/dist/desktop-core/hole-desktop-core-linux-amd64" \
 这条命令包含 Linux 真正从 memfd 启动核心、握手和释放句柄的测试。Windows 文件回收的共用逻辑可在
 Linux 测试中验证，Windows ACL / CreateProcess 仍需 Windows 系统运行验收。
 Linux 单文件运行验收可用 `xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop/linux-amd64/hole-desktop`：
-测试只复制 GUI，检查子进程来自 memfd、八个页面截图、正常关闭及强制结束 GUI 后核心沿 EOF 退出。
+测试只复制 GUI，检查子进程来自 memfd、必需页面截图、正常关闭及强制结束 GUI 后核心沿 EOF 退出。
+
+## 桌面界面与操作
+
+窗口默认 1180×780、最小 860×560，保留系统标题栏。208px 侧栏固定为「首页、服务、连接、语音、设置」；
+连接含设备、运行详情、诊断，设置含房间与身份、连接方式、外观、桌面行为、配置文件。
+窗口宽度达到 1120px 后摘要和分组使用双栏，内容宽度最多 1280px。
+
+首页和侧栏运行面板显示同一份核心快照：启动意图、引擎阶段、信令加入和设备连通分别呈现；
+忙碌时禁止重复提交。服务按提供／使用分组，64px 行直接显示协议、端点和状态；
+编辑从右侧 400px 面板打开，更多菜单支持上移、下移、删除，删除后可跨页面撤销。
+离开未保存表单或关闭编辑面板会确认放弃；保存、取消后返回触发控件。
+
+Ctrl+1～5 切换一级导航；侧栏支持上／下键及 Enter / Space，Tab 遍历控件；
+Esc 关闭对话框／编辑面板，或从连接和设置子类返回首页。退出仍提供停止／取消，支持托盘的平台可仅隐藏窗口。
+
+外观使用 Android 同源五组调色板和明暗层级。旧 teal 标识对应绿色，violet 对应紫色；
+主按钮、容器、前景及导航选中同步切换。减少动画会立即完成页面、导航和数字过渡。
+动画只影响展示，不重发启动、保存或语音命令。验证入口及 Windows 待验收边界见 [桌面 GUI 计划](../docs/DESKTOP_GUI_PLAN.md)。
 
 ## 房间语音
 
@@ -306,7 +324,12 @@ cargo build --offline
 cargo test --offline
 ```
 
-界面截图模式通过 `HOLE_DESKTOP_SCREENSHOT_DIR` 指定输出目录，依次保存八个页面（含语音）的 PPM 图片后退出。
+界面截图模式通过 `HOLE_DESKTOP_SCREENSHOT_DIR` 指定输出目录，按必需页面名称保存 PPM 图片后退出。
+`HOLE_DESKTOP_SCREENSHOT_PAGES` 可指定逗号分隔的路由子集，默认覆盖五项导航及全部二级分类。
+`HOLE_DESKTOP_SCREENSHOT_SCENARIO` 可选 `empty`、`running`、`reconnecting`、`error`、`long-list`；
+这些是只用于截图的确定性测试数据，不发送核心命令或改变已保存配置。
+完整 Linux 截图矩阵可运行 `xvfb-run -a -s "-screen 0 3400x2200x24" python3 desktop/gui/tests/visual_matrix.py dist/desktop/linux-amd64/hole-desktop`。
+输出位于 `.cache/desktop-ui/`；截图只证明界面渲染，不代表真实连接或设备验收。
 可用 `HOLE_DESKTOP_SCREENSHOT_SIZE=860x560` 检查最小窗口；尺寸有效范围为 860–3840 × 560–2160，格式错误时保留默认窗口尺寸。
 截图时应将 `HOLE_DESKTOP_CONFIG_DIR` 指向单独的演示配置目录并保持连接关闭；深浅色由该目录中配置的 `prefs.theme_mode` 决定。
 Linux 无显示环境可用 `xvfb-run` 配合 `SLINT_BACKEND=winit-software`。截图验证布局，不代表真实联网或 Windows 桌面验收。

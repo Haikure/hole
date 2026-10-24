@@ -1,168 +1,141 @@
 import { Theme } from "../theme.slint";
 import { App } from "../state.slint";
-import { Icon, Icons } from "../icons.slint";
-import { Card, SectionTitle, Label, Hint, Btn, IconBtn, Toggle, Badge, Field, Choice, SwitchRow, EmptyState, Notice, PageHeader, PageBody, Dialog, Divider } from "../controls.slint";
+import { Icons } from "../icons.slint";
+import { Card, SectionTitle, Hint, Btn, IconBtn, Toggle, Badge, Field, Choice, SwitchRow, EmptyState, Notice, PageHeader, PageBody, Dialog, Drawer, Divider, Label } from "../controls.slint";
 import { MappingRow, MappingForm } from "../models.slint";
 
 component MappingItem inherits Rectangle {
     in property <MappingRow> item;
     in property <bool> first;
     in property <bool> last;
+    in property <bool> restore-focus;
     callback edit();
-    height: 68px;
+    changed restore-focus => { if restore-focus { edit-button.focus-button(); } }
+    height: 64px;
     border-radius: Theme.radius;
     background: ta.has-hover ? Theme.surface-hover : transparent;
-    animate background { duration: Theme.motion-fast; }
     opacity: item.enabled ? 1 : 0.82;
     ta := TouchArea { double-clicked => { root.edit(); } }
-    if !root.last : Rectangle {
-        x: 52px;
-        y: parent.height - 1px;
-        width: parent.width - 64px;
-        height: 1px;
-        background: Theme.border;
-    }
+    if !root.last : Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
     HorizontalLayout {
-        padding-left: Theme.space-2;
-        padding-right: Theme.space-2;
-        spacing: Theme.space-3;
-        Rectangle {
-            width: 36px; height: 36px; border-radius: 9px;
-            y: (parent.height - self.height) / 2;
-            background: item.role == "provide" ? Theme.accent-soft : Theme.surface-alt;
-            Text {
-                text: item.protocol == "" ? "?" : item.protocol;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                font-size: Theme.font-xs; font-weight: 700;
-                color: item.role == "provide" ? Theme.accent : Theme.text-muted;
-            }
-        }
+        padding-left: 8px; padding-right: 8px; spacing: 12px;
         VerticalLayout {
-            alignment: center; spacing: 2px; horizontal-stretch: 1;
-            HorizontalLayout {
-                spacing: Theme.space-2;
-                alignment: start;
-                Text { text: item.id == "" ? "（未命名）" : item.id; font-size: Theme.font-md; font-weight: 600; color: Theme.text; overflow: elide; }
-                Badge { text: item.state-label; kind: item.kind; y: (parent.height - self.height) / 2; }
+            alignment: center; spacing: 3px; horizontal-stretch: 1;
+            Text { text: item.id == "" ? "（未命名）" : item.id; font-size: Theme.font-body; font-weight: 600; color: Theme.text; overflow: elide; }
+            Text { text: item.endpoint; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
+        }
+        Text { text: item.protocol == "" ? "待匹配" : item.protocol; width: 48px; color: Theme.text-muted; font-size: Theme.font-xs; vertical-alignment: center; }
+        Badge { text: item.state-label; kind: item.kind; width: 90px; y: (parent.height - self.height) / 2; }
+        edit-button := IconBtn { icon: Icons.edit; label: "编辑 " + item.id; y: (parent.height - self.height) / 2; clicked => { root.edit(); } }
+        Btn { text: "⋯"; compact: true; kind: "ghost"; accessible-label: "更多操作 " + item.id; y: (parent.height - self.height) / 2; clicked => { more.show(); } }
+        Toggle { y: (parent.height - self.height) / 2; checked: item.enabled; label: "启用 " + item.id; toggled(v) => { App.toggle-mapping(item.role, item.entry-id, v); } }
+    }
+    more := PopupWindow {
+        x: parent.width - 208px; y: 46px; width: 180px;
+        Rectangle {
+            background: Theme.surface; border-radius: Theme.radius; border-width: 1px; border-color: Theme.border;
+            VerticalLayout { padding: 8px; spacing: 4px;
+                Btn { text: "上移"; icon: Icons.up; enabled: !root.first; clicked => { more.close(); App.move-mapping(item.role, item.entry-id, -1); } }
+                Btn { text: "下移"; icon: Icons.down; enabled: !root.last; clicked => { more.close(); App.move-mapping(item.role, item.entry-id, 1); } }
+                Btn { text: "删除"; icon: Icons.trash; kind: "danger"; clicked => { more.close(); App.delete-mapping(item.role, item.entry-id); } }
             }
-            Text { text: item.endpoint + (item.sessions != "" ? "  ·  " + item.sessions : ""); font-size: Theme.font-sm; color: Theme.text-muted; overflow: elide; }
-        }
-        HorizontalLayout {
-            spacing: 2px;
-            alignment: end;
-            IconBtn { icon: Icons.up; label: "上移 " + item.id; enabled: !root.first; y: (parent.height - self.height) / 2; clicked => { App.move-mapping(item.role, item.entry-id, -1); } }
-            IconBtn { icon: Icons.down; label: "下移 " + item.id; enabled: !root.last; y: (parent.height - self.height) / 2; clicked => { App.move-mapping(item.role, item.entry-id, 1); } }
-            IconBtn { icon: Icons.edit; label: "编辑 " + item.id; y: (parent.height - self.height) / 2; clicked => { root.edit(); } }
-            IconBtn { icon: Icons.trash; label: "删除 " + item.id; y: (parent.height - self.height) / 2; clicked => { App.delete-mapping(item.role, item.entry-id); } }
-        }
-        Toggle {
-            y: (parent.height - self.height) / 2;
-            checked: item.enabled;
-            label: "启用 " + item.id;
-            toggled(v) => { App.toggle-mapping(item.role, item.entry-id, v); }
         }
     }
 }
 
-export component MappingsPage inherits VerticalLayout {
-    spacing: 0px;
-    property <bool> editing: false;
+export component MappingsPage inherits Rectangle {
+    in-out property <bool> editing: false;
     property <MappingForm> form;
+    property <MappingForm> original;
     property <string> form-error;
     property <bool> is-new: true;
-
+    property <bool> ask-discard: false;
+    property <string> focus-entry;
+    out property <bool> dirty: editing && (form.id != original.id || form.host != original.host ||
+        form.port != original.port || form.protocol != original.protocol || form.enabled != original.enabled);
+    function return-focus() {
+        focus-entry = form.entry-id;
+        if form.entry-id == "" {
+            if form.role == "provide" { add-provide.focus-button(); } else { add-consume.focus-button(); }
+        }
+    }
+    public function focus-editor() { mapping-id.focus-input(); }
+    public function discard() { editing = false; ask-discard = false; return-focus(); }
+    function request-close() { if dirty { ask-discard = true; } else { discard(); } }
     public function new-entry(role: string) {
+        focus-entry = "";
         is-new = true;
         form = { entry-id: "", role: role, id: "", protocol: "tcp", host: role == "consume" ? "127.0.0.1" : "", port: "", enabled: true };
-        form-error = "";
-        editing = true;
+        original = form; form-error = ""; editing = true;
     }
     public function edit-entry(role: string, row: MappingRow) {
+        focus-entry = "";
         is-new = false;
-        form = { entry-id: row.entry-id, role: role, id: row.id, protocol: row.protocol == "" ? "tcp" : row.protocol,
+        form = { entry-id: row.entry-id, role: role, id: row.id, protocol: row.protocol == "UDP" || row.protocol == "udp" ? "udp" : "tcp",
             host: row.details.length > 0 ? row.details[0].value : "", port: row.details.length > 1 ? row.details[1].value : "", enabled: row.enabled };
-        form-error = "";
-        editing = true;
+        original = form; form-error = ""; editing = true;
     }
-
-    PageHeader {
-        title: "服务";
-        subtitle: "把服务共享出去，或接到这台设备上。";
+    VerticalLayout {
+        spacing: 0px;
+        PageHeader { title: "服务"; subtitle: "把服务共享出去，或接到这台设备上。"; }
+        PageBody {
+            if App.status.config-error != "" : Notice { text: App.status.config-error; kind: "warn"; }
+            Card {
+                HorizontalLayout { alignment: space-between;
+                    SectionTitle { text: "提供给其他设备"; subtitle: App.provides.length + " 项服务"; }
+                    add-provide := Btn { text: "提供服务"; icon: Icons.plus; clicked => { root.new-entry("provide"); } }
+                }
+                if App.provides.length == 0 : EmptyState { title: "还没有共享服务"; description: "把本机的 SSH 或网页服务提供给另一台设备。"; }
+                for row[i] in App.provides : MappingItem {
+                    item: row; first: i == 0; last: i == App.provides.length - 1;
+                    restore-focus: root.focus-entry == row.entry-id && !root.editing;
+                    edit => { root.edit-entry("provide", row); }
+                }
+            }
+            Card {
+                HorizontalLayout { alignment: space-between;
+                    SectionTitle { text: "在本机使用"; subtitle: App.consumes.length + " 项服务"; }
+                    add-consume := Btn { text: "使用服务"; icon: Icons.plus; clicked => { root.new-entry("consume"); } }
+                }
+                if App.consumes.length == 0 : EmptyState { title: "还没有接入服务"; description: "填写对方的服务 ID，通过本地端口访问。"; }
+                for row[i] in App.consumes : MappingItem {
+                    item: row; first: i == 0; last: i == App.consumes.length - 1;
+                    restore-focus: root.focus-entry == row.entry-id && !root.editing;
+                    edit => { root.edit-entry("consume", row); }
+                }
+            }
+            Hint { text: "关闭开关保留配置；更多菜单可排序和删除，删除后支持跨页面撤销。"; }
+        }
     }
-
-    PageBody {
-        if App.status.config-error != "" : Notice { text: App.status.config-error; kind: "warn"; }
-        VerticalLayout {
-            spacing: Theme.space-3;
-            HorizontalLayout {
-                alignment: space-between;
-                SectionTitle { text: "提供给其他设备"; subtitle: App.provides.length + " 项服务"; }
-                Btn { text: "提供服务"; icon: Icons.plus; clicked => { root.new-entry("provide"); } }
-            }
-            Divider { }
-            if App.provides.length == 0 : EmptyState { title: "还没有共享服务"; description: "例如，把本机的 SSH 或网页服务提供给另一台设备。"; }
-            for row[i] in App.provides : MappingItem {
-                item: row; first: i == 0; last: i == App.provides.length - 1;
-                edit => { root.edit-entry("provide", row); }
-            }
-        }
-        Rectangle { height: Theme.space-4; }
-        VerticalLayout {
-            spacing: Theme.space-3;
-            HorizontalLayout {
-                alignment: space-between;
-                SectionTitle { text: "在本机使用"; subtitle: App.consumes.length + " 项服务"; }
-                Btn { text: "使用服务"; icon: Icons.plus; clicked => { root.new-entry("consume"); } }
-            }
-            Divider { }
-            if App.consumes.length == 0 : EmptyState { title: "还没有接入服务"; description: "填写对方的服务 ID，通过本地端口访问。"; }
-            for row[i] in App.consumes : MappingItem {
-                item: row; first: i == 0; last: i == App.consumes.length - 1;
-                edit => { root.edit-entry("consume", row); }
-            }
-        }
-        Hint { text: "关闭开关可暂停服务并保留配置；删除会结束对应连接。"; }
-    }
-
-    if root.editing : Dialog {
-        title: (root.is-new ? "新增 " : "编辑 ") + (root.form.role == "provide" ? "提供服务" : "使用服务");
-        dismissed => { root.editing = false; }
-        Field {
-            label: "映射 ID";
-            text: root.form.id;
-            hint: root.form.role == "provide" ? "与远端 consume 配置配对的标识，同类内不重复" : "匹配远端 provide 的映射 ID，同类内不重复";
-            edited(t) => { root.form.id = t; }
-        }
-        if root.form.role == "provide" : VerticalLayout {
-            spacing: 4px;
-            Text { text: "协议"; font-size: Theme.font-sm; font-weight: 500; color: Theme.text-muted; }
-            Choice { values: ["tcp", "udp"]; labels: ["TCP", "UDP"]; selected: root.form.protocol; changed(v) => { root.form.protocol = v; } }
-        }
-        Field {
-            label: root.form.role == "provide" ? "服务地址" : "本地监听地址";
-            text: root.form.host;
-            hint: root.form.role == "provide" ? "允许域名、IPv4、IPv6；例如 127.0.0.1 或 ssh.example.com" : "必须是字面 IP；127.0.0.1 仅本机可访问，0.0.0.0 或 :: 表示所有接口";
-            edited(t) => { root.form.host = t; }
-        }
-        Field {
-            label: root.form.role == "provide" ? "服务端口" : "本地监听端口";
-            text: root.form.port;
-            hint: root.form.role == "provide" ? "1–65535" : "1–65535；建议使用高位端口";
-            edited(t) => { root.form.port = t; }
-        }
-        if root.form.role == "consume" : Hint { text: "协议由匹配到的远端 provide 决定；尚未匹配时显示“等待对端”。"; }
-        SwitchRow { title: "保存后启用"; summary: "停用时保留配置，不加入运行集合"; checked: root.form.enabled; toggled(v) => { root.form.enabled = v; } }
+    Drawer {
+        open: root.editing;
+        title: (root.is-new ? "新增" : "编辑") + (root.form.role == "provide" ? "提供服务" : "使用服务");
+        dismissed => { root.request-close(); }
+        focus-requested => { mapping-id.focus-input(); }
+        mapping-id := Field { label: "服务 ID"; text <=> root.form.id; hint: "与远端服务配对的标识，同类内不重复"; edited(t) => { root.form.id = t; } }
+        if root.form.role == "provide" : Choice { values: ["tcp", "udp"]; labels: ["TCP", "UDP"]; selected <=> root.form.protocol; changed(v) => { root.form.protocol = v; } }
+        Field { label: root.form.role == "provide" ? "服务地址" : "本地监听地址"; text <=> root.form.host;
+            hint: root.form.role == "provide" ? "域名、IPv4 或 IPv6，例如 127.0.0.1" : "必须是字面 IP；127.0.0.1 仅本机可访问";
+            edited(t) => { root.form.host = t; } }
+        Field { label: root.form.role == "provide" ? "服务端口" : "本地监听端口"; text <=> root.form.port; hint: "1–65535"; edited(t) => { root.form.port = t; } }
+        if root.form.role == "consume" : Hint { text: "协议由匹配到的远端服务决定。"; }
+        SwitchRow { title: "保存后启用"; summary: "停用时保留配置，不加入运行集合"; checked <=> root.form.enabled; toggled(v) => { root.form.enabled = v; } }
         if root.form-error != "" : Notice { text: root.form-error; kind: "bad"; }
-        HorizontalLayout {
-            spacing: Theme.space-2;
-            alignment: end;
-            if !root.is-new : Btn { text: "删除"; kind: "danger"; clicked => { App.delete-mapping(root.form.role, root.form.entry-id); root.editing = false; } }
-            Btn { text: "取消"; clicked => { root.editing = false; } }
-            Btn { text: "保存"; kind: "primary"; clicked => {
+        HorizontalLayout { spacing: 8px; alignment: end;
+            Btn { text: "取消"; clicked => { root.request-close(); } }
+            Btn { text: "保存"; kind: "primary"; enabled: !App.status.busy; clicked => {
                 root.form-error = App.save-mapping(root.form);
-                if (root.form-error == "") { root.editing = false; }
+                if root.form-error == "" { root.discard(); }
             } }
+        }
+    }
+    if root.ask-discard : Dialog {
+        title: "放弃服务修改？"; dialog-width: 380px;
+        dismissed => { root.ask-discard = false; mapping-id.focus-input(); }
+        Label { text: "关闭后会丢失尚未保存的服务内容。"; }
+        HorizontalLayout { alignment: end; spacing: 8px;
+            Btn { text: "继续编辑"; clicked => { root.ask-discard = false; mapping-id.focus-input(); } }
+            Btn { text: "放弃"; kind: "danger"; clicked => { root.discard(); } }
         }
     }
 }

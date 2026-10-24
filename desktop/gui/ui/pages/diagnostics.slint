@@ -1,7 +1,7 @@
 import { Theme } from "../theme.slint";
 import { App } from "../state.slint";
 import { Icon, Icons } from "../icons.slint";
-import { Card, SectionTitle, Label, Hint, Btn, Badge, KVRow, KVList, Disclosure, EmptyState, Notice, PageHeader, PageBody, Field, Choice } from "../controls.slint";
+import { Card, SectionTitle, Label, Hint, Btn, Badge, KVRow, KVList, Disclosure, EmptyState, Notice, PageHeader, PageBody, Field, Choice, AdaptivePair } from "../controls.slint";
 import { EventRow } from "../models.slint";
 
 component EventItem inherits Rectangle {
@@ -31,12 +31,13 @@ component EventItem inherits Rectangle {
 
 export component DiagnosticsPage inherits VerticalLayout {
     spacing: 0px;
+    in property <bool> wide: false;
     property <string> filter: "all";
 
     PageHeader {
         title: "诊断";
         subtitle: "运行时间、恢复记录、结构化事件与脱敏连接报告。";
-        Btn { text: "重新连接"; icon: Icons.transport; enabled: App.status.run-requested; clicked => { App.reconnect(); } }
+        Btn { text: "重新连接"; icon: Icons.transport; enabled: App.status.run-requested && !App.status.busy; clicked => { App.reconnect(); } }
     }
     PageBody {
         Card {
@@ -52,9 +53,10 @@ export component DiagnosticsPage inherits VerticalLayout {
             if App.status.command-error != "" : Notice { text: App.status.command-error; kind: "warn"; }
         }
 
-        HorizontalLayout {
-            spacing: Theme.space-4;
-            Card {
+        AdaptivePair {
+            wide: root.wide; first-height: first.preferred-height; second-height: second.preferred-height;
+            first := Card {
+                x: 0px; y: 0px; width: root.wide ? (parent.width - 16px) / 2 : parent.width; height: self.preferred-height;
                 horizontal-stretch: 1;
                 SectionTitle { text: "设置与恢复"; }
                 Text { text: App.status.configuration-text; font-size: Theme.font-md; color: Theme.accent; }
@@ -63,7 +65,9 @@ export component DiagnosticsPage inherits VerticalLayout {
                 KVRow { key: "断线保留"; value: App.status.session-timeout; }
                 Hint { text: "底层路径断开时，已有 TCP 会话在保留期限内尝试续接；正常转发不会到点停止。UDP 期间可能丢包。删除服务、变更身份或停止运行会结束对应会话。"; }
             }
-            Card {
+            second := Card {
+                x: root.wide ? (parent.width + 16px) / 2 : 0px; y: root.wide ? 0px : first.height + 16px;
+                width: first.width; height: self.preferred-height;
                 horizontal-stretch: 1;
                 SectionTitle { text: "本机网络与后台"; }
                 KVRow { key: "网络"; value: App.status.network-label; }
@@ -79,8 +83,8 @@ export component DiagnosticsPage inherits VerticalLayout {
         }
 
         Card {
-            HorizontalLayout {
-                alignment: space-between;
+            VerticalLayout {
+                spacing: 12px;
                 SectionTitle { text: "事件"; subtitle: "按核心代次与序号过滤的结构化记录；丢弃事件 " + App.status.events-dropped + " 条。"; }
                 Choice {
                     width: 260px;

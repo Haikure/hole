@@ -15,7 +15,7 @@ component AccentSwatch inherits Rectangle {
     border-color: Theme.accent;
     accessible-role: radio-button;
     accessible-label: root.value == "blue" ? "蓝色强调色"
-        : root.value == "teal" ? "青绿色强调色"
+        : root.value == "teal" ? "绿色强调色"
         : root.value == "violet" ? "紫色强调色"
         : root.value == "amber" ? "琥珀色强调色" : "玫瑰色强调色";
     accessible-checked: root.selected;
@@ -27,7 +27,7 @@ component AccentSwatch inherits Rectangle {
         width: 22px;
         height: 22px;
         border-radius: 11px;
-        background: root.value == "blue" ? #2563EB : root.value == "teal" ? #0F766E : root.value == "violet" ? #7C3AED : root.value == "amber" ? #B45309 : #BE123C;
+        background: root.value == "blue" ? #435E91 : root.value == "teal" ? #386B4B : root.value == "violet" ? #66508D : root.value == "amber" ? #805610 : #98445F;
     }
     focus := FocusScope {
         key-pressed(event) => {
@@ -48,7 +48,10 @@ component AccentSwatch inherits Rectangle {
 
 export component SettingsPage inherits VerticalLayout {
     spacing: 0px;
+    in property <string> section: "settings";
     callback open-page(string);
+    property <bool> focus-request;
+    public function focus-editor() { focus-request = !focus-request; }
 
     // 草稿与已保存值分离；dirty 时离开页面由 MainWindow 询问。
     in-out property <ConnectionForm> form: App.connection;
@@ -60,34 +63,40 @@ export component SettingsPage inherits VerticalLayout {
         form.candidate-interfaces != App.connection.candidate-interfaces || form.candidate-addresses != App.connection.candidate-addresses;
 
     public function reset() { form = App.connection; save-error = ""; }
+    public function save() {
+        if !App.config-loaded || !dirty || App.status.busy { return; }
+        save-error = App.save-connection(form);
+        if save-error == "" { App.connection = form; }
+    }
+
 
     PageHeader {
-        title: "设置";
-        subtitle: "连接信息、外观与启动偏好。";
+        title: root.section == "appearance" ? "外观" : root.section == "behavior" ? "桌面行为" : "房间与身份";
+        subtitle: root.section == "appearance" ? "与 Android 一致的配色与动效。" : root.section == "behavior" ? "后台保持、自动恢复与本机信息。" : "服务器、房间与设备凭据。";
     }
     PageBody {
         VerticalLayout {
             spacing: Theme.space-4;
             // ---- 连接 ----
-            VerticalLayout {
+            if root.section == "settings" : Card {
                 horizontal-stretch: 1;
                 spacing: Theme.space-3;
                 SectionTitle { text: "房间连接"; subtitle: "两端填写相同的房间信息。"; }
                 Divider { }
-                Field { label: "信令服务器"; text: root.form.server-url; placeholder: "wss://HOST/ws"; hint: "完整 WebSocket URL；明文 ws:// 仅用于开发，需在连接方式中显式允许"; edited(t) => { root.form.server-url = t; } }
-                Field { label: "信令密码"; text: root.form.password; secret: true; hint: "由服务器管理员提供"; edited(t) => { root.form.password = t; } }
+                Field { focus-request: root.focus-request; label: "信令服务器"; text <=> root.form.server-url; placeholder: "wss://HOST/ws"; hint: "完整 WebSocket URL；明文 ws:// 仅用于开发，需在连接方式中显式允许"; edited(t) => { root.form.server-url = t; } }
+                Field { label: "信令密码"; text <=> root.form.password; secret: true; hint: "由服务器管理员提供"; edited(t) => { root.form.password = t; } }
                 HorizontalLayout {
                     spacing: Theme.space-3;
-                    Field { label: "房间号"; text: root.form.room; edited(t) => { root.form.room = t; } }
-                    Field { label: "设备名"; text: root.form.device-name; hint: "在房间内展示的成员名称，房间内唯一"; edited(t) => { root.form.device-name = t; } }
+                    Field { label: "房间号"; text <=> root.form.room; edited(t) => { root.form.room = t; } }
+                    Field { label: "设备名"; text <=> root.form.device-name; hint: "在房间内展示的成员名称，房间内唯一"; edited(t) => { root.form.device-name = t; } }
                 }
-                Field { label: "房间密码"; text: root.form.token; secret: true; hint: "加入房间使用的共享 token，与信令密码是两个凭据"; edited(t) => { root.form.token = t; } }
-                Field { label: "会话保留期限"; text: root.form.session-timeout; hint: "例如 10m；网络中断后 TCP 在此期限内恢复，UDP 为空闲期限"; edited(t) => { root.form.session-timeout = t; } }
+                Field { label: "房间密码"; text <=> root.form.token; secret: true; hint: "加入房间使用的共享 token，与信令密码是两个凭据"; edited(t) => { root.form.token = t; } }
+                Field { label: "会话保留期限"; text <=> root.form.session-timeout; hint: "例如 10m；网络中断后 TCP 在此期限内恢复，UDP 为空闲期限"; edited(t) => { root.form.session-timeout = t; } }
                 Disclosure {
                     open-label: "仅 IPv6 高级项";
                     close-label: "收起仅 IPv6 高级项";
-                    Field { label: "候选网卡"; text: root.form.candidate-interfaces; hint: "逗号分隔的网卡名，留空表示不限制"; edited(t) => { root.form.candidate-interfaces = t; } }
-                    Field { label: "候选地址"; text: root.form.candidate-addresses; hint: "逗号分隔的公网 IPv6 字面地址，留空表示不使用；与 ICE 模式互斥"; edited(t) => { root.form.candidate-addresses = t; } }
+                    Field { label: "候选网卡"; text <=> root.form.candidate-interfaces; hint: "逗号分隔的网卡名，留空表示不限制"; edited(t) => { root.form.candidate-interfaces = t; } }
+                    Field { label: "候选地址"; text <=> root.form.candidate-addresses; hint: "逗号分隔的公网 IPv6 字面地址，留空表示不使用；与 ICE 模式互斥"; edited(t) => { root.form.candidate-addresses = t; } }
                 }
                 if root.save-error != "" : Notice { text: root.save-error; kind: "bad"; }
                 HorizontalLayout {
@@ -95,20 +104,19 @@ export component SettingsPage inherits VerticalLayout {
                     alignment: end;
                     Btn { text: "还原"; enabled: root.dirty; clicked => { root.reset(); } }
                     Btn { text: "保存连接设置"; kind: "primary"; enabled: App.config-loaded && root.dirty; clicked => {
-                        root.save-error = App.save-connection(root.form);
-                        if (root.save-error == "") { root.form = App.connection; }
+                        root.save();
                     } }
                 }
                 Hint { text: "运行中保存会立即应用连接设置。"; }
             }
 
-            HorizontalLayout {
+            VerticalLayout {
                 horizontal-stretch: 1;
                 spacing: Theme.space-4;
                 // ---- 外观 ----
-                Card {
+                if root.section == "appearance" : Card {
                     horizontal-stretch: 1;
-                    SectionTitle { text: "外观"; subtitle: "中性桌面主题；跟随系统时使用系统明暗设置。"; }
+                    SectionTitle { text: "外观"; subtitle: "五组 Android 同源调色板；跟随系统时使用系统明暗设置。"; }
                     Choice {
                         values: ["system", "light", "dark"];
                         labels: ["跟随系统", "浅色", "深色"];
@@ -131,7 +139,7 @@ export component SettingsPage inherits VerticalLayout {
                     SwitchRow { title: "减少动画"; summary: "关闭过渡动效"; checked: App.prefs.reduce-motion; toggled(v) => { App.save-prefs({ theme-mode: App.prefs.theme-mode, accent: App.prefs.accent, close-to-tray: App.prefs.close-to-tray, resume-at-login: App.prefs.resume-at-login, start-hidden: App.prefs.start-hidden, reduce-motion: v }); } }
                 }
                 // ---- 桌面行为 ----
-                VerticalLayout {
+                if root.section == "behavior" : VerticalLayout {
                     horizontal-stretch: 1;
                     spacing: Theme.space-4;
                     Card {
