@@ -1,6 +1,8 @@
 module hole/androidbind
 
-go 1.26.0
+go 1.27.0
+
+toolchain go1.27.2
 
 tool (
 	golang.org/x/mobile/cmd/gobind

@@ -2,7 +2,7 @@
 
 这是 `github.com/wlynxg/anet` 的最小接口发现兼容实现。
 Pion transport v4.1.0 会引入 anet v0.0.5；其 Android 实现引用私有 `net.zoneCache` 符号，
-与项目使用的 Go 1.26 链接检查不兼容。
+与项目使用的 Go 1.27 链接检查不兼容。
 
 ## 行为
 

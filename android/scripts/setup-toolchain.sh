@@ -11,7 +11,7 @@ usage() {
 安装目录：${TOOLCHAIN_DIR:-$HOME/.local/share/hole-android}
 可选环境变量：JDK17_HOME、MOBILE_VERSION、GOPROXY。
 默认锁定工程使用的 x/mobile 版本；gomobile/gobind 使用同一版本。
-需要现有 Go 1.26.4、JDK 17、curl、unzip、python3、sha256sum、flock。
+需要现有 Go 1.27.2、JDK 17、curl、unzip、python3、sha256sum、flock。
 构建缓存写入仓库 .cache/；工具安装位置不变。
 EOF
 }
@@ -33,7 +33,7 @@ done
 export GOTOOLCHAIN=local
 GO_BIN=$(command -v go)
 GO_VERSION=$("$GO_BIN" version)
-[[ "$GO_VERSION" == 'go version go1.26.4 '* ]] || die "需要 Go 1.26.4，当前：$GO_VERSION"
+[[ "$GO_VERSION" == 'go version go1.27.2 '* ]] || die "需要 Go 1.27.2，当前：$GO_VERSION"
 
 JAVA_FOUND=''
 for candidate in "${JDK17_HOME:-}" "${JAVA_HOME:-}" /usr/lib/jvm/java-17-openjdk-amd64; do

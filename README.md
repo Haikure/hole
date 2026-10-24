@@ -17,7 +17,7 @@ CLI、Android 手机与 Wear OS 共用 Go 核心；Cloudflare Worker 负责信�
 
 ## 快速开始：CLI
 
-准备 Go 1.26+、Bash 和 Python 3，在仓库根目录执行：
+准备 Go 1.27.2、Bash 和 Python 3，在仓库根目录执行：
 
 ```bash
 ./build.sh cli

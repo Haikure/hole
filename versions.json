@@ -1,11 +1,11 @@
 {
   "core": {
-    "version": "1.0.0"
+    "version": "1.0.1"
   },
   "frontends": {
     "android": {
-      "version": "1.0.1",
-      "version_code": 12
+      "version": "1.0.2",
+      "version_code": 13
     },
     "desktop_gui": {
       "version": "0.1.0"

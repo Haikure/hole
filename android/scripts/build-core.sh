@@ -14,7 +14,7 @@ NDK_VERSION=28.2.13676358
 for command in go gomobile gobind java javac python3; do
   command -v "$command" >/dev/null || { echo "缺少工具 $command，请先安装。" >&2; exit 1; }
 done
-[[ "$(GOTOOLCHAIN=local go env GOVERSION)" == go1.26.4 ]] || { echo '本工程锁定 Go 1.26.4。' >&2; exit 1; }
+[[ "$(GOTOOLCHAIN=local go env GOVERSION)" == go1.27.2 ]] || { echo '本工程锁定 Go 1.27.2。' >&2; exit 1; }
 [[ "$(javac -version 2>&1)" == 'javac 17.'* ]] || { echo '本工程需要 JDK 17。' >&2; exit 1; }
 for binary in gomobile gobind; do
   info=$(go version -m "$(command -v "$binary")")
