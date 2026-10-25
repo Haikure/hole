@@ -6,8 +6,14 @@ token: ROOM_TOKEN   # 房间密码
 device_name: desktop    # 当前设备名，房间内唯一，用于区分设备
 session_timeout: 10m    # 断开会话重建超时时间
 transport:
-  preferred: ice    # 接受 ice 或 ipv6，由ice分配或仅IPv6
+  preferred: ice    # auto / ice / ipv6；auto 允许旧 IPv6 对端
   allow_legacy: true    # 对端仅支持 IPv6 协议时允许兼容
+  # 可选固定入口。两项必须同时填写；对端自动获取地址，无需开启监听。
+  # 本例公网 UDP 50000 映射到本机 UDP 40000；仅在 auto / ice 下可用。
+  # 该设备对只重试固定路径，不进入 ICE / TURN，也不能与 relay_only 共用。
+  # fixed_endpoint:
+  #   listen: 0.0.0.0:40000
+  #   advertise: gateway.example.com:50000
 ice:
   stun_urls:
     - stun:stun.cloudflare.com:3478

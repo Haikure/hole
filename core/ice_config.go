@@ -15,8 +15,10 @@ const (
 	PreferredICE         = "ice"
 	ProfileLegacy        = "legacy-ipv6-quic-v2"
 	ProfileICE           = "ice-quic-mux-v1"
+	ProfileFixed         = "fixed-quic-mux-v1"
 	RelayPolicyUDPTCPTLS = "udp-tcp-tls-v1"
 	iceALPN              = "hole-ice-mux-v1"
+	fixedALPN            = "hole-fixed-mux-v1"
 	maxPeerTransports    = 16
 	maxPeerChannels      = 64
 	maxICECandidates     = 64
@@ -48,9 +50,15 @@ func (d *ConfigDuration) UnmarshalJSON(b []byte) error {
 }
 
 type TransportConfig struct {
-	Preferred           string `yaml:"preferred" json:"preferred"`
-	AllowLegacy         bool   `yaml:"allow_legacy" json:"allow_legacy"`
-	AllowInsecureSignal bool   `yaml:"allow_insecure_signal" json:"allow_insecure_signal"`
+	Preferred           string               `yaml:"preferred" json:"preferred"`
+	AllowLegacy         bool                 `yaml:"allow_legacy" json:"allow_legacy"`
+	AllowInsecureSignal bool                 `yaml:"allow_insecure_signal" json:"allow_insecure_signal"`
+	FixedEndpoint       *FixedEndpointConfig `yaml:"fixed_endpoint,omitempty" json:"fixed_endpoint,omitempty"`
+}
+
+type FixedEndpointConfig struct {
+	Listen    string `yaml:"listen" json:"listen"`
+	Advertise string `yaml:"advertise" json:"advertise"`
 }
 type ICEConfig struct {
 	STUNURLs            []string       `yaml:"stun_urls" json:"stun_urls"`
@@ -77,6 +85,14 @@ type ICEServer struct {
 }
 
 func (c *Config) normalizeTransport() {
+	if c.Transport.Preferred == "auto" {
+		c.Transport.Preferred = PreferredICE
+		c.Transport.AllowLegacy = true
+	}
+	if endpoint := c.Transport.FixedEndpoint; endpoint != nil {
+		copy := *endpoint
+		c.Transport.FixedEndpoint = &copy
+	}
 	if c.Transport.Preferred == "" {
 		c.Transport.Preferred = PreferredIPv6
 	}
@@ -113,7 +129,18 @@ func (c *Config) normalizeTransport() {
 func (c Config) validateTransport() error {
 	c.normalizeTransport()
 	if c.Transport.Preferred != PreferredICE && c.Transport.Preferred != PreferredIPv6 {
-		return fmt.Errorf("transport.preferred 只接受 ice 或 ipv6")
+		return fmt.Errorf("transport.preferred 只接受 auto、ice 或 ipv6")
+	}
+	if endpoint := c.Transport.FixedEndpoint; endpoint != nil {
+		if c.Transport.Preferred != PreferredICE || c.ICE.RelayOnly {
+			return fmt.Errorf("transport.fixed_endpoint 需要 auto / ice，不能与 ipv6 或 ice.relay_only 同时配置")
+		}
+		if err := validateFixedAddress(endpoint.Listen, true); err != nil {
+			return fmt.Errorf("transport.fixed_endpoint.listen: %w", err)
+		}
+		if err := validateFixedAddress(endpoint.Advertise, false); err != nil {
+			return fmt.Errorf("transport.fixed_endpoint.advertise: %w", err)
+		}
 	}
 	if c.Transport.Preferred == PreferredICE && len(c.CandidateAddresses) > 0 {
 		return fmt.Errorf("candidate_addresses 仅用于 IPv6 直连；选择 ICE 时请移除此项，不自动转换为 NAT 地址映射")

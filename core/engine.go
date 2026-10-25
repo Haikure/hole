@@ -543,7 +543,7 @@ func (e *Engine) Snapshot() Snapshot {
 		s.Voice.State = "waiting"
 	}
 	if e.request.Config.Transport.Preferred == PreferredICE {
-		s.Capabilities.Transport = "ICE / QUIC / mux-v1"
+		s.Capabilities.Transport = "ICE / 固定入口直连 / QUIC / mux-v1"
 		s.Capabilities.RequiresIPv6 = false
 	}
 	var manager *sessionManager

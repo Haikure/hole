@@ -311,7 +311,7 @@ func (r *cliReporter) mapping(e core.Event) {
 			delete(r.messages, key)
 		}
 		// ICE progress is shared by a device pair, not repeated for every mapping.
-		if e.Profile != core.ProfileICE {
+		if e.Profile != core.ProfileICE && e.Profile != core.ProfileFixed {
 			message = "建立映射中"
 		}
 	case "error":
@@ -498,6 +498,15 @@ func (r *cliReporter) peer(p core.PeerTransportSnapshot) {
 		}
 	}
 	if message != "" {
+		if p.Profile == core.ProfileFixed {
+			message += "，固定入口 " + logText(p.FixedEndpoint)
+			if p.RemoteAddress != "" {
+				message += "，实际对端 " + logText(p.RemoteAddress)
+			}
+			if p.Error != nil && p.State != "error" {
+				message += " (" + logFault(p.Error) + ")"
+			}
+		}
 		r.once(key, level, subject+message)
 	}
 }

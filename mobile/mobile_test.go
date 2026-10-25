@@ -14,6 +14,22 @@ import (
 
 const requestJSON = `{"api_version":1,"server_url":"wss://example.invalid/ws","config":{"room":"fixture","password":"PRIVATE_PASSWORD","token":"PRIVATE_TOKEN","device_name":"fixture-device","provide":[],"consume":[]}}`
 
+func TestFacadeAcceptsSharedFixedTransportConfig(t *testing.T) {
+	request := strings.Replace(requestJSON, `"provide":[]`, `"transport":{"preferred":"ice","fixed_endpoint":{"listen":"0.0.0.0:40000","advertise":"gateway.example:50000"}},"provide":[]`, 1)
+	r, err := parseRequest(request)
+	if err != nil || r.Config.Transport.FixedEndpoint == nil {
+		t.Fatal(r, err)
+	}
+	e := NewEngine(nil)
+	defer e.Close()
+	if err := e.ApplyConfig(request); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.SnapshotJSON(), "固定入口直连") {
+		t.Fatal(e.SnapshotJSON())
+	}
+}
+
 func TestFacadeStoppedLifecycle(t *testing.T) {
 	e := NewEngine(nil)
 	defer e.Close()

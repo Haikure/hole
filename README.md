@@ -6,6 +6,7 @@ CLI、Android 手机与 Wear OS 共用 Go 核心；Cloudflare Worker 负责信�
 ## 功能
 
 - ICE IPv4 / IPv6 直连，按每端配置顺序尝试 TURN UDP、TCP、TLS 中继；中继阶段优先选择单跳（非对称）候选对。
+- 固定入口直连：一端公布公网 UDP 地址，对端通过 Worker 自动获取并拨号；该设备对只重试固定路径。
 - 一对设备共享 QUIC 传输，支持双向、多条 TCP / UDP 映射。
 - 可选语音房：`voice.enabled: true` 后，同一 room 的语音设备自动建立最多 8 人的点对点媒体传输。
 - 网络切换和传输重连时保留仍存活的应用会话，TCP 支持确认、重放和半关闭。
@@ -34,7 +35,7 @@ token: ROOM_TOKEN   # 房间密码
 device_name: desktop    # 当前设备名，房间内唯一，用于区分设备
 session_timeout: 10m    # 断开会话重建超时时间
 transport:
-  preferred: ice    # 接受 ice 或 ipv6，由ice分配或仅IPv6
+  preferred: ice    # auto / ice / ipv6；auto 允许旧 IPv6 对端
   allow_legacy: true    # 对端仅支持 IPv6 协议时允许兼容
 ice:
   stun_urls:
@@ -81,6 +82,38 @@ consume:
 
 服务 ID 将 `provide` 与 `consume` 配对。UDP 服务使用 `udp://HOST:PORT`；
 消费端仍填写本地监听地址。完整配置见 [config.example.yaml](config.example.yaml)。
+
+### 固定入口与公网业务监听
+
+拥有公网地址或能手动设置 UDP 端口映射的设备可以配置固定入口：
+
+```yaml
+transport:
+  preferred: ice
+  fixed_endpoint:
+    listen: 0.0.0.0:40000
+    advertise: 203.0.113.10:50000
+```
+
+这里公网 UDP 50000 映射到本机 UDP 40000；直绑公网地址时也可使用相同端口。
+`listen` 必须是 IPv4 / IPv6 字面地址；`advertise` 支持 IP 或域名，IPv6 使用 `[地址]:端口`。
+两项必须同时填写，端口范围为 1–65535，公布地址不能为通配地址；域名每次连接重新解析。
+省略整个 `fixed_endpoint` 块即不开启固定监听。配置只适用于 `auto` / `ice`，不能与本机
+`ice.relay_only` 或 `ipv6` 模式共用；对端要求仅中继时双方明确报告冲突。
+
+对端保持普通 ICE 配置，无需填写入口或开启监听。任一端公布入口后，该设备对使用固定
+QUIC 连接，不收集 ICE 候选、不申请 TURN；失败后持续重试，间隔从 1 秒增至最多 15 秒。
+双方均公布入口时，先尝试设备名字典序较小端的入口，失败后更换方向。
+
+类似 frp 的入口用法仍使用现有服务映射：公网机配置上述固定入口，并配置
+`consume: [{id: ssh, expose: "0.0.0.0:2222"}]`；内网机配置
+`provide: [{id: ssh, service: "tcp://127.0.0.1:22"}]`。内网机主动建立隧道，外部客户端
+访问公网机 TCP 2222，再经固定 QUIC 隧道访问内网 SSH。隧道入口开放 UDP，业务端口按
+服务协议开放。Worker 负责授权和地址交换，业务流量经过运行 hole 的设备。
+
+首版提供共享核心与 CLI 配置；Android / Wear 重新打包新版核心后可自动拨号连接固定入口，
+图形界面暂不提供固定监听配置和专用状态文案。此功能需按 **Worker → 两端核心** 顺序升级，
+固定协议不提供旧版本兼容回退。公网端口映射还需在实际网络验收。
 
 常用 CLI 参数：
 

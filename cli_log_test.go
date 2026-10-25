@@ -56,6 +56,28 @@ func TestCLILogFormatAndCauseRules(t *testing.T) {
 	}
 }
 
+func TestCLIFixedPathShowsEndpointActualAddressAndFailure(t *testing.T) {
+	r, output := testReporter(t)
+	p := core.PeerTransportSnapshot{PeerID: "public", TransportID: "fixed-1", Profile: core.ProfileFixed, Phase: "fixed", FixedEndpoint: "gateway.example:50000", State: "connecting"}
+	r.peer(p)
+	if !strings.Contains(output.String(), "固定入口直连") || !strings.Contains(output.String(), p.FixedEndpoint) {
+		t.Fatal(output)
+	}
+	output.Reset()
+	p.State, p.PathType, p.RemoteAddress = "active", "fixed", "203.0.113.10:50000"
+	r.peer(p)
+	if !strings.Contains(output.String(), "已连接 固定入口直连") || !strings.Contains(output.String(), p.RemoteAddress) {
+		t.Fatal(output)
+	}
+	output.Reset()
+	p.State = "reconnecting"
+	p.Error = &core.Fault{Code: "fixed_path_failed", Message: "dial timeout"}
+	r.peer(p)
+	if !strings.Contains(output.String(), "fixed_path_failed") || !strings.Contains(output.String(), "dial timeout") || !strings.Contains(output.String(), p.FixedEndpoint) {
+		t.Fatal(output)
+	}
+}
+
 func TestCLIStartupExplainsEffectivePolicyWithoutCredentials(t *testing.T) {
 	r, output := testReporter(t)
 	r.startup()

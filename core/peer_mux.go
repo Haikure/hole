@@ -104,6 +104,11 @@ func readMuxPrefix(stream *quic.Stream) (byte, uint32, error) {
 }
 
 func newMuxPeer(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceSignalMessage) (*muxPeer, error) {
+	return newMuxPeerPrepared(ctx, owner, conn, ready, nil, time.Time{})
+}
+
+// A shared fixed listener has already read the first hello to select its owner.
+func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceSignalMessage, incoming *fixedIncoming, deadline time.Time) (*muxPeer, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	p := &muxPeer{owner: owner, conn: conn, ctx: ctx, cancel: cancel, channels: map[uint32]*muxChannel{}, byMapping: map[string]*muxChannel{}, streamSlots: make(chan struct{}, maxSessionHandshakes), ready: ready, voiceEnabled: ready.Voice, voiceDatagrams: make(chan []byte, voiceJitterLimit), voiceFeedback: make(chan []byte, 2)}
 	owner.mu.Lock()
@@ -120,9 +125,16 @@ func newMuxPeer(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceS
 	}
 	hsCtx, stop := context.WithTimeout(ctx, sessionHandshakeTimeout)
 	defer stop()
+	if !deadline.IsZero() {
+		var stopDeadline context.CancelFunc
+		hsCtx, stopDeadline = context.WithDeadline(hsCtx, deadline)
+		defer stopDeadline()
+	}
 	var stream *quic.Stream
 	var err error
-	if initiator {
+	if incoming != nil {
+		stream = incoming.stream
+	} else if initiator {
 		stream, err = conn.OpenStreamSync(hsCtx)
 	} else {
 		stream, err = conn.AcceptStream(hsCtx)
@@ -132,10 +144,11 @@ func newMuxPeer(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceS
 		return nil, err
 	}
 	p.control = stream
-	_ = stream.SetDeadline(time.Now().Add(sessionHandshakeTimeout))
+	ioDeadline, _ := hsCtx.Deadline()
+	_ = stream.SetDeadline(ioDeadline)
 	stopIO := context.AfterFunc(hsCtx, func() { stream.CancelRead(0); stream.CancelWrite(0) })
 	defer stopIO()
-	hello := muxHello{Profile: ProfileICE, TransportID: ready.TransportID, Generation: ready.TransportGeneration, LocalRuntime: owner.coordinator.runtimeID, RemoteRuntime: ready.PeerRuntimeID, Version: sessionProtocol, LocalRelayProtocol: localRelayProtocol, RelayProtocol: localRelayProtocol, Voice: ready.Voice, VoiceVersion: voiceProtocolVersion}
+	hello := muxHello{Profile: ready.Profile, TransportID: ready.TransportID, Generation: ready.TransportGeneration, LocalRuntime: owner.coordinator.runtimeID, RemoteRuntime: ready.PeerRuntimeID, Version: sessionProtocol, LocalRelayProtocol: localRelayProtocol, RelayProtocol: localRelayProtocol, Voice: ready.Voice, VoiceVersion: voiceProtocolVersion}
 	var remote muxHello
 	if initiator {
 		err = writeMuxPrefix(stream, muxControl, 0)
@@ -145,6 +158,8 @@ func newMuxPeer(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceS
 		if err == nil {
 			err = readSessionJSON(stream, &remote)
 		}
+	} else if incoming != nil {
+		remote = incoming.hello
 	} else {
 		kind, id, e := readMuxPrefix(stream)
 		err = e
@@ -162,7 +177,7 @@ func newMuxPeer(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceS
 	if err == nil && remote.LocalRelayProtocol != "" && remote.RelayProtocol != "" && remote.LocalRelayProtocol != remote.RelayProtocol {
 		err = &Fault{Code: "protocol_mismatch", Message: "对端本机中继接入类型字段不一致"}
 	}
-	if err == nil && (remote.Profile != ProfileICE || remote.TransportID != ready.TransportID || remote.Generation != ready.TransportGeneration || remote.LocalRuntime != ready.PeerRuntimeID || remote.RemoteRuntime != owner.coordinator.runtimeID || remote.Version != sessionProtocol || !validRelayProtocol(remoteRelayProtocol)) {
+	if err == nil && (remote.Profile != ready.Profile || remote.TransportID != ready.TransportID || remote.Generation != ready.TransportGeneration || remote.LocalRuntime != ready.PeerRuntimeID || remote.RemoteRuntime != owner.coordinator.runtimeID || remote.Version != sessionProtocol || !validRelayProtocol(remoteRelayProtocol)) {
 		err = &Fault{Code: "protocol_mismatch", Message: "对端传输身份或协议与信令不一致"}
 	}
 	if err == nil && ready.Voice && (!remote.Voice || remote.VoiceVersion != voiceProtocolVersion) {

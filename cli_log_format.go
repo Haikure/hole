@@ -53,6 +53,8 @@ func logDuration(milliseconds int64) string {
 
 func logPhase(phase string) string {
 	switch phase {
+	case "fixed":
+		return "固定入口直连"
 	case "direct":
 		return "直连"
 	case "relay_udp":
@@ -68,6 +70,8 @@ func logPhase(phase string) string {
 
 func logPath(p core.PeerTransportSnapshot) string {
 	switch p.PathType {
+	case "fixed":
+		return "固定入口直连"
 	case "direct":
 		return "直连"
 	case "relay":
@@ -116,6 +120,7 @@ func logCause(f *core.Fault) string {
 		"peer_identity_mismatch":  "对端身份校验失败", "protocol_mismatch": "连接协议不兼容",
 		"transport_limit": "对端连接数已达上限", "no_ipv6": "没有可用的 IPv6 地址",
 		"ice_network_adapter_missing": "缺少网络适配", "ice_path_failed": "路径未连通",
+		"fixed_path_failed": "固定入口未连通", "fixed_relay_conflict": "固定入口与仅中继要求冲突",
 		"relay_unavailable": "没有可用的中继服务器", "relay_credentials_unavailable": "中继凭据未就绪",
 		"turn_request_timeout": "申请中继凭据超时", "service_refused": "拒绝连接",
 		"service_timeout": "连接超时", "service_unavailable": "不可用",

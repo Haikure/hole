@@ -77,10 +77,27 @@ func TestCLIModeOverridesAndLocalSignal(t *testing.T) {
 }
 
 func TestCLIRejectsOldPreferredNames(t *testing.T) {
-	for _, name := range []string{core.ProfileICE, core.ProfileLegacy, "auto", "legacy"} {
+	for _, name := range []string{core.ProfileICE, core.ProfileLegacy, core.ProfileFixed, "legacy"} {
 		data := "server_url: wss://fixture.invalid/ws\n" + strings.Replace(cliFixtureConfig, "preferred: ice", "preferred: "+name, 1)
 		if _, err := cliRequest([]byte(data), cliOptions{}); err == nil || !strings.Contains(err.Error(), "ice 或 ipv6") {
 			t.Fatalf("%q: %v", name, err)
 		}
+	}
+}
+
+func TestCLIFixedEndpointModeOverrides(t *testing.T) {
+	data := "server_url: wss://fixture.invalid/ws\n" + strings.Replace(cliFixtureConfig, "  allow_legacy: true", "  fixed_endpoint:\n    listen: 0.0.0.0:40000\n    advertise: gateway.example:50000", 1)
+	for _, mode := range []string{"", "auto", "ice"} {
+		r, err := cliRequest([]byte(data), cliOptions{transport: mode})
+		if err != nil || r.Config.Transport.FixedEndpoint == nil || r.Config.Transport.FixedEndpoint.Advertise != "gateway.example:50000" {
+			t.Fatal(mode, r, err)
+		}
+	}
+	if _, err := cliRequest([]byte(data), cliOptions{transport: "ipv6"}); err == nil {
+		t.Fatal("CLI accepted fixed endpoint in ipv6 mode")
+	}
+	data = strings.Replace(data, "preferred: ice", "preferred: auto", 1)
+	if _, err := cliRequest([]byte(data), cliOptions{}); err != nil {
+		t.Fatal("YAML auto rejected", err)
 	}
 }

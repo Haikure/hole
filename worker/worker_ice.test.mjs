@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { Room } from './worker.js';
-import { TurnBroker, ICE_PROFILE, LEGACY_PROFILE, RELAY_POLICY, negotiateProfile, iceJoinFields, validateTurnResponse, relayPairs } from './worker_ice.mjs';
+import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_POLICY, negotiateProfile, iceJoinFields, validateTurnResponse, relayPairs, validFixedEndpoint } from './worker_ice.mjs';
 Object.defineProperty(globalThis,'crypto',{value:webcrypto});
 function fixture(){
  const values=new Map(),sockets=[];
@@ -16,6 +16,75 @@ const endpoint={protocol:'tcp',addr:'127.0.0.1',port:22};
 function join(name,provide=[],consume=[]){return{type:'join',signal_version:2,auth_mode:'shared-secret',runtime_id:(name==='alpha'?'a':'b').repeat(32),transport_epoch:'1',transport_profiles:[ICE_PROFILE,LEGACY_PROFILE],session_versions:[2],cert_fingerprint:(name==='alpha'?'a':'b').repeat(64),room:'fixture',token:'room-secret',device_name:name,provide:provide.map(id=>({id,service:endpoint})),consume:consume.map(id=>({id,expose:{addr:'127.0.0.1',port:18080}}))}}
 async function pair(){const f=fixture();const r=new Room(f.state,{});const a=f.socket(),b=f.socket();await r.webSocketMessage(a,JSON.stringify(join('alpha',['one','two'])));await r.webSocketMessage(b,JSON.stringify(join('beta',[],['one','two'])));return{...f,r,a,b,record:[...r.ice.records.values()][0]}}
 const payload={iceServers:[{urls:['stun:stun.cloudflare.com:3478']},{urls:['turn:turn.cloudflare.com:3478?transport=udp','turn:turn.cloudflare.com:3478?transport=tcp','turn:turn.cloudflare.com:80?transport=tcp','turns:turn.cloudflare.com:5349?transport=tcp','turns:turn.cloudflare.com:443?transport=tcp'],username:'temporary-user',credential:'temporary-secret'}]};
+
+test('fixed endpoints validate addresses and enforce exclusive negotiation',()=>{
+ for(const address of ['203.0.113.10:50000','[2001:db8::1]:65535','gateway.example:1','localhost:443']) assert.equal(validFixedEndpoint(address),true,address);
+ for(const address of ['',':44','0.0.0.0:44','[::]:44','[0:0:0:0:0:0:0:0]:44','[::ffff:0.0.0.0]:44','[not:ip]:44','a:0','a:65536','-bad:4','bad/name:44','a:4\n']) assert.equal(validFixedEndpoint(address),false,address);
+ const fixed={...join('alpha'),transport_profiles:[ICE_PROFILE,FIXED_PROFILE],fixed_endpoint:'gateway.example:50000'};
+ assert.ok(iceJoinFields(fixed));
+ assert.equal(iceJoinFields({...fixed,relay_only:true}),null);
+ assert.equal(iceJoinFields({...fixed,transport_profiles:[ICE_PROFILE]}),null);
+ assert.equal(negotiateProfile(fixed,{transport_profiles:[ICE_PROFILE,FIXED_PROFILE]}),FIXED_PROFILE);
+ assert.equal(negotiateProfile(fixed,{transport_profiles:[ICE_PROFILE]}),null);
+ assert.equal(negotiateProfile(fixed,{transport_profiles:[ICE_PROFILE,FIXED_PROFILE],relay_only:true}),null);
+});
+
+test('fixed-only retries alternate listeners, coalesce generations and survive hibernation',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const caps={transport_profiles:[ICE_PROFILE,FIXED_PROFILE],relay_order:['udp'],relay_pairing:'all-pairs-v1'};
+ const ja={...join('alpha',['one']),...caps,fixed_endpoint:'alpha.example:50000'};
+ const jb={...join('beta',[],['one']),...caps,fixed_endpoint:'[2001:db8::2]:40000'};
+ await r.webSocketMessage(a,JSON.stringify(ja));await r.webSocketMessage(b,JSON.stringify(jb));
+ const record=[...r.ice.records.values()][0];
+ const check=(listener,delay)=>{
+  for(const s of [a,b]) {
+   const ready=s.messages.filter(m=>m.type==='transport_ready').at(-1);
+   assert.equal(ready.profile,FIXED_PROFILE);assert.equal(ready.phase,'fixed');assert.equal(ready.listener_id,listener);
+   assert.equal(ready.initiator_id,ready.dialer_id);assert.notEqual(ready.dialer_id,listener);
+   assert.equal(ready.fixed_endpoint,listener==='alpha'?ja.fixed_endpoint:jb.fixed_endpoint);
+   assert.equal(ready.retry_after_ms,delay);assert.equal(ready.relay_round,undefined);assert.equal(ready.relay_pairing,undefined);
+  }
+ };
+ check('alpha',0);
+ for(let i=0;i<6;i++) {
+  const message={type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'fixed'};
+  const previous=record.generation;
+  await r.webSocketMessage(a,JSON.stringify(message));await r.webSocketMessage(b,JSON.stringify(message));
+  assert.equal(record.generation,String(BigInt(previous)+1n));
+  check(i%2===0?'beta':'alpha',Math.min(15000,1000*2**i));
+ }
+ const resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(a,JSON.stringify({type:'transport_sync'}));check('alpha',15000);
+ await resumed.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'relay_udp'}));
+ assert.equal(a.messages.at(-1).code,'invalid_phase');
+ await resumed.webSocketMessage(a,JSON.stringify({type:'ice_candidate',transport_id:record.id,transport_generation:record.generation,to_peer_id:'beta',candidate:'1 1 udp 1 127.0.0.1 3333 typ host'}));
+ assert.equal(a.messages.at(-1).code,'invalid_phase');
+ await resumed.webSocketMessage(a,JSON.stringify({type:'turn_request',request_id:'fixed-test'}));
+ assert.equal(a.messages.at(-1).code,'transport_not_authorized');
+ const replacement=f.socket();
+ await resumed.webSocketMessage(replacement,JSON.stringify({...ja,fixed_endpoint:'new.example:60000'}));
+ const ready=b.messages.filter(m=>m.type==='transport_ready').at(-1);
+ assert.equal(ready.fixed_endpoint,'new.example:60000');assert.ok(BigInt(ready.transport_generation)>BigInt(record.generation));
+});
+
+test('one fixed listener never falls back, relay-only conflict is explicit',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const caps={transport_profiles:[ICE_PROFILE,FIXED_PROFILE]};
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps,fixed_endpoint:'public.example:40000'}));
+ const jb={...join('beta',[],['one']),...caps};
+ await r.webSocketMessage(b,JSON.stringify(jb));
+ const record=[...r.ice.records.values()][0];
+ for(let i=0;i<3;i++) {
+  const ready=b.messages.filter(m=>m.type==='transport_ready').at(-1);
+  assert.equal(ready.listener_id,'alpha');assert.equal(ready.dialer_id,'beta');assert.equal(ready.profile,FIXED_PROFILE);
+  await r.webSocketMessage(b,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'fixed'}));
+ }
+ const replacement=f.socket();
+ await r.webSocketMessage(replacement,JSON.stringify({...jb,relay_only:true}));
+ assert.ok(a.messages.some(m=>m.code==='fixed_relay_conflict'));
+ assert.ok(replacement.messages.some(m=>m.code==='fixed_relay_conflict'));
+ assert.equal(r.ice.records.size,0);
+});
 
 test('version negotiation only falls back when both sides advertise legacy',()=>{
  assert.equal(negotiateProfile({transport_profiles:[ICE_PROFILE]},{transport_profiles:[ICE_PROFILE]}),ICE_PROFILE);

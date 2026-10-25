@@ -32,14 +32,14 @@ func TestParseTransportDefaultsAndExplicitOverrides(t *testing.T) {
 }
 
 func TestPreferredNamesAreStrictAndSeparateFromWireProfiles(t *testing.T) {
-	for _, preferred := range []string{PreferredICE, PreferredIPv6} {
+	for _, preferred := range []string{PreferredICE, PreferredIPv6, "auto"} {
 		cfg := validConfig()
 		cfg.Transport.Preferred = preferred
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(preferred, err)
 		}
 	}
-	for _, old := range []string{ProfileICE, ProfileLegacy, "auto", "legacy", "ICE", "IPv6"} {
+	for _, old := range []string{ProfileICE, ProfileLegacy, ProfileFixed, "legacy", "ICE", "IPv6"} {
 		cfg := validConfig()
 		cfg.Transport.Preferred = old
 		if err := cfg.Validate(); err == nil {

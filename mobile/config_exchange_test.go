@@ -31,10 +31,15 @@ func TestCLIExchangeValidatesConfiguredServer(t *testing.T) {
 }
 
 func TestCLIExchangeRejectsOldPreferredAndExportsShortNames(t *testing.T) {
-	for _, name := range []string{"ice-quic-mux-v1", "legacy-ipv6-quic-v2", "legacy", "auto"} {
+	for _, name := range []string{"ice-quic-mux-v1", "legacy-ipv6-quic-v2", "fixed-quic-mux-v1", "legacy"} {
 		if _, err := DecodeCLIConfig("transport:\n  preferred: " + name + "\n"); err == nil {
 			t.Fatal("old preferred accepted", name)
 		}
+	}
+	text, err := DecodeCLIConfig("transport:\n  preferred: auto\n")
+	var doc exchangeConfig
+	if err != nil || json.Unmarshal([]byte(text), &doc) != nil || doc.Transport.Preferred != "ice" || !doc.Transport.AllowLegacy {
+		t.Fatal("auto did not normalize to ICE with legacy support", text, err)
 	}
 	for _, name := range []string{"ice", "ipv6"} {
 		text, err := EncodeCLIConfig(`{"transport":{"preferred":"`+name+`"},"provide":[],"consume":[]}`, false)

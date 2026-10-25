@@ -20,6 +20,9 @@ type iceSignalMessage struct {
 	TransportProfiles   []string            `json:"transport_profiles,omitempty"`
 	SessionVersions     []int               `json:"session_versions,omitempty"`
 	Profile             string              `json:"profile,omitempty"`
+	FixedEndpoint       string              `json:"fixed_endpoint,omitempty"`
+	ListenerID          string              `json:"listener_id,omitempty"`
+	DialerID            string              `json:"dialer_id,omitempty"`
 	SessionVersion      int                 `json:"session_version,omitempty"`
 	RequestID           string              `json:"request_id,omitempty"`
 	TransportID         string              `json:"transport_id,omitempty"`
@@ -65,16 +68,19 @@ type transportLease struct {
 }
 
 type PeerTransportSnapshot struct {
-	PeerID      string `json:"peer_id"`
-	TransportID string `json:"transport_id"`
-	Generation  uint64 `json:"generation,string"`
-	Profile     string `json:"profile"`
-	Voice       bool   `json:"voice,omitempty"`
-	State       string `json:"state"`
-	Phase       string `json:"phase"`
-	PathType    string `json:"path_type,omitempty"`
-	LocalType   string `json:"local_type,omitempty"`
-	RemoteType  string `json:"remote_type,omitempty"`
+	PeerID        string `json:"peer_id"`
+	TransportID   string `json:"transport_id"`
+	Generation    uint64 `json:"generation,string"`
+	Profile       string `json:"profile"`
+	FixedEndpoint string `json:"fixed_endpoint,omitempty"`
+	ListenerID    string `json:"listener_id,omitempty"`
+	DialerID      string `json:"dialer_id,omitempty"`
+	Voice         bool   `json:"voice,omitempty"`
+	State         string `json:"state"`
+	Phase         string `json:"phase"`
+	PathType      string `json:"path_type,omitempty"`
+	LocalType     string `json:"local_type,omitempty"`
+	RemoteType    string `json:"remote_type,omitempty"`
 	// LocalRelayProtocol is the TURN access protocol used by this process.
 	// RelayProtocol is kept as a compatibility alias for older hosts.
 	LocalRelayProtocol  string   `json:"local_relay_protocol,omitempty"`

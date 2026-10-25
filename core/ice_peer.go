@@ -17,28 +17,41 @@ import (
 )
 
 type iceAttempt struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	ready       iceSignalMessage
-	events      chan iceSignalMessage
-	failed      chan error
-	diagnostics *iceDiagnostics
+	ctx          context.Context
+	cancel       context.CancelFunc
+	ready        iceSignalMessage
+	events       chan iceSignalMessage
+	failed       chan error
+	diagnostics  *iceDiagnostics
+	incoming     chan *fixedIncoming
+	fixedClaimed bool // protected by icePeer.mu
 }
 type liveICETransport struct {
-	ready      iceSignalMessage
-	mux        *muxPeer
-	agent      *ice.Agent
-	connection *ice.Conn
-	packet     *icePacketConn
-	quic       *quic.Transport
-	session    *quic.Conn
-	cancel     context.CancelFunc
-	expires    int64
-	once       sync.Once
+	ready        iceSignalMessage
+	mux          *muxPeer
+	agent        *ice.Agent
+	connection   *ice.Conn
+	packet       *icePacketConn
+	quic         *quic.Transport
+	session      *quic.Conn
+	cancel       context.CancelFunc
+	expires      int64
+	once         sync.Once
+	fixedCleanup func()
 }
 
 func (t *liveICETransport) close() {
-	t.once.Do(func() { t.cancel(); t.mux.close(); _ = t.quic.Close(); _ = t.packet.Close(); _ = t.agent.Close() })
+	t.once.Do(func() {
+		t.cancel()
+		t.mux.close()
+		if t.fixedCleanup != nil {
+			t.fixedCleanup()
+			return
+		}
+		_ = t.quic.Close()
+		_ = t.packet.Close()
+		_ = t.agent.Close()
+	})
 }
 
 type icePeer struct {
@@ -59,7 +72,7 @@ type icePeer struct {
 
 func newICEPeer(c *iceCoordinator, m iceSignalMessage) *icePeer {
 	ctx, cancel := context.WithCancel(c.ctx)
-	p := &icePeer{coordinator: c, ctx: ctx, cancel: cancel, stats: PeerTransportSnapshot{PeerID: m.PeerDevice, TransportID: m.TransportID, Profile: ProfileICE, Voice: m.Voice, State: "connecting"}}
+	p := &icePeer{coordinator: c, ctx: ctx, cancel: cancel, stats: PeerTransportSnapshot{PeerID: m.PeerDevice, TransportID: m.TransportID, Profile: m.Profile, Voice: m.Voice, State: "connecting"}}
 	p.workers.Add(1)
 	go func() { defer p.workers.Done(); p.maintain() }()
 	return p
@@ -105,6 +118,8 @@ func (p *icePeer) update(m iceSignalMessage) {
 	p.online = true
 	identityChanged := old.PeerFingerprint != "" && (old.PeerFingerprint != m.PeerFingerprint || old.PeerRuntimeID != m.PeerRuntimeID)
 	p.ready = m
+	p.stats.Profile = m.Profile
+	p.stats.FixedEndpoint, p.stats.ListenerID, p.stats.DialerID = m.FixedEndpoint, m.ListenerID, m.DialerID
 	p.stats.Voice = m.Voice
 	p.stats.LeaseUntil = m.LeaseUntil
 	p.stats.RelayPolicy = m.RelayPolicy
@@ -114,11 +129,11 @@ func (p *icePeer) update(m iceSignalMessage) {
 	}
 	p.stats.RelayOrder = slices.Clone(m.RelayOrder)
 	p.stats.PeerRelayOrder = slices.Clone(m.PeerRelayOrder)
-	fallbackNotice := customOrderConfigured && m.RelayRound == nil && !p.stats.RelayOrderFallback
-	p.stats.RelayOrderFallback = customOrderConfigured && m.RelayRound == nil
+	fallbackNotice := m.Profile == ProfileICE && customOrderConfigured && m.RelayRound == nil && !p.stats.RelayOrderFallback
+	p.stats.RelayOrderFallback = m.Profile == ProfileICE && customOrderConfigured && m.RelayRound == nil
 	p.stats.MappingCount = len(m.Mappings)
 	active := p.active
-	retireActive := identityChanged || (m.RelayRequired && active != nil && !relayReadyConforms(active.ready, m.RelayOnly))
+	retireActive := identityChanged || (active != nil && (active.ready.Profile != m.Profile || (m.Profile == ProfileFixed && (active.ready.FixedEndpoint != m.FixedEndpoint || active.ready.ListenerID != m.ListenerID)))) || (m.RelayRequired && active != nil && !relayReadyConforms(active.ready, m.RelayOnly))
 	if retireActive {
 		p.active = nil
 		if p.pending != nil {
@@ -133,14 +148,16 @@ func (p *icePeer) update(m iceSignalMessage) {
 			p.pending.cancel()
 		}
 		ctx, cancel := context.WithCancel(p.ctx)
-		a := &iceAttempt{ctx: ctx, cancel: cancel, ready: m, events: make(chan iceSignalMessage, maxICECandidates+4), failed: make(chan error, 1)}
+		a := &iceAttempt{ctx: ctx, cancel: cancel, ready: m, events: make(chan iceSignalMessage, maxICECandidates+4), failed: make(chan error, 1), incoming: make(chan *fixedIncoming, 1)}
 		p.pending = a
 		p.requestedGeneration = 0
 		p.terminal = false
 		p.stats.State = "connecting"
 		p.stats.Phase = m.Phase
 		p.stats.Generation = m.TransportGeneration
-		p.stats.Error = nil
+		if m.Profile != ProfileFixed || m.RetryAfterMS == 0 {
+			p.stats.Error = nil
+		}
 		p.stats.LocalCandidates = 0
 		p.stats.RemoteCandidates = 0
 		p.stats.LocalRelayProtocol = ""
@@ -149,7 +166,14 @@ func (p *icePeer) update(m iceSignalMessage) {
 		p.stats.DatagramLimit = 0
 		p.stats.CandidatePairs = nil
 		p.workers.Add(1)
-		go func() { defer p.workers.Done(); p.attempt(a) }()
+		go func() {
+			defer p.workers.Done()
+			if m.Profile == ProfileFixed {
+				p.attemptFixed(a)
+			} else {
+				p.attempt(a)
+			}
+		}()
 	}
 	p.mu.Unlock()
 	if fallbackNotice && p.coordinator.emit != nil {
@@ -202,7 +226,7 @@ func (p *icePeer) receive(m iceSignalMessage) {
 	p.mu.Lock()
 	a := p.pending
 	p.mu.Unlock()
-	if a == nil || m.TransportGeneration != a.ready.TransportGeneration {
+	if a == nil || a.ready.Profile == ProfileFixed || m.TransportGeneration != a.ready.TransportGeneration {
 		return
 	}
 	select {
@@ -266,8 +290,9 @@ func (p *icePeer) emitMapping(id, state, protocol string) {
 	p.mu.Lock()
 	peer := p.ready.PeerDevice
 	path := p.stats.RemoteAddress
+	profile := p.ready.Profile
 	p.mu.Unlock()
-	p.coordinator.emit(Event{Kind: "mapping", MappingID: id, Protocol: protocol, State: state, Peer: peer, Path: path, Profile: ProfileICE})
+	p.coordinator.emit(Event{Kind: "mapping", MappingID: id, Protocol: protocol, State: state, Peer: peer, Path: path, Profile: profile})
 }
 
 // Retire paths created without the new constraint before starting its generation.
@@ -296,7 +321,10 @@ func (p *icePeer) requireRelay(localOnly bool) {
 	}
 }
 func (p *icePeer) mappingError(id string, err error) {
-	p.coordinator.emit(Event{Kind: "mapping", MappingID: id, State: "error", Profile: ProfileICE, Error: classifyError(err)})
+	p.mu.Lock()
+	profile := p.ready.Profile
+	p.mu.Unlock()
+	p.coordinator.emit(Event{Kind: "mapping", MappingID: id, State: "error", Profile: profile, Error: classifyError(err)})
 }
 func (p *icePeer) restart(phase, reason string) {
 	p.mu.Lock()
@@ -338,6 +366,10 @@ func (p *icePeer) restartWithRound(round *int, phase, reason string) {
 		return
 	}
 	m := p.ready
+	if m.Profile == ProfileFixed {
+		phase = "fixed"
+		round = nil
+	}
 	p.requestedGeneration = m.TransportGeneration
 	p.stats.RetryCount++
 	p.mu.Unlock()
@@ -395,7 +427,7 @@ func (p *icePeer) renominate() {
 	}
 }
 func (p *icePeer) transportEvent(a *iceAttempt, state string, fault *Fault) {
-	p.coordinator.emit(Event{Kind: "transport", State: state, Peer: a.ready.PeerDevice, Profile: ProfileICE,
+	p.coordinator.emit(Event{Kind: "transport", State: state, Peer: a.ready.PeerDevice, Profile: a.ready.Profile,
 		Phase: a.ready.Phase, TransportGeneration: a.ready.TransportGeneration, Error: fault})
 }
 
@@ -406,7 +438,10 @@ func (p *icePeer) stateChanged() {
 	if p.coordinator.emit == nil {
 		return
 	}
-	p.coordinator.emit(Event{Kind: "transport", State: "changed", Peer: p.peerID(), Profile: ProfileICE})
+	p.mu.Lock()
+	peer, profile := p.ready.PeerDevice, p.ready.Profile
+	p.mu.Unlock()
+	p.coordinator.emit(Event{Kind: "transport", State: "changed", Peer: peer, Profile: profile})
 }
 func (p *icePeer) failed(a *iceAttempt, err error) {
 	if a.ctx.Err() != nil {
@@ -415,6 +450,9 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 	fault := classifyError(err)
 	if fault.Code == "network_error" {
 		fault = &Fault{Code: "ice_path_failed", Message: "当前网络路径尚未连通，正在尝试下一条路径"}
+		if a.ready.Profile == ProfileFixed {
+			fault = &Fault{Code: "fixed_path_failed", Message: "固定入口 " + a.ready.FixedEndpoint + " 连接失败：" + err.Error()}
+		}
 	}
 	p.mu.Lock()
 	if p.pending != a {
@@ -437,7 +475,9 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 	if fatal {
 		state = "error"
 	}
-	a.diagnostics.failed(err)
+	if a.diagnostics != nil {
+		a.diagnostics.failed(err)
+	}
 	p.transportEvent(a, state, fault)
 	if fatal {
 		report := signalMessage("transport_failed")
@@ -446,7 +486,9 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 		report.Code = fault.Code
 		_ = p.coordinator.send(report)
 	} else {
-		if a.ready.RelayPairing == relayPairingAll && a.ready.RelayRound != nil {
+		if a.ready.Profile == ProfileFixed {
+			p.restart("fixed", "path_failed")
+		} else if a.ready.RelayPairing == relayPairingAll && a.ready.RelayRound != nil {
 			limit := len(relayPairs(a.ready.RelayOrder, a.ready.PeerRelayOrder, true))
 			p.restartRound(nextICERound(*a.ready.RelayRound, limit), "", "path_failed")
 		} else if a.ready.RelayRound != nil {
@@ -1022,23 +1064,27 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 		if pending != nil {
 			s.PendingPhase = pending.ready.Phase
 		}
-		if pair, err := active.agent.GetSelectedCandidatePair(); err == nil && pair != nil {
-			// selectedICEPair refreshes the pair-derived fields. The remote TURN
-			// access protocol comes from the mux hello and is not present in ICE
-			// SDP, so preserve that separately reported value.
-			remoteRelayProtocol := s.RemoteRelayProtocol
-			selectedICEPair(&s, pair.Local, pair.Remote)
-			s.RemoteRelayProtocol = remoteRelayProtocol
+		if active.agent != nil {
+			if pair, err := active.agent.GetSelectedCandidatePair(); err == nil && pair != nil {
+				// selectedICEPair refreshes the pair-derived fields. The remote TURN
+				// access protocol comes from the mux hello and is not present in ICE
+				// SDP, so preserve that separately reported value.
+				remoteRelayProtocol := s.RemoteRelayProtocol
+				selectedICEPair(&s, pair.Local, pair.Remote)
+				s.RemoteRelayProtocol = remoteRelayProtocol
+			}
+			if pair, ok := active.agent.GetSelectedCandidatePairStats(); ok {
+				s.RTTMS = int64(pair.CurrentRoundTripTime * 1000)
+			}
+			s.CandidatePairs = candidatePairSnapshots(active.agent)
 		}
-		if pair, ok := active.agent.GetSelectedCandidatePairStats(); ok {
-			s.RTTMS = int64(pair.CurrentRoundTripTime * 1000)
-		}
-		s.CandidatePairs = candidatePairSnapshots(active.agent)
 		if active.session != nil {
 			s.DatagramLimit = datagramLimit(active.session)
 		}
-		s.BytesSent = active.connection.BytesSent()
-		s.BytesReceived = active.connection.BytesReceived()
+		if active.connection != nil {
+			s.BytesSent = active.connection.BytesSent()
+			s.BytesReceived = active.connection.BytesReceived()
+		}
 		s.DroppedDatagrams = active.mux.dropped.Load()
 		active.mux.mu.Lock()
 		s.ActiveChannels = 0
@@ -1050,6 +1096,9 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 		active.mux.mu.Unlock()
 	}
 	_, expires, state := p.coordinator.servers()
+	if s.Profile == ProfileFixed {
+		expires, state = 0, ""
+	}
 	s.RelayState = state
 	s.TURNExpiresAt = expires
 	return s

@@ -20,9 +20,10 @@ ICE 配置要求 WSS；本地 WS 测试需显式启用 `transport.allow_insecure
 | 配置 | 网络 profile | QUIC ALPN |
 | --- | --- | --- |
 | `transport.preferred: ice` | `ice-quic-mux-v1` | `hole-ice-mux-v1` |
+| `auto` / `ice` 且任一端公布固定入口 | `fixed-quic-mux-v1` | `hole-fixed-mux-v1` |
 | `transport.preferred: ipv6` | `legacy-ipv6-quic-v2` | `hole-v2` |
 
-配置只接受 `ice` / `ipv6` 短名称。省略 `transport` 保留 IPv6 模式；CLI `-transport auto`
+配置接受 `auto` / `ice` / `ipv6` 短名称。省略 `transport` 保留 IPv6 模式；`auto` 或 CLI `-transport auto`
 显式选择 ICE 并允许旧 IPv6 profile。原始 hole-v1 不参与当前互通。
 
 `allow_legacy: true` 用于与只支持旧 IPv6 profile 的对端协商，不是 ICE 连接失败后的降级开关。
@@ -30,6 +31,40 @@ ICE 配置要求 WSS；本地 WS 测试需显式启用 `transport.allow_insecure
 
 默认 STUN 为 `stun:stun.cloudflare.com:3478`；显式空 `ice.stun_urls` 仅收集本地候选。
 `turn` 默认使用 Worker 签发的短期凭据，TTL 为 6 小时；也支持手动 TURN 或关闭本机中继申请。
+
+## 固定入口直连
+
+共享核心在新版 join 的 `transport_profiles` 声明 `fixed-quic-mux-v1`；配置了
+`transport.fixed_endpoint` 的设备还发送 `fixed_endpoint: "host:port"`，只公布 `advertise`，
+不公布本机 `listen`。两端均不公布入口时沿用原策略；任一端公布时只选择固定 profile。
+另一端不支持该 profile 时报告 `protocol_mismatch`，不退回 ICE 或旧 IPv6。
+固定入口不能与任一端 `relay_only` 要求同时满足，Worker 返回 `fixed_relay_conflict`。
+
+Worker 持久化入口、方向、运行实例、证书指纹和代次。`transport_ready` 使用 `phase: fixed`，
+携带 `listener_id`、`dialer_id`、`fixed_endpoint`，`initiator_id` 等于 `dialer_id`；不携带
+ICE 中继轮次或配对字段。仅一端有入口时另一端拨号；两端均有时按设备名排序，先以较小端为
+监听方，失败后交替方向。固定 `transport_restart` 只接受 `phase: fixed`，以
+`expected_generation` 合并同一失败的双方请求；每次推进代次，并等待 1、2、4、8、15 秒，
+之后维持最多 15 秒。成功后清零退避。重连、切网、入口和身份变化重置协商代次与方向。
+
+每个运行实例持有一个固定 UDP 监听和 QUIC Transport，以独立 ALPN `hole-fixed-mux-v1`
+接受多个授权对端；连接关闭只释放该连接。拨号使用平台提供的网络绑定、UDP socket 与 DNS，
+每次尝试重新解析域名；本机已有同地址族的固定 socket 时复用其 Transport。
+单次拨号、TLS 和 mux 控制认证总预算为 10 秒，退避时间另计。
+
+拨号方发起首个 HMX/1 控制流。共享监听先读取 hello 来定位传输，再核对证书指纹、
+profile、transport ID、两端 runtime、generation 和授权租约；认证前不创建业务通道。
+业务继续通过现有 OPEN_MAPPING / MAPPING_ACK 校验本机映射和对端角色，并复用同一 TCP / UDP
+会话协议与资源限额。无效身份、过时代次和未知映射不能进入业务数据面。
+
+固定路径不启动 ICE 候选收集、不发送 ICE 描述，也不申请 TURN；Worker 拒绝固定关系的
+ICE 消息及没有其他 ICE 关系的 TURN 请求。开启或变更本机入口时立即停止旧路径，随后重建
+信令与固定连接；保持身份和映射不变的应用会话按既有规则恢复。
+快照 `profile`、`phase`、`path_type: fixed`、入口、监听方、拨号方、实际本地 / 对端地址及
+`error` 描述当前状态。CLI 显示“固定入口直连”、公布入口、实际对端和失败原因。
+
+本功能只扩展当前协议，没有固定入口的旧版兼容分支；发布顺序为 Worker、两端核心。
+Android / Wear 的新版共享核心支持自动拨号，固定监听配置界面后续接入。
 
 ## ICE 与 TURN
 
@@ -83,7 +118,9 @@ Worker 在 `joined` / `transport_ready` 中以 `relay_only_policy: relay-only-v1
 本机开启仅中继后立即取消旧的无约束尝试并关闭其数据路径，不等待信令恢复；对端收到新约束
 时同样停止旧的无约束路径。仅中继端只发布 relay 候选，普通端仍可用 host / srflx 与之形成
 单跳中继。TURN 不可用时等待或报错，不降级纯直连或旧 IPv6 profile。
-旧 Worker 未声明支持时，仅中继客户端报告 `worker_upgrade_required`；普通模式继续兼容旧 Worker。
+仅中继协商要求 Worker 声明对应策略，否则报告 `worker_upgrade_required`。
+当前核心在 join 中统一声明固定入口 profile，ICE 模式也需使用接受新 profile 的 Worker；
+旧 IPv6 profile 的协商不变。
 
 manual URL 必须显式给出端口。`turn:HOST:PORT` 未写 `transport` 时支持 UDP 和 TCP，
 按 `turn.order` 选择并推导本轮接入协议；`turns:HOST:PORT` 仅支持 TLS。

@@ -53,6 +53,8 @@ type iceCoordinator struct {
 	voiceMu                  sync.RWMutex
 	voiceMembers             map[string]voiceRoomMember
 	voice                    *voiceRuntime
+	fixedMu                  sync.Mutex
+	fixed                    *fixedListener
 }
 
 func (c *iceCoordinator) voiceRuntimePtr() *voiceRuntime {
@@ -82,6 +84,20 @@ func (c *iceCoordinator) submit(r Request) {
 	old := c.desired
 	c.desired = r
 	c.configMu.Unlock()
+	if !reflect.DeepEqual(old.Config.Transport.FixedEndpoint, r.Config.Transport.FixedEndpoint) {
+		for _, p := range c.peerList() {
+			p.retireForFixedPolicy()
+		}
+		if r.Config.Transport.FixedEndpoint != nil {
+			c.mu.Lock()
+			legacy := c.legacy
+			c.mu.Unlock()
+			if legacy != nil {
+				legacy.lifecycleCancel()
+				_ = legacy.quicTransport.Close()
+			}
+		}
+	}
 	if old.Config.Voice.Enabled != r.Config.Voice.Enabled {
 		c.voiceMu.Lock()
 		previous := c.voice
@@ -101,7 +117,7 @@ func (c *iceCoordinator) submit(r Request) {
 			p.requireRelay(true)
 		}
 	}
-	if !reflect.DeepEqual(old.Config.ICE, r.Config.ICE) || !reflect.DeepEqual(old.Config.TURN, r.Config.TURN) || old.Config.Transport != r.Config.Transport {
+	if !reflect.DeepEqual(old.Config.ICE, r.Config.ICE) || !reflect.DeepEqual(old.Config.TURN, r.Config.TURN) || !reflect.DeepEqual(old.Config.Transport, r.Config.Transport) {
 		c.networkEpoch.Add(1)
 		c.turnMu.Lock()
 		c.turnServers = nil
@@ -177,6 +193,9 @@ func (c *iceCoordinator) run() error {
 		}
 		last = current
 		lastSet = true
+		if err := c.configureFixed(current); err != nil {
+			return err
+		}
 		select {
 		case <-c.reset:
 		default:
@@ -268,9 +287,9 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(signalPongWait)) })
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	profiles := []string{ProfileICE}
+	profiles := []string{ProfileICE, ProfileFixed}
 	var candidates []Candidate
-	if r.Config.Transport.AllowLegacy && !r.Config.ICE.RelayOnly {
+	if r.Config.Transport.AllowLegacy && !r.Config.ICE.RelayOnly && r.Config.Transport.FixedEndpoint == nil {
 		profiles = append(profiles, ProfileLegacy)
 		candidates, _ = platform.Candidates(ctx, r.Config, holePort)
 	}
@@ -284,6 +303,9 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS,
 		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll, RelayOnly: r.Config.ICE.RelayOnly}
 	join.Voice = r.Config.Voice.Enabled
+	if endpoint := r.Config.Transport.FixedEndpoint; endpoint != nil {
+		join.FixedEndpoint = endpoint.Advertise
+	}
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err = conn.WriteJSON(join); err != nil {
 		return err, false
@@ -406,49 +428,58 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			return nil
 		}
 		cfg := c.request().Config
-		if cfg.ICE.RelayOnly && m.RelayOnlyPolicy != relayOnlyPolicy {
-			return &Fault{Code: "worker_upgrade_required", Message: "仅中继模式需要更新 Worker 以协商双方连接策略"}
-		}
-		if m.RelayOnlyPolicy != "" && (m.RelayOnlyPolicy != relayOnlyPolicy || m.RelayOnly != cfg.ICE.RelayOnly || m.RelayRequired != (m.RelayOnly || m.PeerRelayOnly)) {
-			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的仅中继约束与双方策略不一致"}
-		}
-		if m.RelayRequired && (m.Phase == "direct" || (m.RelayRound != nil && *m.RelayRound == 0)) {
-			return &Fault{Code: "protocol_mismatch", Message: "仅中继连接不能进入直连轮次"}
-		}
-		if m.RelayPairing != "" && m.RelayPairing != relayPairingAll {
-			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不支持的中继配对策略"}
-		}
-		if m.RelayPolicy != "" && m.RelayPolicy != RelayPolicyUDPTCPTLS {
-			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不受支持的中继策略"}
-		}
-		if m.RelayPairing == relayPairingAll {
-			if m.RelayRound == nil || !validRelayOrder(m.RelayOrder) || !validRelayOrder(m.PeerRelayOrder) ||
-				m.Phase == "" || m.Phase != pairedRelayPhase(*m.RelayRound, m.RelayOrder, m.PeerRelayOrder, cfg.DeviceName < m.PeerDevice) {
-				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继配对轮次无效"}
+		if m.Profile == ProfileFixed {
+			if err := c.validateFixedReady(m); err != nil {
+				return err
 			}
-		} else if m.RelayRound != nil {
-			if !validRelayRound(*m.RelayRound, m.Phase, m.RelayOrder, m.PeerRelayOrder) {
-				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继轮次或本机路径阶段无效"}
-			}
-		} else if !validRelayPhase(m.RelayPolicy, m.Phase) {
-			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继策略或路径阶段不受支持"}
-		}
-		if len(m.RelayOrder) > 5 || len(m.PeerRelayOrder) > 5 {
-			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继顺序超出限制"}
-		}
-		if m.RelayRound == nil {
-			// Old workers and clients communicate named phases. Their shared
-			// policy remains authoritative, so custom local orders are ignored.
-			fallbackOrder := relayOrder(m.RelayPolicy, nil)
-			m.RelayOrder = fallbackOrder
-			m.PeerRelayOrder = slices.Clone(fallbackOrder)
 		} else {
-			localOrder := relayOrderForConfig(m.RelayPolicy, cfg.TURN)
-			if !slices.Equal(localOrder, m.RelayOrder) {
-				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的本机中继顺序与配置不一致"}
+			if cfg.Transport.FixedEndpoint != nil {
+				return &Fault{Code: "protocol_mismatch", Message: "已启用固定入口，协调服务不能选择其他连接方式"}
+			}
+			if cfg.ICE.RelayOnly && m.RelayOnlyPolicy != relayOnlyPolicy {
+				return &Fault{Code: "worker_upgrade_required", Message: "仅中继模式需要更新 Worker 以协商双方连接策略"}
+			}
+			if m.RelayOnlyPolicy != "" && (m.RelayOnlyPolicy != relayOnlyPolicy || m.RelayOnly != cfg.ICE.RelayOnly || m.RelayRequired != (m.RelayOnly || m.PeerRelayOnly)) {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的仅中继约束与双方策略不一致"}
+			}
+			if m.RelayRequired && (m.Phase == "direct" || (m.RelayRound != nil && *m.RelayRound == 0)) {
+				return &Fault{Code: "protocol_mismatch", Message: "仅中继连接不能进入直连轮次"}
+			}
+			if m.RelayPairing != "" && m.RelayPairing != relayPairingAll {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不支持的中继配对策略"}
+			}
+			if m.RelayPolicy != "" && m.RelayPolicy != RelayPolicyUDPTCPTLS {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不受支持的中继策略"}
+			}
+			if m.RelayPairing == relayPairingAll {
+				if m.RelayRound == nil || !validRelayOrder(m.RelayOrder) || !validRelayOrder(m.PeerRelayOrder) ||
+					m.Phase == "" || m.Phase != pairedRelayPhase(*m.RelayRound, m.RelayOrder, m.PeerRelayOrder, cfg.DeviceName < m.PeerDevice) {
+					return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继配对轮次无效"}
+				}
+			} else if m.RelayRound != nil {
+				if !validRelayRound(*m.RelayRound, m.Phase, m.RelayOrder, m.PeerRelayOrder) {
+					return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继轮次或本机路径阶段无效"}
+				}
+			} else if !validRelayPhase(m.RelayPolicy, m.Phase) {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继策略或路径阶段不受支持"}
+			}
+			if len(m.RelayOrder) > 5 || len(m.PeerRelayOrder) > 5 {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继顺序超出限制"}
+			}
+			if m.RelayRound == nil {
+				// Old workers and clients communicate named phases. Their shared
+				// policy remains authoritative, so custom local orders are ignored.
+				fallbackOrder := relayOrder(m.RelayPolicy, nil)
+				m.RelayOrder = fallbackOrder
+				m.PeerRelayOrder = slices.Clone(fallbackOrder)
+			} else {
+				localOrder := relayOrderForConfig(m.RelayPolicy, cfg.TURN)
+				if !slices.Equal(localOrder, m.RelayOrder) {
+					return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的本机中继顺序与配置不一致"}
+				}
 			}
 		}
-		if m.Profile != ProfileICE || m.SessionVersion != sessionProtocol || m.TransportID == "" || m.TransportGeneration == 0 || m.PeerRuntimeID == "" || len(m.PeerFingerprint) != 64 || m.PeerDevice == "" || len(m.Mappings) > maxPeerChannels {
+		if (m.Profile != ProfileICE && m.Profile != ProfileFixed) || m.SessionVersion != sessionProtocol || m.TransportID == "" || m.TransportGeneration == 0 || m.PeerRuntimeID == "" || len(m.PeerFingerprint) != 64 || m.PeerDevice == "" || len(m.Mappings) > maxPeerChannels {
 			return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的 ICE 能力或传输信息无效"}
 		}
 		if m.Voice && !cfg.Voice.Enabled {
@@ -457,6 +488,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		expected := c.deviceID()
 		if m.PeerDevice < expected {
 			expected = m.PeerDevice
+		}
+		if m.Profile == ProfileFixed {
+			expected = m.DialerID
 		}
 		if m.InitiatorID != expected {
 			return &Fault{Code: "protocol_mismatch", Message: "双方连接角色不一致"}
@@ -493,7 +527,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		}
 		c.mu.Unlock()
 		p.update(m)
-		c.requestTURN()
+		if m.Profile != ProfileFixed {
+			c.requestTURN()
+		}
 	case "ice_description", "ice_candidate":
 		c.mu.Lock()
 		p := c.peers[m.TransportID]
@@ -505,7 +541,7 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if m.Profile != "" && m.Profile != ProfileLegacy {
 			return nil
 		}
-		if !sessionRequest.Config.Transport.AllowLegacy || c.request().Config.ICE.RelayOnly {
+		if !sessionRequest.Config.Transport.AllowLegacy || c.request().Config.ICE.RelayOnly || c.request().Config.Transport.FixedEndpoint != nil {
 			return &Fault{Code: "protocol_mismatch", Message: "对端仅支持 IPv6 直连协议，当前配置未启用兼容模式"}
 		}
 		if err := c.legacyMapping(m.SignalMessage, platform); err != nil {
@@ -751,6 +787,7 @@ func (c *iceCoordinator) close() {
 	for _, p := range c.peerList() {
 		p.close()
 	}
+	c.closeFixed()
 	c.closeLegacy()
 	if voice := c.voiceRuntimePtr(); voice != nil {
 		voice.close()
@@ -849,7 +886,7 @@ func (c *iceCoordinator) leaseRequest() (iceSignalMessage, bool) {
 func (c *iceCoordinator) needsTURN() bool {
 	for _, p := range c.peerList() {
 		p.mu.Lock()
-		needed := p.online && !p.closed && ((p.pending != nil && p.pending.ready.Phase != "direct") || (p.active != nil && p.active.expires > 0))
+		needed := p.online && !p.closed && p.ready.Profile != ProfileFixed && ((p.pending != nil && p.pending.ready.Phase != "direct") || (p.active != nil && p.active.expires > 0))
 		p.mu.Unlock()
 		if needed {
 			return true

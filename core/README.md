@@ -1,7 +1,13 @@
 # 共享 Go 核心
 
-`hole/core` 供 CLI 与 Android 共用，实现信令、ICE / QUIC、TCP / UDP 映射及可恢复应用会话。
+`hole/core` 供 CLI 与 Android 共用，实现信令、ICE / 固定入口 QUIC、TCP / UDP 映射及可恢复应用会话。
 本包不读取配置文件、不解析命令行参数，不安装进程信号处理器，也不退出宿主进程。
+
+`transport.fixed_endpoint` 在 `auto` / `ice` 配置下提供固定 UDP 监听与公布地址。
+对端无需填写连接地址；新版核心自动处理 Worker 下发的 `fixed-quic-mux-v1`，复用平台网络
+绑定、DNS、mux、会话恢复与限额。固定设备对失败只重试固定入口，不启动 ICE / TURN。
+Android / Wear 重打包新版 AAR 后具备自动拨号能力，固定入口配置界面后续接入。
+配置和部署顺序见 [固定入口直连](../docs/PROTOCOL.md#固定入口直连)。
 
 配置中的 `voice.enabled` 默认关闭。开启后，核心只接受平台提供的 48 kHz、单声道、PCM16
 20 ms 帧（每帧 960 个采样），通过同一 room 的 voice-only ICE / QUIC 传输发送 Opus 帧。

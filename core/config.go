@@ -139,6 +139,7 @@ func ParseConfig(data []byte) (Config, error) {
 // validate 检查跨字段的约束。单字段的格式（protocol://host:port、host:port、
 // 端口范围）已在 YAML 反序列化时由自定义 UnmarshalYAML 把关并带出出错行号。
 func (cfg Config) Validate() error {
+	cfg = cfg.normalized()
 	if err := cfg.validateTransport(); err != nil {
 		return err
 	}

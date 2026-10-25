@@ -1,6 +1,6 @@
 # Worker 部署
 
-`worker.js` 提供房间 WebSocket 协调，`worker_ice.mjs` 提供 ICE 关系管理和 TURN broker。
+`worker/worker.js` 提供房间 WebSocket 协调，`worker/worker_ice.mjs` 提供 ICE / 固定入口关系管理和 TURN broker。
 Worker 不转发业务数据；客户端之间使用直连 QUIC 或通过 TURN 中继。
 
 ## 准备
@@ -37,7 +37,14 @@ wrangler deploy
 TURN 主凭据只配置在 Worker；客户端接收按需签发的短期凭据。
 
 `build.sh` 只构建客户端，不执行上述部署命令。
-协议升级按 **Worker → CLI / Android / Wear** 顺序部署，保留与旧客户端所需的兼容 profile。
+协议升级按 **Worker → CLI / Android / Wear** 顺序部署。
+固定入口功能直接扩展当前协议，需要 Worker 和两端核心同步升级，不增加固定协议的旧版兼容分支。
+新版成员声明 `fixed-quic-mux-v1`，有固定监听的成员在 join 中公布 `fixed_endpoint`。
+Worker 持久化并在 `transport_ready` 中返回入口、监听方和拨号方；一端配置后，整对设备仅使用
+固定路径，失败只推进代次和方向，不转入 ICE 或 TURN。与任一端仅中继要求冲突时返回
+`fixed_relay_conflict`。Worker 本身不监听隧道 UDP，也不需要新增绑定或迁移。
+入口设备需自行开放或映射 UDP 端口；业务 `consume.expose` 端口按服务协议开放。
+域名解析、QUIC 连接和业务转发在客户端进行。真实公网地址、端口映射和防火墙需另外验收。
 Worker 与新客户端均支持 `relay_order` / `relay_round` 后才会启用每端独立 TURN 顺序；
 进一步由双方声明 `relay_pairing: all-pairs-v1` 启用完整跨类型组合，最多 25 个中继轮次，
 避免可用类型处于不同序位时无法相遇。新旧客户端混用时继续原轮次计划；能力变化会重置代次。
