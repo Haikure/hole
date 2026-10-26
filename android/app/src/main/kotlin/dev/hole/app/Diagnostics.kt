@@ -3,7 +3,10 @@ package dev.hole.app
 import android.os.Build
 import dev.hole.corebridge.CoreSnapshot
 import dev.hole.app.ui.peerPathLabel
-import dev.hole.app.ui.phaseLabel
+import dev.hole.app.ui.peerPhaseLabel
+import dev.hole.app.ui.isFixedPeer
+import dev.hole.app.ui.fixedPeerDetails
+import dev.hole.app.ui.fixedConnectionIssue
 import dev.hole.app.ui.relayOrderLabel
 import java.net.URI
 import java.net.URLEncoder
@@ -35,6 +38,7 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
         appendLine("电池不优化 ${background.batteryExempt} · 后台受限 ${background.backgroundRestricted} · 通知 ${background.notificationsEnabled}")
         appendLine("开机恢复 ${background.resumeAfterBoot} · ${background.lastResumeError}")
         snapshot.errorMessage?.let { appendLine("错误 ${snapshot.errorCode}: $it") }
+        fixedConnectionIssue(snapshot.errorCode)?.let { appendLine(it) }
         for (mapping in snapshot.mappings) {
             appendLine("映射 ${mapping.id}: ${mapping.role} / ${mapping.protocol} / ${mapping.state} / ${mapping.endpoint}")
             appendLine("  对端 ${mapping.peer} · 路径 ${mapping.path} · TCP ${mapping.tcpSessions} / UDP ${mapping.udpSessions}")
@@ -44,14 +48,20 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
         appendLine("设备线路（结构化状态，不含原始日志或候选凭据）")
         for (peer in snapshot.peers) {
             appendLine("设备 ${peer.peerId}：${peer.state} / ${peerPathLabel(peer)}")
-            appendLine("  本机接入 ${peer.localRelayProtocol.ifBlank { peer.relayProtocol }.ifBlank { "非本机中继" }} · 对端接入 ${peer.remoteRelayProtocol.ifBlank { "未上报" }} · 中继使用方 ${peer.relaySide}")
-            appendLine("  本机 TURN 顺序 ${relayOrderLabel(peer.relayOrder)} · 对端 TURN 顺序 ${relayOrderLabel(peer.peerRelayOrder)} · 轮次 ${peer.relayRound}${if (peer.relayOrderFallback) " · 已回退默认顺序" else ""}")
-            appendLine("  本地 ${peer.localAddress} (${peer.localType}) · 对端 ${peer.remoteAddress} (${peer.remoteType})")
+            if (isFixedPeer(peer)) {
+                fixedPeerDetails(peer).forEach { (label, value) -> appendLine("  $label $value") }
+            } else {
+                appendLine("  本机接入 ${peer.localRelayProtocol.ifBlank { peer.relayProtocol }.ifBlank { "非本机中继" }} · 对端接入 ${peer.remoteRelayProtocol.ifBlank { "未上报" }} · 中继使用方 ${peer.relaySide}")
+                appendLine("  本机 TURN 顺序 ${relayOrderLabel(peer.relayOrder)} · 对端 TURN 顺序 ${relayOrderLabel(peer.peerRelayOrder)} · 轮次 ${peer.relayRound}${if (peer.relayOrderFallback) " · 已回退默认顺序" else ""}")
+                appendLine("  本地 ${peer.localAddress} (${peer.localType}) · 对端 ${peer.remoteAddress} (${peer.remoteType})")
+            }
             appendLine("  通道 ${peer.activeChannels}/${peer.mappingCount} · RTT ${peer.rttMs} ms · 建连 ${peer.connectMs} ms")
             appendLine("  线路发送 ${peer.bytesSent} / 接收 ${peer.bytesReceived} 字节 · UDP 丢弃 ${peer.droppedDatagrams}")
-            appendLine("  ${peer.transportId} / generation ${peer.generation} / phase ${peer.phase}（${phaseLabel(peer.phase)}） / retries ${peer.retryCount}")
-            appendLine("  中继状态 ${peer.relayState} · 凭据到期 ${peer.turnExpiresAt} · 授权到期 ${peer.leaseUntil}")
+            appendLine("  ${peer.transportId} / generation ${peer.generation} / phase ${peer.phase}（${peerPhaseLabel(peer)}） / retries ${peer.retryCount}")
+            if (!isFixedPeer(peer)) appendLine("  中继状态 ${peer.relayState} · 凭据到期 ${peer.turnExpiresAt}")
+            appendLine("  授权到期 ${peer.leaseUntil}")
             peer.errorCode?.let { appendLine("  当前问题 $it: ${peer.errorMessage.orEmpty()}") }
+            fixedConnectionIssue(peer.errorCode)?.let { appendLine("  $it") }
         }
     }
     return redactDiagnostic(report, listOf(config.password, config.token, config.turnCredential))

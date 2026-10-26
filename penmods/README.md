@@ -93,7 +93,7 @@ bash -n penmods/build.sh
 python3 -m unittest discover -s scripts -p 'test_build.py'
 go test -race -count=1 ./desktop ./cmd/hole-desktop-core
 go vet ./desktop ./cmd/hole-desktop-core
-node --test penmods/tests/config.test.mjs
+node --test penmods/tests/*.test.mjs
 QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input penmods/tests
 ./penmods/build.sh
 ```
@@ -101,6 +101,7 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input penmods
 脚本测试覆盖核心构建参数、源码版本更新、完整打包和构建失败时保留已有产物。
 Node 测试执行 `Main.qml` 中的配置读写函数，覆盖 TURN 来源切换、仅 IPv6、页面重建、旧配置兼容及未完成草稿的保留；
 宿主插件和保存接口使用替身，不代表真实设备落盘验收。
+快照测试执行实际 QML 格式化函数，并复用桌面固定快照，覆盖固定通道状态、地址族、角色互换、缺失字段和 ICE / TURN 显示兼容。
 QML 交互测试需要宿主 Qt 5 的 QtQuick、QtQuick.Layouts 和 QtTest 模块，覆盖点按启停类型、
 跨行排序、跨区拖动、取消、小屏幕边缘滚动、普通滑动及三种连接方式的配置兼容；不依赖 PenMods 宿主页面。
 本地构建与测试不代表 PenMods 真机验收。
@@ -146,3 +147,5 @@ QML 交互测试需要宿主 Qt 5 的 QtQuick、QtQuick.Layouts 和 QtTest 模�
 配置在最后一次编辑 600ms 后自动保存。启动开关保持开启时，完整且通过表单校验的配置会自动提交给共享核心 `apply_config`；尚未填完整的编辑只保存，补齐后会自动提交。核心按 Android 相同的重配逻辑处理新配置，并保留仍符合新旧配置和连接作用域的应用会话。
 
 “运行状态”中的映射行显示角色、状态、协议、地址、对端、会话数和收 / 发字节，每个对端通道按字段分行显示状态、路径、地址族、本机连接类型与地址、对端连接类型与地址、中继使用方、探测阶段、延迟和线路流量。“收 / 发”按本机方向统计：`read_bytes` 是从本地端点读入并转发给对端的字节，显示为“发”；`written_bytes` 是从对端接收并写入本地端点的字节，显示为“收”。映射行统计当前运行中映射累计的应用数据，通道行的线路流量按设备线路累计并包含 ICE / QUIC 协议开销，因此大于映射合计，也不作为中继账单。`local_relay_protocol` 与 `remote_relay_protocol` 分别对应两侧实际中继接入方式；旧版 `relay_protocol` 仅作为本机字段的兼容回退。路径尚未选定时，探测阶段只显示一次，不在路径摘要中重复显示。
+
+固定通道显示“固定入口直连”及已上报的地址族，建连与重试状态取自核心；公布入口、监听方、拨号方和实际两端地址分别分行显示，缺失字段省略。固定通道隐藏 TURN 顺序等 ICE 专用信息，保留线路统计，失败提示明确仅重试固定入口。沿用现有滚动布局，固定监听配置界面尚未接入。

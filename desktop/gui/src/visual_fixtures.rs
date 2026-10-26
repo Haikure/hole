@@ -5,6 +5,26 @@ use slint::{ComponentHandle, ModelRc, VecModel};
 fn model<T: Clone + 'static>(values: Vec<T>) -> ModelRc<T> { ModelRc::new(VecModel::from(values)) }
 
 pub fn apply(window: &MainWindow, scenario: &str) {
+    if scenario == "fixed" {
+        apply(window, "running");
+        let snapshot = fixed_snapshot();
+        let app = window.global::<App>();
+        let mut status = app.get_status();
+        status.peers_active = "1".into(); status.peers_total = snapshot.peers.len().to_string().into();
+        status.active_channels = "1".into(); status.total_channels = "1".into();
+        app.set_status(status);
+        app.set_peers(model(snapshot.peers.iter().map(|p| crate::controller::PeerData::from_peer(p).into_row()).collect()));
+        app.set_runtime_mappings(model(snapshot.mappings.iter().map(|m| MappingRow {
+            id: m.id.clone().into(), role: m.role.clone().into(), role_label: "使用服务".into(),
+            protocol: m.protocol.to_uppercase().into(), state: m.state.clone().into(),
+            state_label: crate::snapshot::mapping_label(&m.state).into(), kind: "good".into(),
+            endpoint: m.endpoint.clone().into(), peer: m.peer.clone().into(), enabled: true,
+            details: model(vec![KV { key: "传输方式".into(), value: crate::snapshot::profile_label(&m.profile).into() }]),
+            ..Default::default()
+        }).collect()));
+        app.set_voice_peers(model(snapshot.voice.peers));
+        return;
+    }
     if !["empty", "running", "reconnecting", "error", "long-list"].contains(&scenario) { return; }
     let app = window.global::<App>();
     let running = scenario != "empty";
@@ -76,4 +96,8 @@ pub fn apply(window: &MainWindow, scenario: &str) {
         name:"巡检笔记本".into(),state:"已连接".into(),media:"Opus".into(),path:"IPv6".into(),
         bitrate:"32 kbit/s".into(),stats:"发送 1200 · 接收 1250".into(),buffering:"抖动缓冲 40ms".into(),error:"".into(),
     }] } else { vec![] }));
+}
+
+pub(crate) fn fixed_snapshot() -> crate::snapshot::Snapshot {
+    crate::snapshot::parse_snapshot(&serde_json::from_str(include_str!("../tests/fixtures/fixed_snapshot.json")).unwrap()).unwrap()
 }

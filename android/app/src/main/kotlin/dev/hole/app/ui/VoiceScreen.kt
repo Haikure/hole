@@ -234,7 +234,7 @@ private fun VoicePeerRow(peer: VoicePeerSnapshot) {
                 Text(peer.peerId.ifBlank { "未知设备" }, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 10.dp))
             }
             Text(
-                "${peerStateLabel(peer.state)} · ${peer.path.ifBlank { "路径待确认" }} · ${peer.bitrate} bit/s",
+                "${peerStateLabel(peer.state)} · ${voicePathLabel(peer.path)} · ${peer.bitrate} bit/s",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

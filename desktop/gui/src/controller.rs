@@ -42,7 +42,7 @@ struct MappingData {
 }
 
 #[derive(Clone, Default)]
-struct PeerData {
+pub(crate) struct PeerData {
     peer_id: String,
     transport_id: String,
     state_label: String,
@@ -77,7 +77,55 @@ impl MappingData {
 }
 
 impl PeerData {
-    fn into_row(self) -> PeerRow {
+    pub(crate) fn from_peer(p: &snap::Peer) -> Self {
+        let fixed = snap::is_fixed_peer(p);
+        let mut details = vec![kv("连接过程", &snap::peer_phase_label(p))];
+        if fixed {
+            details.extend(snap::fixed_peer_details(p).into_iter().map(|(key, value)| kv(key, &value)));
+        } else {
+            details.extend([
+                kv("本机 TURN 顺序", &snap::relay_order_label(&p.relay_order)),
+                kv("对端 TURN 顺序", &snap::relay_order_label(&p.peer_relay_order)),
+            ]);
+            if p.relay_order_fallback {
+                details.push(kv("顺序状态", "对端或协调服务不支持自定义顺序，已回退默认顺序"));
+            } else if p.relay_round > 0 {
+                details.push(kv("共享中继轮次", &format!("第 {} 轮", p.relay_round)));
+            }
+            if p.path_type == "relay" {
+                details.push(kv("中继使用方", match p.relay_side.as_str() { "both" => "本机与对端", "local" => "本机", "remote" => "对端", _ => "等待确认" }));
+                details.push(kv("中继接入", &snap::relay_path_label(p)));
+            }
+            details.extend([
+                kv("本机连接", &snap::selected_connection_label(&p.local_type, &p.local_address)),
+                kv("对端连接", &snap::selected_connection_label(&p.remote_type, &p.remote_address)),
+                kv("已发现候选地址", &format!("本机 {} · 对端 {}", p.local_candidates, p.remote_candidates)),
+                kv("本机中继来源", match p.relay_state.as_str() { "ready" => "短期凭据已就绪", "manual" => "手动配置", "off" => "不申请本机中继", "unavailable" | "expired" => "暂不可用，直连仍可使用", _ => "准备中" }),
+            ]);
+            if p.turn_expires_at != 0 {
+                details.push(kv("中继凭据剩余时间", &snap::remaining_time(p.turn_expires_at)));
+            }
+        }
+        details.extend([
+            kv("建连耗时", &if p.connect_ms == "0" { "尚未完成".to_string() } else { format!("{} ms", p.connect_ms) }),
+            kv("路径重试", &format!("{} 次", p.retry_count)),
+            kv("丢弃的 UDP 报文", &p.dropped_datagrams),
+            kv("授权确认剩余时间", &snap::remaining_time(p.lease_until)),
+            kv("传输标识", &format!("{} · 第 {} 次路径", p.transport_id, p.generation)),
+        ]);
+        Self { details,
+            peer_id: p.peer_id.clone(), transport_id: p.transport_id.clone(),
+            state_label: snap::peer_state_label(&p.state).into(),
+            path_label: snap::peer_path_label(p), kind: snap::peer_kind(&p.state).into(),
+            channels: format!("{} / {}", p.active_channels, p.mapping_count),
+            rtt: if p.rtt_ms == "0" { "正在测量".to_string() } else { format!("{} ms", p.rtt_ms) },
+            traffic: format!("{} / {}", snap::format_bytes(p.bytes_sent), snap::format_bytes(p.bytes_received)),
+            note: if p.pending_phase.is_empty() { String::new() } else { format!("同时{}，新路径就绪后切换。", snap::phase_label(&p.pending_phase)) },
+            error: p.error.as_ref().filter(|_| !matches!(p.state.as_str(), "active" | "switching")).map(|e| snap::connection_issue(&e.code).to_string()).unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn into_row(self) -> PeerRow {
         PeerRow {
             peer_id: self.peer_id.into(),
             transport_id: self.transport_id.into(),
@@ -913,7 +961,7 @@ impl Worker {
             .mappings
             .iter()
             .map(|m| MappingData { details: vec![
-                    kv("传输方式", match m.profile.as_str() { "legacy-ipv6-quic-v2" => "IPv6 直连", "ice-quic-mux-v1" => "ICE · 多服务共享 QUIC", _ => "等待协商" }),
+                    kv("传输方式", snap::profile_label(&m.profile)),
                     kv("线路地址", if m.path.is_empty() { "由设备线路统一承载" } else { &m.path }),
                     kv("TCP 应用上行 / 下行", &format!("{} / {}", snap::format_bytes_str(&m.tcp_read_bytes), snap::format_bytes_str(&m.tcp_written_bytes))),
                     kv("TCP 待确认数据", &snap::format_bytes_str(&m.replay_bytes)),
@@ -940,48 +988,7 @@ impl Worker {
         self.snapshot
             .peers
             .iter()
-            .map(|p| {
-                let mut details = vec![
-                    kv("连接过程", &snap::peer_phase_label(p)),
-                    kv("本机 TURN 顺序", &snap::relay_order_label(&p.relay_order)),
-                    kv("对端 TURN 顺序", &snap::relay_order_label(&p.peer_relay_order)),
-                ];
-                if p.relay_order_fallback {
-                    details.push(kv("顺序状态", "对端或协调服务不支持自定义顺序，已回退默认顺序"));
-                } else if p.relay_round > 0 {
-                    details.push(kv("共享中继轮次", &format!("第 {} 轮", p.relay_round)));
-                }
-                if p.path_type == "relay" {
-                    details.push(kv("中继使用方", match p.relay_side.as_str() { "both" => "本机与对端", "local" => "本机", "remote" => "对端", _ => "等待确认" }));
-                    details.push(kv("中继接入", &snap::relay_path_label(p)));
-                }
-                details.extend([
-                    kv("本机连接", &snap::selected_connection_label(&p.local_type, &p.local_address)),
-                    kv("对端连接", &snap::selected_connection_label(&p.remote_type, &p.remote_address)),
-                    kv("已发现候选地址", &format!("本机 {} · 对端 {}", p.local_candidates, p.remote_candidates)),
-                    kv("建连耗时", &if p.connect_ms == "0" { "尚未完成".to_string() } else { format!("{} ms", p.connect_ms) }),
-                    kv("路径重试", &format!("{} 次", p.retry_count)),
-                    kv("丢弃的 UDP 报文", &p.dropped_datagrams),
-                    kv("本机中继来源", match p.relay_state.as_str() { "ready" => "短期凭据已就绪", "manual" => "手动配置", "off" => "不申请本机中继", "unavailable" | "expired" => "暂不可用，直连仍可使用", _ => "准备中" }),
-                ]);
-                if p.turn_expires_at != 0 {
-                    details.push(kv("中继凭据剩余时间", &snap::remaining_time(p.turn_expires_at)));
-                }
-                details.push(kv("授权确认剩余时间", &snap::remaining_time(p.lease_until)));
-                details.push(kv("传输标识", &format!("{} · 第 {} 次路径", p.transport_id, p.generation)));
-                PeerData { details,
-                    peer_id: p.peer_id.clone().into(),
-                    transport_id: p.transport_id.clone().into(),
-                    state_label: snap::peer_state_label(&p.state).into(),
-                    path_label: snap::peer_path_label(p).into(),
-                    kind: snap::peer_kind(&p.state).into(),
-                    channels: format!("{} / {}", p.active_channels, p.mapping_count).into(),
-                    rtt: if p.rtt_ms == "0" { "正在测量".to_string() } else { format!("{} ms", p.rtt_ms) }.into(),
-                    traffic: format!("{} / {}", snap::format_bytes(p.bytes_sent), snap::format_bytes(p.bytes_received)).into(),
-                    note: if p.pending_phase.is_empty() { String::new() } else { format!("同时{}，新路径就绪后切换。", snap::phase_label(&p.pending_phase)) }.into(),
-                    error: p.error.as_ref().filter(|_| !matches!(p.state.as_str(), "active" | "switching")).map(|e| snap::connection_issue(&e.code).to_string()).unwrap_or_default().into(),
-                }
-            })
+            .map(PeerData::from_peer)
             .collect()
     }
 
@@ -1069,6 +1076,26 @@ fn model_len<T: Clone + 'static>(m: &ModelRc<T>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_details_omit_ice_fields_but_keep_connection_statistics() {
+        let mut s = crate::visual_fixtures::fixed_snapshot();
+        s.peers[0].relay_order = vec!["udp".into()];
+        s.peers[0].turn_expires_at = i64::MAX;
+        for p in &s.peers {
+            let row = PeerData::from_peer(p);
+            assert_eq!(row.state_label, snap::peer_state_label(&p.state));
+            for detail in &row.details {
+                assert!(!["TURN", "候选", "中继", "凭据"].iter().any(|token| detail.key.contains(token)));
+            }
+            assert!(row.details.iter().any(|d| d.key == "路径重试"));
+        }
+        let row = PeerData::from_peer(&s.peers[0]);
+        assert!(row.details.iter().any(|d| d.key == "公布入口" && d.value == "gateway.example:40000"));
+        assert!(row.details.iter().any(|d| d.key == "对端连接" && d.value.contains("[2001:db8:7:8:9:a:b:c]:40000")));
+        let row = PeerData::from_peer(&s.peers[3]);
+        assert!(!row.details.iter().any(|d| ["公布入口", "监听方", "拨号方", "本机连接", "对端连接"].contains(&d.key.as_str())));
+    }
 
     #[test]
     fn rfc3339_now_shape() {

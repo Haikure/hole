@@ -24,6 +24,7 @@ data class PeerSnapshot(
     val relaySide: String = "", val relayPolicy: String = "",
     val relayOrder: List<String> = emptyList(), val peerRelayOrder: List<String> = emptyList(),
     val relayRound: Int = 0, val relayOrderFallback: Boolean = false,
+    val fixedEndpoint: String = "", val listenerId: String = "", val dialerId: String = "",
 ) {
     companion object {
         fun fromJson(j: JSONObject): PeerSnapshot = PeerSnapshot(
@@ -40,6 +41,7 @@ data class PeerSnapshot(
             relayOrder = j.optJSONArray("relay_order")?.let { array -> List(array.length()) { array.optString(it) } }.orEmpty(),
             peerRelayOrder = j.optJSONArray("peer_relay_order")?.let { array -> List(array.length()) { array.optString(it) } }.orEmpty(),
             relayRound = j.optInt("relay_round"), relayOrderFallback = j.optBoolean("relay_order_fallback"),
+            fixedEndpoint = j.optString("fixed_endpoint"), listenerId = j.optString("listener_id"), dialerId = j.optString("dialer_id"),
         )
     }
 }

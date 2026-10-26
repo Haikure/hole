@@ -46,6 +46,9 @@ pub struct Peer {
     pub state: String,
     pub phase: String,
     pub pending_phase: String,
+    pub fixed_endpoint: String,
+    pub listener_id: String,
+    pub dialer_id: String,
     pub path_type: String,
     pub address_family: String,
     pub local_relay_protocol: String,
@@ -148,7 +151,7 @@ fn parse_voice(v: &Value) -> Voice {
         }).collect()).unwrap_or_default(),
         peers: v["peers"].as_array().map(|peers| peers.iter().map(|p| crate::VoicePeerRow {
             name: s_or(p, "peer_id", "未知设备").into(), state: peer_state_label(&s(p, "state")).into(),
-            media: media_label(&s(p, "media_state")).into(), path: s_or(p, "path", "路径待确认").into(),
+            media: media_label(&s(p, "media_state")).into(), path: voice_path_label(&s(p, "path")).into(),
             bitrate: format!("{} kb/s", i(p, "bitrate") / 1000).into(),
             stats: format!("发送 {} · 解码 {} · 补帧 {} · 丢包 {}", s_or(p, "sent_frames", "0"), s_or(p, "decoded_frames", "0"), s_or(p, "concealed_frames", "0"), s_or(p, "packet_loss", "0")).into(),
             buffering: format!("队列 {} · 抖动 {}", i(p, "queue_depth"), i(p, "jitter_depth")).into(),
@@ -258,6 +261,9 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
                     state: s(p, "state"),
                     phase: s(p, "phase"),
                     pending_phase: s(p, "pending_phase"),
+                    fixed_endpoint: s(p, "fixed_endpoint"),
+                    listener_id: s(p, "listener_id"),
+                    dialer_id: s(p, "dialer_id"),
                     path_type: s(p, "path_type"),
                     address_family: s(p, "address_family"),
                     local_relay_protocol: { let l = s(p, "local_relay_protocol"); if l.is_empty() { s(p, "relay_protocol") } else { l } },
@@ -393,7 +399,7 @@ pub fn connection_policy_label(mode: &str) -> &'static str {
     }
 }
 
-const ACTIONABLE: [&str; 6] = ["signal_auth_failed", "invalid_token", "protocol_mismatch", "worker_upgrade_required", "invalid_config", "insecure_signal"];
+const ACTIONABLE: [&str; 7] = ["signal_auth_failed", "invalid_token", "protocol_mismatch", "worker_upgrade_required", "invalid_config", "insecure_signal", "fixed_relay_conflict"];
 
 pub fn connection_title(s: &Snapshot) -> &'static str {
     let code = s.error.as_ref().map(|e| e.code.as_str()).unwrap_or("");
@@ -442,6 +448,7 @@ pub fn configuration_text(s: &Snapshot) -> &'static str {
 
 pub fn phase_label(phase: &str) -> &'static str {
     match phase {
+        "fixed" => "连接固定入口",
         "direct" => "探测直连路径",
         "relay_udp" => "尝试 UDP 中继",
         "relay_tls_443" => "尝试 TLS 中继 · 443 端口",
@@ -466,11 +473,17 @@ pub fn relay_order_label(order: &[String]) -> String {
 }
 
 pub fn peer_phase_label(p: &Peer) -> String {
-    if p.state == "waiting_credentials" { "等待中继凭据，尚未开始探测".into() } else { phase_label(&p.phase).into() }
+    if is_fixed_peer(p) { phase_label("fixed").into() }
+    else if p.state == "waiting_credentials" { "等待中继凭据，尚未开始探测".into() } else { phase_label(&p.phase).into() }
+}
+
+pub fn is_fixed_peer(p: &Peer) -> bool {
+    p.profile == "fixed-quic-mux-v1" || p.phase == "fixed" || p.path_type == "fixed"
 }
 
 pub fn peer_path_label(p: &Peer) -> String {
     let family = if p.address_family.is_empty() { String::new() } else { format!(" · {}", p.address_family) };
+    if is_fixed_peer(p) { return format!("固定入口直连{family}"); }
     match (p.state.as_str(), p.path_type.as_str()) {
         ("waiting_credentials", _) => peer_phase_label(p),
         (_, "relay") => format!("中继{family}"),
@@ -526,11 +539,36 @@ pub fn relay_path_label(p: &Peer) -> String {
 
 pub fn selected_connection_label(kind: &str, address: &str) -> String {
     let path = match kind {
+        "fixed" => "固定入口直连",
         "relay" => "中继",
         "host" | "srflx" | "prflx" => "直连",
         _ => "路径未确认",
     };
     format!("{path} · {}", if address.is_empty() { "探测中" } else { address })
+}
+
+pub fn fixed_peer_details(p: &Peer) -> Vec<(&'static str, String)> {
+    let mut details = Vec::new();
+    for (key, value) in [("公布入口", &p.fixed_endpoint), ("监听方", &p.listener_id), ("拨号方", &p.dialer_id)] {
+        if !value.is_empty() { details.push((key, value.clone())); }
+    }
+    for (key, kind, address) in [("本机连接", &p.local_type, &p.local_address), ("对端连接", &p.remote_type, &p.remote_address)] {
+        if !address.is_empty() { details.push((key, selected_connection_label(kind, address))); }
+    }
+    details
+}
+
+pub fn profile_label(profile: &str) -> &'static str {
+    match profile {
+        "fixed-quic-mux-v1" => "固定入口直连",
+        "legacy-ipv6-quic-v2" => "IPv6 直连",
+        "ice-quic-mux-v1" => "ICE · 多服务共享 QUIC",
+        _ => "等待协商",
+    }
+}
+
+pub fn voice_path_label(path: &str) -> &str {
+    match path { "fixed" => "固定入口直连", "" => "路径待确认", _ => path }
 }
 
 pub fn connection_issue(code: &str) -> &'static str {
@@ -548,6 +586,8 @@ pub fn connection_issue(code: &str) -> &'static str {
         "service_unavailable" => "目标服务未响应，请检查提供端的服务地址、端口及运行状态。",
         "insecure_signal" => "ICE 默认使用 wss://。本地 ws:// 测试需在连接方式中显式开启。",
         "ice_path_failed" => "此路径未连通，正在尝试其他直连或中继路径。",
+        "fixed_path_failed" => "固定入口连接失败，仅重试固定入口，不会切换到 ICE 或 TURN。请检查公布地址、UDP 端口和监听端。",
+        "fixed_relay_conflict" => "固定入口直连与任一端的“仅中继”要求冲突，请调整固定入口或仅中继配置。",
         "invalid_config" => "当前设置未通过检查，请核对连接方式、映射与地址。",
         _ => "连接暂未就绪，请检查网络、对端和连接设置。",
     }
@@ -696,6 +736,42 @@ mod tests {
         assert_eq!(s.peers[0].bytes_sent, u64::MAX);
         assert_eq!(connection_title(&s), "转发连接正常");
         assert_eq!(connection_kind(&s), "good");
+    }
+
+    #[test]
+    fn fixed_snapshots_preserve_endpoints_roles_and_actual_state() {
+        let s = crate::visual_fixtures::fixed_snapshot();
+        for (p, state) in s.peers.iter().zip(["已连接", "连接中", "正在重试", "连接需要处理"]) {
+            assert!(is_fixed_peer(p));
+            assert!(peer_path_label(p).starts_with("固定入口直连"));
+            assert_eq!(peer_state_label(&p.state), state);
+            assert_eq!(peer_phase_label(p), "连接固定入口");
+        }
+        let p = &s.peers[0];
+        assert_eq!(p.generation, "9007199254740993");
+        assert_eq!(peer_path_label(p), "固定入口直连 · IPv6");
+        assert_eq!(p.fixed_endpoint, "gateway.example:40000");
+        assert_eq!(p.listener_id, "fixed-ipv6");
+        assert_eq!(p.dialer_id, "desktop");
+        assert_eq!(s.peers[2].listener_id, "desktop");
+        assert_eq!(peer_path_label(&s.peers[2]), "固定入口直连 · IPv4");
+        assert_eq!(s.voice.peers[0].path.as_str(), "固定入口直连");
+        assert_eq!(profile_label(&s.mappings[0].profile), "固定入口直连");
+        assert!(fixed_peer_details(&s.peers[3]).is_empty());
+        assert!(connection_issue("fixed_path_failed").contains("仅重试固定入口"));
+        assert!(connection_issue("fixed_relay_conflict").contains("仅中继"));
+    }
+
+    #[test]
+    fn old_snapshots_and_ice_labels_are_unchanged() {
+        let s = parse_snapshot(&json!({"api_version": 1, "peer_transports": [{"path_type":"direct", "phase":"direct", "address_family":"IPv4"}]})).unwrap();
+        let p = &s.peers[0];
+        assert_eq!((&p.fixed_endpoint, &p.listener_id, &p.dialer_id), (&String::new(), &String::new(), &String::new()));
+        assert!(!is_fixed_peer(p));
+        assert_eq!(peer_path_label(p), "直连 · IPv4");
+        assert_eq!(peer_path_label(&Peer { path_type: "relay".into(), address_family: "IPv6".into(), ..Default::default() }), "中继 · IPv6");
+        assert_eq!(relay_path_label(&Peer { path_type: "relay".into(), local_relay_protocol: "tcp".into(), ..Default::default() }), "TCP 中继");
+        assert_eq!(profile_label("legacy-ipv6-quic-v2"), "IPv6 直连");
     }
 
     #[test]

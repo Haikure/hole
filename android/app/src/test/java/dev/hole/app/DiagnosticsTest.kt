@@ -14,6 +14,14 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26])
 class DiagnosticsTest {
+    @Test fun fixedReportKeepsReportedRolesAndAddressesWithoutIceFields() {
+        val peer = PeerSnapshot(profile="fixed-quic-mux-v1", state="reconnecting", phase="fixed", pathType="fixed",
+            fixedEndpoint="gateway.example:40000", listenerId="phone", dialerId="server", localType="fixed", remoteType="fixed",
+            localAddress="[2001:db8::1]:50000", remoteAddress="[2001:db8::2]:40000", errorCode="fixed_path_failed")
+        val report = diagnosticReport(CoreSnapshot(peers=listOf(peer, PeerSnapshot(phase="fixed", state="connecting"))), ConfigUiState(), BackgroundInfo())
+        for (text in listOf("公布入口 gateway.example:40000", "监听方 phone", "拨号方 server", "对端连接 固定入口直连 · [2001:db8::2]:40000", "仅重试固定入口", "reconnecting", "RTT")) assertTrue(report.contains(text), text)
+        for (text in listOf("TURN 顺序", "中继状态", "凭据到期", "非本机中继", "探测中")) assertFalse(report.contains(text), text)
+    }
     @Test fun diagnosticsStripPlainEncodedAndUrlCredentials() {
         val state = ConfigUiState(true, StoredConfig(connection = ConnectionSettings(serverUrl = "wss://userinfo@fixture.invalid/ws?arbitrary=hidden")), "PASS WORD", "ROOM_SECRET")
         val snapshot = CoreSnapshot(coreVersion = "fixture-core", errorMessage = "PASS WORD ROOM_SECRET PASS+WORD at wss://fixture.invalid/ws?not_a_standard_key=extra")

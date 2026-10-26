@@ -206,6 +206,11 @@ GUI 先释放旧设备，再重配并重新开启音频扩展；播放端也用�
 
 连接设置中的 `turn.order` 可独立配置本机 TURN 白名单和优先顺序，支持 `udp`、`tcp`、`tls`；留空采用默认顺序。运行详情与诊断报告显示本机、对端顺序和旧协议回退状态。
 
+固定通道在首页线路摘要、设备详情、服务传输方式、语音页和报告中显示“固定入口直连”，建连中与重试中的
+通道按固定 profile / 阶段识别，状态仍取自核心。详情区分公布入口、监听方、拨号方及实际两端地址，
+缺失字段省略；不显示不适用的 ICE 候选、TURN 顺序和中继凭据。路径失败后只重试固定入口。
+固定监听配置界面尚未接入。
+
 - `decode_cli_config` 的文档允许缺少服务器/凭据，适合停止态草稿；其他格式与传输约束仍校验。
   缺少的值保留为空，校验用的临时值不会出现在返回配置中。
 - 旧文件没有服务器时，GUI 预览阶段保留本机服务器；设备名为空时可沿用本机名。桥接不自动合并。
@@ -326,7 +331,8 @@ cargo test --offline
 
 界面截图模式通过 `HOLE_DESKTOP_SCREENSHOT_DIR` 指定输出目录，按必需页面名称保存 PPM 图片后退出。
 `HOLE_DESKTOP_SCREENSHOT_PAGES` 可指定逗号分隔的路由子集，默认覆盖五项导航及全部二级分类。
-`HOLE_DESKTOP_SCREENSHOT_SCENARIO` 可选 `empty`、`running`、`reconnecting`、`error`、`long-list`；
+`HOLE_DESKTOP_SCREENSHOT_SCENARIO` 可选 `empty`、`running`、`reconnecting`、`error`、`long-list`、`fixed`；
+`fixed` 使用固定快照，覆盖建连、成功、重试、失败、角色互换及 IPv4 / IPv6，复用实际快照解析和线路详情生成逻辑。
 这些是只用于截图的确定性测试数据，不发送核心命令或改变已保存配置。
 完整 Linux 截图矩阵可运行 `xvfb-run -a -s "-screen 0 3400x2200x24" python3 desktop/gui/tests/visual_matrix.py dist/desktop/linux-amd64/hole-desktop`。
 输出位于 `.cache/desktop-ui/`；截图只证明界面渲染，不代表真实连接或设备验收。

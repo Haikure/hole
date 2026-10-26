@@ -44,8 +44,8 @@ fun RuntimeDetailsScreen(
     var menu by remember { mutableStateOf(false) }
     val floatingInset = LocalFloatingInset.current
     val peers = snapshot.peers.filter {
-        (filter == "all" || it.pathType == filter) &&
-            listOf(it.peerId, it.localAddress, it.remoteAddress, peerPathLabel(it)).any { value -> value.contains(query, ignoreCase = true) }
+        (filter == "all" || if (filter == "fixed") isFixedPeer(it) else it.pathType == filter) &&
+            listOf(it.peerId, it.fixedEndpoint, it.localAddress, it.remoteAddress, peerPathLabel(it)).any { value -> value.contains(query, ignoreCase = true) }
     }
     val mappings = snapshot.mappings.filter {
         (filter == "all" || it.protocol == filter) &&
@@ -89,7 +89,7 @@ fun RuntimeDetailsScreen(
             }
             item {
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    val filters = if (tab == "devices") listOf("all" to "全部", "direct" to "直连", "relay" to "中继")
+                    val filters = if (tab == "devices") listOf("all" to "全部", "direct" to "直连", "relay" to "中继", "fixed" to "固定入口")
                         else listOf("all" to "全部", "tcp" to "TCP", "udp" to "UDP")
                     filters.forEach { (value, label) ->
                         FilterChip(selected = filter == value, onClick = { filter = value }, label = { Text(label) }, shape = CircleShape)
@@ -104,7 +104,7 @@ fun RuntimeDetailsScreen(
                         style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            listOfNotNull(commandError, snapshot.errorMessage).distinct().forEach { error ->
+            listOfNotNull(commandError, fixedConnectionIssue(snapshot.errorCode), snapshot.errorMessage).distinct().forEach { error ->
                 item { Text(error, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
             }
             if ((tab == "devices" && peers.isEmpty()) || (tab == "services" && mappings.isEmpty())) item {
@@ -131,18 +131,23 @@ fun RuntimeDetailsScreen(
                 InspectionValue("状态", peerStateLabel(peer))
                 InspectionValue("延迟", "${peer.rttMs} ms")
                 InspectionValue("连接过程", peerPhaseLabel(peer))
-                DetailRow("本机连接", selectedConnectionLabel(peer.localType, peer.localAddress))
-                DetailRow("对端连接", selectedConnectionLabel(peer.remoteType, peer.remoteAddress))
+                if (isFixedPeer(peer)) {
+                    fixedPeerDetails(peer).forEach { (label, value) -> DetailRow(label, value) }
+                } else {
+                    DetailRow("本机连接", selectedConnectionLabel(peer.localType, peer.localAddress))
+                    DetailRow("对端连接", selectedConnectionLabel(peer.remoteType, peer.remoteAddress))
+                }
                 InspectionValue("上行 / 下行", "${formatBytes(peer.bytesSent)} / ${formatBytes(peer.bytesReceived)}")
                 InspectionValue("服务通道", "${peer.activeChannels} / ${peer.mappingCount}")
                 InspectionValue("建连耗时", "${peer.connectMs} ms")
                 InspectionValue("重试 / 丢包", "${peer.retryCount} / ${peer.droppedDatagrams}")
-                if (peer.pathType == "relay") {
+                if (!isFixedPeer(peer) && peer.pathType == "relay") {
                     InspectionValue("中继接入", relayPathLabel(peer))
                     InspectionValue("本机顺序", relayOrderLabel(peer.relayOrder))
                     InspectionValue("对端顺序", relayOrderLabel(peer.peerRelayOrder))
                     InspectionValue("凭据有效期", remainingTime(peer.turnExpiresAt))
                 }
+                fixedConnectionIssue(peer.errorCode)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 peer.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         }

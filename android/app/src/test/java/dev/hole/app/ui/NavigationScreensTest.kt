@@ -79,7 +79,7 @@ class NavigationScreensTest {
                 muted = false,
                 state = "active",
                 members = listOf(VoiceMemberSnapshot("laptop", true, transportState = "connected", mediaState = "active")),
-                peers = listOf(VoicePeerSnapshot(peerId = "laptop", state = "active", path = "direct", bitrate = 24000, packetLoss = "0")),
+                peers = listOf(VoicePeerSnapshot(peerId = "laptop", state = "active", path = "fixed", bitrate = 24000, packetLoss = "0")),
             ),
         )
         compose.setContent {
@@ -100,7 +100,7 @@ class NavigationScreensTest {
         compose.runOnIdle { assertEquals("headset", microphoneSource) }
         compose.onNodeWithTag("voice-screen").performScrollToNode(hasText("laptop"))
         compose.runOnIdle { assertTrue(compose.onAllNodesWithText("laptop").fetchSemanticsNodes().isNotEmpty()) }
-        compose.onNodeWithTag("voice-screen").performScrollToNode(hasText("已连接 · direct · 24000 bit/s"))
-        compose.onNodeWithText("已连接 · direct · 24000 bit/s").assertExists()
+        compose.onNodeWithTag("voice-screen").performScrollToNode(hasText("已连接 · 固定入口直连 · 24000 bit/s"))
+        compose.onNodeWithText("已连接 · 固定入口直连 · 24000 bit/s").assertExists()
     }
 }

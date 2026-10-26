@@ -63,7 +63,7 @@ fun HomeScreen(
             if (configState.config.connection.serverUrl.isBlank()) item {
                 HoleButton("配置连接", { onNavigate("connection-settings") }, Modifier.fillMaxWidth())
             }
-            listOfNotNull(snapshot.errorMessage, configState.lastError, commandError).distinct().forEach { error ->
+            listOfNotNull(fixedConnectionIssue(snapshot.errorCode), snapshot.errorMessage, configState.lastError, commandError).distinct().forEach { error ->
                 item { Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
             }
         }

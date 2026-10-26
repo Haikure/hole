@@ -769,6 +769,7 @@ Item {
 
     function phaseText(phase) {
         var labels = {
+            fixed: "连接固定入口",
             direct: "探测直连路径",
             relay_udp: "尝试 UDP 中继",
             relay_tls_443: "尝试 TLS 中继 · 443 端口",
@@ -800,6 +801,7 @@ Item {
 
     function candidateAccessText(candidateType, protocol, side) {
         var type = asString(candidateType).toLowerCase()
+        if (type === "fixed") return "固定入口直连"
         if (asString(protocol).length > 0) return relayAccessText(protocol, side)
         if (type === "relay") return relayAccessText(protocol, side)
         if (type === "host" || type === "srflx" || type === "prflx") return "直连"
@@ -825,9 +827,23 @@ Item {
     function peerPathText(peer) {
         var path = asString(peer.path_type)
         var family = asString(peer.address_family)
+        if (page.isFixedPeer(peer)) return "固定入口直连" + (family.length > 0 ? " · " + family : "")
         if (path === "relay") return "中继" + (family.length > 0 ? " · " + family : "")
         if (path === "direct") return "设备直连" + (family.length > 0 ? " · " + family : "")
         return "路径未选定"
+    }
+
+    function isFixedPeer(peer) {
+        return asString(peer.profile) === "fixed-quic-mux-v1"
+                || asString(peer.phase) === "fixed" || asString(peer.path_type) === "fixed"
+    }
+
+    function fixedIssueText(code) {
+        if (code === "fixed_path_failed")
+            return "固定入口连接失败，仅重试固定入口，不会切换到 ICE 或 TURN。请检查公布地址、UDP 端口和监听端。"
+        if (code === "fixed_relay_conflict")
+            return "固定入口直连与任一端的“仅中继”要求冲突，请调整固定入口或仅中继配置。"
+        return ""
     }
 
     function peerPhaseText(peer) {
@@ -835,6 +851,7 @@ Item {
         var state = asString(peer.state)
         var phase = asString(peer.phase)
         var pending = asString(peer.pending_phase)
+        if (page.isFixedPeer(peer)) return page.phaseText("fixed")
         if (pending.length > 0 && pending !== phase)
             return "下一阶段：" + page.phaseText(pending)
         if (phase.length > 0 && path !== "direct" && path !== "relay")
@@ -849,7 +866,16 @@ Item {
         appendSnapshotLine(lines, "通道 · " + peerID, stateText(peer.state))
         appendSnapshotLine(lines, "  路径", page.peerPathText(peer))
         var path = asString(peer.path_type)
-        if (path === "relay" || path === "direct") {
+        var fixed = page.isFixedPeer(peer)
+        if (fixed) {
+            appendSnapshotLine(lines, "  公布入口", peer.fixed_endpoint)
+            appendSnapshotLine(lines, "  监听方", peer.listener_id)
+            appendSnapshotLine(lines, "  拨号方", peer.dialer_id)
+            if (asString(peer.local_address).length > 0)
+                appendSnapshotLine(lines, "  本机连接", page.accessWithAddress(page.candidateAccessText(peer.local_type, "", "local"), peer.local_address))
+            if (asString(peer.remote_address).length > 0)
+                appendSnapshotLine(lines, "  对端连接", page.accessWithAddress(page.candidateAccessText(peer.remote_type, "", "remote"), peer.remote_address))
+        } else if (path === "relay" || path === "direct") {
             var localAccess = path === "relay"
                     ? page.localAccessText(peer)
                     : page.candidateAccessText(peer.local_type, "", "local")
@@ -859,11 +885,11 @@ Item {
             appendSnapshotLine(lines, "  本机连接", page.accessWithAddress(localAccess, peer.local_address))
             appendSnapshotLine(lines, "  对端连接", page.accessWithAddress(remoteAccess, peer.remote_address))
         }
-        if (path === "relay") {
+        if (!fixed && path === "relay") {
             appendSnapshotLine(lines, "  中继使用方", page.relaySideText(peer.relay_side))
         }
-        appendSnapshotLine(lines, "  探测阶段", page.peerPhaseText(peer))
-        if (Array.isArray(peer.relay_order) || Array.isArray(peer.peer_relay_order)) {
+        appendSnapshotLine(lines, fixed ? "  连接阶段" : "  探测阶段", page.peerPhaseText(peer))
+        if (!fixed && (Array.isArray(peer.relay_order) || Array.isArray(peer.peer_relay_order))) {
             appendSnapshotLine(lines, "  本机 TURN 顺序", page.snapshotRelayOrder(peer.relay_order))
             appendSnapshotLine(lines, "  对端 TURN 顺序", page.snapshotRelayOrder(peer.peer_relay_order))
             if (asBool(peer.relay_order_fallback, false)) appendSnapshotLine(lines, "  顺序状态", "不支持自定义顺序，已回退默认顺序")
@@ -875,6 +901,7 @@ Item {
             appendSnapshotLine(lines, "  活动通道", asString(peer.active_channels) + " 个")
         if (peer.error && asString(peer.error.message).length > 0)
             appendSnapshotLine(lines, "  错误", asString(peer.error.message))
+        if (peer.error) appendSnapshotLine(lines, "  连接提示", page.fixedIssueText(peer.error.code))
     }
 
     function orderedPeers(peers) {
@@ -924,6 +951,7 @@ Item {
 
         if (data.error && asString(data.error.message).length > 0)
             appendSnapshotLine(lines, "核心错误", asString(data.error.message))
+        if (data.error) appendSnapshotLine(lines, "连接提示", page.fixedIssueText(data.error.code))
 
         if (Array.isArray(data.mappings)) {
             appendSnapshotLine(lines, "映射数量", data.mappings.length + " 项")

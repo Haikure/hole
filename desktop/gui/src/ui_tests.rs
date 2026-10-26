@@ -1,6 +1,6 @@
 //! Exercise real Slint route transitions and verify routing never invokes mutations.
 use crate::{App, MainWindow, Theme};
-use slint::{ComponentHandle, LogicalSize};
+use slint::{ComponentHandle, LogicalSize, Model};
 use slint::platform::{Platform, PlatformError, WindowAdapter};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use std::rc::Rc;
@@ -34,4 +34,9 @@ fn route_changes_and_reduced_motion_do_not_submit_commands() {
     }
     assert_eq!(navigation.get(), 11);
     assert_eq!(commands.get(), 0, "routing or animation submitted a mutation");
+    crate::visual_fixtures::apply(&window, "fixed");
+    let peer = window.global::<App>().get_peers().row_data(0).unwrap();
+    assert_eq!(peer.path_label, "固定入口直连 · IPv6");
+    assert_eq!(peer.state_label, "已连接");
+    assert_eq!(commands.get(), 0, "snapshot rendering submitted a mutation");
 }

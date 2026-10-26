@@ -23,7 +23,7 @@ fun connectionPolicyLabel(mode: String): String = when (mode) {
 fun connectionTitle(s: CoreSnapshot): String = when {
     !s.runRequested -> "连接已停止"
     s.mappings.any { it.state == "active" } || s.peers.any { it.state in setOf("active", "switching") } -> "转发连接正常"
-    s.errorCode in setOf("signal_auth_failed", "invalid_token", "protocol_mismatch", "worker_upgrade_required", "invalid_config", "insecure_signal") -> "连接需要处理"
+    s.errorCode in setOf("signal_auth_failed", "invalid_token", "protocol_mismatch", "worker_upgrade_required", "invalid_config", "insecure_signal", "fixed_relay_conflict") -> "连接需要处理"
     s.signalState == "joined" && s.mappings.isEmpty() -> "已就绪，尚未启用服务"
     s.signalState == "joined" && s.peers.isEmpty() -> "等待对端设备"
     s.peers.any { it.state == "reconnecting" } || s.engineState == "recovering" -> "正在恢复连接"
@@ -36,6 +36,7 @@ fun configurationText(s: CoreSnapshot, config: ConfigUiState): String = when {
     else -> "正在应用设置并加入房间"
 }
 fun phaseLabel(phase: String): String = when (phase) {
+    "fixed" -> "连接固定入口"
     "direct" -> "探测直连路径"
     "relay_udp" -> "尝试 UDP 中继"
     "relay_tls_443" -> "尝试 TLS 中继 · 443 端口"
@@ -45,9 +46,14 @@ fun phaseLabel(phase: String): String = when (phase) {
     "relay_wait" -> "等待对端的 TURN 中继"
     else -> "正在选择连接路径"
 }
-fun peerPhaseLabel(p: PeerSnapshot): String = if (p.state == "waiting_credentials")
-    "等待中继凭据，尚未开始探测" else phaseLabel(p.phase)
+fun isFixedPeer(p: PeerSnapshot): Boolean = p.profile == "fixed-quic-mux-v1" || p.phase == "fixed" || p.pathType == "fixed"
+fun peerPhaseLabel(p: PeerSnapshot): String = when {
+    isFixedPeer(p) -> phaseLabel("fixed")
+    p.state == "waiting_credentials" -> "等待中继凭据，尚未开始探测"
+    else -> phaseLabel(p.phase)
+}
 fun peerPathLabel(p: PeerSnapshot): String = when {
+    isFixedPeer(p) -> "固定入口直连${p.addressFamily.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}"
     p.state == "waiting_credentials" -> peerPhaseLabel(p)
     p.pathType == "relay" -> "中继${p.addressFamily.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}"
     p.pathType == "direct" -> "直连${p.addressFamily.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}"
@@ -68,12 +74,22 @@ fun relayPathLabel(p: PeerSnapshot): String = when (p.relaySide) {
 }
 fun selectedConnectionLabel(type: String, address: String): String {
     val path = when (type) {
+        "fixed" -> "固定入口直连"
         "relay" -> "中继"
         "host", "srflx", "prflx" -> "直连"
         else -> "路径未确认"
     }
     return "$path · ${address.ifBlank { "探测中" }}"
 }
+fun fixedPeerDetails(p: PeerSnapshot): List<Pair<String, String>> = buildList {
+    if (p.fixedEndpoint.isNotBlank()) add("公布入口" to p.fixedEndpoint)
+    if (p.listenerId.isNotBlank()) add("监听方" to p.listenerId)
+    if (p.dialerId.isNotBlank()) add("拨号方" to p.dialerId)
+    if (p.localAddress.isNotBlank()) add("本机连接" to selectedConnectionLabel(p.localType, p.localAddress))
+    if (p.remoteAddress.isNotBlank()) add("对端连接" to selectedConnectionLabel(p.remoteType, p.remoteAddress))
+}
+fun voicePathLabel(path: String): String = if (path == "fixed") "固定入口直连" else path.ifBlank { "路径待确认" }
+fun fixedConnectionIssue(code: String?): String? = code?.takeIf { it in setOf("fixed_path_failed", "fixed_relay_conflict") }?.let { connectionIssue(it) }
 fun peerStateLabel(p: PeerSnapshot): String = when (p.state) {
     "waiting_credentials" -> "等待中继凭据"
     "active" -> "已连接"
@@ -90,6 +106,7 @@ fun relayOrderLabel(order: List<String>): String = if (order.isEmpty()) "默认�
     else -> token
 } }
 fun candidateLabel(type: String): String = when (type) {
+    "fixed" -> "固定入口直连"
     "host" -> "设备本地地址"
     "srflx" -> "STUN 探测的公网映射"
     "prflx" -> "连通性检查发现的地址"
@@ -110,6 +127,8 @@ fun connectionIssue(code: String?): String = when (code) {
     "service_unavailable" -> "目标服务未响应，请检查提供端的服务地址、端口及运行状态。"
     "insecure_signal" -> "ICE 默认使用 wss://。本地 ws:// 测试需在连接方式中显式开启。"
     "ice_path_failed" -> "此路径未连通，正在尝试其他直连或中继路径。"
+    "fixed_path_failed" -> "固定入口连接失败，仅重试固定入口，不会切换到 ICE 或 TURN。请检查公布地址、UDP 端口和监听端。"
+    "fixed_relay_conflict" -> "固定入口直连与任一端的“仅中继”要求冲突，请调整固定入口或仅中继配置。"
     "invalid_config" -> "当前设置未通过检查，请核对连接方式、映射与地址。"
     else -> "连接暂未就绪，请检查网络、对端和连接设置。"
 }

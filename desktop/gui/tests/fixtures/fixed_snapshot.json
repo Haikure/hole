@@ -1,0 +1,42 @@
+{
+  "api_version": 1,
+  "configured": true,
+  "run_requested": true,
+  "engine_state": "running",
+  "signal_state": "joined",
+  "mappings": [{
+    "id": "fixed-ssh", "role": "consume", "protocol": "tcp", "state": "active",
+    "profile": "fixed-quic-mux-v1", "endpoint": "127.0.0.1:2222", "peer": "fixed-ipv6"
+  }],
+  "peer_transports": [
+    {
+      "peer_id": "fixed-ipv6", "transport_id": "fixture-fixed-v6", "generation": "9007199254740993",
+      "profile": "fixed-quic-mux-v1", "phase": "fixed", "path_type": "fixed", "state": "active",
+      "fixed_endpoint": "gateway.example:40000", "listener_id": "fixed-ipv6", "dialer_id": "desktop",
+      "address_family": "IPv6", "local_type": "fixed", "remote_type": "fixed",
+      "local_address": "[2001:db8:1:2:3:4:5:6]:50123", "remote_address": "[2001:db8:7:8:9:a:b:c]:40000",
+      "active_channels": 1, "mapping_count": 1, "rtt_ms": "24", "connect_ms": "123",
+      "bytes_sent": "1048576", "bytes_received": "2097152", "retry_count": "2"
+    },
+    {
+      "peer_id": "fixed-connecting", "transport_id": "fixture-fixed-connecting",
+      "profile": "fixed-quic-mux-v1", "state": "connecting",
+      "fixed_endpoint": "waiting.example:40001", "listener_id": "desktop", "dialer_id": "fixed-connecting"
+    },
+    {
+      "peer_id": "fixed-retrying", "transport_id": "fixture-fixed-retrying", "generation": "4",
+      "phase": "fixed", "state": "reconnecting", "address_family": "IPv4",
+      "fixed_endpoint": "192.0.2.10:40002", "listener_id": "desktop", "dialer_id": "fixed-retrying",
+      "retry_count": "3", "error": {"code": "fixed_path_failed", "message": "固定入口连接已断开，正在重试"}
+    },
+    {
+      "peer_id": "fixed-failed", "transport_id": "fixture-fixed-failed",
+      "path_type": "fixed", "state": "error",
+      "error": {"code": "fixed_relay_conflict", "message": "固定入口与仅中继要求冲突"}
+    }
+  ],
+  "voice": {
+    "enabled": true, "state": "active",
+    "peers": [{"peer_id": "fixed-ipv6", "state": "active", "path": "fixed", "bitrate": 24000}]
+  }
+}
