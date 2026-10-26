@@ -46,7 +46,7 @@ fun SettingsHub(onNavigate: (String) -> Unit) {
             item { HoleSettingsGroup("连接") {
                 SettingsLink("房间与身份", "服务器、房间、设备名", Icons.Default.Home) { onNavigate("connection-settings") }
                 SettingsLink("连接方式", "直连与中继", Icons.Default.Settings) { onNavigate("transport") }
-                SettingsLink("后台运行", "电池与自动恢复", Icons.Default.Refresh) { onNavigate("background") }
+                SettingsLink("后台运行", "悬浮球、电池与自动恢复", Icons.Default.Refresh) { onNavigate("background") }
             } }
             item { HoleSettingsGroup("应用") {
                 SettingsLink("外观", "颜色与显示模式", Icons.Default.Edit) { onNavigate("appearance") }

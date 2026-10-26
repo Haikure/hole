@@ -12,6 +12,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
@@ -35,6 +36,15 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-initiated persistent encrypted TCP/UDP port forwarding between explicitly configured devices; no VPN or traffic interception." />
+        </service>
+        <service
+            android:name=".FloatingBallService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-enabled draggable application icon overlay, with a persistent notification and explicit disable action, to keep the application available in the background." />
         </service>
         <receiver android:name=".ResumeReceiver" android:exported="false">
             <intent-filter>

@@ -104,6 +104,13 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         if (intent.getBooleanExtra("open_details", false)) detailRequest++
     }
+
+    override fun onResume() {
+        super.onResume()
+        runCatching { FloatingBallService.sync(this) }.onFailure {
+            android.widget.Toast.makeText(this, "悬浮球启动失败，请在后台运行设置中重新开启", android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
 }
 
 /** 一次可撤销的删除：message 展示在 Snackbar，restore 恢复原条目到原位置。 */
