@@ -72,6 +72,7 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 
 `.github/workflows/build.yaml` 支持手动构建和版本 tag 推送。手动运行只上传 Artifact，不创建 GitHub Release；推送任意 tag
 时使用完整构建矩阵，并在所有构建成功后创建同名 GitHub Release，说明内容来自仓库根目录的 `CHANGELOG.md`。
+Release 不再上传 `.sha256` / `SHA256SUMS` 校验文件；GitHub Release 页面会显示每个上传资产的 SHA-256。
 默认 `type=all` 会并行构建：
 
 - Android 手机 ARM64；

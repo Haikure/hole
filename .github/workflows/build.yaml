@@ -401,6 +401,12 @@ jobs:
             artifact_name=${relative%%/*}
             filename=${file##*/}
 
+            case "$filename" in
+              *.sha256|SHA256SUMS)
+                continue
+                ;;
+            esac
+
             case "$artifact_name" in
               hole-desktop-core-*)
                 asset_name="$filename"
