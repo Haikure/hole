@@ -117,7 +117,7 @@ func (c *iceCoordinator) submit(r Request) {
 			p.requireRelay(true)
 		}
 	}
-	if !reflect.DeepEqual(old.Config.ICE, r.Config.ICE) || !reflect.DeepEqual(old.Config.TURN, r.Config.TURN) || !reflect.DeepEqual(old.Config.Transport, r.Config.Transport) {
+	if !reflect.DeepEqual(old.Config.ICE, r.Config.ICE) || !reflect.DeepEqual(old.Config.TURN, r.Config.TURN) || !reflect.DeepEqual(old.Config.Transport, r.Config.Transport) || !reflect.DeepEqual(old.Config.Relay, r.Config.Relay) {
 		c.networkEpoch.Add(1)
 		c.turnMu.Lock()
 		c.turnServers = nil
@@ -209,11 +209,16 @@ func (c *iceCoordinator) run() error {
 		c.online = false
 		c.sink = nil
 		c.mu.Unlock()
+		c.fixedMu.Lock()
+		if c.fixed != nil && c.fixed.relay != nil {
+			c.fixed.relay.revokeAll()
+		}
+		c.fixedMu.Unlock()
 		for _, peer := range c.peerList() {
 			peer.mu.Lock()
-			isVoice := peer.ready.Voice
+			retire := peer.ready.Voice || peer.ready.HoleVersion == HoleRelayVersion
 			peer.mu.Unlock()
-			if isVoice {
+			if retire {
 				peer.offline("signal_offline")
 			}
 		}
@@ -303,6 +308,17 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS,
 		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll, RelayOnly: r.Config.ICE.RelayOnly}
 	join.Voice = r.Config.Voice.Enabled
+	join.HoleVersion = HoleRelayVersion
+	join.HoleDevice = r.Config.Relay.Device
+	// Keep the legacy relay-disabled wire contract unless Hole is requested.
+	if r.Config.holeConfigured() || r.Config.Relay.Order != nil {
+		join.RelayOrder = r.Config.deviceRelayOrder(RelayPolicyUDPTCPTLS)
+	}
+	if r.Config.Relay.Serve.Enabled {
+		serve := r.Config.Relay.Serve
+		serve.MaxPairs = r.Config.relayServeLimit()
+		join.HoleServe = &serve
+	}
 	if endpoint := r.Config.Transport.FixedEndpoint; endpoint != nil {
 		join.FixedEndpoint = endpoint.Advertise
 	}
@@ -391,6 +407,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if !sameEffective(sessionRequest, c.request()) {
 			return nil
 		}
+		if sessionRequest.Config.holeConfigured() && m.HoleVersion != HoleRelayVersion {
+			return &Fault{Code: "worker_upgrade_required", Message: "Hole 中继需要先更新 Worker"}
+		}
 		if m.SignalVersion < 2 && !sessionRequest.Config.Transport.AllowLegacy {
 			return &Fault{Code: "worker_upgrade_required", Message: "协调服务尚未支持 ICE，请先更新 Worker"}
 		}
@@ -414,6 +433,8 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if err := c.updateVoiceMembers(m.RoomState); err != nil {
 			return &Fault{Code: "protocol_mismatch", Message: err.Error()}
 		}
+	case "hole_grant", "hole_revoke":
+		return c.handleHoleGrant(m)
 	case "transport_lease":
 		for _, lease := range m.Leases {
 			c.mu.Lock()
@@ -428,6 +449,11 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			return nil
 		}
 		cfg := c.request().Config
+		if m.HoleVersion != "" || (cfg.Relay.Device != "" && m.Profile != ProfileFixed) {
+			if err := c.validateHoleReady(m); err != nil {
+				return err
+			}
+		}
 		if m.Profile == ProfileFixed {
 			if err := c.validateFixedReady(m); err != nil {
 				return err
@@ -451,7 +477,11 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			if m.RelayPolicy != "" && m.RelayPolicy != RelayPolicyUDPTCPTLS {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不受支持的中继策略"}
 			}
-			if m.RelayPairing == relayPairingAll {
+			if m.HoleVersion == HoleRelayVersion {
+				if m.RelayRound == nil || plannedPhase(m, *m.RelayRound, cfg.DeviceName) != m.Phase {
+					return &Fault{Code: "protocol_mismatch", Message: "Hole 路径轮次无效"}
+				}
+			} else if m.RelayPairing == relayPairingAll {
 				if m.RelayRound == nil || !validRelayOrder(m.RelayOrder) || !validRelayOrder(m.PeerRelayOrder) ||
 					m.Phase == "" || m.Phase != pairedRelayPhase(*m.RelayRound, m.RelayOrder, m.PeerRelayOrder, cfg.DeviceName < m.PeerDevice) {
 					return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继配对轮次无效"}
@@ -463,7 +493,7 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			} else if !validRelayPhase(m.RelayPolicy, m.Phase) {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继策略或路径阶段不受支持"}
 			}
-			if len(m.RelayOrder) > 5 || len(m.PeerRelayOrder) > 5 {
+			if len(m.RelayOrder) > 6 || len(m.PeerRelayOrder) > 6 {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的中继顺序超出限制"}
 			}
 			if m.RelayRound == nil {
@@ -473,7 +503,7 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 				m.RelayOrder = fallbackOrder
 				m.PeerRelayOrder = slices.Clone(fallbackOrder)
 			} else {
-				localOrder := relayOrderForConfig(m.RelayPolicy, cfg.TURN)
+				localOrder := cfg.deviceRelayOrder(m.RelayPolicy)
 				if !slices.Equal(localOrder, m.RelayOrder) {
 					return &Fault{Code: "protocol_mismatch", Message: "协调服务返回的本机中继顺序与配置不一致"}
 				}
@@ -886,7 +916,7 @@ func (c *iceCoordinator) leaseRequest() (iceSignalMessage, bool) {
 func (c *iceCoordinator) needsTURN() bool {
 	for _, p := range c.peerList() {
 		p.mu.Lock()
-		needed := p.online && !p.closed && p.ready.Profile != ProfileFixed && ((p.pending != nil && p.pending.ready.Phase != "direct") || (p.active != nil && p.active.expires > 0))
+		needed := p.online && !p.closed && p.ready.Profile != ProfileFixed && ((p.pending != nil && p.pending.ready.Phase != "direct" && p.pending.ready.Phase != "hole" && p.pending.ready.Phase != "relay_wait") || (p.active != nil && p.active.expires > 0))
 		p.mu.Unlock()
 		if needed {
 			return true

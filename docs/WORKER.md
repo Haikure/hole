@@ -1,7 +1,7 @@
 # Worker 部署
 
 `worker/worker.js` 提供房间 WebSocket 协调，`worker/worker_ice.mjs` 提供 ICE / 固定入口关系管理和 TURN broker。
-Worker 不转发业务数据；客户端之间使用直连 QUIC 或通过 TURN 中继。
+Worker 不转发业务数据；客户端之间使用直连 QUIC、Hole 设备中继或 TURN。
 
 ## 准备
 
@@ -9,7 +9,7 @@ Worker 不转发业务数据；客户端之间使用直连 QUIC 或通过 TURN �
 - 支持项目所需 Durable Objects 的账户配置。
 - 如需 Cloudflare TURN 中继，准备 TURN Key ID 与对应 API Token。
 
-编辑根目录 `wrangler.toml`，按环境设置 Worker 名称和 `[[routes]]`。
+从 `worker/wrangler.example.toml` 复制本地 `worker/wrangler.toml`，按环境设置 Worker 名称和 `[[routes]]`。
 使用 `workers.dev` 域名时可移除自定义域名路由。保留以下绑定和迁移关系：
 
 | 绑定 | 类 | 迁移 |
@@ -22,7 +22,8 @@ Worker 不转发业务数据；客户端之间使用直连 QUIC 或通过 TURN �
 ## 配置与发布
 
 ```bash
-# 仓库根目录
+# 在 worker/ 目录中运行
+cd worker
 wrangler secret put PASSWORD
 
 # 使用 Cloudflare TURN 时配置；仅直连模式可省略这两项
@@ -66,6 +67,20 @@ UDP 3478、TCP 3478、TCP 80、TLS 5349、TLS 443 排序；缓存键随端口优
 启用语音的 join 使用可选 `voice: true` 字段。Worker 广播 `room_state` 完整成员快照，并为两个
 语音成员创建允许空 `mappings` 的 voice-only transport；语音参与者上限为 8，超过时返回
 `voice_capacity`，不影响普通 16 人房间和 mapping 配对。旧客户端仍收到原有 `room_members` 字符串数组。
+
+## Hole 三方授权
+
+`joined` 声明 `hole-relay-v1` 能力。具备真实映射或语音关系的两端通过 `hole_device` 和
+统一顺序生成 `relay_plan`；无需先创建到中继设备的映射。只有声明固定入口与
+`hole_serve` 的 CLI 可服务。Hole 轮次向中继发送 `hole_grant`，向双方发送带授权的
+`transport_ready`；包含设备身份、运行实例、网络和传输代次、入口及租约。
+容量按正在建立或活动的设备对统计，不按映射数统计；暂时不可用时双方按计划回退。
+
+`hole_revoke` 在离线、服务变化和阶段推进时撤销授权。三方重连均重新核对身份，
+端点租约过期后推进传输代次并重新生成路由和密钥；中继单独同步不能延长已过期授权。
+`hole_failed` 保存失败状态，休眠后不得恢复旧路由。Hole 轮次不需要 TURN broker 配置。
+旧 Worker、旧对端及旧中继必须先升级；未使用 Hole 的设备继续使用原兼容流程。
+部署顺序为 Worker → 客户端。
 
 ## TURN broker
 

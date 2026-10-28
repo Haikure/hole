@@ -5,7 +5,7 @@ CLI、Android 手机与 Wear OS 共用 Go 核心；Cloudflare Worker 负责信�
 
 ## 功能
 
-- ICE IPv4 / IPv6 直连，按每端配置顺序尝试 TURN UDP、TCP、TLS 中继；中继阶段优先选择单跳（非对称）候选对。
+- ICE IPv4 / IPv6 直连，按每端配置顺序尝试同房间 Hole 设备中继、TURN UDP、TCP、TLS；TURN 阶段优先选择单跳候选对。
 - 固定入口直连：一端公布公网 UDP 地址，对端通过 Worker 自动获取并拨号；该设备对只重试固定路径。
 - 一对设备共享 QUIC 传输，支持双向、多条 TCP / UDP 映射。
 - 可选语音房：`voice.enabled: true` 后，同一 room 的语音设备自动建立最多 8 人的点对点媒体传输。
@@ -14,11 +14,11 @@ CLI、Android 手机与 Wear OS 共用 Go 核心；Cloudflare Worker 负责信�
 - Wear 安装包包含 ARM32 / ARM64，独立运行，与手机端共用界面和核心。
 
 这是端口映射工具，不创建 VPN / TUN。业务数据经 QUIC 加密传输；协调服务不转发业务数据，
-中继由 TURN 服务承担。连接策略和恢复边界见 [协议说明](docs/PROTOCOL.md)。
+中继由同房间 Hole CLI 或 TURN 服务承担。连接策略和恢复边界见 [协议说明](docs/PROTOCOL.md)。
 
 ## 快速开始：CLI
 
-准备 Go 1.27.2、Bash 和 Python 3，在仓库根目录执行：
+准备 Go 1.27.3、Bash 和 Python 3，在仓库根目录执行：
 
 ```bash
 ./build.sh cli
@@ -155,11 +155,47 @@ STUN 默认使用 Cloudflare，TURN 默认向 Worker 按需申请短期凭据。
 独立配置 `udp`、`tcp`、`tls` 顺序。Worker 与两端均支持 `all-pairs-v1` 时，
 轮次覆盖两端白名单的跨类型组合；Cloudflare 的 TCP / TLS 先试标准端口，再试 80 / 443。
 manual URL 必须给端口；省略 `transport` 时，`turn:` 支持 UDP / TCP，`turns:` 仅支持 TLS。
-任一端启用 `ice.relay_only: true` 时，需要开启本机 TURN；新版 Worker 通知双方跳过直连，
+任一端启用 `ice.relay_only: true` 时，新版 Worker 通知双方跳过直连，可使用 Hole 或 TURN，
 重试和切网后也只尝试中继，仍支持单跳中继。连接旧 Worker 时会提示升级。运行中开启仅中继
 会停止旧的无约束路径。中继检查保留完整时间预算，不再因候选对瞬时 Failed 而提前放弃。
 旧版本继续使用其支持的轮次或命名阶段。TCP 重放缓存按需增长，单方向最多 16 MiB，
 同一核心实例的重放块容量合计最多 128 MiB；恢复与限额细节见 [协议说明](docs/PROTOCOL.md)。
+
+## 同房间设备中继
+
+只有根 Go CLI 能开启中继服务。服务端配置现有固定 UDP 入口，并可不配置业务映射：
+
+```yaml
+transport:
+  preferred: ice
+  fixed_endpoint:
+    listen: 0.0.0.0:40000
+    advertise: relay.example.com:40000
+relay:
+  serve:
+    enabled: true
+    max_pairs: 64
+    bandwidth_mbps: 0
+```
+
+各客户端填写同房间中继设备名，不需要创建到中继的业务映射：
+
+```yaml
+relay:
+  device: relay-node
+  order: [hole, udp, tcp, tls]
+```
+
+正常顺序为直连 → Hole → TURN UDP → TCP → TLS；仅中继跳过直连。
+`relay.order` 只尝试列出的类型，不能重复；显式 `[]` 使用新默认顺序。
+省略该字段时迁移旧 `turn.order`，填写设备名则在前面加入 Hole。
+没有本端设备名仍可参与对端指定的 Hole 路径；设备名不能是该连接任一端。
+`turn.mode: off` 只关闭本端 TURN，Hole 仍可承载 TCP、UDP 和语音。
+`max_pairs` 为正在建立及活动的设备对上限，默认 64、范围 1–128；
+`bandwidth_mbps` 为所有中继双向流量的十进制 Mbps 总限速，0 不限，不计中继自己的业务。
+中继与普通固定业务共用同一个监听端口，保留自身提供和使用服务的能力。
+涉及固定入口的普通设备对仍只走固定路径。GUI 导入开启服务的 CLI 配置会明确拒绝。
+先升级 Worker，再升级客户端；旧 Worker、旧对端或旧中继会提示升级。
 
 ## 桌面客户端构建
 
@@ -216,7 +252,7 @@ Worker 单独部署，见 [Worker 部署](docs/WORKER.md)。
 | [mobile/](mobile/README.md) | gomobile 窄接口与 Android 平台网络适配 |
 | [desktop/](desktop/README.md)、`cmd/hole-desktop-core/` | 桌面 GUI 的独立 Go stdio 桥接与入口 |
 | [android/](android/README.md) | 手机应用、共享桥接模块和 [Wear 模块](android/wear/README.md) |
-| `worker.js` / `worker_ice.mjs` | 房间协调、ICE 信令与 TURN broker |
+| `worker/worker.js` / `worker/worker_ice.mjs` | 房间协调、ICE 信令、Hole 授权与 TURN broker |
 | `scripts/` | 构建环境、源码摘要及构建脚本回归测试 |
 | [AGENTS.md](AGENTS.md) | 仓库维护与验证约定 |
 

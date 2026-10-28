@@ -6,6 +6,7 @@ import (
 	"github.com/pion/stun/v4"
 	"gopkg.in/yaml.v3"
 	"net"
+	"slices"
 	"strings"
 	"time"
 )
@@ -156,8 +157,8 @@ func (c Config) validateTransport() error {
 	if c.TURN.Mode != "worker" && c.TURN.Mode != "manual" && c.TURN.Mode != "off" {
 		return fmt.Errorf("turn.mode 需要 worker、manual 或 off")
 	}
-	if c.ICE.RelayOnly && c.TURN.Mode == "off" {
-		return fmt.Errorf("ice.relay_only 需要开启 TURN")
+	if err := c.validateHoleRelay(); err != nil {
+		return err
 	}
 	if len(c.TURN.Order) > 3 {
 		return fmt.Errorf("turn.order 最多 3 项")
@@ -206,8 +207,13 @@ func (c Config) validateTransport() error {
 	if c.TURN.Mode == "manual" && (len(c.TURN.URLs) == 0 || c.TURN.Username == "" || c.TURN.Credential == "") {
 		return fmt.Errorf("手动 TURN 需要 URL、用户名和凭据")
 	}
-	if c.TURN.Mode == "manual" && len(relayOrderForConfig(RelayPolicyUDPTCPTLS, c.TURN)) == 0 {
-		return fmt.Errorf("手动 TURN URL 与 turn.order 没有匹配类型；turn 支持 UDP/TCP，turns 仅支持 TLS，显式 transport 会限制类型")
+	if c.TURN.Mode == "manual" {
+		probe := c
+		probe.Relay.Device = ""
+		wantsTURN := c.Relay.Order == nil || len(c.Relay.Order) == 0 || slices.ContainsFunc(c.Relay.Order, func(token string) bool { return token != "hole" })
+		if wantsTURN && len(probe.deviceRelayOrder(RelayPolicyUDPTCPTLS)) == 0 {
+			return fmt.Errorf("手动 TURN URL 与中继顺序没有匹配类型；turn 支持 UDP/TCP，turns 仅支持 TLS，显式 transport 会限制类型")
+		}
 	}
 	return nil
 }

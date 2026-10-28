@@ -24,6 +24,8 @@ type fixedIncoming struct {
 
 // One socket and Transport serve every authorized peer of this runtime.
 type fixedListener struct {
+	relay     *holeForwarder
+	serve     RelayServeConfig
 	config    FixedEndpointConfig
 	epoch     uint64
 	ctx       context.Context
@@ -60,7 +62,7 @@ func (c *iceCoordinator) configureFixed(r Request) error {
 	f := c.fixed
 	epoch := c.networkEpoch.Load()
 	endpoint := r.Config.Transport.FixedEndpoint
-	if f != nil && endpoint != nil && f.config == *endpoint && f.epoch == epoch {
+	if f != nil && endpoint != nil && f.config == *endpoint && f.epoch == epoch && f.serve == r.Config.Relay.Serve {
 		c.fixedMu.Unlock()
 		return nil
 	}
@@ -88,6 +90,11 @@ func (c *iceCoordinator) configureFixed(r Request) error {
 		cancel()
 		return err
 	}
+	var relay *holeForwarder
+	if r.Config.Relay.Serve.Enabled {
+		relay = newHoleForwarder(ctx, packet, r.Config.Relay.Serve)
+		packet = relay.quicPacketConn()
+	}
 	transport := &quic.Transport{Conn: packet}
 	tlsConfig := c.identity.Clone()
 	tlsConfig.NextProtos = []string{fixedALPN}
@@ -102,6 +109,7 @@ func (c *iceCoordinator) configureFixed(r Request) error {
 		return err
 	}
 	f = &fixedListener{config: *endpoint, epoch: epoch, ctx: ctx, cancel: cancel, packet: packet, transport: transport, listener: listener}
+	f.relay, f.serve = relay, r.Config.Relay.Serve
 	c.fixedMu.Lock()
 	c.fixed = f
 	c.fixedMu.Unlock()
@@ -233,6 +241,7 @@ func (p *icePeer) retireForFixedPolicy() {
 	}
 	active := p.active
 	p.active = nil
+	p.stats.RTTMS = 0
 	p.online = false
 	p.stats.State = "reconnecting"
 	p.mu.Unlock()
@@ -345,7 +354,8 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 		}
 	}
 	defer conn.CloseWithError(0, "fixed path ended")
-	if !conn.ConnectionState().SupportsDatagrams {
+	datagrams := conn.ConnectionState().SupportsDatagrams
+	if !datagrams.Local || !datagrams.Remote {
 		p.failed(a, &Fault{Code: "protocol_mismatch", Message: "固定入口需要 QUIC DATAGRAM"})
 		return
 	}
@@ -403,6 +413,7 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 	if current {
 		p.active = nil
 		p.stats.State = "reconnecting"
+		p.stats.RTTMS = 0
 		p.stats.Error = &Fault{Code: "fixed_path_failed", Message: "固定入口连接已断开，正在重试"}
 	}
 	p.mu.Unlock()

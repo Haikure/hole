@@ -1,5 +1,11 @@
 # 共享 Go 核心
 
+`relay.device` / `relay.order` 提供 Hole 设备中继配置，`relay.serve` 仅由根 CLI 显式能力
+`Options.AllowRelayServe` 开放。固定 UDP socket 由单一分流器读取；Linux 批量后端和其他
+平台数据报后端共用授权、限速、公平队列和统计。`Snapshot.Relay` 为服务端统计，
+`PeerTransports` 包含实际中继设备、公布入口与接入地址。配置及三方生命周期见
+[Hole 协议](../docs/PROTOCOL.md#hole-设备中继)。mobile、桌面与插件只消费该共享实现。
+
 `hole/core` 供 CLI 与 Android 共用，实现信令、ICE / 固定入口 QUIC、TCP / UDP 映射及可恢复应用会话。
 本包不读取配置文件、不解析命令行参数，不安装进程信号处理器，也不退出宿主进程。
 

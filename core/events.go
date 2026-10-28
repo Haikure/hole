@@ -72,6 +72,8 @@ type MappingSnapshot struct {
 }
 
 type Capabilities struct {
+	HoleRelay         bool   `json:"hole_relay"`
+	RelayServe        bool   `json:"relay_serve"`
 	Transport         string `json:"transport"`
 	RequiresIPv6      bool   `json:"requires_ipv6"`
 	LiveConfiguration bool   `json:"live_configuration"`
@@ -79,6 +81,7 @@ type Capabilities struct {
 }
 
 type Snapshot struct {
+	Relay               *holeCounters           `json:"relay,omitempty"`
 	APIVersion          int                     `json:"api_version"`
 	SessionProtocol     int                     `json:"session_protocol"`
 	CoreVersion         string                  `json:"core_version"`

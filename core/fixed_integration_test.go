@@ -244,6 +244,14 @@ func TestFixedActualWorkerBidirectionalMappingsRecoveryAndSharedListener(t *test
 	}
 	waitSnapshot(t, a, fixedActive(4))
 	waitSnapshot(t, b, fixedActive(4))
+	for _, engine := range []*Engine{a, b} {
+		snapshot := waitSnapshotWithin(t, engine, 5*time.Second, func(s Snapshot) bool {
+			return fixedActive(4)(s) && s.PeerTransports[0].RTTMS > 0
+		})
+		if snapshot.PeerTransports[0].RTTMS <= 0 {
+			t.Fatalf("fixed QUIC RTT was not measured: %+v", snapshot.PeerTransports[0])
+		}
+	}
 	first, second := fixedTCP(t, ta), fixedTCP(t, tb)
 	fixedUDP(t, ua)
 	fixedUDP(t, ub)

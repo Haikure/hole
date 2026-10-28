@@ -3,7 +3,77 @@ import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { Room } from './worker.js';
 import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_POLICY, negotiateProfile, iceJoinFields, validateTurnResponse, relayPairs, validFixedEndpoint } from './worker_ice.mjs';
+import {HOLE_VERSION,deviceRelayPlan} from './worker_ice.mjs';
+
+const holeCaps={hole_version:HOLE_VERSION,relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1',relay_order:[],relay_enabled:false};
+async function holeFixture({two=false,offline=false,only=true}={}) {
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket(),relay=f.socket();
+ const jr={...join('relay-node'),...holeCaps,transport_profiles:[ICE_PROFILE,FIXED_PROFILE],fixed_endpoint:'relay.example:40000',hole_serve:{enabled:true,max_pairs:1,bandwidth_mbps:0}};
+ if(!offline)await r.webSocketMessage(relay,JSON.stringify(jr));
+ const ja={...join('alpha',['one']),...holeCaps,hole_device:'relay-node',relay_order:['hole','udp'],relay_enabled:true,relay_only:only};
+ const jb={...join('beta',[],['one']),...holeCaps,relay_only:only,...(two?{hole_device:'relay-node',relay_order:['hole']}: {})};
+ await r.webSocketMessage(a,JSON.stringify(ja));await r.webSocketMessage(b,JSON.stringify(jb));
+ return {...f,r,a,b,relay,jr,ja,jb,record:[...r.ice.records.values()][0]};
+}
+test('Hole shared plans collapse relay pairs, sort distinct names, and keep TURN order',()=>{
+ assert.deepEqual(deviceRelayPlan(['hole','udp'],['hole','tls'],'z','a'),[{device:'a',a:'hole',b:'hole'},{device:'z',a:'hole',b:'hole'},{a:'relay_udp',b:'relay_tls'}]);
+ assert.deepEqual(deviceRelayPlan(['hole','udp'],['hole','tls'],'same','same'),[{device:'same',a:'hole',b:'hole'},{a:'relay_udp',b:'relay_tls'}]);
+});
+test('Hole authorization needs only a real endpoint relation and both sides support it',async()=>{
+ const f=await holeFixture();const h=f.record.hole;
+ assert.equal(f.record.round,1);assert.equal(h.device,'relay-node');assert.match(h.route,/^[a-f0-9]{32}$/);
+ assert.equal(f.relay.messages.filter(m=>m.type==='hole_grant').length,1);
+ for(const s of [f.a,f.b]) {const ready=s.messages.filter(m=>m.type==='transport_ready').at(-1);assert.equal(ready.phase,'hole');assert.equal(ready.hole.route,h.route);}
+ assert.equal(f.r.ice.records.size,1);
+ const old=f.socket();await f.r.webSocketMessage(old,JSON.stringify(join('beta',[],['one'])));
+ assert.ok(f.a.messages.some(m=>m.code==='peer_upgrade_required'));
+ assert.ok(old.messages.some(m=>m.code==='peer_upgrade_required'));
+ assert.equal([...f.r.ice.records.values()].filter(r=>r.online).length,0);
+});
+test('Hole direct-first, offline fallback, lease renewal, hibernation and revocation',async()=>{
+ const f=await holeFixture({only:false});assert.equal(f.record.round,0);assert.equal(f.record.hole,undefined);
+ await f.r.webSocketMessage(f.a,JSON.stringify({type:'transport_restart',transport_id:f.record.id,expected_generation:f.record.generation,relay_round:1}));
+ const route=f.record.hole.route,gen=f.record.generation;
+ const resumed=new Room(f.state,{});await resumed.webSocketMessage(f.a,JSON.stringify({type:'transport_renew'}));
+ assert.equal([...resumed.ice.records.values()][0].hole.route,route);
+ assert.equal(f.relay.messages.filter(m=>m.type==='hole_grant').at(-1).transport_generation,gen);
+ const live=[...resumed.ice.records.values()][0];live.lease_until=Date.now()-1;
+ await resumed.webSocketMessage(f.a,JSON.stringify({type:'transport_renew'}));
+ assert.notEqual(live.hole.route,route);assert.ok(BigInt(live.generation)>BigInt(gen));
+ await resumed.webSocketClose(f.b,1000,'closed',true);
+ assert.ok(f.relay.messages.some(m=>m.type==='hole_revoke'));assert.equal(live.hole,null);
+ const missing=await holeFixture({offline:true});assert.match(missing.record.hole.error,/暂未在线/);
+});
+test('Hole service capacity is per pair and relay restart invalidates grants',async()=>{
+ const f=await holeFixture();const old=f.record.hole.route;
+ const c=f.socket();await f.r.webSocketMessage(c,JSON.stringify({...join('charlie',[],['one']),...holeCaps,relay_only:true}));
+ const other=[...f.r.ice.records.values()].find(r=>r.b==='charlie');assert.match(other.hole.error,/容量/);
+ const replacement=f.socket();await f.r.webSocketMessage(replacement,JSON.stringify({...f.jr,runtime_id:'c'.repeat(32),fixed_endpoint:'new.example:40001'}));
+ assert.notEqual(f.record.hole.route,old);assert.equal(f.record.hole.endpoint,'new.example:40001');
+ await f.r.webSocketClose(replacement,1000,'closed',true);assert.match(f.record.hole.error,/暂未在线/);
+});
 Object.defineProperty(globalThis,'crypto',{value:webcrypto});
+test('Hole relay socket reconnect rotates generation even with unchanged identity',async()=>{
+ const f=await holeFixture();const gen=f.record.generation,route=f.record.hole.route;
+ const replacement=f.socket();await f.r.webSocketMessage(replacement,JSON.stringify(f.jr));
+ assert.ok(BigInt(f.record.generation)>BigInt(gen));assert.notEqual(f.record.hole.route,route);
+ assert.equal(f.relay.closed,true,'replaced relay socket remained authorized');
+ const live=new Room(f.state,{});
+ await live.webSocketMessage(replacement,JSON.stringify({type:'transport_sync'}));
+ const record=[...live.ice.records.values()][0];
+ assert.equal(record.generation,f.record.generation);
+ record.lease_until=Date.now()-1;
+ const before=replacement.messages.filter(m=>m.type==='hole_grant').length;
+ await live.webSocketMessage(replacement,JSON.stringify({type:'transport_sync'}));
+ assert.equal(replacement.messages.filter(m=>m.type==='hole_grant').length,before,'relay sync renewed an expired authorization');
+});
+test('Hole install failure persists across Worker hibernation',async()=>{
+ const f=await holeFixture();
+ await f.r.webSocketMessage(f.relay,JSON.stringify({type:'hole_failed',transport_id:f.record.id,transport_generation:f.record.generation}));
+ const live=new Room(f.state,{});
+ await live.webSocketMessage(f.a,JSON.stringify({type:'transport_sync'}));
+ assert.match([...live.ice.records.values()][0].hole.error,/不可用/);
+});
 function fixture(){
  const values=new Map(),sockets=[];
  let alarm=null;const counts={puts:0,lists:0,alarms:0};

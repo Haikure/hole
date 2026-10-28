@@ -13,8 +13,11 @@ import (
 )
 
 type Options struct {
-	Platform      Platform
-	EventCapacity int
+	// Only the root CLI opts into operating a relay. Importing a configuration
+	// in a graphical host must never start a forwarding service.
+	AllowRelayServe bool
+	Platform        Platform
+	EventCapacity   int
 	// Mobile hosts keep the requested run alive while connectivity is absent.
 	RetryNetwork bool
 }
@@ -61,6 +64,7 @@ type engineRun struct {
 }
 
 type Engine struct {
+	allowRelayServe     bool
 	operations          sync.Mutex
 	mu                  sync.Mutex
 	platform            Platform
@@ -95,7 +99,8 @@ func NewEngine(options Options) *Engine {
 		platform = DefaultPlatform{}
 	}
 	return &Engine{
-		platform: platform, events: make(chan Event, capacity),
+		allowRelayServe: options.AllowRelayServe,
+		platform:        platform, events: make(chan Event, capacity),
 		retryNetwork: options.RetryNetwork,
 		state:        "stopped", signal: "disconnected", mappings: make(map[string]MappingSnapshot),
 	}
@@ -106,6 +111,9 @@ func (e *Engine) Events() <-chan Event { return e.events }
 // Start validates synchronously and starts network work asynchronously. An
 // identical repeat is idempotent. Acceptance is not a signal/mapping connection.
 func (e *Engine) Start(request Request) error {
+	if request.Config.Relay.Serve.Enabled && !e.allowRelayServe {
+		return &Fault{Code: "cli_only", Message: "中继服务仅 CLI 支持"}
+	}
 	request, err := request.validated()
 	if err != nil {
 		return err
@@ -226,6 +234,9 @@ func (e *Engine) Close() error {
 // the previous transport before a full authenticated rejoin, retaining only
 // application sessions whose configuration and connection scope still match.
 func (e *Engine) ApplyConfig(request Request) error {
+	if request.Config.Relay.Serve.Enabled && !e.allowRelayServe {
+		return &Fault{Code: "cli_only", Message: "中继服务仅 CLI 支持"}
+	}
 	request, err := request.validated()
 	if err != nil {
 		return err
@@ -527,6 +538,8 @@ func (e *Engine) Snapshot() Snapshot {
 		StartedAt: e.startedAt, Network: e.network.clone(),
 		Mappings: []MappingSnapshot{}, PeerTransports: []PeerTransportSnapshot{}, Voice: VoiceSnapshot{State: "disabled", Members: []VoiceMemberSnapshot{}, Peers: []VoicePeerSnapshot{}}, Capabilities: Capabilities{Transport: "IPv6 / QUIC / hole-v2", RequiresIPv6: true, LiveConfiguration: true},
 	}
+	s.Capabilities.HoleRelay = true
+	s.Capabilities.RelayServe = e.allowRelayServe
 	if p, ok := e.platform.(NetworkSnapshotter); ok {
 		s.Capabilities.NetworkBinding = p.NetworkBinding()
 	}
@@ -570,6 +583,7 @@ func (e *Engine) Snapshot() Snapshot {
 	activeMappings := map[string]bool{}
 	if coordinator != nil {
 		s.PeerTransports = coordinator.snapshot()
+		s.Relay = coordinator.relaySnapshot()
 		activeMappings = coordinator.activeMappings()
 		s.Voice = coordinator.voiceSnapshot()
 	}

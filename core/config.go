@@ -7,6 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ type Config struct {
 	Transport           TransportConfig `yaml:"transport"`
 	ICE                 ICEConfig       `yaml:"ice"`
 	TURN                TURNConfig      `yaml:"turn"`
+	Relay               RelayConfig     `yaml:"relay" json:"relay"`
 	Voice               VoiceConfig     `yaml:"voice" json:"voice"`
 }
 
@@ -200,6 +202,7 @@ func (cfg Config) Validate() error {
 
 func (cfg Config) normalized() Config {
 	cfg.normalizeTransport()
+	cfg.Relay.Order = slices.Clone(cfg.Relay.Order)
 	cfg.CandidateInterfaces = append([]string(nil), cfg.CandidateInterfaces...)
 	cfg.CandidateAddresses = append([]string(nil), cfg.CandidateAddresses...)
 	cfg.Provide = append([]Provide{}, cfg.Provide...)

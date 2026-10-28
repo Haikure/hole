@@ -86,11 +86,11 @@ func TestRelayOnlyRequiresWorkerSupportAndConsistentReady(t *testing.T) {
 	checkFault(legacy, "protocol_mismatch")
 }
 
-func TestRelayOnlyRejectsDisabledTURN(t *testing.T) {
+func TestRelayOnlyCanParticipateInPeerHoleWithDisabledTURN(t *testing.T) {
 	r := iceFixtureRequest("ws://127.0.0.1/ws", "local")
 	r.Config.ICE.RelayOnly = true
-	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "需要开启 TURN") {
-		t.Fatalf("impossible relay-only configuration accepted: %v", err)
+	if err := r.Validate(); err != nil {
+		t.Fatalf("peer Hole participation rejected: %v", err)
 	}
 }
 

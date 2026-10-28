@@ -9,6 +9,12 @@ type peerMappingRecord struct {
 	Expose   HostPort        `json:"expose"`
 }
 type iceSignalMessage struct {
+	HoleVersion    string            `json:"hole_version,omitempty"`
+	HoleDevice     string            `json:"hole_device,omitempty"`
+	PeerHoleDevice string            `json:"peer_hole_device,omitempty"`
+	HoleServe      *RelayServeConfig `json:"hole_serve,omitempty"`
+	RelayPlan      []relayPathStep   `json:"relay_plan,omitempty"`
+	Hole           *holeGrant        `json:"hole,omitempty"`
 	SignalMessage
 	SignalVersion       int                 `json:"signal_version,omitempty"`
 	LeaseRenewal        bool                `json:"lease_renewal,omitempty"`
@@ -36,7 +42,7 @@ type iceSignalMessage struct {
 	PeerRelayOnly       bool                `json:"peer_relay_only,omitempty"`
 	RelayRequired       bool                `json:"relay_required,omitempty"`
 	RelayOnlyPolicy     string              `json:"relay_only_policy,omitempty"`
-	RelayOrder          []string            `json:"relay_order,omitempty"`
+	RelayOrder          []string            `json:"relay_order"`
 	PeerRelayOrder      []string            `json:"peer_relay_order,omitempty"`
 	RelayRound          *int                `json:"relay_round,omitempty"`
 	RelayPairing        string              `json:"relay_pairing,omitempty"`
@@ -68,19 +74,22 @@ type transportLease struct {
 }
 
 type PeerTransportSnapshot struct {
-	PeerID        string `json:"peer_id"`
-	TransportID   string `json:"transport_id"`
-	Generation    uint64 `json:"generation,string"`
-	Profile       string `json:"profile"`
-	FixedEndpoint string `json:"fixed_endpoint,omitempty"`
-	ListenerID    string `json:"listener_id,omitempty"`
-	DialerID      string `json:"dialer_id,omitempty"`
-	Voice         bool   `json:"voice,omitempty"`
-	State         string `json:"state"`
-	Phase         string `json:"phase"`
-	PathType      string `json:"path_type,omitempty"`
-	LocalType     string `json:"local_type,omitempty"`
-	RemoteType    string `json:"remote_type,omitempty"`
+	RelayDevice        string `json:"relay_device,omitempty"`
+	RelayEndpoint      string `json:"relay_endpoint,omitempty"`
+	RelayAccessAddress string `json:"relay_access_address,omitempty"`
+	PeerID             string `json:"peer_id"`
+	TransportID        string `json:"transport_id"`
+	Generation         uint64 `json:"generation,string"`
+	Profile            string `json:"profile"`
+	FixedEndpoint      string `json:"fixed_endpoint,omitempty"`
+	ListenerID         string `json:"listener_id,omitempty"`
+	DialerID           string `json:"dialer_id,omitempty"`
+	Voice              bool   `json:"voice,omitempty"`
+	State              string `json:"state"`
+	Phase              string `json:"phase"`
+	PathType           string `json:"path_type,omitempty"`
+	LocalType          string `json:"local_type,omitempty"`
+	RemoteType         string `json:"remote_type,omitempty"`
 	// LocalRelayProtocol is the TURN access protocol used by this process.
 	// RelayProtocol is kept as a compatibility alias for older hosts.
 	LocalRelayProtocol  string   `json:"local_relay_protocol,omitempty"`

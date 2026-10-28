@@ -66,9 +66,48 @@ Android / Wear、桌面和 PenMods 通过固定 profile、`phase: fixed` 或 `pa
 识别固定通道，路径显示“固定入口直连”及已上报的地址族，连接状态仍取自实际 `state`。
 详情与报告分别展示公布入口、监听方、拨号方及实际两端地址；缺失字段省略，不从入口推测连接地址。
 固定通道隐藏 ICE 候选、TURN 顺序和中继凭据，保留通用连接统计；失败提示明确只重试固定入口。
+`rtt_ms` 使用 QUIC ACK 采样的平滑往返时间；CLI 在建立或恢复路径时显示该测量值。
 
 本功能只扩展当前协议，没有固定入口的旧版兼容分支；发布顺序为 Worker、两端核心。
 Android / Wear、桌面和 PenMods 的固定监听配置界面后续接入。
+
+## Hole 设备中继
+
+`hole-relay-v1` 同时版本化客户端能力、路径计划和 UDP 封装。`relay.device` 指定单个
+同房间设备，只有根 CLI 通过 `Options.AllowRelayServe` 开启服务。监听复用
+`transport.fixed_endpoint.listen`，公布地址沿用 `advertise`；不新开公网端口、不建立中继链。
+普通固定入口关系仍优先选择固定 profile，不自动转入 Hole 或 TURN。
+
+`relay.order` 接受不重复的 `hole/udp/tcp/tls`；显式空数组使用该默认顺序，省略时沿用
+旧 `turn.order` 并在指定设备时前置 Hole。可用类型仍受设备名、TURN 来源和 URL 限制。
+未指定设备名的一端不提出 Hole，但可使用另一端提出的共享路径；关闭 TURN 不关闭 Hole。
+正常首轮为直连，仅中继从首个可用中继轮开始。两端顺序沿用 `all-pairs-v1` 组合算法：
+包含 Hole 的组合只生成一次共享 Hole 尝试，不分配 TURN；涉及不同中继时按设备名排序，
+同一中继只保留第一次出现。不含 Hole 的组合保留 TURN 配对顺序。
+
+Worker 只为真实映射或语音关系签发三方授权，绑定两个设备身份、运行实例、网络代次、
+中继身份及入口、传输代次和租约。双方及中继收到同一随机路由 ID 和两个方向的 MAC 密钥。
+双方通过 register → challenge → confirm → ack 确认 UDP 地址，之后传送端到端 QUIC。
+46 字节封装包含版本、类型、方向、路由、序号及截断为 16 字节的 HMAC-SHA256；序号使用
+64 包滑动窗口防重放。普通业务包不能修改目的地址，地址变化必须重新确认。
+内部继续使用现有 QUIC 多路复用、端到端证书指纹校验、TCP 重放、UDP 分片和语音协议；
+中继不解密业务、不连接目标服务，也不再套一层 QUIC。QUIC 使用保守 MTU 并关闭路径 MTU 探测。
+
+中继离线、重连、重启、入口或服务配置变化会撤销路由、推进代次并重新协商。
+Worker 休眠恢复和续租不得重发过期授权；过期后重新授权会推进代次、换路由及密钥。
+中继拒绝旧代次替换、已撤销授权恢复以及同代次更换路由、密钥或身份；续租只延长有效路由。
+容量满或暂时离线可按顺序回退，协议版本缺失明确提示升级。未使用 Hole 的连接保留旧流程。
+
+启用服务后由一个接收者分流固定 QUIC 和 Hole，收包缓冲区直接交给有界队列。
+每对最多排队 16 包，按设备对轮转出队，再计入共享令牌桶；每批立即发送，不等待凑批。
+Linux 后端使用 recvmmsg/sendmmsg，其他平台使用普通数据报，均支持无 CGo 构建。
+Linux 固定 QUIC 保留真实 pktinfo、ECN 与发送 GSO，通过分流队列提供批量读取，避免
+QUIC 绕过队列另读 socket；Hole 封装回复使用对应端点的本机地址信息。其他后端不虚报
+OOB/GSO/ECN 能力；网络发送不持有授权锁。撤销排队包时回收缓冲区，已提交给
+socket 的在途包无法撤回，端点仍受当前租约和 QUIC 身份约束。
+`max_pairs` 默认 64、范围 1–128，独立于业务连接配额；总带宽为双向十进制 Mbps，0 不限。
+快照提供实际设备、公布入口、接入地址、失败原因，以及服务端设备对数、转发字节、队列及限速丢包、后端名称。
+Hole 通道的 `rtt_ms` 使用端到端 QUIC ACK 采样的平滑往返时间，CLI 在建立或恢复路径时显示该值。
 
 ## ICE 与 TURN
 
@@ -113,7 +152,7 @@ PCM 桥接仍接受最多 4 帧批次，Android 采集与播放使用单帧。�
 认证；失败后推进，遍历完成后回到首轮并退避。普通连接的首轮为直连；任一端要求仅中继时，
 首轮为有效中继轮次。不会要求两端使用相同 TURN 接入协议。
 
-`ice.relay_only: true` 要求本机开启 TURN，并在 join 中声明 `relay_only: true`。
+`ice.relay_only: true` 在 join 中声明 `relay_only: true`，可由 Hole 或 TURN 满足。
 Worker 在 `joined` / `transport_ready` 中以 `relay_only_policy: relay-only-v1` 声明支持，
 在 ready 中返回本端 `relay_only`、`peer_relay_only` 和两者逻辑或 `relay_required`。
 任一端要求仅中继，首次连接、失败回环、切网和重连均跳过直连；旧客户端请求回到第 0 轮或

@@ -4,7 +4,7 @@
 
 - 根目录是 Go CLI，`core/` 是 CLI / Android 共用实现，`mobile/` 是 gomobile 窄接口。
 - `android/app` 为手机，`android/wear` 复用手机源码，`android/corebridge` 管理 AAR 和平台网络适配。
-- Worker 实现在 `worker.js` / `worker_ice.mjs`，部署配置为 `wrangler.toml`。
+- Worker 实现在 `worker/worker.js` / `worker/worker_ice.mjs`，部署配置参考 `worker/wrangler.example.toml`。
 - 发布入口是根目录 `build.sh`。技术说明集中于 `docs/` 和各模块 README，不新增会话流水式 Markdown。
 
 ## 修改原则
@@ -45,7 +45,7 @@ python3 -m unittest discover -s scripts -p 'test_build.py'
 python3 -m unittest discover -s android/scripts -p 'verify_apk_test.py'
 go test -race -count=1 ./...
 go vet ./...
-node --test worker_ice.test.mjs
+node --test worker/worker_ice.test.mjs worker/worker_fixture.test.mjs
 git diff --check
 ```
 

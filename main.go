@@ -102,7 +102,7 @@ func run(configPath string, options cliOptions) error {
 	reporter.startup()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	engine := core.NewEngine(core.Options{})
+	engine := core.NewEngine(core.Options{AllowRelayServe: true})
 	defer engine.Close()
 	logsDone := make(chan struct{})
 	go func() {

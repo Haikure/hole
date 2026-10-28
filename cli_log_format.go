@@ -53,6 +53,8 @@ func logDuration(milliseconds int64) string {
 
 func logPhase(phase string) string {
 	switch phase {
+	case "hole":
+		return "Hole 中继"
 	case "fixed":
 		return "固定入口直连"
 	case "direct":
@@ -70,6 +72,8 @@ func logPhase(phase string) string {
 
 func logPath(p core.PeerTransportSnapshot) string {
 	switch p.PathType {
+	case "hole":
+		return "Hole 中继 · " + logText(p.RelayDevice)
 	case "fixed":
 		return "固定入口直连"
 	case "direct":

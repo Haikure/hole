@@ -2,7 +2,7 @@ module hole/androidbind
 
 go 1.27.0
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 tool (
 	golang.org/x/mobile/cmd/gobind
@@ -23,9 +23,8 @@ require (
 	github.com/pion/stun/v4 v4.0.0 // indirect
 	github.com/pion/transport/v4 v4.1.0 // indirect
 	github.com/pion/turn/v5 v5.1.0 // indirect
-	github.com/quic-go/quic-go v0.54.0 // indirect
+	github.com/quic-go/quic-go v0.63.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	go.uber.org/mock v0.5.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/mobile v0.0.0-20260908204917-8b95e45f8d3e // indirect
 	golang.org/x/mod v0.41.0 // indirect

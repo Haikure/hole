@@ -5,17 +5,17 @@
 
 ## 工具链
 
-CLI / `desktop-core` 需要 Bash、Python 3 和 Go 1.27.2；桌面桥接不需要 Qt、Slint 或 CGo。
+CLI / `desktop-core` 需要 Bash、Python 3 和 Go 1.27.3；桌面桥接不需要 Qt、Slint 或 CGo。
 完整 `desktop` 目标还需要 Rust stable / Cargo。桌面 GUI 支持 Linux、Windows 的 AMD64 / ARM64；
 Linux 桌面 GUI 与语音设备适配通过 Slint / fontconfig 和 CPAL / ALSA 构建，需要 `pkg-config`、
 Fontconfig 和 ALSA 开发包（Debian / Ubuntu 为 `libfontconfig1-dev`、`libasound2-dev`）；运行环境需系统
 ALSA 库及默认音频设备。Windows 使用系统 WASAPI。
 交叉构建需提前安装对应 Rust target 和平台 linker / sysroot（Linux 含目标 ALSA 库），构建脚本不会自动安装 Rust 工具链或系统音频开发包。
-项目 Android 构建固定使用 Go 1.27.2。
+项目 Android 构建固定使用 Go 1.27.3。
 
 | Android 组件 | 版本 |
 | --- | --- |
-| Go | 1.27.2 |
+| Go | 1.27.3 |
 | JDK | 17；Robolectric / Miuix UI 测试宿主另需 21+ |
 | x/mobile（gomobile、gobind） | `v0.0.0-20260908204917-8b95e45f8d3e` |
 | Gradle Wrapper / AGP | 9.4.1 / 9.2.1 |
@@ -25,7 +25,7 @@ ALSA 库及默认音频设备。Windows 使用系统 WASAPI。
 | NDK | 28.2.13676358（r28c） |
 | minSdk / targetSdk | 26 / 36 |
 
-Android 自动化工具安装脚本面向 Linux x86_64。已有 Go 1.27.2、JDK 17 后，可主动执行：
+Android 自动化工具安装脚本面向 Linux x86_64。已有 Go 1.27.3、JDK 17 后，可主动执行：
 
 ```bash
 bash android/scripts/setup-toolchain.sh
@@ -191,7 +191,7 @@ python3 -m unittest discover -s scripts -p 'test_build.py'
 python3 -m unittest discover -s android/scripts -p 'verify_apk_test.py'
 go test -race -count=1 ./...
 go vet ./...
-node --test worker_ice.test.mjs
+node --test worker/worker_ice.test.mjs worker/worker_fixture.test.mjs
 
 # Android 绑定依赖图也单独验证
 (cd android/corebridge/gobuild && go test -race -count=1 hole/core hole/mobile && go vet hole/core hole/mobile)
@@ -200,6 +200,14 @@ node --test worker_ice.test.mjs
 `go test ./...` 包含桌面协议、真实 Engine 本地信令及宿主子进程测试；可单独执行
 `go test -race -count=1 ./desktop ./cmd/hole-desktop-core`。Windows 交叉编译只验证构建，
 Windows 管道、窗口与系统集成运行验收在相应系统单独执行。
+
+Hole 中继专项覆盖 `core/hole_*test.go`、Worker 三方生命周期、各客户端配置往返和
+PenMods 排序交互。可用 `go test ./core -run '^$' -bench BenchmarkHoleForwarding -benchmem`
+测量鉴权、路由入队热路径；它不包含内核 UDP 收发，不代表公网吞吐或设备性能。
+`BenchmarkHoleBackendLoopback` 对照逐包与 Linux 批量系统调用，报告每包耗时、吞吐和
+批次完成耗时的 p50/p95/p99；这是回环提交加接收时间，不是公网 RTT。
+CLI 中继及跨平台核心保留 `CGO_ENABLED=0`；Android/Wear、桌面和 PenMods 沿用各自
+Release 构建入口。真实跨 NAT、长时间稳定性及真机音频播放需单独验收。
 
 Go 集成测试使用本地 socket；Worker 测试需要提供 `node:test` 的 Node.js。
 Android UI 测试使用已有 JDK 21+，通过 `JDK_TEST_HOME` 指定其目录：

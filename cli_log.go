@@ -31,6 +31,7 @@ type cliPeerProgress struct {
 // Presentation is event-driven. Internal generations, leases and statistics do
 // not constitute user-visible progress; the latest snapshot supplies path facts.
 type cliReporter struct {
+	relayFacts       string
 	logger           *log.Logger
 	request          core.Request
 	debug            bool
@@ -430,6 +431,9 @@ func (r *cliReporter) peer(p core.PeerTransportSnapshot) {
 		if message != "" && p.ConnectMS > 0 && !(previous.State == "switching" && previous.Generation == p.Generation) {
 			message += " " + logDuration(int64(p.ConnectMS))
 		}
+		if message != "" && p.RTTMS > 0 {
+			message += "，RTT " + logDuration(p.RTTMS)
+		}
 		progress.connected, progress.interrupted, progress.path = true, false, path
 		progress.attempts = map[string]bool{}
 		progress.retryBase, progress.reported = p.RetryCount, p.RetryCount
@@ -514,6 +518,13 @@ func (r *cliReporter) peer(p core.PeerTransportSnapshot) {
 func (r *cliReporter) snapshot(s core.Snapshot) {
 	if !s.Configured {
 		return
+	}
+	if s.Relay != nil {
+		facts := fmt.Sprintf("%d/%d/%d", s.Relay.ActivePairs, s.Relay.QueueDrops, s.Relay.RateDrops)
+		if facts != r.relayFacts {
+			r.relayFacts = facts
+			r.info("Hole 中继服务: 设备对 %d · 转发 %d B · 队列丢包 %d · 限速丢包 %d · 后端 %s", s.Relay.ActivePairs, s.Relay.ForwardedBytes, s.Relay.QueueDrops, s.Relay.RateDrops, logText(s.Relay.Backend))
+		}
 	}
 	if !r.stopped && s.EngineState != "stopped" && s.EngineState != "error" {
 		peers := append([]core.PeerTransportSnapshot(nil), s.PeerTransports...)

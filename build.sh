@@ -119,7 +119,7 @@ if (( BUILD_ANDROID || BUILD_WEAR )); then
   for tool in go java javac keytool gomobile gobind; do
     command -v "$tool" >/dev/null || die "缺少工具 $tool；参见 docs/BUILDING.md"
   done
-  [[ "$(go env GOVERSION)" == go1.27.2 ]] || die 'Android 绑定锁定 Go 1.27.2'
+  [[ "$(go env GOVERSION)" == go1.27.3 ]] || die 'Android 绑定锁定 Go 1.27.3'
   [[ "$(javac -version 2>&1)" == 'javac 17.'* ]] || die 'Android 绑定需要 JDK 17'
   [[ -n "${ANDROID_HOME:-}" ]] || die '请配置 ANDROID_HOME 或 HOLE_TOOLCHAIN_ENV'
   for sdk_file in platforms/android-37.0/android.jar ndk/28.2.13676358/source.properties \
@@ -129,8 +129,8 @@ if (( BUILD_ANDROID || BUILD_WEAR )); then
   keytool -list -keystore "$HOLE_SIGNING_STORE_FILE" \
     -storepass:env HOLE_SIGNING_STORE_PASSWORD -alias "$HOLE_SIGNING_KEY_ALIAS" >/dev/null
 fi
-command -v go >/dev/null || die '请安装 Go 1.27.2'
-[[ "$(go env GOVERSION)" == go1.27.2 ]] || die '本工程锁定 Go 1.27.2'
+command -v go >/dev/null || die '请安装 Go 1.27.3'
+[[ "$(go env GOVERSION)" == go1.27.3 ]] || die '本工程锁定 Go 1.27.3'
 if (( BUILD_DESKTOP )); then
   command -v cargo >/dev/null || die '构建 desktop 需要 Rust stable 的 Cargo；参见 docs/BUILDING.md'
   command -v rustc >/dev/null || die '构建 desktop 需要 rustc；参见 docs/BUILDING.md'

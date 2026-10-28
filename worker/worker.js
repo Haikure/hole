@@ -1,4 +1,4 @@
-import { RoomICE, TurnBroker, iceJoinFields, negotiateProfile, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_ONLY_POLICY, VOICE_MEMBER_LIMIT } from "./worker_ice.mjs";
+import { RoomICE, TurnBroker, iceJoinFields, negotiateProfile, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_ONLY_POLICY, VOICE_MEMBER_LIMIT, HOLE_VERSION } from "./worker_ice.mjs";
 export { TurnBroker };
 const ROOM_PATH = "/ws";
 const MAX_MESSAGE_SIZE = 256 * 1024;
@@ -233,6 +233,7 @@ export class Room {
       signal_version: 2,
       auth_mode: "shared-secret",
       lease_renewal: true,
+      hole_version: HOLE_VERSION,
       relay_only_policy: RELAY_ONLY_POLICY,
       room_members: [...this.members.keys()],
     });
@@ -355,6 +356,11 @@ export class Room {
           allowedVoice.has(left.member.device_name) && allowedVoice.has(right.member.device_name);
 
         if (pairMappings.length || voicePair) {
+          if ((left.member.hole_device || right.member.hole_device) && !left.member.fixed_endpoint && !right.member.fixed_endpoint &&
+              (left.member.hole_version!==HOLE_VERSION || right.member.hole_version!==HOLE_VERSION)) {
+            for (const entry of [left,right]) send(entry.ws,{type:'error',code:'peer_upgrade_required',message:'Hole 中继需要双方更新客户端'});
+            continue;
+          }
           const profile = negotiateProfile(left.member, right.member);
           if (profile === ICE_PROFILE || profile === FIXED_PROFILE) { await this.ice.activate(left, right, pairMappings, icePairs, voicePair); continue; }
           if ((left.member.fixed_endpoint || right.member.fixed_endpoint) && (left.member.relay_only || right.member.relay_only)) {

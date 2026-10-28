@@ -216,6 +216,21 @@ func TestCLITCPAndTLSPathsRemainDistinct(t *testing.T) {
 	}
 }
 
+func TestCLIConnectionLogIncludesMeasuredQUICRTT(t *testing.T) {
+	for _, p := range []core.PeerTransportSnapshot{
+		{PeerID: "hole-peer", State: "active", PathType: "hole", RelayDevice: "relay", ConnectMS: 123, RTTMS: 27},
+		{PeerID: "fixed-peer", State: "active", Profile: core.ProfileFixed, PathType: "fixed", ConnectMS: 123, RTTMS: 31},
+	} {
+		t.Run(p.PeerID, func(t *testing.T) {
+			r, output := testReporter(t)
+			r.peer(p)
+			if !strings.Contains(output.String(), "RTT "+logDuration(p.RTTMS)) {
+				t.Fatalf("connection log omitted measured RTT: %s", output)
+			}
+		})
+	}
+}
+
 func TestCLICredentialWaitIsDistinctFromConnectionAttempt(t *testing.T) {
 	r, output := testReporter(t)
 	p := core.PeerTransportSnapshot{PeerID: "peer", TransportID: "pair", Generation: 1, Phase: "relay_udp", State: "waiting_credentials"}

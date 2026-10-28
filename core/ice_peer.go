@@ -121,6 +121,11 @@ func (p *icePeer) update(m iceSignalMessage) {
 	p.stats.Profile = m.Profile
 	p.stats.FixedEndpoint, p.stats.ListenerID, p.stats.DialerID = m.FixedEndpoint, m.ListenerID, m.DialerID
 	p.stats.Voice = m.Voice
+	if m.Hole != nil {
+		p.stats.RelayDevice, p.stats.RelayEndpoint = m.Hole.Device, m.Hole.Endpoint
+	} else {
+		p.stats.RelayDevice, p.stats.RelayEndpoint, p.stats.RelayAccessAddress = "", "", ""
+	}
 	p.stats.LeaseUntil = m.LeaseUntil
 	p.stats.RelayPolicy = m.RelayPolicy
 	p.stats.RelayRound = 0
@@ -133,15 +138,27 @@ func (p *icePeer) update(m iceSignalMessage) {
 	p.stats.RelayOrderFallback = m.Profile == ProfileICE && customOrderConfigured && m.RelayRound == nil
 	p.stats.MappingCount = len(m.Mappings)
 	active := p.active
-	retireActive := identityChanged || (active != nil && (active.ready.Profile != m.Profile || (m.Profile == ProfileFixed && (active.ready.FixedEndpoint != m.FixedEndpoint || active.ready.ListenerID != m.ListenerID)))) || (m.RelayRequired && active != nil && !relayReadyConforms(active.ready, m.RelayOnly))
+	retireHole := active != nil && active.ready.Phase == "hole" && (m.Hole == nil || m.Hole.Error != "" || active.ready.Hole == nil || active.ready.Hole.Route != m.Hole.Route)
+	retireActive := retireHole || identityChanged || (active != nil && (active.ready.Profile != m.Profile || (m.Profile == ProfileFixed && (active.ready.FixedEndpoint != m.FixedEndpoint || active.ready.ListenerID != m.ListenerID)))) || (m.RelayRequired && active != nil && !relayReadyConforms(active.ready, m.RelayOnly))
 	if retireActive {
 		p.active = nil
+		p.stats.RTTMS = 0
 		if p.pending != nil {
 			p.pending.cancel()
 			p.pending = nil
 		}
 	}
 	same := old.TransportGeneration == m.TransportGeneration
+	if same && m.Phase == "hole" && m.Hole != nil && m.Hole.Error != "" && p.pending != nil {
+		code := m.Hole.ErrorCode
+		if code == "" {
+			code = "hole_unavailable"
+		}
+		select {
+		case p.pending.failed <- &Fault{Code: code, Message: m.Hole.Error}:
+		default:
+		}
+	}
 	need := !same && !p.closed
 	if need {
 		if p.pending != nil {
@@ -164,12 +181,15 @@ func (p *icePeer) update(m iceSignalMessage) {
 		p.stats.RelayProtocol = ""
 		p.stats.RemoteRelayProtocol = ""
 		p.stats.DatagramLimit = 0
+		p.stats.RTTMS = 0
 		p.stats.CandidatePairs = nil
 		p.workers.Add(1)
 		go func() {
 			defer p.workers.Done()
 			if m.Profile == ProfileFixed {
 				p.attemptFixed(a)
+			} else if m.Phase == "hole" {
+				p.attemptHole(a)
 			} else {
 				p.attempt(a)
 			}
@@ -256,6 +276,7 @@ func (p *icePeer) offline(reason string) {
 		// A signaling reconnect can replay the same generation. Retire the
 		// closed path so that replay starts a fresh ICE attempt.
 		p.active = nil
+		p.stats.RTTMS = 0
 	}
 	records := append([]peerMappingRecord{}, p.ready.Mappings...)
 	fp := p.ready.PeerFingerprint
@@ -311,6 +332,7 @@ func (p *icePeer) requireRelay(localOnly bool) {
 	if p.active != nil && !relayReadyConforms(p.active.ready, localOnly) {
 		retired, p.active = p.active, nil
 		p.stats.State = "reconnecting"
+		p.stats.RTTMS = 0
 	}
 	p.mu.Unlock()
 	if retired != nil {
@@ -462,7 +484,7 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 	p.pending = nil
 	p.stats.State = "reconnecting"
 	p.stats.Error = fault
-	p.terminal = fault.Code == "protocol_mismatch" || fault.Code == "peer_identity_mismatch"
+	p.terminal = fault.Code == "protocol_mismatch" || fault.Code == "peer_identity_mismatch" || fault.Code == "peer_upgrade_required"
 	fatal := p.terminal
 	if fatal {
 		p.stats.State = "error"
@@ -488,6 +510,8 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 	} else {
 		if a.ready.Profile == ProfileFixed {
 			p.restart("fixed", "path_failed")
+		} else if a.ready.HoleVersion == HoleRelayVersion && a.ready.RelayRound != nil {
+			p.restartRound(nextICERound(*a.ready.RelayRound, len(a.ready.RelayPlan)), "", "path_failed")
 		} else if a.ready.RelayPairing == relayPairingAll && a.ready.RelayRound != nil {
 			limit := len(relayPairs(a.ready.RelayOrder, a.ready.PeerRelayOrder, true))
 			p.restartRound(nextICERound(*a.ready.RelayRound, limit), "", "path_failed")
@@ -920,7 +944,8 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		p.failed(a, err)
 		return
 	}
-	if !connection.ConnectionState().SupportsDatagrams {
+	datagrams := connection.ConnectionState().SupportsDatagrams
+	if !datagrams.Local || !datagrams.Remote {
 		_ = connection.CloseWithError(1, "DATAGRAM required")
 		p.failed(a, &Fault{Code: "protocol_mismatch", Message: "对端未启用 QUIC 数据报"})
 		return
@@ -998,6 +1023,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	if current {
 		p.active = nil
 		p.stats.State = "reconnecting"
+		p.stats.RTTMS = 0
 	}
 	p.mu.Unlock()
 	if current && p.ctx.Err() == nil {
@@ -1079,6 +1105,9 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 			s.CandidatePairs = candidatePairSnapshots(active.agent)
 		}
 		if active.session != nil {
+			if active.agent == nil {
+				s.RTTMS = quicRTTMilliseconds(active.session.ConnectionStats().SmoothedRTT)
+			}
 			s.DatagramLimit = datagramLimit(active.session)
 		}
 		if active.connection != nil {
@@ -1096,8 +1125,11 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 		active.mux.mu.Unlock()
 	}
 	_, expires, state := p.coordinator.servers()
-	if s.Profile == ProfileFixed {
+	if s.Profile == ProfileFixed || s.Phase == "hole" {
 		expires, state = 0, ""
+		if s.Phase == "hole" {
+			state = s.State
+		}
 	}
 	s.RelayState = state
 	s.TURNExpiresAt = expires
