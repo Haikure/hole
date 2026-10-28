@@ -1,17 +1,17 @@
 {
   "core": {
-    "version": "1.0.2"
+    "version": "1.0.4"
   },
   "frontends": {
     "android": {
-      "version": "1.0.3",
-      "version_code": 14
+      "version": "1.0.4",
+      "version_code": 15
     },
     "desktop_gui": {
-      "version": "0.1.1"
+      "version": "0.1.2"
     },
     "penmods": {
-      "version": "0.1.2"
+      "version": "0.1.3"
     }
   }
 }

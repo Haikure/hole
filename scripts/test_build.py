@@ -20,7 +20,7 @@ with open(os.environ["BUILD_TEST_LOG"], "a") as log:
     log.write(json.dumps({"tool": name, "args": args, "env": {key: os.environ.get(key) for key in keys}}) + "\n")
 if name == "go":
     if args[:1] == ["env"]:
-        values = {"GOVERSION": "go1.27.2", "GOHOSTOS": "linux", "GOHOSTARCH": "amd64"}
+        values = {"GOVERSION": "go1.27.3", "GOHOSTOS": "linux", "GOHOSTARCH": "amd64"}
         print("\n".join(values[key] for key in args[1:]))
     elif args == ["tool", "dist", "list"]:
         print("linux/amd64\nlinux/arm64\nwindows/amd64\ndarwin/arm64")
@@ -425,7 +425,8 @@ class BuildTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("fixture_build_meta", self.root / "scripts/build_meta.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        self.assertEqual("1.0.1", module.core_version())
+        expected_version = json.loads((self.root / "versions.json").read_text())["core"]["version"]
+        self.assertEqual(expected_version, module.core_version())
         self.assertRegex(module.core_build_id(), r"^unknown-worktree-[0-9a-f]{12}$")
         previous = module.core_build_id()
         (self.root / "core/core_test.go").write_text("excluded test\n")
