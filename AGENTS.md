@@ -34,9 +34,23 @@
 - Go、Kotlin、Python、Worker 测试源码纳入 Git，不恢复 `*test*` 一类泛化忽略规则。
 - 不自动提交、推送、部署 Worker 或安装到设备。
 
+## 发布说明
+
+- `CHANGELOG.md` 是 `.github/workflows/build.yaml` 创建 GitHub Release 时使用的正文来源（`body_path`）。
+- 文件只保留本次发布 tag 相对上一个 tag 的变更内容；准备新版本时整体替换旧说明，不累积历史版本章节。
+- 发布说明使用简体中文，基于两个 tag 之间的实际变更撰写，不写仓库介绍或未发布内容。
+
 ## 验证
 
-按改动范围执行，并说明实际执行结果：
+验证按改动范围分级；下面的全量命令是跨模块 / 发布检查参考，不是每次任务的固定清单。先选覆盖本次改动的最小检查，完成修改后集中执行一次，避免每轮编辑都重跑全套。Go 测试默认保留缓存，不要无条件添加 `-count=1`；`-race`、全仓 `go vet` 和完整 Android Release 构建按并发 / 传输 / 依赖风险或发布需求选择。最终说明实际执行和未执行的检查。
+
+- 仅文档 / Markdown：`git diff --check`。
+- Worker：运行 `node --test worker/worker_ice.test.mjs worker/worker_fixture.test.mjs`。
+- Go 单模块改动：先运行受影响包或测试；涉及并发、传输生命周期、身份或资源限额时，再运行相关包的 race 测试。
+- Android UI / 业务逻辑：运行相关 JVM 测试和 lint；只有改动影响构建、桥接、签名或交付时才加 Release 构建。
+- 跨模块改动、Go 依赖升级或发布：按涉及模块组合下列全量检查；无需为了未受影响的模块补跑测试。
+
+全量验证命令参考，按改动范围选取：
 
 ```bash
 source scripts/build-env.sh
@@ -49,11 +63,11 @@ node --test worker/worker_ice.test.mjs worker/worker_fixture.test.mjs
 git diff --check
 ```
 
-核心 / mobile / 依赖变化时另测绑定依赖图：
+核心 / mobile 源码或 Go 依赖变化时，额外检查 Android 绑定模块使用自己的依赖图能否编译并运行共享包测试。日常快速检查使用默认缓存和非 race 模式：
 
 ```bash
-(cd android/corebridge/gobuild && go test -race -count=1 hole/core hole/mobile && go vet hole/core hole/mobile)
+(cd android/corebridge/gobuild && go test hole/core hole/mobile)
 ```
 
-Android 变化时运行所涉及目标的 Release 构建、lint 和 JVM 测试；后者需已有 JDK 21+。
+只有并发 / 传输风险较高、依赖或导出 API 变化，或发布前需要提高把握时，再对相关包追加 `-race -count=1` 和 `go vet`。Android JVM 测试需已有 JDK 21+。
 命令及 APK 验证入口见 `docs/BUILDING.md`。不要仅凭已有 AAR、APK 或旧测试报告判定当前源码通过。
