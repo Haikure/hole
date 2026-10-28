@@ -29,6 +29,7 @@ type portableConfig struct {
 	Transport           core.TransportConfig `json:"transport" yaml:"transport"`
 	ICE                 core.ICEConfig       `json:"ice" yaml:"ice"`
 	TURN                core.TURNConfig      `json:"turn" yaml:"turn"`
+	Relay               core.RelayConfig     `json:"relay" yaml:"relay"`
 	Voice               core.VoiceConfig     `json:"voice" yaml:"voice"`
 	Room                string               `json:"room" yaml:"room"`
 	Password            string               `json:"password" yaml:"password,omitempty"`
@@ -54,6 +55,9 @@ func portableDocument(data []byte) (portableConfig, *rpcError) {
 		return portableConfig{}, documentFault()
 	}
 	cfg.ServerURL = strings.TrimSpace(cfg.ServerURL)
+	if cfg.Relay.Serve.Enabled {
+		return portableConfig{}, rpcFault(invalidParams, "cli_only", "中继服务仅 CLI 支持")
+	}
 	validation := cfg
 	// Like Android, allow a redacted or incomplete connection identity to be
 	// previewed as a stopped draft. Placeholders never enter the returned data.
@@ -77,7 +81,7 @@ func portableDocument(data []byte) (portableConfig, *rpcError) {
 		return portableConfig{}, documentFault()
 	}
 	doc := portableConfig{
-		ServerURL: cfg.ServerURL, Transport: cfg.Transport, ICE: cfg.ICE, TURN: cfg.TURN, Voice: cfg.Voice,
+		ServerURL: cfg.ServerURL, Transport: cfg.Transport, ICE: cfg.ICE, TURN: cfg.TURN, Relay: cfg.Relay, Voice: cfg.Voice,
 		Room: cfg.Room, Password: cfg.Password, Token: cfg.Token, DeviceName: cfg.DeviceName,
 		SessionTimeout: cfg.SessionTimeout.String(), CandidateInterfaces: append([]string{}, cfg.CandidateInterfaces...),
 		CandidateAddresses: append([]string{}, cfg.CandidateAddresses...), Provide: []portableProvide{}, Consume: []portableConsume{},

@@ -7,6 +7,40 @@ import (
 	"time"
 )
 
+func TestHoleCLIExchangePreservesOrderPresenceAndRejectsServer(t *testing.T) {
+	for _, order := range []string{"", "  order: []\n", "  order: [hole, tls]\n"} {
+		source := "transport:\n  preferred: ice\ndevice_name: phone\nrelay:\n  device: relay-node\n" + order
+		text, err := DecodeCLIConfig(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var before exchangeConfig
+		if err = json.Unmarshal([]byte(text), &before); err != nil {
+			t.Fatal(err)
+		}
+		if (before.Relay.Order == nil) != (order == "") {
+			t.Fatal("lost order presence", text)
+		}
+		yamlText, err := EncodeCLIConfig(text, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		back, err := DecodeCLIConfig(yamlText)
+		if err != nil || back != text {
+			t.Fatal("relay round trip", err, back, text)
+		}
+	}
+	if _, err := DecodeCLIConfig("transport:\n  fixed_endpoint:\n    listen: 0.0.0.0:40000\n    advertise: relay.example:40000\nrelay:\n  serve:\n    enabled: true\n"); err == nil || !strings.Contains(err.Error(), "仅 CLI 支持") {
+		t.Fatal(err)
+	}
+}
+
+func TestHoleGUIDefaultServerSettings(t *testing.T) {
+	if _, err := DecodeCLIConfig(`{"transport":{"preferred":"ice"},"relay":{"device":"relay-node","order":null,"serve":{"enabled":false,"max_pairs":64,"bandwidth_mbps":0}}}`); err != nil {
+		t.Fatal("GUI default relay settings rejected", err)
+	}
+}
+
 func TestOldCLIImportRetainsEmptyServerAndWorkerDefaults(t *testing.T) {
 	text, err := DecodeCLIConfig("room: fixture\nprovide: []\nconsume: []\n")
 	if err != nil {

@@ -45,6 +45,7 @@ data class ConnectionSettings(
     val allowInsecureSignal: Boolean = false,
     val ice: IceSettings = IceSettings(),
     val turn: TurnSettings = TurnSettings(),
+    val relay: RelaySettings = RelaySettings(),
     val turnCredentialCipher: String = "",
 )
 
@@ -121,6 +122,7 @@ data class CoreConfig(
     val transport: CoreTransport = CoreTransport(),
     val ice: IceSettings = IceSettings(),
     val turn: CoreTurn = CoreTurn(),
+    val relay: RelaySettings = RelaySettings(),
     val voice: CoreVoiceSettings = CoreVoiceSettings(),
 )
 

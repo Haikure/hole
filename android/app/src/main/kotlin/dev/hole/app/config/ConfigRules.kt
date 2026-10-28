@@ -151,6 +151,9 @@ fun toStartRequest(
     findConnectionError(stored.connection, password, token)?.let { throw IllegalArgumentException(it) }
     findIdConflict(stored.provide, stored.consume)?.let { throw IllegalArgumentException(it) }
     val connection = stored.connection
+    require(!connection.relay.serve.enabled) { "中继服务仅 CLI 支持" }
+    require(connection.relay.device.isEmpty() || (connection.relay.device.matches(Regex("[a-zA-Z0-9._-]{1,128}")) && connection.relay.device != connection.deviceName)) { "中继设备名无效或指向本机" }
+    holeRelayOrderError(connection.relay.order)?.let { throw IllegalArgumentException(it) }
     require(connection.connectionMode in setOf("auto", "ice", "legacy")) { "连接方式无效" }
     if (connection.connectionMode != "legacy") {
         require(connection.candidateAddresses.isEmpty()) { "手动 IPv6 候选地址只用于“仅 IPv6”模式；使用 ICE 前请清空此项" }
@@ -178,6 +181,7 @@ fun toStartRequest(
     return StartRequest(
         serverUrl = stored.connection.serverUrl.trim(),
         config = CoreConfig(
+            relay = connection.relay,
             room = stored.connection.room.trim(),
             password = password,
             token = token,

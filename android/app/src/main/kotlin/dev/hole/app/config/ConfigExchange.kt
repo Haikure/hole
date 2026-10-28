@@ -64,6 +64,7 @@ object ConfigExchange {
         val document = coreJson.parseToJsonElement(text).jsonObject
         val serverUrl = document["server_url"]?.jsonPrimitive?.content.orEmpty().trim()
         val cli = coreJson.decodeFromJsonElement<CoreConfig>(JsonObject(document - "server_url"))
+        require(!cli.relay.serve.enabled) { "中继服务仅 CLI 支持" }
         require(cli.transport.preferred in setOf(PREFERRED_ICE, PREFERRED_IPV6)) { "transport.preferred 只接受 ice 或 ipv6" }
         val config = current.copy(
             connection = ConnectionSettings(
@@ -72,6 +73,7 @@ object ConfigExchange {
                 sessionTimeout = cli.sessionTimeout, candidateInterfaces = cli.candidateInterfaces, candidateAddresses = cli.candidateAddresses,
                 connectionMode = if (cli.transport.preferred == PREFERRED_IPV6) "legacy" else if (cli.transport.allowLegacy) "auto" else "ice",
                 allowInsecureSignal = cli.transport.allowInsecureSignal, ice = cli.ice, turn = TurnSettings(cli.turn.mode, cli.turn.ttl, cli.turn.urls, cli.turn.username, normalizedTurnOrder(cli.turn.order)),
+                relay = cli.relay,
             ),
             voice = current.voice.copy(enabled = cli.voice.enabled),
             provide = cli.provide.map {

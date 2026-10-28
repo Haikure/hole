@@ -1,5 +1,8 @@
 # Wear OS 客户端
 
+复用手机端的 Hole 设备名输入、统一中继顺序、配置交换及路径诊断；可使用同房间 CLI
+中继，但不能在手表开启中继服务。协议及限额均由共享 Go 核心实现。
+
 独立运行的 Wear OS 安装包，复用手机端 Kotlin 源码、资源、配置、前台服务及 Go 核心。
 Wear OS 与手机共用 [versions.json](../../versions.json) 中的 Android 前端版本和 `versionCode`。
 

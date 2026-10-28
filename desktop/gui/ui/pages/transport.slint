@@ -14,6 +14,8 @@ export component TransportPage inherits VerticalLayout {
     property <string> save-error;
     property <bool> advanced: false;
     out property <bool> dirty:
+        form.relay-order-edited ||
+        form.relay-device != App.transport.relay-device ||
         form.mode != App.transport.mode || form.stun-urls != App.transport.stun-urls || form.relay-mode != App.transport.relay-mode ||
         form.turn-urls != App.transport.turn-urls || !same-turn-order(form.turn-order, App.transport.turn-order) || form.turn-username != App.transport.turn-username || form.turn-credential != App.transport.turn-credential ||
         form.direct-probe-timeout != App.transport.direct-probe-timeout || form.gather-timeout != App.transport.gather-timeout ||
@@ -25,7 +27,7 @@ export component TransportPage inherits VerticalLayout {
     public function save() {
         if !App.config-loaded || !dirty || App.status.busy { return; }
         save-error = App.save-transport(form);
-        if save-error == "" { App.transport = form; }
+        if save-error == "" { form.relay-order-edited = false; App.transport = form; }
     }
 
 
@@ -67,10 +69,11 @@ export component TransportPage inherits VerticalLayout {
                 width: first.width; height: self.preferred-height;
                 horizontal-stretch: 1;
                 SectionTitle { text: "直连失败后的中继"; }
+                Field { label: "Hole 中继设备名"; text <=> root.form.relay-device; hint: "同房间的 CLI 中继设备；留空仍可使用对端指定的中继。"; edited(t) => {root.form.relay-device=t;} }
                 Choice { values: ["worker", "manual", "off"]; labels: ["协调服务", "手动", "关闭"]; selected <=> root.form.relay-mode; changed(v) => { root.form.relay-mode = v; } }
                 Label { text: root.form.relay-mode == "manual" ? "填写自己的 TURN 服务器。凭据在本机加密保存。"
-                    : root.form.relay-mode == "off" ? "不申请本机 TURN 中继，继续尝试直连。"
-                    : "由 Worker 签发 Cloudflare 短期凭据；主密钥留在部署侧。未配置中继时，直连仍可使用。"; }
+                    : root.form.relay-mode == "off" ? "不申请本机 TURN 中继，Hole 中继仍可使用。"
+                    : "由 Worker 签发 Cloudflare 短期凭据；主密钥留在部署侧。未配置 TURN 时可尝试直连或 Hole。"; }
                 if root.form.relay-mode == "manual" : VerticalLayout {
                     spacing: Theme.space-3;
                     Field { label: "TURN 地址"; multiline: true; lines: 3; text <=> root.form.turn-urls; hint: "每行一条：UDP 用 turn:HOST:3478?transport=udp；TCP 用 turn:HOST:80?transport=tcp；TLS 用 turns:HOST:443?transport=tcp"; edited(t) => { root.form.turn-urls = t; } }
@@ -80,8 +83,14 @@ export component TransportPage inherits VerticalLayout {
                 TurnOrderBoard {
                     selected <=> root.form.turn-order;
                     available <=> root.form.turn-order-available;
+                    edited => { root.form.relay-order-edited = true; }
                 }
-                Hint { text: "默认顺序：直连 → UDP → TCP（80 → 3478）→ TLS（443 → 5349）。每台设备可独立选择顺序；TLS 只加密本机到 TURN 的接入，业务数据始终由 QUIC 端到端加密。"; }
+                Btn { text: "恢复默认顺序"; clicked => {
+                    root.form.turn-order = [];
+                    root.form.turn-order-available = ["hole", "udp", "tcp", "tls"];
+                    root.form.relay-order-edited = true;
+                } }
+                Hint { text: "默认顺序：直连 → Hole → TURN UDP → TCP → TLS。TURN 关闭不影响 Hole；UDP 中继接入可承载 TCP、UDP 服务与语音。"; }
             }
         }
         Card {
@@ -101,7 +110,7 @@ export component TransportPage inherits VerticalLayout {
                     Field { label: "请求的中继凭据有效期"; text <=> root.form.turn-ttl; hint: "默认 6h；Worker 最终决定签发期限"; edited(t) => { root.form.turn-ttl = t; } }
                     Field { label: "允许使用的网卡"; text <=> root.form.interface-allowlist; hint: "逗号分隔；留空表示自动选择"; edited(t) => { root.form.interface-allowlist = t; } }
                 }
-                SwitchRow { title: "仅用中继测试"; summary: "用于核对 TURN；日常使用保持关闭以优先直连。"; checked <=> root.form.relay-only; toggled(v) => { root.form.relay-only = v; } }
+                SwitchRow { title: "仅用中继"; summary: "跳过直连，使用 Hole 或 TURN。"; checked <=> root.form.relay-only; toggled(v) => { root.form.relay-only = v; } }
                 SwitchRow { title: "允许本地 ws 测试"; summary: "默认使用 wss://，此项只为显式配置的本地测试入口启用。"; checked <=> root.form.allow-insecure-signal; toggled(v) => { root.form.allow-insecure-signal = v; } }
             }
         }

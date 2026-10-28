@@ -5,6 +5,22 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 class TransportConfigTest {
+    @Test fun holeOrderPresenceAndBackupsSurviveRoundTrip() {
+        assertEquals(64, RelayServeSettings().maxPairs)
+        for (order in listOf(null, emptyList(), listOf("hole", "tls"))) {
+            val relay = RelaySettings(device = "relay-node", order = order)
+            val config = configured.copy(connection = configured.connection.copy(relay = relay, turn = TurnSettings(mode = "off")))
+            assertEquals(relay, toStartRequest(config, "p", "t").config.relay)
+            val backup = ConfigExchange.backup(config, "", "", false, false, "")
+            assertEquals(relay, ConfigExchange.readBackup(backup).config.connection.relay)
+        }
+        val serve = RelaySettings(serve = RelayServeSettings(enabled = true))
+        assertFailsWith<IllegalArgumentException> {
+            toStartRequest(configured.copy(connection = configured.connection.copy(relay = serve)), "p", "t")
+        }
+        assertNull(holeRelayOrderError(listOf("hole", "udp", "tls")))
+        assertNotNull(holeRelayOrderError(listOf("hole", "hole")))
+    }
     private val wireJson = Json { encodeDefaults = true }
     private val configured = StoredConfig(connection = ConnectionSettings(serverUrl = "wss://fixture.invalid/ws", room = "room", deviceName = "phone"))
     @Test fun cloudflareIsTheDefaultAndTheWireUsesIce() {

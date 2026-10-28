@@ -7,7 +7,7 @@ Item {
 
     property var order: []
     property var scrollView: null
-    readonly property var types: ["udp", "tcp", "tls"]
+    readonly property var types: ["hole", "udp", "tcp", "tls"]
     readonly property var available: types.filter(function(token) { return board.order.indexOf(token) < 0 })
     readonly property bool dragging: dragToken.length > 0
     readonly property int chipSpacing: 6
@@ -25,7 +25,7 @@ Item {
     implicitHeight: layout.implicitHeight
 
     function typeLabel(token) {
-        var labels = {udp: "UDP", tcp: "TCP", tls: "TLS"}
+        var labels = {hole: "Hole", udp: "UDP", tcp: "TCP", tls: "TLS"}
         return labels[token] || token
     }
 

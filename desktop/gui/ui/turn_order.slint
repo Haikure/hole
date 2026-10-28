@@ -86,6 +86,7 @@ component TurnTypeRow inherits Rectangle {
 }
 
 export component TurnOrderBoard inherits Rectangle {
+    callback edited();
     in-out property <[string]> selected;
     in-out property <[string]> available;
     property <string> candidate-token;
@@ -119,6 +120,7 @@ export component TurnOrderBoard inherits Rectangle {
     }
 
     pure function label-for(token: string) -> string {
+        if (token == "hole") { return "Hole"; }
         if (token == "udp") { return "UDP"; }
         if (token == "tcp_80") { return "TCP"; }
         if (token == "tcp") { return "TCP"; }
@@ -157,6 +159,7 @@ export component TurnOrderBoard inherits Rectangle {
 
     function make-available(source: [string]) -> [string] {
         let result: [string] = [];
+        if (!root.contains(source, "hole")) { result.push("hole"); }
         if (!root.contains(source, "udp")) { result.push("udp"); }
         if (!root.contains(source, "tcp")) { result.push("tcp"); }
         if (!root.contains(source, "tls")) { result.push("tls"); }
@@ -165,6 +168,7 @@ export component TurnOrderBoard inherits Rectangle {
 
     function apply-order(next: [string]) {
         root.selected = next;
+        root.edited();
         root.available = root.make-available(next);
     }
 

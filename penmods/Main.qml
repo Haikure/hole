@@ -27,6 +27,10 @@ Item {
     property string stunUrls: ""
     property string turnMode: "worker"
     property string turnOrder: ""
+    property string relayDevice: ""
+    property string relayOrder: ""
+    property bool relayOrderExplicit: false
+    property bool relayServeUnsupported: false
     property string turnUrls: ""
     property string turnUsername: ""
     property string turnCredential: ""
@@ -114,7 +118,7 @@ Item {
 
     function snapshotRelayOrder(order) {
         if (!Array.isArray(order) || order.length === 0) return "默认：UDP → TCP → TLS"
-        var labels = {udp: "UDP", tcp_80: "TCP 80", tcp: "TCP 3478", tls_443: "TLS 443", tls: "TLS 5349"}
+        var labels = {hole: "Hole", udp: "UDP", tcp_80: "TCP 80", tcp: "TCP 3478", tls_443: "TLS 443", tls: "TLS 5349"}
         return order.map(function (token) { return labels[token] || token }).join(" → ")
     }
 
@@ -254,6 +258,12 @@ Item {
             return "会话保留期限格式应类似 10m、30s 或 2h"
         if (preferred !== "ice" && preferred !== "ipv6") return "连接方式无效"
         if (turnMode !== "worker" && turnMode !== "manual" && turnMode !== "off") return "TURN 模式无效"
+        if (relayServeUnsupported) return "中继服务仅 CLI 支持"
+        if (relayDevice.length > 0 && (!/^[a-zA-Z0-9._-]{1,128}$/.test(relayDevice) || relayDevice === deviceName)) return "中继设备名无效或指向本机"
+        var holeOrder = parseRelayOrder(relayOrder)
+        for (var hi=0;hi<holeOrder.length;++hi) {
+            if (["hole","udp","tcp","tls"].indexOf(holeOrder[hi])<0 || holeOrder.indexOf(holeOrder[hi])!==hi) return "中继顺序只接受不重复的 Hole、UDP、TCP、TLS"
+        }
         if (preferred === "ice") {
             if (!isDurationBetween(directProbeTimeout, 100, 120000)) return "直连探测时间需在 100ms 到 2m 之间"
             if (!isDurationBetween(gatherTimeout, 100, 120000)) return "候选收集时间需在 100ms 到 2m 之间"
@@ -400,6 +410,11 @@ Item {
         }
         turnMode = asString(turn.mode) || "worker"
         turnOrder = formatList(parseRelayOrder(formatList(turn.order)))
+        var relay = config.relay && typeof config.relay === "object" ? config.relay : {}
+        relayDevice = asString(relay.device)
+        relayOrderExplicit = Array.isArray(relay.order)
+        relayOrder = relayOrderExplicit ? formatList(relay.order) : ((relayDevice.length > 0 ? "hole, " : "") + (turnOrder || "udp, tcp, tls"))
+        relayServeUnsupported = relay.serve && asBool(relay.serve.enabled, false) ? true : false
         turnTtl = asString(turn.ttl) || "6h"
         turnUrls = formatList(turn.urls)
         turnUsername = asString(turn.username)
@@ -502,6 +517,8 @@ Item {
             provide: page.collectMappings(provides, false),
             consume: page.collectMappings(consumes, true)
         }
+        payload.relay = {device: relayDevice, order: relayOrderExplicit ? parseRelayOrder(relayOrder) : null}
+        if (relayServeUnsupported) payload.relay.serve = {enabled: true}
         holePlugin.serverUrl = asString(serverUrl).trim()
         holePlugin.configJson = JSON.stringify(payload)
         autosave.restart()
@@ -771,6 +788,7 @@ Item {
         var labels = {
             fixed: "连接固定入口",
             direct: "探测直连路径",
+            hole: "连接 Hole 中继",
             relay_udp: "尝试 UDP 中继",
             relay_tls_443: "尝试 TLS 中继 · 443 端口",
             relay_tls: "尝试 TLS 中继 · 5349 / 自定义端口",
@@ -828,7 +846,8 @@ Item {
         var path = asString(peer.path_type)
         var family = asString(peer.address_family)
         if (page.isFixedPeer(peer)) return "固定入口直连" + (family.length > 0 ? " · " + family : "")
-        if (path === "relay") return "中继" + (family.length > 0 ? " · " + family : "")
+        if (path === "hole") return "Hole 中继 · " + asString(peer.relay_device)
+        if (path === "relay") return "TURN 中继" + (family.length > 0 ? " · " + family : "")
         if (path === "direct") return "设备直连" + (family.length > 0 ? " · " + family : "")
         return "路径未选定"
     }
@@ -867,6 +886,11 @@ Item {
         appendSnapshotLine(lines, "  路径", page.peerPathText(peer))
         var path = asString(peer.path_type)
         var fixed = page.isFixedPeer(peer)
+        if (asString(peer.relay_device).length > 0) {
+            appendSnapshotLine(lines, "  Hole 中继设备", peer.relay_device)
+            appendSnapshotLine(lines, "  公布入口", peer.relay_endpoint)
+            appendSnapshotLine(lines, "  实际接入地址", peer.relay_access_address)
+        }
         if (fixed) {
             appendSnapshotLine(lines, "  公布入口", peer.fixed_endpoint)
             appendSnapshotLine(lines, "  监听方", peer.listener_id)
@@ -890,8 +914,8 @@ Item {
         }
         appendSnapshotLine(lines, fixed ? "  连接阶段" : "  探测阶段", page.peerPhaseText(peer))
         if (!fixed && (Array.isArray(peer.relay_order) || Array.isArray(peer.peer_relay_order))) {
-            appendSnapshotLine(lines, "  本机 TURN 顺序", page.snapshotRelayOrder(peer.relay_order))
-            appendSnapshotLine(lines, "  对端 TURN 顺序", page.snapshotRelayOrder(peer.peer_relay_order))
+            appendSnapshotLine(lines, "  本机中继顺序", page.snapshotRelayOrder(peer.relay_order))
+            appendSnapshotLine(lines, "  对端中继顺序", page.snapshotRelayOrder(peer.peer_relay_order))
             if (asBool(peer.relay_order_fallback, false)) appendSnapshotLine(lines, "  顺序状态", "不支持自定义顺序，已回退默认顺序")
             else if (Number(peer.relay_round) > 0) appendSnapshotLine(lines, "  共享中继轮次", "第 " + asString(peer.relay_round) + " 轮")
         }

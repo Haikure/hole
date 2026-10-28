@@ -53,9 +53,10 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /** token 顺序即默认顺序，与 core/ice_config.go 的 turn.order 校验保持一致。 */
-internal val turnOrderTypes = listOf("udp", "tcp", "tls")
+internal val turnOrderTypes = listOf("hole", "udp", "tcp", "tls")
 
 internal fun turnOrderTypeLabel(token: String): String = when (token) {
+    "hole" -> "Hole"
     "udp" -> "UDP"
     "tcp_80" -> "TCP"
     "tcp" -> "TCP"

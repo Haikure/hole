@@ -133,11 +133,13 @@ export struct ConnectionForm {
 }
 
 export struct TransportForm {
+    relay-device: string,
     mode: string,
     stun-urls: string,
     relay-mode: string,
     turn-urls: string,
     turn-order: [string],
+    relay-order-edited: bool,
     turn-order-available: [string],
     turn-username: string,
     turn-credential: string,

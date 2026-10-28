@@ -29,6 +29,7 @@ type exchangeConfig struct {
 	Transport           core.TransportConfig `json:"transport" yaml:"transport"`
 	ICE                 core.ICEConfig       `json:"ice" yaml:"ice"`
 	TURN                core.TURNConfig      `json:"turn" yaml:"turn"`
+	Relay               core.RelayConfig     `json:"relay" yaml:"relay"`
 	Voice               core.VoiceConfig     `json:"voice" yaml:"voice"`
 	Room                string               `json:"room" yaml:"room"`
 	Password            string               `json:"password" yaml:"password,omitempty"`
@@ -50,6 +51,9 @@ func exchangeDocument(text string) (exchangeConfig, error) {
 		return exchangeConfig{}, errors.New("CLI YAML/JSON 格式错误，请检查字段、协议与端口")
 	}
 	cfg = cfg.Normalized()
+	if cfg.Relay.Serve.Enabled {
+		return exchangeConfig{}, errors.New("中继服务仅 CLI 支持")
+	}
 	cfg.ServerURL = strings.TrimSpace(cfg.ServerURL)
 	validation := cfg
 	if validation.TURN.Mode == "manual" {
@@ -81,7 +85,7 @@ func exchangeDocument(text string) (exchangeConfig, error) {
 			return exchangeConfig{}, errors.New("CLI server_url 需要有效的信令服务器地址，并与连接方式匹配")
 		}
 	}
-	doc := exchangeConfig{ServerURL: cfg.ServerURL, Transport: cfg.Transport, ICE: cfg.ICE, TURN: cfg.TURN, Voice: cfg.Voice,
+	doc := exchangeConfig{ServerURL: cfg.ServerURL, Transport: cfg.Transport, ICE: cfg.ICE, TURN: cfg.TURN, Relay: cfg.Relay, Voice: cfg.Voice,
 		Room: cfg.Room, Password: cfg.Password, Token: cfg.Token, DeviceName: cfg.DeviceName,
 		SessionTimeout: cfg.SessionTimeout.String(), CandidateInterfaces: append([]string{}, cfg.CandidateInterfaces...),
 		CandidateAddresses: append([]string{}, cfg.CandidateAddresses...), Provide: []exchangeProvide{}, Consume: []exchangeConsume{},

@@ -8,6 +8,40 @@ use std::net::{IpAddr, Ipv6Addr};
 pub const DEFAULT_STUN_URL: &str = "stun:stun.cloudflare.com:3478";
 pub const SCHEMA_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RelaySettings {
+    pub device: String,
+    pub order: Option<Vec<String>>,
+    pub serve: RelayServeSettings,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RelayServeSettings {
+    pub enabled: bool,
+    pub max_pairs: i32,
+    pub bandwidth_mbps: i64,
+}
+impl Default for RelayServeSettings {
+    fn default() -> Self { Self { enabled: false, max_pairs: 64, bandwidth_mbps: 0 } }
+}
+impl ConnectionSettings {
+    pub fn relay_order(&self) -> Vec<String> {
+        self.relay.order.clone().unwrap_or_else(|| {
+            let mut order = Vec::new();
+            if !self.relay.device.is_empty() {
+                order.push("hole".into());
+            }
+            order.extend(if self.turn.order.is_empty() {
+                vec!["udp".into(), "tcp".into(), "tls".into()]
+            } else {
+                self.turn.order.clone()
+            });
+            order
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProvideEntry {
     pub entry_id: String,
@@ -109,6 +143,7 @@ pub struct ConnectionSettings {
     pub allow_insecure_signal: bool,
     pub ice: IceSettings,
     pub turn: TurnSettings,
+    pub relay: RelaySettings,
 }
 
 impl Default for ConnectionSettings {
@@ -124,6 +159,7 @@ impl Default for ConnectionSettings {
             allow_insecure_signal: false,
             ice: IceSettings::default(),
             turn: TurnSettings::default(),
+            relay: RelaySettings::default(),
         }
     }
 }
@@ -190,7 +226,9 @@ pub fn default_device_name() -> String {
     std::env::var("HOSTNAME")
         .ok()
         .or_else(|| std::env::var("COMPUTERNAME").ok())
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string())
+        })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "desktop".into())
 }
@@ -422,6 +460,30 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
         return Err("中继来源无效".into());
     }
     let order_types = ["udp", "tcp", "tls"];
+    if c.relay.serve.enabled {
+        return Err("中继服务仅 CLI 支持".into());
+    }
+    if !c.relay.device.is_empty()
+        && (c.relay.device.len() > 128
+            || !c
+                .relay
+                .device
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            || c.relay.device == c.device_name)
+    {
+        return Err("中继设备名无效或指向本机".into());
+    }
+    if let Some(order) = &c.relay.order {
+        if order.len() > 4
+            || order
+                .iter()
+                .any(|s| !["hole", "udp", "tcp", "tls"].contains(&s.as_str()))
+            || order.iter().collect::<std::collections::HashSet<_>>().len() != order.len()
+        {
+            return Err("中继顺序只接受不重复的 Hole、UDP、TCP、TLS".into());
+        }
+    }
     if c.turn.order.len() > 3 || c.turn.order.iter().any(|item| !order_types.contains(&item.as_str())) {
         return Err("TURN 顺序仅接受不超过 3 种 UDP、TCP 或 TLS 类型".into());
     }
@@ -506,6 +568,7 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
                 "relay_only": c.ice.relay_only,
             },
             "turn": turn,
+            "relay": c.relay,
         }
     }))
 }
@@ -544,7 +607,11 @@ pub fn to_portable_document(cfg: &StoredConfig, secrets: &Secrets, include_secre
 /// 从便携文档生成停止态草稿；缺少服务器/设备名时沿用本机值，新条目分配独立 ID。
 pub fn from_portable_document(doc: &Value, current: &StoredConfig) -> Result<(StoredConfig, Secrets), String> {
     let s = |v: &Value| v.as_str().unwrap_or_default().trim().to_string();
-    let list = |v: &Value| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).collect::<Vec<_>>()).unwrap_or_default();
+    let list = |v: &Value| {
+        v.as_array().map(|a| {
+                a.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).collect::<Vec<_>>()
+            }).unwrap_or_default()
+    };
     let transport = &doc["transport"];
     let preferred = s(&transport["preferred"]);
     if !matches!(preferred.as_str(), "ice" | "ipv6" | "") {
@@ -592,6 +659,8 @@ pub fn from_portable_document(doc: &Value, current: &StoredConfig) -> Result<(St
             username: s(&turn["username"]),
             order: normalize_turn_order(&list(&turn["order"])),
         },
+        relay: serde_json::from_value(doc.get("relay").cloned().unwrap_or(json!({})))
+            .map_err(|_| "中继配置格式无效")?,
     };
     let mut provide = Vec::new();
     for p in doc["provide"].as_array().cloned().unwrap_or_default() {
@@ -684,7 +753,11 @@ pub fn read_backup(text: &str, current: &StoredConfig) -> Result<BackupPreview, 
 /// Android 备份使用 camelCase 与 Material/Miuix 主题字段；只保留可移植部分。
 fn android_backup(config: &Value, version: i64, current: &StoredConfig) -> Result<StoredConfig, String> {
     let s = |v: &Value| v.as_str().unwrap_or_default().trim().to_string();
-    let list = |v: &Value| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).collect::<Vec<_>>()).unwrap_or_default();
+    let list = |v: &Value| {
+        v.as_array().map(|a| {
+                a.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).collect::<Vec<_>>()
+            }).unwrap_or_default()
+    };
     let conn = &config["connection"];
     let ice = &conn["ice"];
     let turn = &conn["turn"];
@@ -729,6 +802,8 @@ fn android_backup(config: &Value, version: i64, current: &StoredConfig) -> Resul
                 relay_only: ice["relay_only"].as_bool().unwrap_or(false),
             },
             turn: TurnSettings { mode: or(&turn["mode"], "worker"), ttl: or(&turn["ttl"], "6h"), urls: list(&turn["urls"]), username: s(&turn["username"]), order: normalize_turn_order(&list(&turn["order"])) },
+            relay: serde_json::from_value(conn.get("relay").cloned().unwrap_or(json!({})))
+                .map_err(|_| "中继配置格式无效")?,
         },
         provide: vec![],
         consume: vec![],
@@ -758,6 +833,36 @@ fn android_backup(config: &Value, version: i64, current: &StoredConfig) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hole_round_trip_preserves_order_presence_and_cli_only() {
+        assert_eq!(RelayServeSettings::default().max_pairs,64);
+        for order in [None, Some(vec![]), Some(vec!["hole".into(), "tls".into()])] {
+            let (mut cfg, secrets) = sample();
+            cfg.connection.relay = RelaySettings {
+                device: "relay-node".into(),
+                order,
+                ..Default::default()
+            };
+            let document = to_portable_document(&cfg, &secrets, false).unwrap();
+            let (back, _) = from_portable_document(&document, &StoredConfig::default()).unwrap();
+            assert_eq!(back.connection.relay, cfg.connection.relay);
+            let backup = backup_document(&cfg, &secrets, false);
+            assert_eq!(
+                read_backup(&backup.to_string(), &StoredConfig::default())
+                    .unwrap()
+                    .config
+                    .connection
+                    .relay,
+                cfg.connection.relay
+            );
+        }
+        let (mut cfg, secrets) = sample();
+        cfg.connection.relay.serve.enabled = true;
+        assert!(to_run_request(&cfg, &secrets)
+            .unwrap_err()
+            .contains("仅 CLI 支持"));
+    }
 
     #[test]
     fn durations() {

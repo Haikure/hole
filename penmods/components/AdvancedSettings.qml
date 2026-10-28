@@ -169,13 +169,23 @@ Section {
     }
 
     function currentRelayOrder() {
-        return settings.form ? settings.form.parseRelayOrder(settings.form.turnOrder) : []
+        return settings.form ? settings.form.parseRelayOrder(settings.form.relayOrder) : []
     }
 
     function writeRelayOrder(order) {
         if (!settings.form) return
-        settings.form.turnOrder = order.join(", ")
+        settings.form.relayOrder = order.join(", ")
+        settings.form.relayOrderExplicit = true
         settings.form.syncConfig()
+    }
+
+    Field {
+        Layout.fillWidth: true
+        hostKeyboard: settings.hostKeyboard
+        label: "Hole 中继设备名"
+        value: settings.form ? settings.form.relayDevice : ""
+        placeholder: "同房间的 CLI 中继设备"
+        onEdited: function(nextValue) {settings.form.relayDevice=nextValue;settings.form.syncConfig()}
     }
 
     ColumnLayout {
@@ -186,7 +196,7 @@ Section {
 
         Text {
             Layout.fillWidth: true
-            text: "本机 TURN 类型顺序"
+            text: "中继类型顺序"
             color: Theme.textPrimary
             font.family: Theme.fontFamily
             font.pixelSize: Theme.fontLabel

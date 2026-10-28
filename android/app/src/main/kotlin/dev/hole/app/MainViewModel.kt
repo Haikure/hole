@@ -284,12 +284,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         RunStateStore(getApplication()).setResumeAfterBoot(preview.resumeAfterBoot)
         mutableConfigState.value = ConfigUiState(true, stored, preview.password, preview.token, turnCredential = preview.turnCredential)
     }
-    suspend fun saveTransportSettings(mode: String, ice: IceSettings, turn: TurnSettings, credential: String, insecure: Boolean): String? = try {
+    suspend fun saveTransportSettings(mode: String, ice: IceSettings, turn: TurnSettings, credential: String, insecure: Boolean, relay: dev.hole.app.config.RelaySettings): String? = try {
         val encrypted = withContext(Dispatchers.IO) {
             if (credential == mutableConfigState.value.turnCredential) mutableConfigState.value.config.connection.turnCredentialCipher
             else credential.takeIf { it.isNotEmpty() }?.let { cipher.encrypt(it.toCharArray()) }.orEmpty()
         }
-        val stored = repository.update { it.copy(connection = it.connection.copy(connectionMode = mode, ice = ice, turn = turn, turnCredentialCipher = encrypted, allowInsecureSignal = insecure)) }
+        val stored = repository.update { it.copy(connection = it.connection.copy(connectionMode = mode, ice = ice, turn = turn, relay = relay, turnCredentialCipher = encrypted, allowInsecureSignal = insecure)) }
         mutableConfigState.value = mutableConfigState.value.copy(config = stored, turnCredential = credential, lastError = null)
         null
     } catch (failure: Exception) { if (failure is CancellationException) throw failure; failure.message ?: "连接方式保存失败" }

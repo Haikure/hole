@@ -222,6 +222,9 @@ func parseRequest(text string) (core.Request, error) {
 	if err != nil {
 		return core.Request{}, err
 	}
+	if config.Relay.Serve.Enabled {
+		return core.Request{}, &core.Fault{Code: "cli_only", Message: "中继服务仅 CLI 支持"}
+	}
 	return core.Request{ServerURL: wire.ServerURL, Config: config}, nil
 }
 

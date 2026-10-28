@@ -86,14 +86,16 @@ pub fn push_config_forms(window: &Weak<MainWindow>, shared: &Arc<Mutex<Shared>>)
     let _ = window.upgrade_in_event_loop(move |w| {
         let app = w.global::<App>();
         let c = &cfg.connection;
-        let turn_order_available = ["udp", "tcp", "tls"]
+        let effective_relay_order = c.relay_order();
+        let turn_order_available = ["hole", "udp", "tcp", "tls"]
             .into_iter()
-            .filter(|item| !c.turn.order.iter().any(|configured| configured == *item))
+            .filter(|item| {
+                !effective_relay_order
+                    .iter().any(|configured| configured == *item)
+            })
             .map(slint::SharedString::from)
             .collect::<Vec<_>>();
-        let turn_order = c
-            .turn
-            .order
+        let turn_order = effective_relay_order
             .iter()
             .map(|item| slint::SharedString::from(item.as_str()))
             .collect::<Vec<_>>();
@@ -108,6 +110,8 @@ pub fn push_config_forms(window: &Weak<MainWindow>, shared: &Arc<Mutex<Shared>>)
             candidate_addresses: config::join_list(&c.candidate_addresses).into(),
         });
         app.set_transport(TransportForm {
+            relay_order_edited: false,
+            relay_device: c.relay.device.clone().into(),
             mode: c.connection_mode.clone().into(),
             stun_urls: c.ice.stun_urls.join("\n").into(),
             relay_mode: c.turn.mode.clone().into(),
@@ -325,9 +329,10 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
                 let relay = form.relay_mode.to_string();
                 let turn_urls = config::split_lines(&form.turn_urls);
                 let turn_order = form.turn_order.iter().map(|item| item.to_string()).collect::<Vec<_>>();
-                let order_types = ["udp", "tcp", "tls"];
-                if turn_order.len() > 3 || turn_order.iter().any(|item| !order_types.contains(&item.as_str())) {
-                    return Err("TURN 顺序仅接受不超过 3 种 UDP、TCP 或 TLS 类型。".into());
+                let order_types = ["hole", "udp", "tcp", "tls"];
+                if turn_order.len() > 4
+                    || turn_order.iter().any(|item| !order_types.contains(&item.as_str())) {
+                    return Err("中继顺序仅接受 Hole、UDP、TCP、TLS。".into());
                 }
                 if turn_order.iter().collect::<std::collections::HashSet<_>>().len() != turn_order.len() {
                     return Err("TURN 类型顺序不能重复。".into());
@@ -353,7 +358,10 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
                 conn.turn.mode = relay;
                 conn.turn.ttl = form.turn_ttl.trim().into();
                 conn.turn.urls = turn_urls;
-                conn.turn.order = turn_order;
+                if form.relay_order_edited || turn_order != conn.relay_order() {
+                    conn.relay.order = Some(turn_order);
+                }
+                conn.relay.device = form.relay_device.trim().into();
                 conn.turn.username = form.turn_username.trim().into();
                 secrets.turn_credential = form.turn_credential.to_string();
                 Ok(())

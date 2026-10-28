@@ -36,6 +36,7 @@ fun configurationText(s: CoreSnapshot, config: ConfigUiState): String = when {
     else -> "正在应用设置并加入房间"
 }
 fun phaseLabel(phase: String): String = when (phase) {
+    "hole" -> "连接 Hole 中继"
     "fixed" -> "连接固定入口"
     "direct" -> "探测直连路径"
     "relay_udp" -> "尝试 UDP 中继"
@@ -53,6 +54,7 @@ fun peerPhaseLabel(p: PeerSnapshot): String = when {
     else -> phaseLabel(p.phase)
 }
 fun peerPathLabel(p: PeerSnapshot): String = when {
+    p.pathType == "hole" -> "Hole 中继 · ${p.relayDevice}"
     isFixedPeer(p) -> "固定入口直连${p.addressFamily.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}"
     p.state == "waiting_credentials" -> peerPhaseLabel(p)
     p.pathType == "relay" -> "中继${p.addressFamily.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}"
@@ -74,6 +76,7 @@ fun relayPathLabel(p: PeerSnapshot): String = when (p.relaySide) {
 }
 fun selectedConnectionLabel(type: String, address: String): String {
     val path = when (type) {
+        "hole" -> "Hole 中继 UDP 接入"
         "fixed" -> "固定入口直连"
         "relay" -> "中继"
         "host", "srflx", "prflx" -> "直连"
@@ -100,6 +103,7 @@ fun peerStateLabel(p: PeerSnapshot): String = when (p.state) {
     else -> "连接中"
 }
 fun relayOrderLabel(order: List<String>): String = if (order.isEmpty()) "默认：UDP → TCP → TLS" else dev.hole.app.config.normalizedTurnOrder(order).joinToString(" → ") { token -> when (token) {
+    "hole" -> "Hole"
     "udp" -> "UDP"
     "tcp" -> "TCP"
     "tls" -> "TLS"

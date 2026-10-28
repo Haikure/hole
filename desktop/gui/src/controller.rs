@@ -80,12 +80,20 @@ impl PeerData {
     pub(crate) fn from_peer(p: &snap::Peer) -> Self {
         let fixed = snap::is_fixed_peer(p);
         let mut details = vec![kv("连接过程", &snap::peer_phase_label(p))];
+        if !p.relay_device.is_empty() {
+            details.extend([
+                kv("Hole 中继设备", &p.relay_device),
+                kv("公布入口", &p.relay_endpoint),
+                kv("实际接入地址", &p.relay_access_address),
+            ]);
+        }
         if fixed {
             details.extend(snap::fixed_peer_details(p).into_iter().map(|(key, value)| kv(key, &value)));
         } else {
             details.extend([
-                kv("本机 TURN 顺序", &snap::relay_order_label(&p.relay_order)),
-                kv("对端 TURN 顺序", &snap::relay_order_label(&p.peer_relay_order)),
+                kv("本机中继顺序", &snap::relay_order_label(&p.relay_order)),
+                kv(
+                    "对端中继顺序", &snap::relay_order_label(&p.peer_relay_order)),
             ]);
             if p.relay_order_fallback {
                 details.push(kv("顺序状态", "对端或协调服务不支持自定义顺序，已回退默认顺序"));
@@ -99,9 +107,12 @@ impl PeerData {
             details.extend([
                 kv("本机连接", &snap::selected_connection_label(&p.local_type, &p.local_address)),
                 kv("对端连接", &snap::selected_connection_label(&p.remote_type, &p.remote_address)),
-                kv("已发现候选地址", &format!("本机 {} · 对端 {}", p.local_candidates, p.remote_candidates)),
-                kv("本机中继来源", match p.relay_state.as_str() { "ready" => "短期凭据已就绪", "manual" => "手动配置", "off" => "不申请本机中继", "unavailable" | "expired" => "暂不可用，直连仍可使用", _ => "准备中" }),
             ]);
+            if p.phase != "hole" {
+                details.push(kv("已发现候选地址", &format!("本机 {} · 对端 {}", p.local_candidates, p.remote_candidates)));
+                details.push(kv(
+                    "本机 TURN 来源", match p.relay_state.as_str() { "ready" => "短期凭据已就绪", "manual" => "手动配置", "off" => "不申请本机 TURN", "unavailable" | "expired" => "暂不可用", _ => "准备中" }));
+            }
             if p.turn_expires_at != 0 {
                 details.push(kv("中继凭据剩余时间", &snap::remaining_time(p.turn_expires_at)));
             }
@@ -439,8 +450,11 @@ impl Worker {
 
     fn read_snapshot(&mut self) {
         self.last_read = Instant::now();
-        let Some(client) = self.client.clone() else { return };
-        match client.call("snapshot", None).and_then(|v| snap::parse_snapshot_result(&v).map_err(|e| RpcError { code: 0, message: e, fault_code: None, fault_message: None })) {
+        let Some(client) = self.client.clone() else { return;
+        };
+        match client.call("snapshot", None).and_then(|v| {
+            snap::parse_snapshot_result(&v).map_err(|e| RpcError { code: 0, message: e, fault_code: None, fault_message: None })
+        }) {
             Ok(s) => {
                 if s.run_requested {
                     self.history.push_back(TrafficSample { at: Instant::now(), sent: s.bytes_sent(), received: s.bytes_received() });
@@ -497,7 +511,7 @@ impl Worker {
             Command::VoiceMuted(muted) => {
                 if let Some(client) = &self.client {
                     match client.call("set_voice_muted", Some(serde_json::json!({"muted": muted}))) {
-                        Ok(_) => { self.voice_muted = muted; self.command_error.clear(); },
+                        Ok(_) => { self.voice_muted = muted; self.command_error.clear(); }
                         Err(e) => self.command_error = format!("语音静音操作失败：{e}"),
                     }
                 }
@@ -823,7 +837,9 @@ impl Worker {
         } else {
             "桌面平台未提供网络状态"
         };
-        let error = s.error.as_ref().map(|e| format!("{} {}", snap::connection_issue(&e.code), if e.message.is_empty() { String::new() } else { format!("（{}）", e.message) })).unwrap_or_default();
+        let error = s.error.as_ref().map(|e| {
+                format!("{} {}", snap::connection_issue(&e.code), if e.message.is_empty() { String::new() } else { format!("（{}）", e.message) })
+            }).unwrap_or_default();
         Status {
             bridge_ready: self.client.is_some(),
             bridge_error: self.bridge_error.clone().into(),

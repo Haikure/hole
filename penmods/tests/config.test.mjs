@@ -57,6 +57,24 @@ const manualTurn = {
     order: ['tls', 'udp'],
 };
 
+test('Hole 设备单独编辑和空顺序在重新打开后保留', () => {
+    for (const order of [null, [], ['hole', 'tls']]) {
+        let page = createPage({configJson: JSON.stringify({relay: {device: 'relay-node', order}})});
+        page.relayDevice = 'second-relay';
+        page.syncConfig();
+        page = reopen(page);
+        assert.equal(page.relayDevice, 'second-relay');
+        assert.deepEqual(JSON.parse(page.holePlugin.configJson).relay.order, order);
+    }
+});
+
+test('Hole 服务配置保留并明确拒绝在插件启用', () => {
+    const page = createPage({configJson: JSON.stringify({room: 'room', password: 'p', token: 't', device_name: 'pen', relay: {serve: {enabled: true}}})});
+    assert.match(page.validationMessage(), /仅 CLI 支持/);
+    page.syncConfig();
+    assert.equal(JSON.parse(page.holePlugin.configJson).relay.serve.enabled, true);
+});
+
 function enterManualTurn(page) {
     page.turnMode = manualTurn.mode;
     page.turnTtl = manualTurn.ttl;

@@ -62,7 +62,7 @@ TestCase {
 
     function test_labelsAndTapToggle() {
         compare(board.types.map(function(token) { return board.typeLabel(token) }).join(","),
-                "UDP,TCP,TLS")
+                "Hole,UDP,TCP,TLS")
         var tcp = chip("tcp", true)
         mouseClick(tcp, tcp.width / 2, tcp.height / 2)
         compare(board.order, ["udp", "tls"])

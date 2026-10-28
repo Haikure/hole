@@ -13,6 +13,7 @@ data class MappingSnapshot(
 )
 
 data class PeerSnapshot(
+    val relayDevice: String = "", val relayEndpoint: String = "", val relayAccessAddress: String = "",
     val peerId: String = "", val transportId: String = "", val generation: String = "0",
     val profile: String = "", val state: String = "", val phase: String = "", val pendingPhase: String = "",
     val pathType: String = "", val addressFamily: String = "", val relayProtocol: String = "", val localRelayProtocol: String = "", val remoteRelayProtocol: String = "",
@@ -28,6 +29,7 @@ data class PeerSnapshot(
 ) {
     companion object {
         fun fromJson(j: JSONObject): PeerSnapshot = PeerSnapshot(
+            relayDevice = j.optString("relay_device"), relayEndpoint = j.optString("relay_endpoint"), relayAccessAddress = j.optString("relay_access_address"),
             peerId = j.optString("peer_id"), transportId = j.optString("transport_id"), generation = j.optString("generation", "0"),
             profile = j.optString("profile"), state = j.optString("state"), phase = j.optString("phase"), pendingPhase = j.optString("pending_phase"),
             pathType = j.optString("path_type"), addressFamily = j.optString("address_family"), relayProtocol = j.optString("relay_protocol"), localRelayProtocol = j.optString("local_relay_protocol").ifBlank { j.optString("relay_protocol") }, remoteRelayProtocol = j.optString("remote_relay_protocol"),

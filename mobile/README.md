@@ -1,5 +1,9 @@
 # Android Go 桥接 API
 
+配置中的 `relay.device` 和 `relay.order` 原样进入共享核心及 CLI 导入导出；省略顺序和
+显式空数组分别保留。`relay.serve.enabled: true` 在导入和启动时明确返回“仅 CLI 支持”，
+不会静默删除。快照包含 Hole 路径设备、公布入口、实际接入地址和失败原因。
+
 `hole/mobile` 是共享核心的 gomobile 窄接口，当前 **API version 1**。
 生成的 Java 包为 `dev.hole.core.mobile`；构建入口是 `./build.sh android` 或 `./build.sh wear`。
 本目录不复制网络协议或转发实现。

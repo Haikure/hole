@@ -1,4 +1,4 @@
-"""Linux/Xvfb: TURN drag order, save, dirty navigation interception and Esc."""
+"""Linux/Xvfb: unified relay drag order, Hole selection and repeated saves."""
 import json
 import os
 from pathlib import Path
@@ -22,18 +22,24 @@ def main():
                 driver.key("s", "Control_L")
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline:
-                    actual = json.loads(config.read_text())["connection"]["turn"]["order"]
+                    actual = json.loads(config.read_text())["connection"].get("relay", {}).get("order")
                     if actual == expected:
                         return
                     time.sleep(0.1)
                 raise AssertionError(f"Expected {expected}, got {actual}")
 
             # Coordinates are relative to the default 1180x780 window.
-            driver.drag((773, 538), (1130, 538))
+            driver.drag((773, 634), (1130, 634))
             save_and_check(["tcp", "tls", "udp"])
-            driver.drag((1010, 538), (720, 538))
+            driver.drag((1010, 634), (720, 634))
             save_and_check(["udp", "tcp", "tls"])
-            print("PASS: TURN reorder forward/backward, Ctrl+S save and no accidental removal")
+            driver.click(773, 709)  # Add Hole through the actual board.
+            save_and_check(["udp", "tcp", "tls", "hole"])
+            driver.click(850, 438)
+            driver.type("relay-node")
+            save_and_check(["udp", "tcp", "tls", "hole"])
+            assert json.loads(config.read_text())["connection"]["relay"]["device"] == "relay-node"
+            print("PASS: relay reorder, Hole selection, independent device editing and repeated Ctrl+S")
         except Exception:
             driver.shot("turn-failure.png")
             raise

@@ -10,6 +10,25 @@ const val PREFERRED_ICE = "ice"
 const val PREFERRED_IPV6 = "ipv6"
 
 @Serializable
+data class RelayServeSettings(val enabled: Boolean = false,
+    @SerialName("max_pairs") val maxPairs: Int = 64,
+    @SerialName("bandwidth_mbps") val bandwidthMbps: Int = 0)
+@Serializable
+data class RelaySettings(val device: String = "", val order: List<String>? = null,
+    val serve: RelayServeSettings = RelayServeSettings())
+
+fun effectiveRelayOrder(relay: RelaySettings, turn: TurnSettings): List<String> = relay.order ?: buildList {
+    if (relay.device.isNotBlank()) add("hole")
+    addAll(normalizedTurnOrder(turn.order).ifEmpty { listOf("udp", "tcp", "tls") })
+}
+fun holeRelayOrderError(order: List<String>?): String? = when {
+    order == null -> null
+    order.size > 4 || order.any { it !in setOf("hole", "udp", "tcp", "tls") } -> "中继顺序只接受 Hole、UDP、TCP、TLS"
+    order.distinct().size != order.size -> "中继类型不能重复"
+    else -> null
+}
+
+@Serializable
 data class CoreTransport(
     val preferred: String = PREFERRED_ICE,
     @SerialName("allow_legacy") val allowLegacy: Boolean = true,

@@ -116,7 +116,7 @@ class ConnectionDetailsTest {
     @Test fun ipv6ModeUsesTheNewLabelAndExplainsTheActualBehavior() {
         compose.setContent { HoleTheme(ThemeMode.LIGHT, false) {
             TransportSettingsScreen(ConfigUiState(loaded=true, config=StoredConfig(connection=ConnectionSettings(connectionMode="legacy"))),
-                onSave={_,_,_,_,_->null}, onBack={})
+                onSave={_,_,_,_,_,_->null}, onBack={})
         } }
         compose.onNodeWithText("仅 IPv6").assertExists()
         compose.onNodeWithText("旧 IPv6").assertDoesNotExist()

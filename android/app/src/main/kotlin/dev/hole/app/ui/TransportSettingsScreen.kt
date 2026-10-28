@@ -31,7 +31,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun TransportSettingsScreen(
     configState: ConfigUiState,
-    onSave: suspend (String, IceSettings, TurnSettings, String, Boolean) -> String?,
+    onSave: suspend (String, IceSettings, TurnSettings, String, Boolean, RelaySettings) -> String?,
     onBack: () -> Unit,
     handleBack: Boolean = true,
 ) {
@@ -39,7 +39,9 @@ fun TransportSettingsScreen(
     var mode by rememberSaveable { mutableStateOf(current.connectionMode) }
     var stun by rememberSaveable { mutableStateOf(current.ice.stunUrls.joinToString("\n")) }
     var relay by rememberSaveable { mutableStateOf(current.turn.mode) }
-    var relayOrderText by rememberSaveable { mutableStateOf(normalizedTurnOrder(current.turn.order).joinToString(", ")) }
+    var relayOrderText by rememberSaveable { mutableStateOf(effectiveRelayOrder(current.relay, current.turn).joinToString(", ")) }
+    var relayDevice by rememberSaveable { mutableStateOf(current.relay.device) }
+    var relayOrderEdited by rememberSaveable { mutableStateOf(false) }
     var urls by rememberSaveable { mutableStateOf(current.turn.urls.joinToString("\n")) }
     var username by rememberSaveable { mutableStateOf(current.turn.username) }
     var credential by remember { mutableStateOf(configState.turnCredential) }
@@ -59,8 +61,9 @@ fun TransportSettingsScreen(
     val scope = rememberCoroutineScope()
     val ice = current.ice.copy(stunUrls = splitListField(stun), directProbeTimeout = probe.trim(), gatherTimeout = gather.trim(), connectivityTimeout = check.trim(), retryMaxDelay = retry.trim(), interfaceAllowlist = splitListField(interfaces), relayOnly = relayOnly)
     val relayOrder = splitListField(relayOrderText)
-    val turn = TurnSettings(relay, ttl.trim(), splitListField(urls), username.trim(), relayOrder)
-    val dirty = mode != current.connectionMode || ice != current.ice || turn != current.turn || credential != configState.turnCredential || insecure != current.allowInsecureSignal
+    val turn = TurnSettings(relay, ttl.trim(), splitListField(urls), username.trim(), current.turn.order)
+    val holeRelay = current.relay.copy(device = relayDevice.trim(), order = if (relayOrderEdited) relayOrder else current.relay.order)
+    val dirty = mode != current.connectionMode || ice != current.ice || turn != current.turn || holeRelay != current.relay || credential != configState.turnCredential || insecure != current.allowInsecureSignal
     fun back() { if (busy) return; if (dirty) confirm = true else onBack() }
     val saveTransport: () -> Unit = {
                 error = when {
@@ -69,10 +72,10 @@ fun TransportSettingsScreen(
                     ice.stunUrls.any { !it.startsWith("stun:") } -> "STUN 地址需以 stun: 开头。"
                     relay == "manual" && (turn.urls.isEmpty() || username.isBlank() || credential.isEmpty()) -> "请填齐 TURN 地址、用户名和凭据。"
                     relay == "manual" && turn.urls.any { !it.startsWith("turn:") && !it.startsWith("turns:") } -> "TURN 地址需以 turn: 或 turns: 开头。"
-                    relayOrderError(relayOrder) != null -> relayOrderError(relayOrder)
+                    holeRelayOrderError(relayOrder) != null -> holeRelayOrderError(relayOrder)
                     else -> null
                 }
-                if (error == null) scope.launch { busy = true; error = onSave(mode, ice, turn, credential, insecure); busy = false; if (error == null) onBack() }
+                if (error == null) scope.launch { busy = true; error = onSave(mode, ice, turn, credential, insecure, holeRelay); busy = false; if (error == null) onBack() }
     }
     BackHandler(handleBack) { back() }
     HoleScaffold(title = "连接方式", navigationIcon = { HoleBackButton { back() } },
@@ -90,10 +93,12 @@ fun TransportSettingsScreen(
                 HoleTextButton("恢复 Cloudflare 默认值", { stun = DEFAULT_STUN_URL })
             }
             HoleSettingsGroup("直连失败后的中继") {
+                HoleTextField(relayDevice, { relayDevice = it }, "Hole 中继设备名", modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    supportingText = { Text("同房间 CLI 中继设备；留空仍可参与对端指定的 Hole 路径。") })
                 HoleSingleChoice(listOf("worker" to "协调服务", "manual" to "手动", "off" to "关闭"), relay, { relay = it }, Modifier.fillMaxWidth())
                 HoleHelp("凭据来源", when (relay) {
                     "manual" -> "使用自备 TURN；凭据加密保存在本机。"
-                    "off" -> "不申请 TURN 凭据，仅尝试直连。"
+                    "off" -> "不申请 TURN 凭据，Hole 中继仍可使用。"
                     else -> "由 Worker 发放短期凭据；未配置 TURN 时仍可直连。"
                 })
                 AnimatedVisibility(relay == "manual") {
@@ -103,19 +108,19 @@ fun TransportSettingsScreen(
                         HoleTextField(credential, { credential = it }, "TURN 凭据", modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
                     }
                 }
-                HoleHelp("中继说明", "先尝试直连，再按本机顺序尝试 TURN。TLS 保护中继接入，业务数据由 QUIC 端到端加密。")
+                HoleHelp("中继说明", "默认直连 → Hole → TURN UDP → TCP → TLS；中继 UDP 接入可承载 TCP、UDP 服务和语音。")
             }
-            HoleSettingsGroup("本机 TURN 类型顺序") {
+            HoleSettingsGroup("中继类型顺序") {
                 HoleHelp("尝试顺序", "顺序仅影响本机；留空使用默认值，未选类型会跳过。")
                 TurnOrderBoard(
                     order = relayOrder,
-                    onChange = { relayOrderText = it.joinToString(", ") },
+                    onChange = { relayOrderText = it.joinToString(", "); relayOrderEdited = true },
                     onDraggingChanged = { turnOrderDragging = it },
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    HoleTextButton("恢复默认顺序", { relayOrderText = "" })
+                    HoleTextButton("恢复默认顺序", { relayOrderText = ""; relayOrderEdited = true })
                 }
-                relayOrderError(relayOrder)?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                holeRelayOrderError(relayOrder)?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             }
             HoleTextButton(if (advanced) "收起高级参数" else "高级连接参数", { advanced = !advanced })
             AnimatedVisibility(advanced) {
@@ -126,7 +131,7 @@ fun TransportSettingsScreen(
                     HoleTextField(retry, { retry = it }, "最大重试间隔", modifier = Modifier.fillMaxWidth(), singleLine = true)
                     HoleTextField(ttl, { ttl = it }, "请求的中继凭据有效期", supportingText = { Text("默认 6h；以 Worker 签发期限为准。") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     HoleTextField(interfaces, { interfaces = it }, "允许使用的网卡", supportingText = { Text("留空自动选择；Android 跟随系统网络。") }, modifier = Modifier.fillMaxWidth())
-                    HoleSwitchPreference("仅用中继测试", "跳过直连，强制使用 TURN。", checked = relayOnly, onCheckedChange = { relayOnly = it })
+                    HoleSwitchPreference("仅用中继", "跳过直连，使用 Hole 或 TURN。", checked = relayOnly, onCheckedChange = { relayOnly = it })
                     HoleSwitchPreference("允许本地 ws 测试", "仅本地测试使用 ws://；生产环境请用 wss://。", checked = insecure, onCheckedChange = { insecure = it })
                 }
             }

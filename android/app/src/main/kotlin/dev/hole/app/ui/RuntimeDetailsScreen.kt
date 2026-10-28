@@ -89,7 +89,7 @@ fun RuntimeDetailsScreen(
             }
             item {
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    val filters = if (tab == "devices") listOf("all" to "全部", "direct" to "直连", "relay" to "中继", "fixed" to "固定入口")
+                    val filters = if (tab == "devices") listOf("all" to "全部", "direct" to "直连", "hole" to "Hole", "relay" to "TURN", "fixed" to "固定入口")
                         else listOf("all" to "全部", "tcp" to "TCP", "udp" to "UDP")
                     filters.forEach { (value, label) ->
                         FilterChip(selected = filter == value, onClick = { filter = value }, label = { Text(label) }, shape = CircleShape)
@@ -128,6 +128,11 @@ fun RuntimeDetailsScreen(
             if (peer == null) Text("连接已结束") else {
                 Text(peer.peerId, style = MaterialTheme.typography.headlineSmall)
                 InspectionValue("线路", peerPathLabel(peer))
+                if (peer.relayDevice.isNotBlank()) {
+                    DetailRow("Hole 中继设备", peer.relayDevice)
+                    DetailRow("公布入口", peer.relayEndpoint)
+                    DetailRow("实际接入地址", peer.relayAccessAddress)
+                }
                 InspectionValue("状态", peerStateLabel(peer))
                 InspectionValue("延迟", "${peer.rttMs} ms")
                 InspectionValue("连接过程", peerPhaseLabel(peer))
@@ -141,11 +146,11 @@ fun RuntimeDetailsScreen(
                 InspectionValue("服务通道", "${peer.activeChannels} / ${peer.mappingCount}")
                 InspectionValue("建连耗时", "${peer.connectMs} ms")
                 InspectionValue("重试 / 丢包", "${peer.retryCount} / ${peer.droppedDatagrams}")
-                if (!isFixedPeer(peer) && peer.pathType == "relay") {
-                    InspectionValue("中继接入", relayPathLabel(peer))
+                if (!isFixedPeer(peer) && peer.pathType in setOf("relay", "hole")) {
+                    InspectionValue("中继接入", if (peer.pathType == "hole") "Hole · UDP" else relayPathLabel(peer))
                     InspectionValue("本机顺序", relayOrderLabel(peer.relayOrder))
                     InspectionValue("对端顺序", relayOrderLabel(peer.peerRelayOrder))
-                    InspectionValue("凭据有效期", remainingTime(peer.turnExpiresAt))
+                    if (peer.pathType == "relay") InspectionValue("凭据有效期", remainingTime(peer.turnExpiresAt))
                 }
                 fixedConnectionIssue(peer.errorCode)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 peer.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }

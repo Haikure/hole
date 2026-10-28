@@ -10,7 +10,9 @@ pub fn url_encode(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for b in text.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'*' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'*' => {
+                out.push(b as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -122,6 +124,15 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
     line(&mut out, "设备线路（结构化状态，不含原始日志或候选凭据）".into());
     for p in &s.peers {
         line(&mut out, format!("设备 {}：{} / {}", p.peer_id, p.state, peer_path_label(p)));
+        if !p.relay_device.is_empty() {
+            line(
+                &mut out,
+                format!(
+                    "  Hole 中继设备 {} · 公布入口 {} · 实际接入 {}",
+                    p.relay_device, p.relay_endpoint, p.relay_access_address
+                ),
+            );
+        }
         if is_fixed_peer(p) {
             for (key, value) in fixed_peer_details(p) { line(&mut out, format!("  {key} {value}")); }
         } else {
@@ -129,13 +140,14 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
             let remote = if p.remote_relay_protocol.is_empty() { "未上报" } else { &p.remote_relay_protocol };
             let policy = if p.relay_policy.is_empty() { "兼容阶段" } else { &p.relay_policy };
             line(&mut out, format!("  本机接入 {local} · 对端接入 {remote} · 中继使用方 {} · 策略 {policy}", p.relay_side));
-            line(&mut out, format!("  本机 TURN 顺序 {} · 对端 TURN 顺序 {} · 轮次 {}{}", super::snapshot::relay_order_label(&p.relay_order), super::snapshot::relay_order_label(&p.peer_relay_order), p.relay_round, if p.relay_order_fallback { " · 已回退默认顺序" } else { "" }));
+            line(&mut out, format!(
+                    "  本机中继顺序 {} · 对端中继顺序 {} · 轮次 {}{}", super::snapshot::relay_order_label(&p.relay_order), super::snapshot::relay_order_label(&p.peer_relay_order), p.relay_round, if p.relay_order_fallback { " · 已回退默认顺序" } else { "" }));
             line(&mut out, format!("  本地 {} ({}) · 对端 {} ({})", p.local_address, p.local_type, p.remote_address, p.remote_type));
         }
         line(&mut out, format!("  通道 {}/{} · RTT {} ms · 建连 {} ms", p.active_channels, p.mapping_count, p.rtt_ms, p.connect_ms));
         line(&mut out, format!("  线路发送 {} / 接收 {} 字节 · UDP 丢弃 {}", p.bytes_sent, p.bytes_received, p.dropped_datagrams));
         line(&mut out, format!("  {} / generation {} / phase {}（{}） / retries {}", p.transport_id, p.generation, p.phase, peer_phase_label(p), p.retry_count));
-        if !is_fixed_peer(p) { line(&mut out, format!("  中继状态 {} · 凭据到期 {}", p.relay_state, p.turn_expires_at)); }
+        if !is_fixed_peer(p) && p.phase != "hole" { line(&mut out, format!("  中继状态 {} · 凭据到期 {}", p.relay_state, p.turn_expires_at)); }
         line(&mut out, format!("  授权到期 {}", p.lease_until));
         if let Some(e) = &p.error {
             line(&mut out, format!("  当前问题 {}: {}", e.code, e.message));

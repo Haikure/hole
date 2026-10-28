@@ -21,6 +21,9 @@ func jsonObject(t *testing.T, data []byte) any {
 
 func TestPortableConfigurationMatchesAndroidExchange(t *testing.T) {
 	fixtures := []string{
+		"transport:\n  preferred: ice\ndevice_name: desktop\nrelay:\n  device: relay-node\n",
+		"transport:\n  preferred: ice\ndevice_name: desktop\nrelay:\n  device: relay-node\n  order: []\n",
+		"transport:\n  preferred: ice\ndevice_name: desktop\nrelay:\n  device: relay-node\n  order: [hole, tls]\n",
 		`{}`,
 		"room: ROOM\nprovide: []\nconsume: []\n",
 		"server_url: wss://HOST/ws\ntransport:\n  preferred: ice\n  allow_legacy: true\nice:\n  stun_urls: []\nturn:\n  mode: off\n",

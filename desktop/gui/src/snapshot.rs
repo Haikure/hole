@@ -39,6 +39,9 @@ pub struct Mapping {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Peer {
+    pub relay_device: String,
+    pub relay_endpoint: String,
+    pub relay_access_address: String,
     pub peer_id: String,
     pub transport_id: String,
     pub generation: String,
@@ -143,20 +146,24 @@ fn parse_voice(v: &Value) -> Voice {
         muted: v["muted"].as_bool().unwrap_or(false),
         state: s(v, "state"), capture_state: s(v, "capture_state"),
         captured_frames: s_or(v, "captured_frames", "0"), mixed_frames: s_or(v, "mixed_frames", "0"),
-        members: v["members"].as_array().map(|members| members.iter().map(|m| crate::VoiceMemberRow {
+        members: v["members"].as_array().map(|members| {
+                members.iter().map(|m| crate::VoiceMemberRow {
             name: s_or(m, "device_name", "未命名设备").into(), local: m["local"].as_bool().unwrap_or(false),
             enabled: m["voice"].as_bool().unwrap_or(false),
             state: if m["local"] == true { "本机音频".into() } else { peer_state_label(&s(m, "transport_state")).into() },
             media: media_label(&s(m, "media_state")).into(),
-        }).collect()).unwrap_or_default(),
-        peers: v["peers"].as_array().map(|peers| peers.iter().map(|p| crate::VoicePeerRow {
+        }).collect()
+            }).unwrap_or_default(),
+        peers: v["peers"].as_array().map(|peers| {
+                peers.iter().map(|p| crate::VoicePeerRow {
             name: s_or(p, "peer_id", "未知设备").into(), state: peer_state_label(&s(p, "state")).into(),
             media: media_label(&s(p, "media_state")).into(), path: voice_path_label(&s(p, "path")).into(),
             bitrate: format!("{} kb/s", i(p, "bitrate") / 1000).into(),
             stats: format!("发送 {} · 解码 {} · 补帧 {} · 丢包 {}", s_or(p, "sent_frames", "0"), s_or(p, "decoded_frames", "0"), s_or(p, "concealed_frames", "0"), s_or(p, "packet_loss", "0")).into(),
             buffering: format!("队列 {} · 抖动 {}", i(p, "queue_depth"), i(p, "jitter_depth")).into(),
             error: p.get("error").and_then(fault).map(|f| f.message).unwrap_or_default().into(),
-        }).collect()).unwrap_or_default(),
+        }).collect()
+            }).unwrap_or_default(),
     }
 }
 
@@ -209,7 +216,9 @@ fn i(v: &Value, key: &str) -> i64 {
     }
 }
 fn list(v: &Value, key: &str) -> Vec<String> {
-    v.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()
+    v.get(key).and_then(Value::as_array).map(|a| {
+            a.iter().filter_map(|x| x.as_str().map(String::from)).collect()
+        }).unwrap_or_default()
 }
 
 /// 解析 `snapshot` 方法的 result（含 bridge_events_dropped）。
@@ -254,6 +263,9 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
         .map(|a| {
             a.iter()
                 .map(|p| Peer {
+                    relay_device: s(p, "relay_device"),
+                    relay_endpoint: s(p, "relay_endpoint"),
+                    relay_access_address: s(p, "relay_access_address"),
                     peer_id: s(p, "peer_id"),
                     transport_id: s(p, "transport_id"),
                     generation: s_or(p, "generation", "0"),
@@ -338,7 +350,9 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
 pub fn engine_label(s: &Snapshot) -> String {
     match s.engine_state.as_str() {
         "loading" => "正在加载核心",
-        "stopped" => if s.configured { "已停止" } else { "未配置 · 已停止" },
+        "stopped" => {
+            if s.configured { "已停止" } else { "未配置 · 已停止" }
+        }
         "starting" => "正在启动",
         "running" => "核心运行中",
         "stopping" => "正在停止",
@@ -448,6 +462,7 @@ pub fn configuration_text(s: &Snapshot) -> &'static str {
 
 pub fn phase_label(phase: &str) -> &'static str {
     match phase {
+        "hole" => "连接 Hole 中继",
         "fixed" => "连接固定入口",
         "direct" => "探测直连路径",
         "relay_udp" => "尝试 UDP 中继",
@@ -463,7 +478,8 @@ pub fn phase_label(phase: &str) -> &'static str {
 pub fn relay_order_label(order: &[String]) -> String {
     if order.is_empty() { return "默认：UDP → TCP 80 → TCP 3478 → TLS 443 → TLS 5349".into(); }
     order.iter().map(|token| match token.as_str() {
-        "udp" => "UDP",
+            "hole" => "Hole",
+            "udp" => "UDP",
         "tcp_80" => "TCP 80",
         "tcp" => "TCP 3478 / 自定义端口",
         "tls_443" => "TLS 443",
@@ -482,6 +498,9 @@ pub fn is_fixed_peer(p: &Peer) -> bool {
 }
 
 pub fn peer_path_label(p: &Peer) -> String {
+    if p.path_type == "hole" {
+        return format!("Hole 中继 · {}", p.relay_device);
+    }
     let family = if p.address_family.is_empty() { String::new() } else { format!(" · {}", p.address_family) };
     if is_fixed_peer(p) { return format!("固定入口直连{family}"); }
     match (p.state.as_str(), p.path_type.as_str()) {
@@ -518,7 +537,9 @@ pub fn relay_access_label(protocol: &str, side: &str) -> String {
         "udp" => "UDP 中继".into(),
         "tls" => "TLS 中继".into(),
         "tcp" => "TCP 中继".into(),
-        _ => if side == "remote" { "对端中继 · 接入协议未上报".into() } else { "中继连接 · 接入协议待确认".into() },
+        _ => {
+            if side == "remote" { "对端中继 · 接入协议未上报".into() } else { "中继连接 · 接入协议待确认".into() }
+        },
     }
 }
 
@@ -539,6 +560,7 @@ pub fn relay_path_label(p: &Peer) -> String {
 
 pub fn selected_connection_label(kind: &str, address: &str) -> String {
     let path = match kind {
+        "hole" => "Hole 中继 UDP 接入",
         "fixed" => "固定入口直连",
         "relay" => "中继",
         "host" | "srflx" | "prflx" => "直连",

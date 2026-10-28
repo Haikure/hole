@@ -51,8 +51,9 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
             if (isFixedPeer(peer)) {
                 fixedPeerDetails(peer).forEach { (label, value) -> appendLine("  $label $value") }
             } else {
+                if (peer.relayDevice.isNotBlank()) appendLine("  Hole 中继设备 ${peer.relayDevice} · 公布入口 ${peer.relayEndpoint} · 实际接入 ${peer.relayAccessAddress}")
                 appendLine("  本机接入 ${peer.localRelayProtocol.ifBlank { peer.relayProtocol }.ifBlank { "非本机中继" }} · 对端接入 ${peer.remoteRelayProtocol.ifBlank { "未上报" }} · 中继使用方 ${peer.relaySide}")
-                appendLine("  本机 TURN 顺序 ${relayOrderLabel(peer.relayOrder)} · 对端 TURN 顺序 ${relayOrderLabel(peer.peerRelayOrder)} · 轮次 ${peer.relayRound}${if (peer.relayOrderFallback) " · 已回退默认顺序" else ""}")
+                appendLine("  本机中继顺序 ${relayOrderLabel(peer.relayOrder)} · 对端中继顺序 ${relayOrderLabel(peer.peerRelayOrder)} · 轮次 ${peer.relayRound}${if (peer.relayOrderFallback) " · 已回退默认顺序" else ""}")
                 appendLine("  本地 ${peer.localAddress} (${peer.localType}) · 对端 ${peer.remoteAddress} (${peer.remoteType})")
             }
             appendLine("  通道 ${peer.activeChannels}/${peer.mappingCount} · RTT ${peer.rttMs} ms · 建连 ${peer.connectMs} ms")

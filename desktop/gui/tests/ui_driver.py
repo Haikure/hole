@@ -24,6 +24,7 @@ class Driver:
             ("XDefaultRootWindow", [C.c_void_p], C.c_ulong),
             ("XSetInputFocus", [C.c_void_p, C.c_ulong, C.c_int, C.c_ulong], C.c_int),
             ("XRaiseWindow", [C.c_void_p, C.c_ulong], C.c_int),
+            ("XMapRaised", [C.c_void_p, C.c_ulong], C.c_int),
             ("XFetchName", [C.c_void_p, C.c_ulong, C.POINTER(C.c_void_p)], C.c_int),
             ("XFree", [C.c_void_p], C.c_int),
         ]:
@@ -41,9 +42,23 @@ class Driver:
             env.pop(name, None)
         self.log = (self.root / "gui.log").open("w")
         self.process = subprocess.Popen([str(Path(binary).resolve())], env=env, stderr=self.log)
-        time.sleep(2)
-        assert self.process.poll() is None, "GUI exited before interaction"
-        self.focus_window()
+        deadline = time.monotonic() + 15
+        try:
+            while True:
+                assert self.process.poll() is None, "GUI exited before interaction"
+                try:
+                    self.focus_window()
+                    # The native window can be mapped before Slint finishes
+                    # binding its first frame and keyboard callbacks.
+                    time.sleep(2)
+                    break
+                except AssertionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.1)
+        except BaseException:
+            self.close()
+            raise
 
     def focus_window(self):
         pending = [self.x.XDefaultRootWindow(self.display)]
@@ -54,7 +69,7 @@ class Driver:
                 title = C.string_at(name).decode(errors="replace")
                 self.x.XFree(name)
                 if title == "hole":
-                    self.x.XRaiseWindow(self.display, window)
+                    self.x.XMapRaised(self.display, window)
                     self.x.XSetInputFocus(self.display, window, 1, 0)
                     self.x.XFlush(self.display)
                     time.sleep(0.1)

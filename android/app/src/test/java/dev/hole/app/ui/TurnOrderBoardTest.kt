@@ -37,7 +37,8 @@ class TurnOrderBoardTest {
         assertEquals("TLS", turnOrderTypeLabel("tls_443"))
         assertEquals("TLS", turnOrderTypeLabel("tls"))
         assertEquals("unknown", turnOrderTypeLabel("unknown"))
-        assertTrue(turnOrderTypes.toList() == listOf("udp", "tcp", "tls"))
+        assertEquals("Hole", turnOrderTypeLabel("hole"))
+        assertTrue(turnOrderTypes.toList() == listOf("hole", "udp", "tcp", "tls"))
     }
 
     @Test
