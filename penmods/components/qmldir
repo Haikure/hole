@@ -1,6 +1,7 @@
 singleton Theme 1.0 Theme.qml
 ActionButton 1.0 ActionButton.qml
 AdvancedSettings 1.0 AdvancedSettings.qml
+AdvancedSettingsForm 1.0 AdvancedSettingsForm.qml
 ChoiceRow 1.0 ChoiceRow.qml
 ConnectionModeRow 1.0 ConnectionModeRow.qml
 Field 1.0 Field.qml

@@ -2,284 +2,31 @@ import QtQuick 2.12
 import QtQuick.Layouts 1.12
 import "."
 
-// The advanced form is kept out of Main.qml so the page remains a small
-// controller instead of becoming another configuration implementation.
 Section {
     id: settings
 
     property var form: null
     property var hostKeyboard: null
     property var scrollView: null
-    readonly property bool turnOrderDragging: turnOrderBoard.dragging
+    readonly property bool turnOrderDragging: formLoader.item ? formLoader.item.turnOrderDragging : false
 
     title: "高级连接参数"
     subtitle: form && form.preferred === "ipv6" ? "IPv6" : "ICE / TURN"
     collapsible: true
 
-    Field {
+    Loader {
+        id: formLoader
         Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-        hostKeyboard: settings.hostKeyboard
-        label: "STUN 服务器（逗号或换行分隔）"
-        value: settings.form ? settings.form.stunUrls : ""
-        placeholder: "留空仅使用本地候选"
-        onEdited: function(nextValue) {
-            settings.form.stunUrls = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    ChoiceRow {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-        title: "TURN 模式"
-        summary: "直连失败后的中继方式"
-        options: [
-            {value: "worker", label: "协调服务"},
-            {value: "manual", label: "手动"},
-            {value: "off", label: "关闭"}
-        ]
-        selected: settings.form ? settings.form.turnMode : "off"
-        onChosen: function(nextValue) {
-            settings.form.turnMode = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    Field {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-                 && settings.form.turnMode === "manual"
-        hostKeyboard: settings.hostKeyboard
-        label: "TURN 地址（逗号或换行分隔）"
-        value: settings.form ? settings.form.turnUrls : ""
-        invalid: settings.form && settings.form.parseList(settings.form.turnUrls).length === 0
-        onEdited: function(nextValue) {
-            settings.form.turnUrls = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    Field {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-                 && settings.form.turnMode === "manual"
-        hostKeyboard: settings.hostKeyboard
-        label: "TURN 用户名"
-        value: settings.form ? settings.form.turnUsername : ""
-        onEdited: function(nextValue) {
-            settings.form.turnUsername = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    Field {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-                 && settings.form.turnMode === "manual"
-        hostKeyboard: settings.hostKeyboard
-        label: "TURN 凭据"
-        value: settings.form ? settings.form.turnCredential : ""
-        secret: true
-        onEdited: function(nextValue) {
-            settings.form.turnCredential = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    Field {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-        hostKeyboard: settings.hostKeyboard
-        label: "直连探测时间"
-        value: settings.form ? settings.form.directProbeTimeout : ""
-        placeholder: "3s"
-        invalid: settings.form && !settings.form.isDurationBetween(settings.form.directProbeTimeout, 100, 120000)
-        onEdited: function(nextValue) {
-            settings.form.directProbeTimeout = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    Field {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-        hostKeyboard: settings.hostKeyboard
-        label: "候选收集时间"
-        value: settings.form ? settings.form.gatherTimeout : ""
-        placeholder: "6s"
-        invalid: settings.form && !settings.form.isDurationBetween(settings.form.gatherTimeout, 100, 120000)
-        onEdited: function(nextValue) {
-            settings.form.gatherTimeout = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    Field {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-        hostKeyboard: settings.hostKeyboard
-        label: "连通性检查时间"
-        value: settings.form ? settings.form.connectivityTimeout : ""
-        placeholder: "10s"
-        invalid: settings.form && !settings.form.isDurationBetween(settings.form.connectivityTimeout, 100, 120000)
-        onEdited: function(nextValue) {
-            settings.form.connectivityTimeout = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    Field {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-        hostKeyboard: settings.hostKeyboard
-        label: "最大重试间隔"
-        value: settings.form ? settings.form.retryMaxDelay : ""
-        placeholder: "15s"
-        invalid: settings.form && !settings.form.isDurationBetween(settings.form.retryMaxDelay, 100, 120000)
-        onEdited: function(nextValue) {
-            settings.form.retryMaxDelay = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    Field {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-                 && settings.form.turnMode !== "off"
-        hostKeyboard: settings.hostKeyboard
-        label: "TURN 凭据期限"
-        value: settings.form ? settings.form.turnTtl : ""
-        placeholder: "6h"
-        invalid: settings.form && !settings.form.isDurationBetween(settings.form.turnTtl, 60000, 21600000)
-        onEdited: function(nextValue) {
-            settings.form.turnTtl = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    function currentRelayOrder() {
-        return settings.form ? settings.form.parseRelayOrder(settings.form.relayOrder) : []
-    }
-
-    function writeRelayOrder(order) {
-        if (!settings.form) return
-        settings.form.relayOrder = order.join(", ")
-        settings.form.relayOrderExplicit = true
-        settings.form.syncConfig()
-    }
-
-    Field {
-        Layout.fillWidth: true
-        hostKeyboard: settings.hostKeyboard
-        label: "Hole 中继设备名"
-        value: settings.form ? settings.form.relayDevice : ""
-        placeholder: "同房间的 CLI 中继设备"
-        onEdited: function(nextValue) {settings.form.relayDevice=nextValue;settings.form.syncConfig()}
-    }
-
-    ColumnLayout {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-        spacing: Theme.cardSpacing
-
-        Text {
-            Layout.fillWidth: true
-            text: "中继类型顺序"
-            color: Theme.textPrimary
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontLabel
-            font.bold: true
-        }
-
-        Text {
-            Layout.fillWidth: true
-            text: "每台设备独立设置。留空使用默认顺序；未选中的类型会跳过。两端顺序不同也会在同一连接轮次中分别尝试。"
-            color: Theme.textMuted
-            font.family: Theme.fontFamily
-            font.pixelSize: Theme.fontCaption
-            wrapMode: Text.WordWrap
-        }
-
-        TurnOrderBoard {
-            id: turnOrderBoard
-            Layout.fillWidth: true
-            order: settings.currentRelayOrder()
+        Layout.preferredWidth: Math.max(0, settings.width - 2 * Theme.cardPadding)
+        // Build the form with the available width and current data on each open.
+        // Drafts live in the page model, independently of these visual items.
+        active: settings.open && settings.visible && settings.form !== null
+                && settings.width > 2 * Theme.cardPadding
+        sourceComponent: AdvancedSettingsForm {
+            width: formLoader.width
+            form: settings.form
+            hostKeyboard: settings.hostKeyboard
             scrollView: settings.scrollView
-            onEdited: settings.writeRelayOrder(nextOrder)
-        }
-
-        ActionButton {
-            Layout.fillWidth: true
-            text: "恢复默认顺序"
-            variant: "link"
-            enabled: !turnOrderBoard.dragging
-            onClicked: settings.writeRelayOrder([])
-        }
-    }
-
-    Field {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-        hostKeyboard: settings.hostKeyboard
-        label: "允许使用的网卡"
-        value: settings.form ? settings.form.interfaceAllowlist : ""
-        placeholder: "留空表示全部"
-        onEdited: function(nextValue) {
-            settings.form.interfaceAllowlist = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    Field {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ipv6"
-        hostKeyboard: settings.hostKeyboard
-        label: "手动 IPv6 候选地址"
-        value: settings.form ? settings.form.candidateAddresses : ""
-        placeholder: "留空表示自动收集"
-        onEdited: function(nextValue) {
-            settings.form.candidateAddresses = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    SwitchRow {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-        title: "包含回环候选"
-        summary: "同机调试时可开启"
-        checked: settings.form && settings.form.includeLoopback
-        onToggled: function(nextValue) {
-            settings.form.includeLoopback = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
-    SwitchRow {
-        Layout.fillWidth: true
-        Layout.preferredHeight: visible ? implicitHeight : 0
-        visible: settings.form && settings.form.preferred === "ice"
-        title: "仅使用中继"
-        summary: "始终走 TURN，不做直连尝试"
-        checked: settings.form && settings.form.relayOnly
-        onToggled: function(nextValue) {
-            settings.form.relayOnly = nextValue
-            settings.form.syncConfig()
         }
     }
 }
