@@ -4,8 +4,8 @@
   },
   "frontends": {
     "android": {
-      "version": "1.0.4",
-      "version_code": 15
+      "version": "1.0.5",
+      "version_code": 16
     },
     "desktop_gui": {
       "version": "0.1.2"

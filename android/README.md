@@ -78,7 +78,7 @@ Release 开启 R8 混淆、资源收缩与 native strip，保留 JNI 所需类�
 Android 11–13 通话时显式使用麦克风前台服务类型，Android 14+ 同时保留 `specialUse` 类型；
 音频设备在服务类型更新后启动，关闭语音时移除麦克风类型，转发连接继续运行。
 
-CLI YAML 可导入导出；应用完整备份还包含停用条目与界面设置。凭据由 Android Keystore
+CLI YAML 可导入导出，也可直接粘贴 CLI YAML / JSON 或 Android 备份 JSON 后预览导入；应用完整备份还包含停用条目与界面设置。凭据由 Android Keystore
 管理的 AES-GCM 密钥保护，默认导出不含凭据，备份不复制设备绑定的 Keystore 密文。
 
 ## 生命周期和平台边界

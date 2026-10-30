@@ -58,6 +58,17 @@ object ConfigExchange {
         return readCLIJSON(Mobile.decodeCLIConfig(text), current)
     }
 
+    /** Detect the portable Android envelope before falling back to the CLI exchange format. */
+    fun readPasted(text: String, current: StoredConfig): ImportPreview {
+        require(text.toByteArray().size <= MAX_DOCUMENT_BYTES) { "文件超过 128 KiB" }
+        val normalized = text.trim()
+        require(normalized.isNotEmpty()) { "粘贴内容为空" }
+        val isBackup = runCatching {
+            json.parseToJsonElement(normalized).jsonObject["format"]?.jsonPrimitive?.content == "hole-android-backup"
+        }.getOrDefault(false)
+        return if (isBackup) readBackup(normalized) else readCLI(normalized, current)
+    }
+
     // Keep document metadata out of the runtime's nested CoreConfig. The mobile
     // request continues to have one authoritative server_url in its envelope.
     internal fun readCLIJSON(text: String, current: StoredConfig): ImportPreview {

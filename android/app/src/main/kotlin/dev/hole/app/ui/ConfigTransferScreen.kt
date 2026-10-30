@@ -1,14 +1,18 @@
 package dev.hole.app.ui
 
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -28,6 +32,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private fun clipboardText(context: Context): String? = runCatching {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+}.getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+
 @Composable
 fun ConfigTransferScreen(config: ConfigUiState, onImport: suspend (ImportPreview) -> Unit, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -38,6 +47,9 @@ fun ConfigTransferScreen(config: ConfigUiState, onImport: suspend (ImportPreview
     var preview by remember { mutableStateOf<ImportPreview?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var pasteDialog by remember { mutableStateOf(false) }
+    var pastedText by remember { mutableStateOf("") }
+    var pasteError by remember { mutableStateOf<String?>(null) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         val document = pendingExport
         pendingExport = ""
@@ -86,6 +98,12 @@ fun ConfigTransferScreen(config: ConfigUiState, onImport: suspend (ImportPreview
             finally { busy = false }
         }
     }
+    fun openPasteDialog() {
+        pastedText = clipboardText(context).orEmpty()
+        pasteError = if (pastedText.isEmpty()) "剪贴板没有文本配置，请在下方输入或粘贴。" else null
+        message = null
+        pasteDialog = true
+    }
     HoleScaffold(title = "导入与导出", navigationIcon = { HoleBackButton(onBack) }) { insets ->
         Column(Modifier.fillMaxWidth().padding(insets).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -99,9 +117,61 @@ fun ConfigTransferScreen(config: ConfigUiState, onImport: suspend (ImportPreview
                 HoleHelp("导入说明", "先预览再替换。导入后连接停止，检查服务器与凭据后手动启动。")
                 HoleButton("导入 CLI YAML / JSON", { importingBackup = false; picker.launch(arrayOf("*/*")) }, enabled = !busy, secondary = true)
                 HoleButton("恢复备份", { importingBackup = true; picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }, enabled = !busy, secondary = true)
+                HoleButton("粘贴配置", ::openPasteDialog, enabled = !busy, secondary = true)
             }
             if (busy) Text("正在处理文件…", style = MaterialTheme.typography.bodyMedium)
             message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        }
+    }
+    if (pasteDialog) {
+        Dialog(onDismissRequest = { if (!busy) pasteDialog = false }) {
+            HoleCard(Modifier.fillMaxWidth().padding(16.dp)) {
+                Column(
+                    Modifier.padding(20.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("粘贴配置", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "支持 Android 备份 JSON 和 CLI YAML / JSON。粘贴后先检查，确认后才会替换当前配置。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = pastedText,
+                        onValueChange = { pastedText = it; pasteError = null },
+                        label = { Text("配置内容") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 8,
+                        maxLines = 12,
+                        enabled = !busy,
+                    )
+                    pasteError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        HoleTextButton("重新读取剪贴板", onClick = {
+                            val text = clipboardText(context)
+                            if (text == null) pasteError = "剪贴板没有可读取的文本配置。"
+                            else { pastedText = text; pasteError = null }
+                        })
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            HoleTextButton("取消", { if (!busy) pasteDialog = false })
+                            HoleButton("检查并预览", onClick = {
+                                val text = pastedText
+                                scope.launch {
+                                    busy = true
+                                    try {
+                                        preview = withContext(Dispatchers.Default) { ConfigExchange.readPasted(text, config.config) }
+                                        pasteDialog = false
+                                        pasteError = null
+                                        message = null
+                                    } catch (_: Exception) {
+                                        pasteError = "粘贴内容检查未通过：请确认格式正确，且内容不超过 128 KiB。"
+                                    } finally { busy = false }
+                                }
+                            }, enabled = !busy && pastedText.isNotBlank())
+                        }
+                    }
+                }
+            }
         }
     }
     preview?.let { draft ->
