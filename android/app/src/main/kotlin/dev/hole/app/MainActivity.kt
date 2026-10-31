@@ -71,10 +71,12 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private var detailRequest by mutableStateOf(0)
+    private var startRequest by mutableStateOf(0)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (intent.getBooleanExtra("open_details", false)) detailRequest++
+        if (intent.getBooleanExtra("request_start", false)) startRequest++
         setContent {
             val model: MainViewModel = viewModel()
             val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -94,7 +96,7 @@ class MainActivity : ComponentActivity() {
                 dynamic = configState.config.usesDynamicColor(),
                 palette = dev.hole.app.config.ThemePalette.fromValue(configState.config.materialPalette),
             ) {
-                AppRoot(model, snapshot, configState, commandError, detailRequest)
+                AppRoot(model, snapshot, configState, commandError, detailRequest, startRequest)
             }
         }
     }
@@ -103,6 +105,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getBooleanExtra("open_details", false)) detailRequest++
+        if (intent.getBooleanExtra("request_start", false)) startRequest++
     }
 
     override fun onResume() {
@@ -123,6 +126,7 @@ private fun AppRoot(
     configState: ConfigUiState,
     commandError: String?,
     detailRequest: Int,
+    startRequest: Int,
 ) {
     var backStack by rememberSaveable { mutableStateOf(listOf("home")) }
     val route = backStack.last()
@@ -231,6 +235,9 @@ private fun AppRoot(
                 }
             }
         }
+    }
+    LaunchedEffect(startRequest, configState.loaded) {
+        if (startRequest > 0 && configState.loaded) onToggleRun(true)
     }
 
     val requestVoicePermission: () -> Unit = {

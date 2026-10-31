@@ -18,12 +18,18 @@ import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /** A user-enabled visible overlay, independent of forwarding and microphone use. */
 class FloatingBallService : Service() {
     private val preferences by lazy { FloatingBallPreferences(this) }
     private val ball by lazy { FloatingBallWindow(this, preferences) }
     private val handler = Handler(Looper.getMainLooper())
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var destroyed = false
     private val permissionWatcher = AppOpsManager.OnOpChangedListener { _, _ ->
         handler.post {
@@ -39,6 +45,11 @@ class FloatingBallService : Service() {
         getSystemService(AppOpsManager::class.java).startWatchingMode(
             AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, packageName, permissionWatcher,
         )
+        serviceScope.launch {
+            FloatingBallStateStore.snapshot.collect { snapshot ->
+                ball.updateSnapshot(snapshot)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -59,6 +70,7 @@ class FloatingBallService : Service() {
                 .addAction(0, "关闭悬浮球", stop).build()
             val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
             ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, type)
+            ball.updateSnapshot(FloatingBallStateStore.snapshot.value)
             ball.show()
         } catch (_: RuntimeException) {
             disable()
@@ -88,6 +100,7 @@ class FloatingBallService : Service() {
         getSystemService(AppOpsManager::class.java).stopWatchingMode(permissionWatcher)
         handler.removeCallbacksAndMessages(null)
         ball.close()
+        serviceScope.cancel()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

@@ -99,6 +99,11 @@ open class EngineService : Service() {
             },
         )
         scope.launch {
+            FloatingBallStateStore.panelExpanded.collect { expanded ->
+                setUiVisible(FloatingBallStateStore, expanded)
+            }
+        }
+        scope.launch {
             var core: CoreController? = null
             try {
                 core = createCore()
@@ -113,7 +118,7 @@ open class EngineService : Service() {
                 }
                 loaded.snapshots.collect { snapshot ->
                     withContext(Dispatchers.Main.immediate) {
-                        mutableState.value = snapshot.copy(runRequested = requested)
+                        publishState(snapshot.copy(runRequested = requested))
                         recoveryLock.update(requested && snapshot.signalState != "joined")
                         runCatching { updateNotification(mutableState.value) }
                     }
@@ -122,10 +127,10 @@ open class EngineService : Service() {
                 throw cancelled
             } catch (failure: Throwable) {
                 ready.completeExceptionally(failure)
-                mutableState.value = CoreSnapshot.failure(
+                publishState(CoreSnapshot.failure(
                     if (failure is LinkageError) "native_load_failed" else "bridge_failed",
                     describeFault(failure),
-                ).copy(runRequested = requested)
+                ).copy(runRequested = requested))
                 recoveryLock.update(false)
             } finally {
                 ready.cancel()
@@ -178,7 +183,7 @@ open class EngineService : Service() {
                 requested = false
                 epoch.incrementAndGet() // Invalidate pending start/config loads immediately.
                 pendingCommand?.cancel()
-                mutableState.value = mutableState.value.copy(runRequested = false, engineState = "stopping")
+                publishState(mutableState.value.copy(runRequested = false, engineState = "stopping"))
                 recoveryLock.update(false)
                 commands.trySend(Command.Stop())
             }
@@ -191,7 +196,7 @@ open class EngineService : Service() {
     private fun requestStart() {
         runStore.setRequested(true)
         requested = true
-        mutableState.value = mutableState.value.copy(runRequested = true)
+        publishState(mutableState.value.copy(runRequested = true))
         startForegroundCompat() // Always before disk/JNI/network work.
         commands.trySend(Command.Start(epoch.incrementAndGet()))
     }
@@ -255,7 +260,7 @@ open class EngineService : Service() {
             epoch.incrementAndGet()
             pendingCommand?.cancel()
             recoveryLock.update(false)
-            mutableState.value = mutableState.value.copy(runRequested = false)
+            publishState(mutableState.value.copy(runRequested = false))
         }
         val completion = CompletableDeferred<Unit>()
         commands.send(Command.Stop(completion))
@@ -310,10 +315,16 @@ open class EngineService : Service() {
     override fun onDestroy() {
         requested = false
         epoch.incrementAndGet()
+        setUiVisible(FloatingBallStateStore, false)
         recoveryLock.close()
         commands.close()
         scope.cancel()
         super.onDestroy()
+    }
+
+    private fun publishState(snapshot: CoreSnapshot) {
+        mutableState.value = snapshot
+        FloatingBallStateStore.publish(snapshot)
     }
 
     companion object {

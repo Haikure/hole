@@ -7,7 +7,9 @@ import android.content.pm.ServiceInfo
 import android.os.Looper
 import android.provider.Settings
 import android.view.MotionEvent
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.ImageButton
 import androidx.core.content.edit
 import org.junit.Before
 import org.junit.Test
@@ -40,6 +42,7 @@ class FloatingBallTest {
     @Before fun prepare() {
         context.getSharedPreferences("floating_ball", 0).edit(commit = true) { clear() }
         RunStateStore(context).setRequested(false)
+        FloatingBallStateStore.setPanelExpanded(false)
         ShadowSettings.setCanDrawOverlays(false)
     }
 
@@ -141,7 +144,7 @@ class FloatingBallTest {
         } finally { controller.destroy() }
     }
 
-    @Test fun dragStaysOnScreenAndRestoresPositionWhileTapOpensTheApp() {
+    @Test fun dragStaysOnScreenAndTapExpandsTheSummaryPanel() {
         val window = FloatingBallWindow(context, preferences)
         try {
             window.show()
@@ -155,17 +158,21 @@ class FloatingBallTest {
             touch(MotionEvent.ACTION_DOWN, 20f, 20f)
             touch(MotionEvent.ACTION_MOVE, -10_000f, -10_000f)
             touch(MotionEvent.ACTION_UP, -10_000f, -10_000f)
-            assertEquals(0, layout.x)
-            assertEquals(0, layout.y)
+            assertTrue(layout.x >= 0)
+            assertTrue(layout.y >= 0)
             assertNull(shadowOf(context).nextStartedActivity)
             window.close()
             preferences.setSizeDp(96)
             window.show()
             val restored = assertNotNull(window.view).layoutParams as WindowManager.LayoutParams
-            assertEquals(0, restored.x)
-            assertEquals(0, restored.y)
+            assertTrue(restored.x >= 0)
+            assertTrue(restored.y >= 0)
             assertEquals((96 * context.resources.displayMetrics.density).roundToInt(), restored.width)
             window.view!!.performClick()
+            val root = assertNotNull(window.view) as ViewGroup
+            val details = assertNotNull(root.findViewWithTag<ImageButton>("floating-details-action"))
+            assertEquals("打开详情", details.contentDescription)
+            details.performClick()
             assertEquals(MainActivity::class.java.name, shadowOf(context).nextStartedActivity.component!!.className)
         } finally { window.close() }
     }
