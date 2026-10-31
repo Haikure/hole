@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -178,6 +179,65 @@ func TestHoleThreeDevices(t *testing.T) {
 				}
 				if !measured {
 					t.Fatalf("Hole QUIC RTT was not measured: %+v", snapshot.PeerTransports)
+				}
+			}
+			// A fatal Hole I/O error must replace the shared fixed listener. The
+			// worker reconnect then issues fresh transport generations and grants.
+			beforeFailure := b.Snapshot().PeerTransports[0].Generation
+			relay.mu.Lock()
+			relayCoordinator := relay.run.ice
+			relay.mu.Unlock()
+			relayCoordinator.fixedMu.Lock()
+			oldFixed := relayCoordinator.fixed
+			relayCoordinator.fixedMu.Unlock()
+			if oldFixed == nil || oldFixed.relay == nil {
+				t.Fatal("relay fixed listener is unavailable")
+			}
+			oldFixed.relay.reportFatal(errors.New("injected Hole forwarder failure"))
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				relayCoordinator.fixedMu.Lock()
+				current := relayCoordinator.fixed
+				relayCoordinator.fixedMu.Unlock()
+				if current != nil && current != oldFixed {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("shared fixed listener was not replaced: %+v", relay.Snapshot())
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			failureEvent := false
+			eventDeadline := time.After(5 * time.Second)
+			for !failureEvent {
+				select {
+				case event := <-relay.Events():
+					if event.Kind == "relay" && event.State == "restarting" && event.Error != nil && event.Error.Code == "hole_forwarder_failed" {
+						failureEvent = true
+					}
+				case <-eventDeadline:
+					t.Fatal("missing Hole forwarder failure event")
+				}
+			}
+			waitSnapshotWithin(t, b, 20*time.Second, func(s Snapshot) bool { return active(s) && s.PeerTransports[0].Generation > beforeFailure })
+			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+			_, _ = c.Write(payload)
+			got = make([]byte, len(payload))
+			if _, err = io.ReadFull(c, got); err != nil || string(got) != string(payload) {
+				t.Fatal("TCP session lost across forwarder recovery", err)
+			}
+			for _, port := range []int{relayExpose, alphaExpose, reverseExpose} {
+				conn, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+				if err != nil {
+					t.Fatal("fixed service after forwarder recovery", err)
+				}
+				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				_, _ = conn.Write(payload)
+				got := make([]byte, len(payload))
+				_, err = io.ReadFull(conn, got)
+				conn.Close()
+				if err != nil || string(got) != string(payload) {
+					t.Fatal("fixed service bytes after forwarder recovery", err)
 				}
 			}
 			// Preserve the existing application socket across endpoint and relay

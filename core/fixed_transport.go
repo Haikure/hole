@@ -57,6 +57,55 @@ func (c *iceCoordinator) closeFixed() {
 	}
 }
 
+func (c *iceCoordinator) watchFixedRelay(f *fixedListener) {
+	if f.relay == nil {
+		return
+	}
+	failure := false
+	select {
+	case <-f.relay.fatalFailure:
+		failure = true
+	case <-f.ctx.Done():
+		select {
+		case <-f.relay.fatalFailure:
+			failure = true
+		default:
+			return
+		}
+	case <-c.ctx.Done():
+		select {
+		case <-f.relay.fatalFailure:
+			failure = true
+		default:
+			return
+		}
+	}
+	if !failure {
+		return
+	}
+	c.fixedMu.Lock()
+	if c.fixed != f {
+		c.fixedMu.Unlock()
+		return
+	}
+	c.fixed = nil
+	c.fixedMu.Unlock()
+
+	f.close()
+	if c.ctx.Err() != nil {
+		return
+	}
+	if c.emit != nil {
+		c.emit(Event{Kind: "relay", State: "restarting", Error: &Fault{
+			Code: "hole_forwarder_failed", Message: "Hole 转发器发生不可恢复错误，正在重建共享固定入口",
+		}})
+	}
+	select {
+	case c.reset <- struct{}{}:
+	default:
+	}
+}
+
 func (c *iceCoordinator) configureFixed(r Request) error {
 	c.fixedMu.Lock()
 	f := c.fixed
@@ -135,6 +184,9 @@ func (c *iceCoordinator) configureFixed(r Request) error {
 			}
 		}
 	}()
+	if relay != nil {
+		go c.watchFixedRelay(f)
+	}
 	return nil
 }
 

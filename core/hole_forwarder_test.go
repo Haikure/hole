@@ -188,6 +188,123 @@ func TestHolePartialBatchAndFairness(t *testing.T) {
 		}
 	}
 }
+
+type fatalHoleBackend struct {
+	readErr  error
+	writeErr error
+}
+
+func (*fatalHoleBackend) Name() string { return "fatal-test" }
+func (b *fatalHoleBackend) ReadBatch([]*holeFrame) (int, error) {
+	return 0, b.readErr
+}
+func (b *fatalHoleBackend) WriteBatch([]*holeFrame) (int, error) {
+	return 0, b.writeErr
+}
+
+func manualHoleForwarder(t testing.TB, backend forwardingBackend) *holeForwarder {
+	t.Helper()
+	socket, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &holeForwarder{
+		conn:         socket,
+		backend:      backend,
+		ctx:          ctx,
+		cancel:       cancel,
+		routes:       map[[16]byte]*holeRoute{},
+		grants:       map[string]holeGrantMark{},
+		free:         make(chan *holeFrame, holeBatchSize+8),
+		normal:       make(chan *holeFrame, 4),
+		control:      make(chan *holeFrame, holeBatchSize),
+		readChanged:  make(chan struct{}),
+		wake:         make(chan struct{}, 1),
+		fatalFailure: make(chan error, 1),
+	}
+	for i := 0; i < cap(f.free); i++ {
+		f.free <- new(holeFrame)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return f
+}
+
+func TestHoleForwarderFatalReadNotifiesOnceAndReclaimsFrames(t *testing.T) {
+	f := manualHoleForwarder(t, &fatalHoleBackend{readErr: errors.New("read failure"), writeErr: net.ErrClosed})
+	f.workers.Add(2)
+	go f.receive()
+	go f.forward()
+	select {
+	case err := <-f.fatalFailure:
+		if err.Error() != "read failure" {
+			t.Fatalf("unexpected fatal error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fatal read was not reported")
+	}
+	f.workers.Wait()
+	if len(f.free) != cap(f.free) {
+		t.Fatalf("read failure leaked frames: %d/%d", len(f.free), cap(f.free))
+	}
+	f.reportFatal(errors.New("second failure"))
+	select {
+	case err := <-f.fatalFailure:
+		t.Fatalf("fatal failure reported more than once: %v", err)
+	default:
+	}
+}
+
+func TestHoleForwarderFatalWriteNotifiesAndStopsWorker(t *testing.T) {
+	f := manualHoleForwarder(t, &fatalHoleBackend{writeErr: errors.New("write failure")})
+	auth, err := newHoleAuth(testHoleGrant())
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := <-f.free
+	frame.n = 100
+	route := &holeRoute{auth: auth, until: time.Now().Add(time.Minute).UnixMilli(), size: 1}
+	route.queue[0] = frame
+	f.routes[auth.route] = route
+	f.order = []*holeRoute{route}
+	f.workers.Add(1)
+	go f.forward()
+	f.wake <- struct{}{}
+	select {
+	case err := <-f.fatalFailure:
+		if err.Error() != "write failure" {
+			t.Fatalf("unexpected fatal error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fatal write was not reported")
+	}
+	f.workers.Wait()
+	if len(f.free) != cap(f.free) {
+		t.Fatalf("write failure leaked frames: %d/%d", len(f.free), cap(f.free))
+	}
+}
+
+func TestHoleForwarderCloseDoesNotReportFatal(t *testing.T) {
+	f := newHoleForwarder(context.Background(), mustListenPacket(t, "udp4"), RelayServeConfig{MaxPairs: 1})
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-f.fatalFailure:
+		t.Fatalf("active close reported fatal error: %v", err)
+	default:
+	}
+}
+
+func mustListenPacket(t testing.TB, network string) net.PacketConn {
+	t.Helper()
+	socket, err := net.ListenPacket(network, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return socket
+}
+
 func TestHoleInvalidExpiredAndReplacedGrant(t *testing.T) {
 	socket, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {

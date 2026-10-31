@@ -198,6 +198,10 @@ func (c *iceCoordinator) run() error {
 		}
 		select {
 		case <-c.reset:
+			// A reset may arrive just after configureFixed inspected the current
+			// listener. Re-enter the loop so a fatal fixed relay is rebuilt before
+			// the next signaling connection starts.
+			continue
 		default:
 		}
 		started := time.Now()

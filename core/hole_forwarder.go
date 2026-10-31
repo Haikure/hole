@@ -59,6 +59,8 @@ type holeForwarder struct {
 	wake         chan struct{}
 	workers      sync.WaitGroup
 	once         sync.Once
+	fatalFailure chan error
+	fatalOnce    sync.Once
 }
 
 func newHoleForwarder(ctx context.Context, conn net.PacketConn, config RelayServeConfig) *holeForwarder {
@@ -67,7 +69,7 @@ func newHoleForwarder(ctx context.Context, conn net.PacketConn, config RelayServ
 	if limit == 0 {
 		limit = 64
 	}
-	f := &holeForwarder{conn: conn, backend: newForwardingBackend(conn), ctx: ctx, cancel: cancel, limit: limit, routes: map[[16]byte]*holeRoute{}, free: make(chan *holeFrame, limit*holePairQueue+64+3*holeBatchSize), normal: make(chan *holeFrame, 64), wake: make(chan struct{}, 1)}
+	f := &holeForwarder{conn: conn, backend: newForwardingBackend(conn), ctx: ctx, cancel: cancel, limit: limit, routes: map[[16]byte]*holeRoute{}, free: make(chan *holeFrame, limit*holePairQueue+64+3*holeBatchSize), normal: make(chan *holeFrame, 64), wake: make(chan struct{}, 1), fatalFailure: make(chan error, 1)}
 	f.grants = make(map[string]holeGrantMark)
 	f.control = make(chan *holeFrame, holeBatchSize)
 	f.readChanged = make(chan struct{})
@@ -82,6 +84,21 @@ func newHoleForwarder(ctx context.Context, conn net.PacketConn, config RelayServ
 	go f.forward()
 	return f
 }
+
+func (f *holeForwarder) reportFatal(err error) {
+	if err == nil || f.ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+		return
+	}
+	f.fatalOnce.Do(func() {
+		if f.fatalFailure != nil {
+			f.fatalFailure <- err
+		}
+		if f.cancel != nil {
+			f.cancel()
+		}
+	})
+}
+
 func (f *holeForwarder) install(m iceSignalMessage) error {
 	now := time.Now()
 	if m.Hole == nil || m.LeaseUntil <= now.UnixMilli() || m.LeaseUntil > now.Add(11*time.Minute).UnixMilli() || m.Hole.Generation != m.TransportGeneration {
@@ -230,6 +247,7 @@ func (f *holeForwarder) receive() {
 			for _, frame := range frames {
 				f.free <- frame
 			}
+			f.reportFatal(err)
 			return
 		}
 		for i, frame := range frames {
@@ -391,6 +409,9 @@ func (f *holeForwarder) forward() {
 				if err != nil || count == 0 {
 					f.stats.QueueDrops += uint64(n - sent)
 					f.mu.Unlock()
+					if err != nil {
+						f.reportFatal(err)
+					}
 					break
 				}
 				f.mu.Unlock()
