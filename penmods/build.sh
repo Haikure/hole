@@ -14,7 +14,7 @@ source "$ROOT/scripts/build-env.sh"
 
 # Keep the packaged core version and build identity equal to CLI and Android.
 # Explicit targets override any inherited desktop build settings.
-"$ROOT/build.sh" desktop-core --os linux --arch arm64 --output "$HERE/build"
+"$ROOT/build.sh" core --os linux --arch arm64 --output "$HERE/build"
 
 (
     cd "$HERE"
@@ -31,7 +31,7 @@ fi
 rm -rf "$OUT"
 mkdir -p "$OUT"
 cp "$PLUGIN_SO" "$OUT/libhole_plugin.so"
-cp "$HERE/build/desktop-core/hole-desktop-core-linux-arm64" "$OUT/hole-desktop-core"
+cp "$HERE/build/core/hole-core-linux-arm64" "$OUT/hole-core"
 cp "$HERE/metadata.json" "$OUT/metadata.json"
 cp "$HERE/icon.png" "$OUT/icon.png"
 cp "$HERE/Main.qml" "$OUT/Main.qml"
@@ -39,7 +39,7 @@ cp "$HERE/SettingsPage.qml" "$OUT/SettingsPage.qml"
 cp "$HERE/ConfigPage.qml" "$OUT/ConfigPage.qml"
 rm -rf "$OUT/components"
 cp -R "$HERE/components" "$OUT/components"
-chmod 0755 "$OUT/libhole_plugin.so" "$OUT/hole-desktop-core"
-python3 "$ROOT/scripts/build_meta.py" checksum "$OUT/hole-desktop-core"
+chmod 0755 "$OUT/libhole_plugin.so" "$OUT/hole-core"
+python3 "$ROOT/scripts/build_meta.py" checksum "$OUT/hole-core"
 
 printf 'Plugin package: %s\n' "$OUT"

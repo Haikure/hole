@@ -342,7 +342,7 @@ fn fail_all(shared: &Shared, reason: &str) {
 }
 
 /// 定位与 GUI 同目录、匹配当前系统与架构的宿主可执行文件。
-pub fn locate_bridge() -> Result<PathBuf, String> {
+pub fn locate_core() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("无法确定 GUI 路径：{e}"))?;
     let dir = exe.parent().ok_or("GUI 所在目录不可用")?.to_path_buf();
     let os = match std::env::consts::OS {
@@ -356,24 +356,24 @@ pub fn locate_bridge() -> Result<PathBuf, String> {
         other => other,
     };
     let ext = if cfg!(windows) { ".exe" } else { "" };
-    let name = format!("hole-desktop-core-{os}-{arch}{ext}");
-    let mut candidates = vec![dir.join(&name), dir.join(format!("hole-desktop-core{ext}"))];
-    if let Ok(custom) = std::env::var("HOLE_DESKTOP_CORE") {
+    let name = format!("hole-core-{os}-{arch}{ext}");
+    let mut candidates = vec![dir.join(&name), dir.join(format!("hole-core{ext}"))];
+    if let Ok(custom) = std::env::var("HOLE_CORE") {
         candidates.insert(0, PathBuf::from(custom));
     }
-    // 开发期：仓库 dist/desktop-core/ 下的产物。
+    // 开发期：仓库 dist/core/ 下的产物。
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        candidates.push(PathBuf::from(manifest).join("../../dist/desktop-core").join(&name));
+        candidates.push(PathBuf::from(manifest).join("../../dist/core").join(&name));
     }
-    if let Some(repo) = dir.ancestors().find(|a| a.join("dist/desktop-core").is_dir()) {
-        candidates.push(repo.join("dist/desktop-core").join(&name));
+    if let Some(repo) = dir.ancestors().find(|a| a.join("dist/core").is_dir()) {
+        candidates.push(repo.join("dist/core").join(&name));
     }
     for c in candidates {
         if c.is_file() {
             return c.canonicalize().map_err(|e| e.to_string());
         }
     }
-    Err(format!("未找到核心宿主 {name}；请先执行 ./build.sh desktop-core 或设置 HOLE_DESKTOP_CORE"))
+    Err(format!("未找到核心宿主 {name}；请先执行 ./build.sh core 或设置 HOLE_CORE"))
 }
 
 #[cfg(test)]

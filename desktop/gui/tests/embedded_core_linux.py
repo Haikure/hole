@@ -40,7 +40,7 @@ def wait_for_core(gui):
                 image = os.readlink(f"/proc/{pid}/exe")
             except FileNotFoundError:
                 continue
-            if image.startswith("/memfd:hole-desktop-core"):
+            if image.startswith("/memfd:hole-core"):
                 return int(pid)
             raise AssertionError(f"GUI launched a disk executable instead of memfd: {image}")
         time.sleep(0.05)
@@ -59,7 +59,7 @@ def main():
             shots = root / "shots"
             shots.mkdir()
             env = dict(os.environ, SLINT_BACKEND="winit-software", HOLE_DESKTOP_CONFIG_DIR=str(config), HOLE_DESKTOP_SCREENSHOT_DIR=str(shots))
-            env.pop("HOLE_DESKTOP_CORE", None)
+            env.pop("HOLE_CORE", None)
             env.pop("HOLE_EMBED_CORE", None)
             env.pop("CARGO_MANIFEST_DIR", None)
             process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -67,7 +67,7 @@ def main():
             try:
                 core_pid = wait_for_core(process)
                 assert not list(root.rglob("*core*.exe"))
-                assert not list(root.rglob("hole-desktop-core*"))
+                assert not list(root.rglob("hole-core*"))
                 if crash:
                     process.kill()
                 _, error = process.communicate(timeout=30)

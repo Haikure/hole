@@ -8,7 +8,7 @@ import (
 
 // Inherited stdio may be synchronous OS handles. os.File.Close need not
 // interrupt a Read/Write already blocked on such a handle (including stdin on
-// Linux and anonymous pipes on Windows). At this *process entry point* only,
+// Linux and anonymous pipes on Windows). At this *core process entry point* only,
 // isolate each direction behind one worker so cancellation can join the bridge
 // and cleanly stop Core before main calls os.Exit. A pending raw syscall then
 // ends with the process; the reusable desktop.Serve API still joins all of its

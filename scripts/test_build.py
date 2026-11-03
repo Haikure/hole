@@ -153,14 +153,14 @@ class BuildTests(unittest.TestCase):
         self.assertIn("-trimpath", build["args"])
         version_flag = next(arg for arg in build["args"] if arg.startswith("-ldflags="))
         self.assertTrue(version_flag.startswith("-ldflags=-s -w -X hole/core.CoreVersion="))
-        self.assertEqual("./cmd/hole-desktop-core", build["args"][-1])
+        self.assertEqual("./cmd/hole-core", build["args"][-1])
         for relative in ("Main.qml", "SettingsPage.qml", "ConfigPage.qml", "metadata.json", "icon.png",
                          *[str(p.relative_to(ROOT / "penmods")) for p in (ROOT / "penmods/components").glob("*") if p.is_file()]):
             self.assertEqual((self.root / "penmods" / relative).read_bytes(), (output / relative).read_bytes())
         self.assertEqual("release-plugin-fixture", (output / "libhole_plugin.so").read_text())
-        self.assertTrue(os.access(output / "hole-desktop-core", os.X_OK))
-        checksum = (output / "hole-desktop-core.sha256").read_text().split()
-        self.assertEqual([hashlib.sha256((output / "hole-desktop-core").read_bytes()).hexdigest(), "hole-desktop-core"], checksum)
+        self.assertTrue(os.access(output / "hole-core", os.X_OK))
+        checksum = (output / "hole-core.sha256").read_text().split()
+        self.assertEqual([hashlib.sha256((output / "hole-core").read_bytes()).hexdigest(), "hole-core"], checksum)
 
         (self.root / "core/core.go").write_text("updated core fixture\n")
         (self.root / "penmods/Main.qml").write_text("updated QML fixture\n")
@@ -179,7 +179,7 @@ class BuildTests(unittest.TestCase):
         self.prepare_penmods()
         output = self.root / "dist/penmods/hole_plugin"
         output.mkdir(parents=True)
-        core = output / "hole-desktop-core"
+        core = output / "hole-core"
         core.write_text("previous-release")
         for failure in ("FAIL_GO", "FAIL_XMAKE"):
             with self.subTest(failure=failure):
@@ -239,11 +239,11 @@ class BuildTests(unittest.TestCase):
         self.assertTrue((self.root / "dist/cli/hole-linux-arm64").is_file())
         self.invoke("cli", "--arch", "invalid", success=False)
 
-    def test_desktop_core_is_opt_in_and_has_no_android_or_qt_requirement(self):
+    def test_core_is_opt_in_and_has_no_android_or_qt_requirement(self):
         self.toolchain.write_text("exit 93\n")
         (self.root / "signing.env").write_text("exit 94\n")
-        self.invoke("desktop-core", "-t", "desktop-core", "--os", "windows", "--arch", "amd64", "--offline")
-        binary = self.root / "dist/desktop-core/hole-desktop-core-windows-amd64.exe"
+        self.invoke("core", "-t", "core", "--os", "windows", "--arch", "amd64", "--offline")
+        binary = self.root / "dist/core/hole-core-windows-amd64.exe"
         self.assertTrue(binary.is_file())
         self.assertTrue(binary.with_name(binary.name + ".sha256").is_file())
         self.assertFalse((self.root / "dist/cli").exists())
@@ -251,7 +251,7 @@ class BuildTests(unittest.TestCase):
         builds = [call for call in self.calls("go") if call["args"][0] == "build"]
         self.assertEqual(1, len(builds))
         build = builds[0]
-        self.assertEqual("./cmd/hole-desktop-core", build["args"][-1])
+        self.assertEqual("./cmd/hole-core", build["args"][-1])
         self.assertIn("-trimpath", build["args"])
         self.assertIn("-mod=readonly", build["args"])
         self.assertIn("-buildvcs=false", build["args"])
@@ -259,56 +259,56 @@ class BuildTests(unittest.TestCase):
         self.assertEqual("0", build["env"]["CGO_ENABLED"])
         self.assertEqual("off", build["env"]["GOPROXY"])
 
-    def test_desktop_build_embeds_matching_bridge_and_packages_one_executable(self):
+    def test_desktop_build_embeds_matching_core_and_packages_one_executable(self):
         self.toolchain.write_text("exit 93\n")
         (self.root / "signing.env").write_text("exit 94\n")
         self.invoke("desktop", "--offline")
         package = self.root / "dist/desktop/linux-amd64"
         gui = package / "hole-desktop"
-        bridge = self.root / "dist/desktop-core/hole-desktop-core-linux-amd64"
+        core_binary = self.root / "dist/core/hole-core-linux-amd64"
         self.assertEqual("release-gui-fixture", gui.read_text())
         self.assertTrue(os.access(gui, os.X_OK))
-        self.assertTrue(os.access(bridge, os.X_OK))
+        self.assertTrue(os.access(core_binary, os.X_OK))
         self.assertEqual({"hole-desktop", "hole-desktop.sha256"}, {p.name for p in package.iterdir()})
-        for binary in (gui, bridge):
+        for binary in (gui, core_binary):
             checksum = binary.with_name(binary.name + ".sha256").read_text().split()
             self.assertEqual([hashlib.sha256(binary.read_bytes()).hexdigest(), binary.name], checksum)
         builds = [call for call in self.calls("go") if call["args"][0] == "build"]
-        self.assertEqual(["./cmd/hole-desktop-core"], [build["args"][-1] for build in builds])
+        self.assertEqual(["./cmd/hole-core"], [build["args"][-1] for build in builds])
         cargo = self.calls("cargo")[0]
         self.assertEqual(["build", "--release", "--locked", "--features", "embedded-core", "--offline"], cargo["args"])
-        self.assertEqual(str(bridge), cargo["env"]["HOLE_EMBED_CORE"])
+        self.assertEqual(str(core_binary), cargo["env"]["HOLE_EMBED_CORE"])
         self.assertEqual(str(self.root / ".cache/cargo-home"), cargo["env"]["CARGO_HOME"])
         self.assertIsNone(cargo["env"]["GOOS"])
         self.assertIsNone(cargo["env"]["GOARCH"])
         self.assertFalse(self.calls("gradlew"))
 
     def test_desktop_cross_target_and_combined_target_are_deduplicated(self):
-        self.invoke("desktop", "desktop-core", "--os", "windows", "--arch", "amd64")
+        self.invoke("desktop", "core", "--os", "windows", "--arch", "amd64")
         package = self.root / "dist/desktop/windows-amd64"
         self.assertTrue((package / "hole-desktop.exe").is_file())
-        self.assertFalse((package / "hole-desktop-core-windows-amd64.exe").exists())
+        self.assertFalse((package / "hole-core-windows-amd64.exe").exists())
         builds = [call for call in self.calls("go") if call["args"][0] == "build"]
         self.assertEqual(1, len(builds))
         self.assertEqual("windows", builds[0]["env"]["GOOS"])
         cargo = self.calls("cargo")[0]
         self.assertEqual("x86_64-pc-windows-gnu", cargo["args"][cargo["args"].index("--target") + 1])
-        self.assertEqual(str(self.root / "dist/desktop-core/hole-desktop-core-windows-amd64.exe"), cargo["env"]["HOLE_EMBED_CORE"])
+        self.assertEqual(str(self.root / "dist/core/hole-core-windows-amd64.exe"), cargo["env"]["HOLE_EMBED_CORE"])
 
     def test_desktop_replaces_old_sidecar_package_and_scopes_embedded_input(self):
         package = self.root / "dist/desktop/linux-amd64"
         package.mkdir(parents=True)
-        (package / "hole-desktop-core-linux-amd64").write_text("old sidecar")
+        (package / "hole-core-linux-amd64").write_text("old sidecar")
         self.invoke("desktop", "android", HOLE_EMBED_CORE="/wrong/old-core")
         self.assertEqual({"hole-desktop", "hole-desktop.sha256"}, {p.name for p in package.iterdir()})
-        self.assertEqual(str(self.root / "dist/desktop-core/hole-desktop-core-linux-amd64"), self.calls("cargo")[0]["env"]["HOLE_EMBED_CORE"])
+        self.assertEqual(str(self.root / "dist/core/hole-core-linux-amd64"), self.calls("cargo")[0]["env"]["HOLE_EMBED_CORE"])
         # The build's chosen input is local to Cargo and doesn't overwrite the caller's environment.
         self.assertEqual("/wrong/old-core", self.calls("gradlew")[0]["env"]["HOLE_EMBED_CORE"])
 
     def test_desktop_custom_output_embeds_absolute_path_with_spaces(self):
         output = self.root / "single file output"
         self.invoke("desktop", "--output", str(output))
-        self.assertEqual(str(output / "desktop-core/hole-desktop-core-linux-amd64"), self.calls("cargo")[0]["env"]["HOLE_EMBED_CORE"])
+        self.assertEqual(str(output / "core/hole-core-linux-amd64"), self.calls("cargo")[0]["env"]["HOLE_EMBED_CORE"])
         self.assertTrue((output / "desktop/linux-amd64/hole-desktop").is_file())
 
     def test_desktop_rejects_unsupported_target_before_building(self):
@@ -330,30 +330,30 @@ class BuildTests(unittest.TestCase):
                 self.invoke(target)
                 builds = [call for call in self.calls("go") if call["args"][0] == "build"]
                 self.assertEqual(["."], [build["args"][-1] for build in builds])
-                self.assertFalse((self.root / "dist/desktop-core").exists())
+                self.assertFalse((self.root / "dist/core").exists())
                 self.assertFalse((self.root / "dist/desktop").exists())
                 self.assertFalse(self.calls("cargo"))
 
-    def test_desktop_core_can_combine_with_all_without_leaking_cross_settings(self):
-        self.invoke("desktop-core", "all", "desktop-core", "--os", "windows", "--arch", "amd64")
+    def test_core_can_combine_with_all_without_leaking_cross_settings(self):
+        self.invoke("core", "all", "core", "--os", "windows", "--arch", "amd64")
         builds = [call for call in self.calls("go") if call["args"][0] == "build"]
-        self.assertEqual([".", "./cmd/hole-desktop-core"], [build["args"][-1] for build in builds])
+        self.assertEqual([".", "./cmd/hole-core"], [build["args"][-1] for build in builds])
         self.assertEqual(1, len(self.calls("gradlew")))
         for key in ("GOOS", "GOARCH", "CGO_ENABLED"):
             self.assertIsNone(self.calls("gradlew")[0]["env"][key])
 
-    def test_desktop_core_output_and_failed_build_preserve_existing_artifacts(self):
+    def test_core_output_and_failed_build_preserve_existing_artifacts(self):
         output = self.root / "desktop output"
-        self.invoke("desktop-core", "--output", str(output), GOOS="linux", GOARCH="arm64")
-        binary = output / "desktop-core/hole-desktop-core-linux-arm64"
+        self.invoke("core", "--output", str(output), GOOS="linux", GOARCH="arm64")
+        binary = output / "core/hole-core-linux-arm64"
         self.assertTrue(binary.is_file())
         previous = binary.read_bytes()
         checksum = binary.with_name(binary.name + ".sha256").read_bytes()
-        self.invoke("desktop-core", "--output", str(output), success=False,
+        self.invoke("core", "--output", str(output), success=False,
                     GOOS="linux", GOARCH="arm64", FAIL_GO="1")
         self.assertEqual(previous, binary.read_bytes())
         self.assertEqual(checksum, binary.with_name(binary.name + ".sha256").read_bytes())
-        self.invoke("desktop-core", "--arch", "invalid", success=False)
+        self.invoke("core", "--arch", "invalid", success=False)
 
     def test_combined_android_targets_are_release_and_deduplicated(self):
         self.invoke("phone", "wear", "-t", "android", "wear")
@@ -431,7 +431,7 @@ class BuildTests(unittest.TestCase):
         previous = module.core_build_id()
         (self.root / "core/core_test.go").write_text("excluded test\n")
         self.assertEqual(previous, module.core_build_id())
-        for relative in ("desktop/bridge.go", "cmd/hole-desktop-core/main.go", "desktop/gui/Main.qml"):
+        for relative in ("desktop/bridge.go", "cmd/hole-core/main.go", "desktop/gui/Main.qml"):
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("desktop-only fixture\n")

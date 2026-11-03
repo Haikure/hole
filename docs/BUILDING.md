@@ -5,7 +5,7 @@
 
 ## 工具链
 
-CLI / `desktop-core` 需要 Bash、Python 3 和 Go 1.27.3；桌面桥接不需要 Qt、Slint 或 CGo。
+CLI / `core` 需要 Bash、Python 3 和 Go 1.27.3；独立核心宿主不需要 Qt、Slint 或 CGo。
 完整 `desktop` 目标还需要 Rust stable / Cargo。桌面 GUI 支持 Linux、Windows 的 AMD64 / ARM64；
 Linux 桌面 GUI 与语音设备适配通过 Slint / fontconfig 和 CPAL / ALSA 构建，需要 `pkg-config`、
 Fontconfig 和 ALSA 开发包（Debian / Ubuntu 为 `libfontconfig1-dev`、`libasound2-dev`）；运行环境需系统
@@ -37,7 +37,7 @@ SDK 许可交互确认；`--accept-licenses` 用于显式自动接受。
 
 Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `HOLE_TOOLCHAIN_ENV` 指定其他环境文件，
 或在没有默认文件时直接提供 `PATH`、`JAVA_HOME`、`ANDROID_HOME`。`JDK17_HOME` 可显式选择绑定用 JDK。
-只构建 CLI / `desktop-core` / `desktop` 时不加载 Android 环境，也不要求签名信息。
+只构建 CLI / `core` / `desktop` 时不加载 Android 环境，也不要求签名信息。
 
 ## 命令与参数
 
@@ -45,24 +45,24 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 ./build.sh cli                         # 宿主系统 / 架构
 ./build.sh cli --os linux --arch arm64
 ./build.sh cli --os windows --arch amd64
-./build.sh desktop-core                # 独立 Go stdio 桥接；不构建 GUI
-./build.sh desktop-core --os windows --arch amd64
+./build.sh core                        # 独立 Go stdio 核心宿主；不构建 GUI
+./build.sh core --os windows --arch amd64
 ./build.sh desktop                    # 内嵌匹配架构 Go 核心的单文件 GUI
 ./build.sh desktop --os windows --arch amd64
 ./build.sh android                     # 手机 ARM64
 ./build.sh wear                        # 手表 ARM32 + ARM64
 ./build.sh android wear                # 一次 Gradle 调用构建两种 APK
-./build.sh all                         # CLI + 手机 + 手表，不包含桌面目标
-./build.sh all desktop-core            # 显式组合独立 Go 桥接
+./build.sh all                         # CLI + 手机 + 手表，不包含 core 或 desktop
+./build.sh all core                    # 显式组合独立 Go 核心宿主
 ./build.sh all desktop                 # 显式增加桌面 GUI
 ./build.sh -t cli -t wear --offline
 ```
 
 | 参数 | 含义 |
 | --- | --- |
-| `cli`、`desktop-core`、`desktop`、`android` / `phone`、`wear`、`all` | 位置参数，可组合；重复目标去重，`all` 不包含桌面目标 |
+| `cli`、`core`、`desktop`、`android` / `phone`、`wear`、`all` | 位置参数，可组合；重复目标去重，`all` 不包含 `core` 或 `desktop` |
 | `-t NAME` / `--target NAME` | 等价的目标选项，可重复 |
-| `--os GOOS`、`--arch GOARCH` | 控制 CLI / 桌面目标；优先于 `GOOS` / `GOARCH` 环境变量，其次使用宿主值；交叉构建 GUI 还需对应 Rust target 与 linker |
+| `--os GOOS`、`--arch GOARCH` | 控制 CLI / `core` / `desktop` 目标；优先于 `GOOS` / `GOARCH` 环境变量，其次使用宿主值；交叉构建 GUI 还需对应 Rust target 与 linker |
 | `-o DIR` / `--output DIR` | 交付根目录，默认仓库 `dist/` |
 | `--signing-config FILE` | 签名环境文件，默认仓库 `signing.env` |
 | `--offline` | 只使用已缓存 Go / Cargo / Gradle 依赖；缓存缺项时报告错误 |
@@ -77,10 +77,10 @@ Release 不再上传 `.sha256` / `SHA256SUMS` 校验文件；GitHub Release 页�
 
 - Android 手机 ARM64；
 - `desktop` 的 Linux / Windows AMD64 / ARM64；
-- `desktop-core` 的 Linux / Windows AMD64 / ARM64；
+- `core` 的 Linux / Windows AMD64 / ARM64；
 - `cli` 的 Linux / Windows AMD64 / ARM64。
 
-`type` 可以改为单一目标；`arch` 和 `os` 会筛选 CLI / 桌面矩阵。选择 `android` 时始终只构建手机 ARM64，并忽略 `arch` 和 `os`。每个矩阵任务单独上传一个 Artifact，名称包含目标、系统和架构；Android Artifact 只包含唯一的 `.apk`，不包含 mapping、构建清单或校验和文件。工作流设置 `compression-level: 0`，保留未压缩的文件内容；GitHub 下载接口仍会为 Artifact 提供归档容器。
+`type` 可以改为单一目标；`arch` 和 `os` 会筛选 CLI / `core` / `desktop` 矩阵。选择 `android` 时始终只构建手机 ARM64，并忽略 `arch` 和 `os`。每个矩阵任务单独上传一个 Artifact，名称包含目标、系统和架构；Android Artifact 只包含唯一的 `.apk`，不包含 mapping、构建清单或校验和文件。工作流设置 `compression-level: 0`，保留未压缩的文件内容；GitHub 下载接口仍会为 Artifact 提供归档容器。
 
 Android Release 构建需要在仓库或组织中配置以下 Actions secrets：
 
@@ -91,13 +91,13 @@ Android Release 构建需要在仓库或组织中配置以下 Actions secrets：
 
 ## 版本号
 
-编辑根目录 `versions.json`：`core.version` 是共享核心版本，CLI、独立 `desktop-core` 和 Android AAR 始终使用同一个值；Android 手机与 Wear OS 共用 `frontends.android` 的版本名和版本码。桌面 GUI 与 PenMods 插件各自维护前端版本。
+编辑根目录 `versions.json`：`core.version` 是共享核心版本，CLI、独立核心宿主和 Android AAR 始终使用同一个值；Android 手机与 Wear OS 共用 `frontends.android` 的版本名和版本码。桌面 GUI 与 PenMods 插件各自维护前端版本。
 修改后运行 `python3 scripts/sync_versions.py`，同步 Cargo package/lock 元数据以及 PenMods 的 `xmake.lua` 和 `metadata.json`。Android Gradle 配置直接读取该清单。桌面 GUI 与 PenMods 正式构建会先检查同步状态；也可手动运行 `python3 scripts/sync_versions.py --check`。
 
 核心构建标识由提交标识和共享核心源码/依赖摘要自动生成，和手动维护的核心版本分开记录；Android APK 验证会同时核对核心版本与构建标识。
 
 显式指定的输出目录和配置文件相对调用目录解析；密钥库相对路径固定相对仓库根目录。
-CLI / 桌面桥接的交叉编译变量不传入 Android 绑定。不同目标、系统和架构的产物互不覆盖。
+CLI / 核心宿主 / 桌面的交叉编译变量不传入 Android 绑定。不同目标、系统和架构的产物互不覆盖。
 
 ## 签名
 
@@ -152,8 +152,8 @@ SDK、NDK、JDK、gomobile 可执行文件和签名密钥不是构建缓存，�
 dist/
   cli/hole-<goos>-<goarch>[.exe]
   cli/hole-<goos>-<goarch>[.exe].sha256
-  desktop-core/hole-desktop-core-<goos>-<goarch>[.exe]
-  desktop-core/hole-desktop-core-<goos>-<goarch>[.exe].sha256
+  core/hole-core-<goos>-<goarch>[.exe]
+  core/hole-core-<goos>-<goarch>[.exe].sha256
   desktop/<goos>-<goarch>/hole-desktop[.exe]
   desktop/<goos>-<goarch>/hole-desktop[.exe].sha256
   android/hole-<version>-release.apk
@@ -166,7 +166,7 @@ dist/
   wear/SHA256SUMS
 ```
 
-CLI / 桌面 Go 桥接使用 `CGO_ENABLED=0`、`-trimpath`、`-s -w`，不调用宿主 `strip` 处理其他架构二进制。
+CLI / 独立 Go 核心宿主使用 `CGO_ENABLED=0`、`-trimpath`、`-s -w`，不调用宿主 `strip` 处理其他架构二进制。
 桌面 GUI 使用 Cargo `release` profile 和 `embedded-core` feature；`desktop` 目录仅包含内嵌核心的 GUI
 与 SHA-256 文件。构建时通过 `HOLE_EMBED_CORE` 传入刚生成的同架构宿主，校验 ELF / PE 后压缩嵌入；
 Cargo 跟踪该输入的变化。Linux 运行时使用可执行 memfd 和 `/proc/self/fd`，Windows 使用私有临时目录，
@@ -179,7 +179,7 @@ Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使�
 `SHA256SUMS` 仅引用同目录交付文件；用于追踪核心的 AAR 摘要保留在构建清单中。
 
 桌面桥接的 stdio 协议和 GUI 构建说明见 [desktop/README.md](../desktop/README.md)，界面路线与完整验收矩阵见
-[GUI 实施计划](DESKTOP_GUI_PLAN.md)。`desktop/`、`desktop/gui/` 和 `cmd/hole-desktop-core/` 不在共享核心
+[GUI 实施计划](DESKTOP_GUI_PLAN.md)。`desktop/`、`desktop/gui/` 和 `cmd/hole-core/` 不在共享核心
 源码摘要中，也不被 CLI / gomobile 导入；只修改桌面代码不会改变 AAR 的核心源码身份。
 
 ## 回归测试
@@ -198,7 +198,7 @@ node --test worker/worker_ice.test.mjs worker/worker_fixture.test.mjs
 ```
 
 `go test ./...` 包含桌面协议、真实 Engine 本地信令及宿主子进程测试；可单独执行
-`go test -race -count=1 ./desktop ./cmd/hole-desktop-core`。Windows 交叉编译只验证构建，
+`go test -race -count=1 ./desktop ./cmd/hole-core`。Windows 交叉编译只验证构建，
 Windows 管道、窗口与系统集成运行验收在相应系统单独执行。
 
 Hole 中继专项覆盖 `core/hole_*test.go`、Worker 三方生命周期、各客户端配置往返和

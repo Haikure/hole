@@ -1,5 +1,5 @@
-// hole-desktop-core is the private stdio host for a desktop GUI. It does not
-// read CLI configuration, open a control TCP port, or import the mobile facade.
+// hole-core is the stdio host for clients of the shared core. It does not read
+// CLI configuration, open a control TCP port, or import the mobile facade.
 package main
 
 import (
@@ -18,10 +18,10 @@ func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 func run(args []string, input io.ReadCloser, output io.WriteCloser, diagnostics io.Writer) int {
 	if len(args) != 0 {
 		if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
-			fmt.Fprintln(diagnostics, "用法：hole-desktop-core\n通过 stdin/stdout 收发逐行 JSON；协议见 desktop/README.md。版本通过 hello 方法查询。")
+			fmt.Fprintln(diagnostics, "用法：hole-core\n通过 stdin/stdout 收发逐行 JSON；协议见 desktop/README.md。版本通过 hello 方法查询。")
 			return 0
 		}
-		fmt.Fprintln(diagnostics, "桌面桥接不接受运行参数；使用 --help 查看说明")
+		fmt.Fprintln(diagnostics, "核心宿主不接受运行参数；使用 --help 查看说明")
 		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

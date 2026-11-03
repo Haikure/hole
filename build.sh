@@ -5,20 +5,20 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 usage() {
   cat <<'EOF'
-用法：./build.sh <cli|desktop-core|desktop|android|wear|all> [更多目标] [选项]
+用法：./build.sh <cli|core|desktop|android|wear|all> [更多目标] [选项]
 
 目标（可组合，重复目标只构建一次）：
   cli                Go CLI，CGO_ENABLED=0、trimpath、-s -w
-  desktop-core       桌面 GUI 的独立 Go stdio 桥接，Release；不需要 Qt
+  core               独立 Go stdio 核心宿主，Release；不需要 Qt
   desktop            内嵌 Go 核心的单文件桌面 GUI，Release；需要 Rust stable / Cargo
   android / phone    Android 手机 Release，ARM64、R8、资源收缩、native strip
   wear               Wear OS Release，ARM32 + ARM64，同上
-  all                cli + android + wear（不包含 desktop-core 或 desktop）
+  all                cli + android + wear（不包含 core 或 desktop）
 
 选项：
   -t, --target NAME      与位置参数相同，可重复使用
-  --os GOOS             CLI / 桌面目标系统（默认 GOOS 或宿主系统）
-  --arch GOARCH         CLI / 桌面目标架构（默认 GOARCH 或宿主架构）
+  --os GOOS             CLI / core / desktop 目标系统（默认 GOOS 或宿主系统）
+  --arch GOARCH         CLI / core / desktop 目标架构（默认 GOARCH 或宿主架构）
   -o, --output DIR      交付目录（默认仓库 dist/）
   --signing-config FILE 签名环境文件（默认仓库 signing.env）
   --offline            仅使用已有 Go / Cargo / Gradle 依赖缓存
@@ -40,8 +40,8 @@ EOF
 
 die() { printf '构建失败：%s\n' "$*" >&2; exit 1; }
 need_value() { [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "$1 需要参数"; }
-BUILD_CLI=0 BUILD_DESKTOP_CORE=0 BUILD_DESKTOP=0 BUILD_ANDROID=0 BUILD_WEAR=0
-CLI_OS="${GOOS:-}" CLI_ARCH="${GOARCH:-}"
+BUILD_CLI=0 BUILD_CORE=0 BUILD_DESKTOP=0 BUILD_ANDROID=0 BUILD_WEAR=0
+TARGET_OS="${GOOS:-}" TARGET_ARCH="${GOARCH:-}"
 OUTPUT="$ROOT/dist"
 SIGNING_CONFIG="$ROOT/signing.env"
 EXPLICIT_SIGNING_CONFIG=0 OFFLINE=0
@@ -49,12 +49,12 @@ EXPLICIT_SIGNING_CONFIG=0 OFFLINE=0
 add_target() {
   case "$1" in
     cli) BUILD_CLI=1 ;;
-    desktop-core) BUILD_DESKTOP_CORE=1 ;;
-    desktop) BUILD_DESKTOP=1; BUILD_DESKTOP_CORE=1 ;;
+    core) BUILD_CORE=1 ;;
+    desktop) BUILD_DESKTOP=1; BUILD_CORE=1 ;;
     android|phone) BUILD_ANDROID=1 ;;
     wear) BUILD_WEAR=1 ;;
     all) BUILD_CLI=1; BUILD_ANDROID=1; BUILD_WEAR=1 ;;
-    *) die "未知目标：$1（可选 cli、desktop-core、desktop、android、wear、all）" ;;
+    *) die "未知目标：$1（可选 cli、core、desktop、android、wear、all）" ;;
   esac
 }
 
@@ -63,8 +63,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     -t|--target) need_value "$@"; add_target "$2"; shift 2 ;;
-    --os) need_value "$@"; CLI_OS="$2"; shift 2 ;;
-    --arch) need_value "$@"; CLI_ARCH="$2"; shift 2 ;;
+    --os) need_value "$@"; TARGET_OS="$2"; shift 2 ;;
+    --arch) need_value "$@"; TARGET_ARCH="$2"; shift 2 ;;
     -o|--output) need_value "$@"; OUTPUT="$2"; shift 2 ;;
     --signing-config) need_value "$@"; SIGNING_CONFIG="$2"; EXPLICIT_SIGNING_CONFIG=1; shift 2 ;;
     --offline) OFFLINE=1; shift ;;
@@ -72,7 +72,7 @@ while [[ $# -gt 0 ]]; do
     *) add_target "$1"; shift ;;
   esac
 done
-(( BUILD_CLI || BUILD_DESKTOP_CORE || BUILD_DESKTOP || BUILD_ANDROID || BUILD_WEAR )) || die '请选择至少一个构建目标'
+(( BUILD_CLI || BUILD_CORE || BUILD_DESKTOP || BUILD_ANDROID || BUILD_WEAR )) || die '请选择至少一个构建目标'
 command -v python3 >/dev/null || die '请安装 Python 3'
 OUTPUT=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$OUTPUT")
 if [[ -f "$SIGNING_CONFIG" ]]; then
@@ -138,8 +138,8 @@ fi
 if (( OFFLINE )); then export HOLE_BUILD_OFFLINE=1 GOPROXY=off; fi
 
 resolve_desktop_target() {
-  DESKTOP_OS="${CLI_OS:-$(go env GOHOSTOS)}"
-  DESKTOP_ARCH="${CLI_ARCH:-$(go env GOHOSTARCH)}"
+  DESKTOP_OS="${TARGET_OS:-$(go env GOHOSTOS)}"
+  DESKTOP_ARCH="${TARGET_ARCH:-$(go env GOHOSTARCH)}"
   case "$DESKTOP_OS/$DESKTOP_ARCH" in
     linux/amd64|linux/arm64|windows/amd64|windows/arm64) ;;
     *) die "桌面 GUI 不支持目标 $DESKTOP_OS/$DESKTOP_ARCH（支持 Linux / Windows ARM64 / AMD64）" ;;
@@ -161,8 +161,8 @@ mkdir -p "$OUTPUT"
 
 build_cli() (
   cd "$ROOT"
-  local_os="${CLI_OS:-$(go env GOHOSTOS)}"
-  local_arch="${CLI_ARCH:-$(go env GOHOSTARCH)}"
+  local_os="${TARGET_OS:-$(go env GOHOSTOS)}"
+  local_arch="${TARGET_ARCH:-$(go env GOHOSTARCH)}"
   go tool dist list | grep -Fx "$local_os/$local_arch" >/dev/null || die "Go 不支持目标 $local_os/$local_arch"
   name="hole-$local_os-$local_arch"
   [[ "$local_os" != windows ]] || name+=.exe
@@ -182,30 +182,30 @@ build_cli() (
 
 if (( BUILD_CLI )); then build_cli; fi
 
-# An opt-in host binary, deliberately excluded from cli/all and the AAR input
-# graph. Keep the established CLI command and Android toolchain path unchanged.
-build_desktop_core() (
+# An opt-in core host binary, deliberately excluded from cli/all and the AAR
+# input graph. Keep the established CLI command and Android toolchain path unchanged.
+build_core() (
   cd "$ROOT"
-  local_os="${CLI_OS:-$(go env GOHOSTOS)}"
-  local_arch="${CLI_ARCH:-$(go env GOHOSTARCH)}"
+  local_os="${TARGET_OS:-$(go env GOHOSTOS)}"
+  local_arch="${TARGET_ARCH:-$(go env GOHOSTARCH)}"
   go tool dist list | grep -Fx "$local_os/$local_arch" >/dev/null || die "Go 不支持目标 $local_os/$local_arch"
-  name="hole-desktop-core-$local_os-$local_arch"
+  name="hole-core-$local_os-$local_arch"
   [[ "$local_os" != windows ]] || name+=.exe
-  mkdir -p "$OUTPUT/desktop-core"
-  work=$(mktemp -d "$HOLE_CACHE_ROOT/tmp/desktop-core.XXXXXXXX")
+  mkdir -p "$OUTPUT/core"
+  work=$(mktemp -d "$HOLE_CACHE_ROOT/tmp/core.XXXXXXXX")
   trap 'rm -rf -- "$work"' EXIT
   version=$(python3 "$ROOT/scripts/build_meta.py" version)
   build_id=$(python3 "$ROOT/scripts/build_meta.py" build-id)
-  printf '\n[Desktop Core] %s/%s · Release / stripped\n' "$local_os" "$local_arch"
+  printf '\n[Core] %s/%s · Release / stripped\n' "$local_os" "$local_arch"
   GOOS="$local_os" GOARCH="$local_arch" CGO_ENABLED=0 \
     go build -mod=readonly -trimpath -buildvcs=false \
-    -ldflags="-s -w -X hole/core.CoreVersion=$version -X hole/core.CoreBuildID=$build_id" -o "$work/$name" ./cmd/hole-desktop-core
-  mv "$work/$name" "$OUTPUT/desktop-core/$name"
-  python3 "$ROOT/scripts/build_meta.py" checksum "$OUTPUT/desktop-core/$name"
-  printf 'Desktop Core: %s\n' "$OUTPUT/desktop-core/$name"
+    -ldflags="-s -w -X hole/core.CoreVersion=$version -X hole/core.CoreBuildID=$build_id" -o "$work/$name" ./cmd/hole-core
+  mv "$work/$name" "$OUTPUT/core/$name"
+  python3 "$ROOT/scripts/build_meta.py" checksum "$OUTPUT/core/$name"
+  printf 'Core: %s\n' "$OUTPUT/core/$name"
 )
 
-if (( BUILD_DESKTOP_CORE )); then build_desktop_core; fi
+if (( BUILD_CORE )); then build_core; fi
 
 build_desktop_gui() (
   cd "$ROOT"
@@ -259,7 +259,7 @@ if (( BUILD_DESKTOP )); then
   unset GOOS GOARCH GOARM GOARM64 GOAMD64 GO386 CGO_ENABLED
   (
     cd "$ROOT/desktop/gui"
-    embedded_core="$OUTPUT/desktop-core/hole-desktop-core-$DESKTOP_OS-$DESKTOP_ARCH"
+    embedded_core="$OUTPUT/core/hole-core-$DESKTOP_OS-$DESKTOP_ARCH"
     [[ "$DESKTOP_OS" != windows ]] || embedded_core+=.exe
     [[ -f "$embedded_core" ]] || die "未找到待嵌入核心：$embedded_core"
     HOLE_EMBED_CORE="$embedded_core" cargo "${cargo_args[@]}"

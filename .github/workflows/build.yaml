@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       type:
-        description: 构建类型；all 会构建 Android、desktop、desktop-core 和 cli
+        description: 构建类型；all 会构建 Android、desktop、core 和 cli
         required: true
         default: all
         type: choice
@@ -15,7 +15,7 @@ on:
           - all
           - android
           - desktop
-          - desktop-core
+          - core
           - cli
       arch:
         description: 非 Android 目标架构；Android 始终固定为 arm64
@@ -74,14 +74,14 @@ jobs:
           build_arch = os.environ["BUILD_ARCH"]
           build_os = os.environ["BUILD_OS"]
 
-          if build_type not in {"all", "android", "desktop", "desktop-core", "cli"}:
+          if build_type not in {"all", "android", "desktop", "core", "cli"}:
               raise SystemExit(f"unsupported type: {build_type}")
           if build_arch not in {"all", "amd64", "arm64"}:
               raise SystemExit(f"unsupported arch: {build_arch}")
           if build_os not in {"all", "linux", "windows"}:
               raise SystemExit(f"unsupported os: {build_os}")
 
-          targets = ("desktop", "desktop-core", "cli")
+          targets = ("desktop", "core", "cli")
           systems = ("linux", "windows") if build_os == "all" else (build_os,)
           architectures = ("amd64", "arm64") if build_arch == "all" else (build_arch,)
           matrix = []
@@ -100,8 +100,8 @@ jobs:
 
                       if target == "desktop":
                           artifact_path = f"dist/desktop/{target_os}-{target_arch}"
-                      elif target == "desktop-core":
-                          artifact_path = "dist/desktop-core"
+                      elif target == "core":
+                          artifact_path = "dist/core"
                       else:
                           artifact_path = "dist/cli"
 
@@ -408,7 +408,7 @@ jobs:
             esac
 
             case "$artifact_name" in
-              hole-desktop-core-*)
+              hole-core-*)
                 asset_name="$filename"
                 ;;
               hole-desktop-*)

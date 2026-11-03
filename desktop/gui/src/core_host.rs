@@ -25,15 +25,15 @@ enum Backing {
 }
 
 pub fn prepare() -> Result<PreparedCore, String> {
-    if let Some(path) = std::env::var_os("HOLE_DESKTOP_CORE") {
+    if let Some(path) = std::env::var_os("HOLE_CORE") {
         return external(Path::new(&path));
     }
     if !CORE_GZIP.is_empty() { return embedded(); }
-    external(&crate::core_client::locate_bridge()?)
+    external(&crate::core_client::locate_core()?)
 }
 
 fn external(path: &Path) -> Result<PreparedCore, String> {
-    if !path.is_absolute() { return Err("HOLE_DESKTOP_CORE 必须是绝对路径".into()); }
+    if !path.is_absolute() { return Err("HOLE_CORE 必须是绝对路径".into()); }
     let path = path.canonicalize().map_err(|e| format!("无法读取指定核心 {}：{e}", path.display()))?;
     if !path.is_file() { return Err("指定核心不是普通文件".into()); }
     Ok(PreparedCore { description: path.display().to_string(), path, backing: Backing::External })
@@ -66,9 +66,9 @@ pub fn embedded() -> Result<PreparedCore, String> {
         // MFD_EXEC is explicit on kernels with memfd_noexec policy. Older
         // kernels reject the flag with EINVAL; their default permits execution.
         let flags = libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING;
-        let mut fd = unsafe { libc::memfd_create(c"hole-desktop-core".as_ptr(), flags | 0x0010) };
+        let mut fd = unsafe { libc::memfd_create(c"hole-core".as_ptr(), flags | 0x0010) };
         if fd < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
-            fd = unsafe { libc::memfd_create(c"hole-desktop-core".as_ptr(), flags) };
+            fd = unsafe { libc::memfd_create(c"hole-core".as_ptr(), flags) };
         }
         if fd < 0 { return Err(format!("无法创建可执行 memfd：{}", std::io::Error::last_os_error())); }
         // SAFETY: a successful memfd_create returns a new owned descriptor.
@@ -127,7 +127,7 @@ mod tests {
         let fd = file.as_raw_fd();
         let seals = unsafe { libc::fcntl(fd, libc::F_GET_SEALS) };
         assert_eq!(seals & libc::F_SEAL_WRITE, libc::F_SEAL_WRITE);
-        assert!(std::fs::read_link(&host.path).unwrap().to_string_lossy().starts_with("/memfd:hole-desktop-core"));
+        assert!(std::fs::read_link(&host.path).unwrap().to_string_lossy().starts_with("/memfd:hole-core"));
         assert_eq!(unsafe { libc::pwrite(fd, b"X".as_ptr().cast(), 1, 0) }, -1);
         let path = host.path.clone();
         let client = crate::core_client::CoreClient::spawn(host, |_| {}).unwrap();

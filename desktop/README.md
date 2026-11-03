@@ -1,7 +1,7 @@
 # 桌面 Go 桥接
 
 `hole/desktop` 为 Windows / Linux GUI 提供独立的 stdio 宿主，入口为
-`cmd/hole-desktop-core`；Rust + Slint GUI 源码位于 `desktop/gui/`。
+`cmd/hole-core`；Rust + Slint GUI 源码位于 `desktop/gui/`。
 界面功能范围和 Android 对齐验收项见 [桌面 GUI 计划](../docs/DESKTOP_GUI_PLAN.md)。
 
 ```text
@@ -22,13 +22,13 @@ TCP / UDP 映射业务字节不经过 GUI。桌面宿主不读取配置文件、
 ```
 
 `desktop` 生成 `dist/desktop/<goos>-<goarch>/hole-desktop[.exe]` 单文件客户端及 `.sha256`，
-同平台 Go 核心以 gzip 压缩后内嵌，无需携带独立桥接程序。构建完整 GUI 需要 Rust stable / Cargo；交叉构建需预装 Rust target
+同平台 Go 核心以 gzip 压缩后内嵌，无需携带独立核心程序。构建完整 GUI 需要 Rust stable / Cargo；交叉构建需预装 Rust target
 及对应 linker / sysroot。缓存统一位于根 `.cache/`。
 
-只构建 Go stdio 桥接时使用 `./build.sh desktop-core --os linux --arch amd64`；产物为
-`dist/desktop-core/hole-desktop-core-<goos>-<goarch>[.exe]` 及同名 `.sha256`。
-桥接使用 `CGO_ENABLED=0`、`-mod=readonly`、`-trimpath`、`-s -w`，不依赖 Qt、Slint 或 CGo。
-`cli`、`android`、`wear` 和 `all` 不隐式包含桌面目标；`all` 可显式组合 `desktop`。
+只构建 Go stdio 核心宿主时使用 `./build.sh core --os linux --arch amd64`；产物为
+`dist/core/hole-core-<goos>-<goarch>[.exe]` 及同名 `.sha256`。
+核心宿主使用 `CGO_ENABLED=0`、`-mod=readonly`、`-trimpath`、`-s -w`，不依赖 Qt、Slint 或 CGo。
+`cli`、`android`、`wear` 和 `all` 不隐式包含 `core` 或 `desktop`；需要时可显式组合。
 桌面源码不属于共享 AAR 的源码摘要输入。
 
 宿主无运行参数；`--help` 写到 stderr，版本通过 `hello` 查询。仅查询本地状态：
@@ -38,7 +38,7 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":"1","method":"hello"}' \
   '{"jsonrpc":"2.0","id":"2","method":"snapshot"}' \
   '{"jsonrpc":"2.0","id":"3","method":"shutdown"}' \
-  | ./dist/desktop-core/hole-desktop-core-linux-amd64
+  | ./dist/core/hole-core-linux-amd64
 ```
 
 GUI 用绝对路径直接启动对应文件，不经过 shell、不从 PATH 搜索同名程序；配置凭据放在
@@ -48,7 +48,7 @@ stdin 消息中，不放到启动参数。Rust `CoreClient` 分离 stdout / stde
 
 `./build.sh desktop` 先构建同平台的 stripped Go 核心，再通过 Cargo 的 `embedded-core` feature
 把它嵌入 GUI。构建脚本校验 ELF / PE 架构，记录未压缩大小和 SHA-256；核心文件变化会使 Cargo
-重新嵌入。`dist/desktop-core/` 保留独立构建产物，分发客户端时只需复制 `dist/desktop/` 下的 GUI 文件。
+重新嵌入。`dist/core/` 保留独立构建产物，分发客户端时只需复制 `dist/desktop/` 下的 GUI 文件。
 
 - Linux：流式解压到 `memfd_create` 的匿名内存文件，校验大小和 SHA-256，再设置执行权限和写入封印，
   通过 `/proc/self/fd/…` 启动核心。不会创建普通核心临时文件；核心停止后关闭内存文件句柄。
@@ -63,13 +63,13 @@ GUI 配置仍按原方式保存；系统可能对匿名内存使用交换空间�
 GUI 退出会等待控制线程完成关闭与清理。强制结束 GUI 后，核心也会沿 stdin EOF 路径退出。
 
 开发时 `cargo build` / `cargo test` 默认不嵌入核心，沿用独立宿主查找方式。显式设置绝对路径
-`HOLE_DESKTOP_CORE` 可覆盖内嵌核心用于调试；无效的显式路径会报错。发布版默认优先使用内嵌核心，
+`HOLE_CORE` 可覆盖内嵌核心用于调试；无效的显式路径会报错。发布版默认优先使用内嵌核心，
 不会自动加载同目录其他核心文件。直接开启 `embedded-core` 时必须提供绝对路径 `HOLE_EMBED_CORE`：
 
 ```bash
 source scripts/build-env.sh
 cd desktop/gui
-HOLE_EMBED_CORE="$HOLE_ROOT/dist/desktop-core/hole-desktop-core-linux-amd64" \
+HOLE_EMBED_CORE="$HOLE_ROOT/dist/core/hole-core-linux-amd64" \
   cargo test --offline --features embedded-core
 ```
 
@@ -351,8 +351,8 @@ Linux 上可用 `xvfb-run -a python3 desktop/gui/tests/turn_order_x11.py .cache/
 
 ```bash
 source scripts/build-env.sh
-go test -race -count=1 ./desktop ./cmd/hole-desktop-core
-go vet ./desktop ./cmd/hole-desktop-core
+go test -race -count=1 ./desktop ./cmd/hole-core
+go vet ./desktop ./cmd/hole-core
 python3 -m unittest discover -s scripts -p 'test_build.py'
 ```
 

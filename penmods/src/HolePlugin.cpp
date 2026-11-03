@@ -168,7 +168,7 @@ void HolePlugin::ensureProcess() {
 
     delete m_process;
     m_process = new QProcess(this);
-    m_process->setProgram(QDir(m_pluginDirectory).filePath(QStringLiteral("hole-desktop-core")));
+    m_process->setProgram(QDir(m_pluginDirectory).filePath(QStringLiteral("hole-core")));
     m_process->setWorkingDirectory(m_pluginDirectory);
     m_process->setProcessChannelMode(QProcess::SeparateChannels);
     connect(m_process, &QProcess::started, this, &HolePlugin::onProcessStarted);

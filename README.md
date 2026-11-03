@@ -214,8 +214,8 @@ relay:
 交付位于 `dist/desktop/<goos>-<goarch>/`，只需运行其中的 `hole-desktop[.exe]`，同目录附 SHA-256 文件。
 Linux 校验后从 memfd 匿名内存文件启动核心；Windows 从私有临时目录启动并在退出时回收，异常残留在下次启动时清理。
 构建完整 GUI 需要 Rust stable / Cargo；交叉构建还需要预装对应 Rust target 和平台 linker。
-若只需要独立 Go 桥接，可构建 `desktop-core`，产物位于 `dist/desktop-core/`，不需要 Qt、Slint 或 CGo。
-`cli` / `android` / `wear` / `all` 不会隐式构建桌面目标；需要时显式组合 `desktop`。
+若只需要独立 Go 核心宿主，可构建 `core`，产物位于 `dist/core/`，不需要 Qt、Slint 或 CGo。
+`cli` / `android` / `wear` / `all` 不会隐式构建 `core` 或 `desktop`；需要时显式组合对应目标。
 控制协议见 [桌面桥接](desktop/README.md)，界面路线和 Android 功能对齐验收矩阵见
 [GUI 计划](docs/DESKTOP_GUI_PLAN.md)。
 
@@ -250,7 +250,7 @@ Worker 单独部署，见 [Worker 部署](docs/WORKER.md)。
 | 根目录 Go 文件 | CLI 参数、配置读取、事件日志 |
 | [core/](core/README.md) | 共享网络、ICE / QUIC、映射与可恢复会话 |
 | [mobile/](mobile/README.md) | gomobile 窄接口与 Android 平台网络适配 |
-| [desktop/](desktop/README.md)、`cmd/hole-desktop-core/` | 桌面 GUI 的独立 Go stdio 桥接与入口 |
+| [desktop/](desktop/README.md)、`cmd/hole-core/` | 独立 Go stdio 核心宿主与入口 |
 | [android/](android/README.md) | 手机应用、共享桥接模块和 [Wear 模块](android/wear/README.md) |
 | `worker/worker.js` / `worker/worker_ice.mjs` | 房间协调、ICE 信令、Hole 授权与 TURN broker |
 | `scripts/` | 构建环境、源码摘要及构建脚本回归测试 |

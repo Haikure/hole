@@ -32,8 +32,8 @@ func TestHelpAndInvalidArgsKeepStdoutReserved(t *testing.T) {
 	}
 }
 
-func TestDesktopCoreHelper(t *testing.T) {
-	if os.Getenv("HOLE_DESKTOP_CORE_HELPER") != "1" {
+func TestCoreHelper(t *testing.T) {
+	if os.Getenv("HOLE_CORE_HELPER") != "1" {
 		return
 	}
 	os.Exit(run(nil, os.Stdin, os.Stdout, os.Stderr))
@@ -49,8 +49,8 @@ func TestProcessPipeEOFShutdownAndSignal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cmd := exec.Command(executable, "-test.run=^TestDesktopCoreHelper$")
-			cmd.Env = append(os.Environ(), "HOLE_DESKTOP_CORE_HELPER=1")
+			cmd := exec.Command(executable, "-test.run=^TestCoreHelper$")
+			cmd.Env = append(os.Environ(), "HOLE_CORE_HELPER=1")
 			input, err := cmd.StdinPipe()
 			if err != nil {
 				t.Fatal(err)

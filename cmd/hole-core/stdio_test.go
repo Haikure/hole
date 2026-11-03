@@ -27,7 +27,7 @@ func (h *synchronousHandle) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func TestProcessAdaptersCancelSynchronousHandlesWithoutBufferRaces(t *testing.T) {
+func TestCoreProcessAdaptersCancelSynchronousHandlesWithoutBufferRaces(t *testing.T) {
 	for _, direction := range []string{"read", "write"} {
 		t.Run(direction, func(t *testing.T) {
 			handle := &synchronousHandle{started: make(chan struct{}), release: make(chan struct{})}
