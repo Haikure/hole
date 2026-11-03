@@ -17,7 +17,7 @@ ALSA 库及默认音频设备。Windows 使用系统 WASAPI。
 | --- | --- |
 | Go | 1.27.3 |
 | JDK | 17；Robolectric / Miuix UI 测试宿主另需 21+ |
-| x/mobile（gomobile、gobind） | `v0.0.0-20260908204917-8b95e45f8d3e` |
+| x/mobile（gomobile、gobind） | `v0.0.0-20261011034528-197770444867` |
 | Gradle Wrapper / AGP | 9.4.1 / 9.2.1 |
 | Kotlin / Compose compiler | 2.4.0 |
 | SDK Platform | `platforms;android-37.0` |

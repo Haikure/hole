@@ -9,7 +9,7 @@ hole_load_android_toolchain
 # A caller may be cross-compiling the CLI in the same shell.
 unset GOOS GOARCH GOARM GOARM64 GOAMD64 GO386
 export CGO_ENABLED=1
-MOBILE_VERSION=v0.0.0-20260908204917-8b95e45f8d3e
+MOBILE_VERSION=v0.0.0-20261011034528-197770444867
 NDK_VERSION=28.2.13676358
 for command in go gomobile gobind java javac python3; do
   command -v "$command" >/dev/null || { echo "缺少工具 $command，请先安装。" >&2; exit 1; }

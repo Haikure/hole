@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pion/transport/v4"
+	"github.com/pion/transport/v5"
 )
 
 // Implements Pion's network boundary without creating stdnet (which enumerates

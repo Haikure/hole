@@ -162,10 +162,7 @@ fi
 printf '\n[4/4] gomobile / gobind\n'
 cd "$HOLE_CACHE_ROOT/mobile-tools"
 [[ -f go.mod ]] || "$GO_BIN" mod init local/hole-android-toolchain
-if [[ -z "${MOBILE_VERSION:-}" && -s "$PREFIX/x-mobile.version" ]]; then
-  MOBILE_VERSION=$(cat "$PREFIX/x-mobile.version")
-fi
-MOBILE_VERSION=$("$GO_BIN" list -m -f '{{.Version}}' "golang.org/x/mobile@${MOBILE_VERSION:-v0.0.0-20260908204917-8b95e45f8d3e}")
+MOBILE_VERSION=$("$GO_BIN" list -m -f '{{.Version}}' "golang.org/x/mobile@${MOBILE_VERSION:-v0.0.0-20261011034528-197770444867}")
 [[ "$MOBILE_VERSION" == v* ]] || die 'x/mobile 版本解析失败。'
 printf '%s\n' "$MOBILE_VERSION" > "$PREFIX/x-mobile.version"
 "$GO_BIN" get "golang.org/x/mobile/cmd/gomobile@$MOBILE_VERSION" "golang.org/x/mobile/cmd/gobind@$MOBILE_VERSION"
