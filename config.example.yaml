@@ -40,12 +40,10 @@ turn:
 voice:
   enabled: false
 
-# 提供方id必须唯一，使用id匹配服务
+# provide / consume 的 id 用于匹配两端映射；复制到两端时替换为各自实际服务。
 provide:
   - id: ssh
     service: tcp://127.0.0.1:22    # 提供方需要明确写出协议（tcp/udp）
-  - id: voice
-    service: udp://1270.0.0.1:8888
 consume:
-  - id: remote_web
-    expose: 127.0.0.1:8080
+  - id: ssh
+    expose: 127.0.0.1:2222

@@ -182,8 +182,8 @@ Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使�
 普通构建不运行单元测试或完整 lint，清单中的相应字段标为未检查，而不是复用旧报告声明通过。
 `SHA256SUMS` 仅引用同目录交付文件；用于追踪核心的 AAR 摘要保留在构建清单中。
 
-桌面桥接的 stdio 协议和 GUI 构建说明见 [desktop/README.md](../desktop/README.md)，界面路线与完整验收矩阵见
-[GUI 实施计划](DESKTOP_GUI_PLAN.md)。`desktop/`、`desktop/gui/` 和 `cmd/hole-core/` 不在共享核心
+桌面桥接的 stdio 协议、GUI 构建和界面说明见 [desktop/README.md](../desktop/README.md)。
+`desktop/`、`desktop/gui/` 和 `cmd/hole-core/` 不在共享核心
 源码摘要中，也不被 CLI / gomobile 导入；只修改桌面代码不会改变 AAR 的核心源码身份。
 
 ## 回归测试

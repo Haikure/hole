@@ -1,177 +1,128 @@
-# hole
+# Hole
 
-自动连接支持 NAT 探测与 UDP 直连补充尝试。双方和 Worker 支持时，普通 ICE 后最多再尝试 15 秒（含排队、探测和 QUIC 握手），随后按现有顺序使用 Hole / TURN。固定入口与仅中继关系保持各自策略。配置见 `config.example.yaml` 的 `ice.udp_punching`、`ice.port_mapping`、`ice.nat_stun_urls`。
+Hole 是一款端口映射工具：让两台设备加入同一个房间，把一端的 TCP / UDP 服务映射到另一端的本地端口。可用于远程访问 SSH、开发服务或其他 TCP / UDP 应用。
 
-## 参考项目与许可
+支持双向多条映射、最多 8 人的可选语音房，以及同一进程内网络切换或传输重连时恢复仍存活的 TCP 会话。
 
-参考 EasyTier 的 UDP NAT 分类、端口预测及多 socket 探测策略，移植来源固定为提交 `24e0303fc55e4e645a11818954dd5b712fb94510`。没有引入 TCP 打洞或其隧道协议。源码归属和修改范围见 [第三方许可清单](THIRD_PARTY_NOTICES.md)。原创部分采用 GPL-2.0-or-later，移植部分保留 LGPL-3.0，包含移植部分的组合交付选择 GPL3；已有第三方许可继续有效。
+Hole 不创建 VPN / TUN。两端通过 QUIC 建立加密数据通道；Worker 负责房间信令和按需签发 TURN 凭据，不转发业务数据。直连失败时，数据通道可按配置经过同房间的 Hole 中继或 TURN。
 
-通过房间连接设备，将一端的 TCP / UDP 服务映射到另一端的本地端口。
-CLI、Android 手机与 Wear OS 共用 Go 核心；Cloudflare Worker 负责信令和按需 TURN 凭据签发。
+```text
+业务数据  设备 A 的服务 ── Hole A ══ 加密 QUIC ══ Hole B ── 设备 B 的本地端口
+控制信令             Hole A <──────── Worker ────────> Hole B
+```
 
-## 功能
+## 导航
 
-- ICE IPv4 / IPv6 直连，按每端配置顺序尝试同房间 Hole 设备中继、TURN UDP、TCP、TLS；TURN 阶段优先选择单跳候选对。
-- 固定入口直连：一端公布公网 UDP 地址，对端通过 Worker 自动获取并拨号；该设备对只重试固定路径。
-- 一对设备共享 QUIC 传输，支持双向、多条 TCP / UDP 映射。
-- 可选语音房：`voice.enabled: true` 后，同一 room 的语音设备自动建立最多 8 人的点对点媒体传输。
-- 网络切换和传输重连时保留仍存活的应用会话，TCP 支持确认、重放和半关闭。
-- 原生 Android 客户端提供 Material 3 / Miuix 主题、前台服务、配置导入导出和连接报告。
-- Wear 安装包包含 ARM32 / ARM64，独立运行，与手机端共用界面和核心。
+[快速开始](#快速开始) · [连接路径](#连接路径) · [NAT 探测与 UDP 直连](#nat-探测与-udp-直连) · [固定入口与设备中继](#固定入口与设备中继) · [客户端与构建](#客户端与构建) · [文档](#文档)
 
-这是端口映射工具，不创建 VPN / TUN。业务数据经 QUIC 加密传输；协调服务不转发业务数据，
-中继由同房间 Hole CLI 或 TURN 服务承担。连接策略和恢复边界见 [协议说明](docs/PROTOCOL.md)。
+## 快速开始
 
-## 快速开始：CLI
+需要 Go 1.27.3、Bash、Python 3，以及一个可用的 Hole Worker。Worker 部署和 TURN 服务配置见 [Worker 部署指南](docs/WORKER.md)。
 
-准备 Go 1.27.3、Bash 和 Python 3，在仓库根目录执行：
+在仓库根目录构建 CLI，并从完整示例复制配置：
 
 ```bash
 ./build.sh cli
-cp -n examples/ice.yaml config.yaml
+cp -n config.example.yaml config.yaml
 ```
 
-编辑 `config.yaml`。两端使用相同的服务器、房间号、信令密码和房间密码，设备名各不相同：
+编辑 `config.yaml`。两台设备的 `server_url`、`room`、`password` 和 `token` 要一致；`password` 对应 Worker 的信令密钥，`token` 是房间口令。`device_name` 在房间内必须各不相同。选择 ICE 传输：
 
 ```yaml
-server_url: wss://HOST/ws   # 信令服务器地址，必填
-room: ROOM  # 房间号，同一房间内设备允许进行连接
-password: SIGNAL_PASSWORD   # 信令服务器密码
-token: ROOM_TOKEN   # 房间密码
-device_name: desktop    # 当前设备名，房间内唯一，用于区分设备
-session_timeout: 10m    # 断开会话重建超时时间
+server_url: wss://HOST/ws
+room: my-room
+password: SIGNAL_PASSWORD
+token: ROOM_PASSWORD
+device_name: desktop       # 另一台设备使用不同名称
 transport:
-  preferred: ice    # auto / ice / ipv6；auto 允许旧 IPv6 对端
-  allow_legacy: true    # 对端仅支持 IPv6 协议时允许兼容
-ice:
-  stun_urls:
-    - stun:stun.cloudflare.com:3478
-  direct_probe_timeout: 3s  # 优先直连时间
-  gather_timeout: 6s    # 候选收集期限
-  connectivity_timeout: 10s    # 连通性检查期限
-  retry_max_delay: 15s    # 最大重试间隔
-  interface_allowlist: []
-# turn 整段可以省略；以下就是缺省值。Worker 签发短期凭据，CLI 不必填账号。
-# 留空使用默认顺序；也可填写如 [tls, udp]，未列类型会跳过。
-turn:
-  mode: worker
-  ttl: 6h
-  urls: []
-  username: ""
-  credential: ""
-  order: []
-voice:
-  enabled: false
+  preferred: ice
+```
 
-# 提供方id必须唯一，使用id匹配服务
+删除示例中本端不需要的映射项。在提供服务的一端配置 `provide`，另一端用相同的 `id` 配置 `consume`：
+
+```yaml
+# 提供 SSH 服务的一端
 provide:
   - id: ssh
-    service: tcp://127.0.0.1:22    # 提供方需要明确写出协议（tcp/udp）
-  - id: voice
-    service: udp://1270.0.0.1:8888
+    service: tcp://127.0.0.1:22
 ```
 
-另一端改用不同的 `device_name`，将 `provide` 换成：
-
 ```yaml
+# 访问 SSH 服务的一端
 consume:
   - id: ssh
     expose: 127.0.0.1:2222
 ```
 
-在各自设备启动 CLI，然后访问消费端的 `127.0.0.1:2222`：
+在两台设备上分别启动 CLI，然后连接消费端的 `127.0.0.1:2222`：
 
 ```bash
-# 示例为 Linux amd64；其他系统/架构使用 dist/cli/ 下对应文件。
-./dist/cli/hole-linux-amd64 -config config.yaml # 默认使用当前目录下的 config.yaml
+./dist/cli/hole-linux-amd64 -config config.yaml
 ```
 
-服务 ID 将 `provide` 与 `consume` 配对。UDP 服务使用 `udp://HOST:PORT`；
-消费端仍填写本地监听地址。完整配置见 [config.example.yaml](config.example.yaml)。
+上面的二进制名称以 Linux amd64 为例；其他系统和架构使用 `dist/cli/` 中对应的文件。`service` 和 `expose` 支持 TCP 与 UDP。更多配置字段见 [配置示例](config.example.yaml)。
 
-### 固定入口与公网业务监听
+常用 CLI 参数：
 
-拥有公网地址或能手动设置 UDP 端口映射的设备可以配置固定入口：
+| 参数 | 作用 |
+| --- | --- |
+| `-config FILE` | 指定配置文件；默认读取当前目录的 `config.yaml`。 |
+| `-transport VALUE` | 可选 `auto`、`ice` 或 `ipv6`；`auto` 使用 ICE 并兼容旧 IPv6 对端。 |
+| `-debug` | 输出连接协商和底层网络错误，日志可能包含服务器及候选地址。 |
+| `-version` | 显示共享核心版本。 |
+
+## 连接路径
+
+普通 ICE 连接按以下思路工作：
+
+1. 先尝试 IPv4 / IPv6 UDP 直连。
+2. 普通 ICE 直连失败后，符合条件时追加 NAT 感知的 UDP 直连尝试，最多 15 秒。
+3. 仍未连通时，按中继顺序尝试可用的 Hole 或 TURN。配置了 Hole 中继时默认先尝试 Hole，再试 TURN/UDP、TURN/TCP、TURN/TLS；可用 `relay.order` 调整。
+
+`transport.preferred` 支持 `ice`、`auto` 和 `ipv6`。`ice` 使用 ICE；`auto` 使用 ICE 并兼容旧 IPv6 对端；`ipv6` 只使用旧 IPv6 路径。省略该设置仍使用 IPv6 模式。`allow_legacy` 用于协商旧对端，不是 ICE 失败后的自动回退开关。
+
+开启 `ice.relay_only: true` 后跳过直连，仅使用可用的 Hole 或 TURN。Worker 和客户端都要支持该策略，才能在连接失败和切网重连时保持约束。
+
+## NAT 探测与 UDP 直连
+
+NAT 辅助尝试在普通 ICE 直连失败后运行。Worker 与双方客户端都支持该能力、双方允许直连且使用 ICE 时才会启用；固定入口、仅中继关系和旧版客户端沿用各自原有路径。15 秒预算包含排队、探测、端口映射和 QUIC 握手。尝试失败后继续原有 Hole / TURN 中继顺序。自管 Worker 升级时先更新 Worker，再更新两端客户端。
+
+配置项位于 `ice` 下：
+
+| 配置 | 默认值 | 作用 |
+| --- | --- | --- |
+| `udp_punching` | `auto` | `auto` 启用 NAT 感知的 UDP 直连补充尝试；`off` 禁用。 |
+| `port_mapping` | `auto` | 在平台和路由器支持时，尝试为隧道 UDP 端口创建 UPnP IGD 或 NAT-PMP 映射；`off` 禁用。它不会映射 `provide` / `consume` 的业务端口。 |
+| `nat_stun_urls` | `null` | NAT 分类用的 UDP STUN 地址。`null` 复用 `ice.stun_urls` 并补充默认服务；`[]` 不使用分类服务；也可自定义，最多 8 条。 |
+
+`ice.stun_urls` 用于常规 ICE 候选收集；`ice.nat_stun_urls` 用于 NAT 分类。自动端口映射会在连接使用期间续租，并在路径结束时尝试删除。路由器或平台不支持映射时，Hole 会继续运行其他直连或中继路径。
+
+NAT 类型、端口可预测性和探测时间用于诊断，不保证直连一定成功；支持的图形客户端会在网络或设备详情中显示这些信息。协商时 NAT 快照和最多 8 个 IPv4 映射地址会经 Worker 转交对端；Worker 不因此承载业务流量。底层协商细节见 [协议说明：UDP 直连子阶段](docs/PROTOCOL.md#udp-直连子阶段)。
+
+Android / Wear、桌面和 PenMods 的设置页可控制 UDP 直连与端口映射，并填写分类 STUN 地址；配置导入导出会保留这些选项。CLI 使用上表中的 YAML 字段。
+
+## 固定入口与设备中继
+
+### 固定入口
+
+有公网 UDP 地址或已配置路由器端口转发时，可给一端设置固定入口：
 
 ```yaml
 transport:
   preferred: ice
   fixed_endpoint:
     listen: 0.0.0.0:40000
-    advertise: 203.0.113.10:50000
+    advertise: relay.example.com:50000
 ```
 
-这里公网 UDP 50000 映射到本机 UDP 40000；直绑公网地址时也可使用相同端口。
-`listen` 必须是 IPv4 / IPv6 字面地址；`advertise` 支持 IP 或域名，IPv6 使用 `[地址]:端口`。
-两项必须同时填写，端口范围为 1–65535，公布地址不能为通配地址；域名每次连接重新解析。
-省略整个 `fixed_endpoint` 块即不开启固定监听。配置只适用于 `auto` / `ice`，不能与本机
-`ice.relay_only` 或 `ipv6` 模式共用；对端要求仅中继时双方明确报告冲突。
+本例表示公网 UDP 50000 转发到本机 UDP 40000。对端无需设置入口，会从 Worker 获取公布地址并拨号。任一端公布固定入口后，该设备对只使用固定路径；连接失败时不会回退到 ICE 或 TURN，也不能与仅中继模式组合。Worker 和两端核心都需支持固定入口协议，升级顺序为 Worker 后客户端。请先确认公布地址、端口转发和防火墙规则可从对端访问。当前图形客户端可显示固定入口连接状态，但固定监听配置需通过 CLI 设置。
 
-对端保持普通 ICE 配置，无需填写入口或开启监听。任一端公布入口后，该设备对使用固定
-QUIC 连接，不收集 ICE 候选、不申请 TURN；失败后持续重试，间隔从 1 秒增至最多 15 秒。
-双方均公布入口时，先尝试设备名字典序较小端的入口，失败后更换方向。
+### 同房间 Hole 中继
 
-类似 frp 的入口用法仍使用现有服务映射：公网机配置上述固定入口，并配置
-`consume: [{id: ssh, expose: "0.0.0.0:2222"}]`；内网机配置
-`provide: [{id: ssh, service: "tcp://127.0.0.1:22"}]`。内网机主动建立隧道，外部客户端
-访问公网机 TCP 2222，再经固定 QUIC 隧道访问内网 SSH。隧道入口开放 UDP，业务端口按
-服务协议开放。Worker 负责授权和地址交换，业务流量经过运行 hole 的设备。
-
-共享核心与 CLI 提供固定入口配置；Android / Wear、桌面和 PenMods 可自动拨号并显示固定入口直连、
-公布入口、监听 / 拨号方及实际连接地址，图形界面暂不提供固定监听配置。此功能需按 **Worker → 两端核心** 顺序升级，
-固定协议不提供旧版本兼容回退。公网端口映射还需在实际网络验收。
-
-常用 CLI 参数：
-
-| 参数 | 用途 |
-| --- | --- |
-| `-config FILE` | 配置文件，默认 `config.yaml`；必须包含 `server_url` |
-| `-transport auto` | 优先 ICE，允许与仅支持 IPv6 协议的对端互通 |
-| `-transport ice` / `ipv6` | 仅使用指定传输 |
-| `-debug` | 输出调试日志 |
-| `-version` | 显示统一维护的共享核心版本号 |
-
-启动后的日志类似：
-
-```text
-21:11:20 INFO  hole <core-version> 设备 desktop
-21:11:21 INFO  已加入房间
-21:11:41 INFO  laptop: 已连接 直连/IPv4 320ms
-21:11:41 INFO  ssh: 映射已就绪，对端 laptop (tcp)
-21:15:13 WARN  laptop: 连接中断，重连中
-21:15:33 INFO  laptop: 已恢复 TCP 中继/IPv4 5.1s
-```
-
-排查中继失败时加上 `-debug`：
-
-```bash
-./dist/cli/hole-linux-amd64 -config config.yaml -debug
-```
-
-调试日志保留对端、`phase`、`gen` 和底层失败原因，包括 Pion ICE / TURN 的警告与错误，
-例如 DNS 解析失败、TCP 拒绝连接、TLS 证书错误或 TURN 分配失败；最终失败原因不再只剩“路径未连通”。
-普通模式仍保持简洁提示。日志会脱敏本次尝试的信令、房间、TURN 和 ICE 凭据，不启用报文级 trace；
-每次尝试最多输出 64 条底层日志，达到上限会提示省略，最终失败原因仍单独输出。
-“尚无候选对”每次尝试只输出一次等待信息；重复发送失败合并，保留脱敏后的 socket / TURN
-permission 错误。正常取消不再输出关闭连接的告警；响应完整性校验始终保留。
-调试日志可能包含服务器和候选地址，分享前请检查。
-
-配置中省略 `transport` 时保留 IPv6 模式；上面的示例显式开启 ICE。
-STUN 默认使用 Cloudflare，TURN 默认向 Worker 按需申请短期凭据。每端可通过 `turn.order`
-独立配置 `udp`、`tcp`、`tls` 顺序。Worker 与两端均支持 `all-pairs-v1` 时，
-轮次覆盖两端白名单的跨类型组合；Cloudflare 的 TCP / TLS 先试标准端口，再试 80 / 443。
-manual URL 必须给端口；省略 `transport` 时，`turn:` 支持 UDP / TCP，`turns:` 仅支持 TLS。
-任一端启用 `ice.relay_only: true` 时，新版 Worker 通知双方跳过直连，可使用 Hole 或 TURN，
-重试和切网后也只尝试中继，仍支持单跳中继。连接旧 Worker 时会提示升级。运行中开启仅中继
-会停止旧的无约束路径。中继检查保留完整时间预算，不再因候选对瞬时 Failed 而提前放弃。
-旧版本继续使用其支持的轮次或命名阶段。TCP 重放缓存按需增长，单方向最多 16 MiB，
-同一核心实例的重放块容量合计最多 128 MiB；恢复与限额细节见 [协议说明](docs/PROTOCOL.md)。
-
-## 同房间设备中继
-
-只有根 Go CLI 能开启中继服务。服务端配置现有固定 UDP 入口，并可不配置业务映射：
+根目录 Go CLI 可把固定入口同时作为同房间设备中继。服务端和客户端需要在同一个房间：
 
 ```yaml
+# 中继设备
 transport:
   preferred: ice
   fixed_endpoint:
@@ -180,87 +131,46 @@ transport:
 relay:
   serve:
     enabled: true
-    max_pairs: 64
-    bandwidth_mbps: 0
 ```
 
-各客户端填写同房间中继设备名，不需要创建到中继的业务映射：
-
 ```yaml
+# 使用中继的客户端
 relay:
   device: relay-node
   order: [hole, udp, tcp, tls]
 ```
 
-正常顺序为直连 → Hole → TURN UDP → TCP → TLS；仅中继跳过直连。
-`relay.order` 只尝试列出的类型，不能重复；显式 `[]` 使用新默认顺序。
-省略该字段时迁移旧 `turn.order`，填写设备名则在前面加入 Hole。
-没有本端设备名仍可参与对端指定的 Hole 路径；设备名不能是该连接任一端。
-`turn.mode: off` 只关闭本端 TURN，Hole 仍可承载 TCP、UDP 和语音。
-`max_pairs` 为正在建立及活动的设备对上限，默认 64、范围 1–128；
-`bandwidth_mbps` 为所有中继双向流量的十进制 Mbps 总限速，0 不限，不计中继自己的业务。
-中继与普通固定业务共用同一个监听端口，保留自身提供和使用服务的能力。
-涉及固定入口的普通设备对仍只走固定路径。GUI 导入开启服务的 CLI 配置会明确拒绝。
-先升级 Worker，再升级客户端；旧 Worker、旧对端或旧中继会提示升级。
+Hole 中继与该设备的固定业务共用 UDP 监听端口，不新开监听端口。中继只转发端到端 QUIC 数据，不连接目标业务服务。服务容量、限速和升级兼容要求见 [协议说明](docs/PROTOCOL.md#hole-设备中继)。
 
-## 桌面客户端构建
+## 客户端与构建
 
-桌面客户端的“语音”页支持房间通话、静音、成员和线路状态，使用系统默认麦克风与播放设备，
-与 Android 复用共享语音核心。Android 客户端可在“语音”页选择自动、手机或耳机麦克风；连接带麦克风的耳机时，
-通话输出和采集会跟随耳机。需选择自动 / ICE 连接方式并启动连接，建议佩戴耳机。
+| 客户端 | 说明 |
+| --- | --- |
+| CLI | Go 命令行客户端；也支持固定入口和运行 Hole 中继。 |
+| Android / Wear OS | 原生应用，共用 Go 核心；支持配置导入导出、连接报告和 NAT 诊断。 |
+| 桌面客户端 | Linux / Windows Rust + Slint GUI，内嵌 Go 核心。 |
+| PenMods | 使用 `hole-core` 的插件。 |
 
-`desktop` 以 Release 模式构建 Rust + Slint GUI，将匹配目标的 Go 核心压缩嵌入，生成单文件客户端：
+启用语音的设备在配置中设置 `voice.enabled: true`；同一房间最多 8 台语音设备参与。Android、桌面和 PenMods 的具体交互见各自客户端说明。
+
+构建入口统一为 `build.sh`：
 
 ```bash
+./build.sh cli
 ./build.sh desktop
-./build.sh desktop --os linux --arch arm64
-./build.sh desktop --os windows --arch amd64
-```
-
-交付位于 `dist/desktop/<goos>-<goarch>/`，只需运行其中的 `hole-desktop[.exe]`，同目录附 SHA-256 文件。
-Linux 校验后从 memfd 匿名内存文件启动核心；Windows 从私有临时目录启动并在退出时回收，异常残留在下次启动时清理。
-构建完整 GUI 需要 Rust stable / Cargo；交叉构建还需要预装对应 Rust target 和平台 linker。
-若只需要独立 Go 核心宿主，可构建 `core`，产物位于 `dist/core/`，不需要 Qt、Slint 或 CGo。
-`cli` / `android` / `wear` / `all` 不会隐式构建 `core` 或 `desktop`；需要时显式组合对应目标。
-控制协议见 [桌面桥接](desktop/README.md)，界面路线和 Android 功能对齐验收矩阵见
-[GUI 计划](docs/DESKTOP_GUI_PLAN.md)。
-
-## 构建与签名
-
-[build.sh](build.sh) 是统一构建入口
-
-统一入口只产出 Release，Go 使用 `-trimpath -ldflags="-s -w"`，Android 开启 R8、资源收缩与 native strip。
-
-```bash
-./build.sh cli --os linux --arch arm64
-./build.sh cli --os windows --arch amd64
-
-# Android / Wear 先配置现有签名密钥
-cp -n signing.env.example signing.env
-# 编辑 signing.env 中的密钥库路径、密码与别名
 ./build.sh android
 ./build.sh wear
-./build.sh all
+./build.sh all       # CLI + Android 手机 + Wear，不包含 desktop 或 core
 ```
 
-产物位于 `dist/cli/`、`dist/android/` 和 `dist/wear/`；所有构建缓存位于项目 `.cache/`。
-`dist/`、`.cache/`、`signing.env` 和密钥库文件均被 Git 忽略，测试源码正常纳入版本管理。
+构建环境、签名、产物和验证方法见 [构建指南](docs/BUILDING.md)。Worker 单独部署，不会随客户端构建自动发布。
 
-环境准备、参数、签名优先级和验证命令见 [构建指南](docs/BUILDING.md)，参数速查用 `./build.sh --help`。
-Worker 单独部署，见 [Worker 部署](docs/WORKER.md)。
+## 文档
 
-## 项目结构
+- [配置示例](config.example.yaml)：CLI 常用 YAML 配置样例。
+- [协议说明](docs/PROTOCOL.md)：连接协商、NAT、固定入口、中继、语音和会话恢复边界。
+- [Worker 部署指南](docs/WORKER.md)：信令服务、TURN 凭据和协议升级顺序。
+- [Android 客户端](android/README.md) · [Wear OS](android/wear/README.md) · [桌面客户端](desktop/README.md) · [PenMods 插件](penmods/README.md)。
+- [第三方许可清单](THIRD_PARTY_NOTICES.md)：移植组件来源、许可与修改说明。
 
-| 路径 | 职责 |
-| --- | --- |
-| 根目录 Go 文件 | CLI 参数、配置读取、事件日志 |
-| [core/](core/README.md) | 共享网络、ICE / QUIC、映射与可恢复会话 |
-| [mobile/](mobile/README.md) | gomobile 窄接口与 Android 平台网络适配 |
-| [desktop/](desktop/README.md)、`cmd/hole-core/` | 独立 Go stdio 核心宿主与入口 |
-| [android/](android/README.md) | 手机应用、共享桥接模块和 [Wear 模块](android/wear/README.md) |
-| `worker/worker.js` / `worker/worker_ice.mjs` | 房间协调、ICE 信令、Hole 授权与 TURN broker |
-| `scripts/` | 构建环境、源码摘要及构建脚本回归测试 |
-| [AGENTS.md](AGENTS.md) | 仓库维护与验证约定 |
-
-Wear 界面目前沿用手机端，圆屏和旋钮的专属交互尚待适配。
-会话恢复限于原进程及仍存活的应用 socket；进程重启或应用自行关闭后，连接重新建立。
+项目原创部分采用 GPL-2.0-or-later；第三方组件继续按其原许可分发。包含移植组件的组合交付许可与源码材料见 [许可清单](THIRD_PARTY_NOTICES.md)。
