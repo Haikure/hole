@@ -1,5 +1,13 @@
 # 传输、会话与兼容性
 
+## UDP 直连子阶段
+
+join 声明 `udp_punch_version: udp-punch-v1`。仅在 Worker 与双方共同支持、ICE profile、双方允许直连时，`transport_ready` 返回同名能力及本代次随机 256 位 `punch_key`。公开 phase/path_type 仍为 `direct`，固定入口、仅中继和旧客户端沿用原流程。
+
+普通 ICE 失败后最多执行 15 秒补充尝试，包含实例内多 socket 任务排队、准备、探测、QUIC 与 mux 握手。`nat_report` 携带 snapshot 和最多 8 个 IPv4 UDP 地址，复用 transport_id、generation、to_peer_id、运行实例和网络代次、租约检查。每端每代次一份报告，不超过 4096 字节并计入已有信令限流；`nat_status` 单独更新展示快照，每端至少间隔 30 秒。Worker 持久化报告，休眠后可回放。凭据每代次轮换。探测包为带角色字段的 HMAC-SHA256 消息，成功 socket 保持单 reader 并交给现有证书指纹认证和业务 mux。
+
+分类与可预测性独立。缺少有效来源或服务器忽略 CHANGE-REQUEST 时保留信息不足，不把请求超时当作确定过滤结论。本机结果按网络代次失效，5 分钟过期并在运行期间刷新；对端未上报与信息不足分别展示。映射结果仅作为地址来源，不改写 NAT 分类，私网外部地址不证明公网可达。
+
 CLI、手机和 Wear 使用同一 Go 实现。配置与交互入口见 [README](../README.md)，
 本文件描述当前协议行为，不包含历史构建流水。
 

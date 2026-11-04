@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"syscall"
@@ -78,6 +79,23 @@ type boundPlatform struct {
 	root    *networkPlatform
 	binding NetworkBinding
 	network core.NetworkSnapshot
+}
+
+func (p *boundPlatform) NATNetworkIdentity() string { return p.network.Handle }
+func (p *boundPlatform) NATIPv4Available() bool {
+	for _, raw := range p.network.Addresses {
+		if ip := net.ParseIP(raw); ip != nil && ip.To4() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *boundPlatform) DefaultGateway(ctx context.Context) (netip.Addr, error) {
+	if err := ctx.Err(); err != nil {
+		return netip.Addr{}, err
+	}
+	return netip.ParseAddr(p.network.Gateway)
 }
 
 func (p *boundPlatform) InterfaceSnapshots(ctx context.Context) ([]core.InterfaceSnapshot, error) {

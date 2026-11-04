@@ -1,5 +1,7 @@
 # Hole PenMods 插件
 
+高级设置支持自动 UDP 直连、自动 UDP 端口映射和 NAT 分类 STUN 地址，导入导出保留 null/空数组差异。运行快照显示本机/对端 NAT、可预测性及探测时间，算法由 `hole-core` 提供。插件仍使用原有标准生命周期和 Qt 资源，不增加宿主 Hook。
+
 插件版本统一维护在仓库根目录的 [versions.json](../versions.json)。修改后运行 `python3 scripts/sync_versions.py`，同步 `metadata.json`、`xmake.lua`、桌面 Cargo 元数据和锁文件。
 
 这个目录构建适用于 PenMods 的 `hole_plugin` 插件。插件使用 PenMods 的标准插件生命周期，启动同目录的 `hole-core` 子进程，通过 stdin/stdout 的 JSON-RPC 协议复用 `core.Engine`。

@@ -62,6 +62,9 @@ type FixedEndpointConfig struct {
 	Advertise string `yaml:"advertise" json:"advertise"`
 }
 type ICEConfig struct {
+	UDPPunching         string         `yaml:"udp_punching" json:"udp_punching"`
+	PortMapping         string         `yaml:"port_mapping" json:"port_mapping"`
+	NATSTUNURLs         []string       `yaml:"nat_stun_urls" json:"nat_stun_urls"`
 	STUNURLs            []string       `yaml:"stun_urls" json:"stun_urls"`
 	DirectProbeTimeout  ConfigDuration `yaml:"direct_probe_timeout" json:"direct_probe_timeout"`
 	GatherTimeout       ConfigDuration `yaml:"gather_timeout" json:"gather_timeout"`
@@ -79,6 +82,23 @@ type TURNConfig struct {
 	Username   string         `yaml:"username" json:"username"`
 	Credential string         `yaml:"credential" json:"credential"`
 }
+
+func (c ICEConfig) MarshalYAML() (any, error) {
+	type plain ICEConfig
+	var node yaml.Node
+	if err := node.Encode(plain(c)); err != nil {
+		return nil, err
+	}
+	if c.NATSTUNURLs == nil {
+		for i := 0; i < len(node.Content); i += 2 {
+			if node.Content[i].Value == "nat_stun_urls" {
+				node.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
+			}
+		}
+	}
+	return &node, nil
+}
+
 type ICEServer struct {
 	URLs       []string `json:"urls"`
 	Username   string   `json:"username,omitempty"`
@@ -86,6 +106,15 @@ type ICEServer struct {
 }
 
 func (c *Config) normalizeTransport() {
+	if c.ICE.UDPPunching == "" {
+		c.ICE.UDPPunching = "auto"
+	}
+	if c.ICE.PortMapping == "" {
+		c.ICE.PortMapping = "auto"
+	}
+	if c.ICE.NATSTUNURLs != nil {
+		c.ICE.NATSTUNURLs = append([]string{}, c.ICE.NATSTUNURLs...)
+	}
 	if c.Transport.Preferred == "auto" {
 		c.Transport.Preferred = PreferredICE
 		c.Transport.AllowLegacy = true
@@ -129,6 +158,18 @@ func (c *Config) normalizeTransport() {
 }
 func (c Config) validateTransport() error {
 	c.normalizeTransport()
+	if (c.ICE.UDPPunching != "auto" && c.ICE.UDPPunching != "off") || (c.ICE.PortMapping != "auto" && c.ICE.PortMapping != "off") {
+		return fmt.Errorf("ice.udp_punching 和 ice.port_mapping 只接受 auto 或 off")
+	}
+	if len(c.ICE.NATSTUNURLs) > 8 {
+		return fmt.Errorf("ice.nat_stun_urls 最多 8 条")
+	}
+	for _, raw := range c.ICE.NATSTUNURLs {
+		u, e := stun.ParseURI(raw)
+		if e != nil || u.Scheme != stun.SchemeTypeSTUN || u.Proto != stun.ProtoTypeUDP {
+			return fmt.Errorf("ice.nat_stun_urls 需要 UDP stun: URL")
+		}
+	}
 	if c.Transport.Preferred != PreferredICE && c.Transport.Preferred != PreferredIPv6 {
 		return fmt.Errorf("transport.preferred 只接受 auto、ice 或 ipv6")
 	}

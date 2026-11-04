@@ -25,6 +25,9 @@ Item {
     property bool allowLegacy: true
     property bool allowInsecureSignal: false
     property string stunUrls: ""
+    property string udpPunching: "auto"
+    property string portMapping: "auto"
+    property var natStunUrls: null
     property string turnMode: "worker"
     property string turnOrder: ""
     property string relayDevice: ""
@@ -389,6 +392,9 @@ Item {
         allowInsecureSignal = asBool(transport.allow_insecure_signal, false)
 
         var ice = config.ice && typeof config.ice === "object" ? config.ice : null
+        udpPunching = ice && ice.udp_punching ? ice.udp_punching : "auto"
+        portMapping = ice && ice.port_mapping ? ice.port_mapping : "auto"
+        natStunUrls = ice && Array.isArray(ice.nat_stun_urls) ? ice.nat_stun_urls : null
         stunUrls = ice ? formatList(ice.stun_urls) : defaultStun
         directProbeTimeout = ice && asString(ice.direct_probe_timeout) ? asString(ice.direct_probe_timeout) : "3s"
         gatherTimeout = ice && asString(ice.gather_timeout) ? asString(ice.gather_timeout) : "6s"
@@ -494,6 +500,9 @@ Item {
                 allow_insecure_signal: allowInsecureSignal
             },
             ice: {
+                udp_punching: udpPunching,
+                port_mapping: portMapping,
+                nat_stun_urls: natStunUrls,
                 // The core validates the complete transport object even when
                 // IPv6 is selected. Do not carry hidden, stale ICE values into
                 // that mode.
@@ -881,6 +890,8 @@ Item {
     }
 
     function appendPeerSnapshotLines(lines, peer) {
+        appendSnapshotLine(lines, "  本机 NAT", natText(peer.local_nat, true))
+        appendSnapshotLine(lines, "  对端 NAT", natText(peer.peer_nat, false))
         var peerID = asString(peer.peer_id)
         appendSnapshotLine(lines, "通道 · " + peerID, stateText(peer.state))
         appendSnapshotLine(lines, "  路径", page.peerPathText(peer))
@@ -928,6 +939,14 @@ Item {
         if (peer.error) appendSnapshotLine(lines, "  连接提示", page.fixedIssueText(peer.error.code))
     }
 
+    function natText(n, local) {
+        if (!n || !n.status) return local ? "信息不足" : "对端未上报"
+        var states = {probing: "探测中", insufficient: "信息不足", expired: "已过期", not_applicable: "IPv4 不适用"}
+        var kinds = {open: "公网直连", full_cone: "完全锥型", restricted_cone: "地址受限锥型", port_restricted_cone: "端口受限锥型", symmetric: "对称型"}
+        var patterns = {stable: "映射稳定", incremental: "可能可预测（递增）", decremental: "可能可预测（递减）", irregular: "未观察到规律"}
+        return (states[n.status] ? states[n.status] + " · " : "") + (kinds[n.type] || "未知") + " · " + (patterns[n.predictability] || "可预测性未知") + " · " + (n.probed_at || "暂无探测时间")
+    }
+
     function orderedPeers(peers) {
         var result = peers.slice(0)
         result.sort(function(left, right) {
@@ -964,6 +983,7 @@ Item {
         }
 
         var network = data.network
+        if (network) appendSnapshotLine(lines, "本机 NAT", natText(network.nat, true))
         if (network && typeof network === "object") {
             var networkParts = [network.available ? "可用" : "不可用"]
             if (asString(network.transport).length > 0) networkParts.push(asString(network.transport))

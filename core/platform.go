@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"net"
+	"net/netip"
 	"time"
 )
 
@@ -62,14 +63,20 @@ type NetworkSnapshotter interface {
 }
 
 type NetworkSnapshot struct {
-	Handle    string   `json:"handle"`
-	Transport string   `json:"transport"`
-	Interface string   `json:"interface"`
-	Addresses []string `json:"addresses"`
-	DNS       []string `json:"dns"`
-	Available bool     `json:"available"`
-	Validated bool     `json:"validated"`
-	Metered   bool     `json:"metered"`
+	NAT       NATSnapshot `json:"nat"`
+	Gateway   string      `json:"gateway,omitempty"`
+	Handle    string      `json:"handle"`
+	Transport string      `json:"transport"`
+	Interface string      `json:"interface"`
+	Addresses []string    `json:"addresses"`
+	DNS       []string    `json:"dns"`
+	Available bool        `json:"available"`
+	Validated bool        `json:"validated"`
+	Metered   bool        `json:"metered"`
+}
+
+type GatewayPlatform interface {
+	DefaultGateway(context.Context) (netip.Addr, error)
 }
 
 func (n NetworkSnapshot) clone() NetworkSnapshot {
@@ -81,6 +88,8 @@ func (n NetworkSnapshot) clone() NetworkSnapshot {
 // DefaultPlatform retains the desktop socket and DNS behavior. It is not an
 // Android Network binding implementation; that adapter lives in mobile/.
 type DefaultPlatform struct{}
+
+func (DefaultPlatform) NATNetworkIdentity() string { return "system" }
 
 func (DefaultPlatform) Candidates(ctx context.Context, cfg Config, port int) ([]Candidate, error) {
 	if err := ctx.Err(); err != nil {

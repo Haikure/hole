@@ -1,5 +1,11 @@
 # hole
 
+自动连接支持 NAT 探测与 UDP 直连补充尝试。双方和 Worker 支持时，普通 ICE 后最多再尝试 15 秒（含排队、探测和 QUIC 握手），随后按现有顺序使用 Hole / TURN。固定入口与仅中继关系保持各自策略。配置见 `config.example.yaml` 的 `ice.udp_punching`、`ice.port_mapping`、`ice.nat_stun_urls`。
+
+## 参考项目与许可
+
+参考 EasyTier 的 UDP NAT 分类、端口预测及多 socket 探测策略，移植来源固定为提交 `24e0303fc55e4e645a11818954dd5b712fb94510`。没有引入 TCP 打洞或其隧道协议。源码归属和修改范围见 [第三方许可清单](THIRD_PARTY_NOTICES.md)。原创部分采用 GPL-2.0-or-later，移植部分保留 LGPL-3.0，包含移植部分的组合交付选择 GPL3；已有第三方许可继续有效。
+
 通过房间连接设备，将一端的 TCP / UDP 服务映射到另一端的本地端口。
 CLI、Android 手机与 Wear OS 共用 Go 核心；Cloudflare Worker 负责信令和按需 TURN 凭据签发。
 

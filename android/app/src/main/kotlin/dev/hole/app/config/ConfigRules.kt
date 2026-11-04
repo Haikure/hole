@@ -156,6 +156,8 @@ fun toStartRequest(
     holeRelayOrderError(connection.relay.order)?.let { throw IllegalArgumentException(it) }
     require(connection.connectionMode in setOf("auto", "ice", "legacy")) { "连接方式无效" }
     if (connection.connectionMode != "legacy") {
+        require(connection.ice.udpPunching in setOf("auto", "off") && connection.ice.portMapping in setOf("auto", "off")) { "UDP 直连和端口映射只接受 auto 或 off" }
+        require(connection.ice.natStunUrls?.let { it.size <= 8 && it.all { url -> url.startsWith("stun:") } } != false) { "NAT 探测最多接受 8 条 STUN 地址" }
         require(connection.candidateAddresses.isEmpty()) { "手动 IPv6 候选地址只用于“仅 IPv6”模式；使用 ICE 前请清空此项" }
         require(!connection.serverUrl.startsWith("ws://") || connection.allowInsecureSignal) { "ICE 默认使用 wss://；本地 ws:// 测试需在连接方式中显式开启" }
     }

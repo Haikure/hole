@@ -114,6 +114,8 @@ pub fn push_config_forms(window: &Weak<MainWindow>, shared: &Arc<Mutex<Shared>>)
             relay_device: c.relay.device.clone().into(),
             mode: c.connection_mode.clone().into(),
             stun_urls: c.ice.stun_urls.join("\n").into(),
+            udp_punching: c.ice.udp_punching != "off", port_mapping: c.ice.port_mapping != "off",
+            nat_stun_urls: c.ice.nat_stun_urls.clone().unwrap_or_default().join("\n").into(),
             relay_mode: c.turn.mode.clone().into(),
             turn_urls: c.turn.urls.join("\n").into(),
             turn_order: ModelRc::new(VecModel::from(turn_order)),
@@ -349,6 +351,10 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
                 conn.connection_mode = mode;
                 conn.allow_insecure_signal = form.allow_insecure_signal;
                 conn.ice.stun_urls = stun;
+                conn.ice.udp_punching = if form.udp_punching {"auto"} else {"off"}.into();
+                conn.ice.port_mapping = if form.port_mapping {"auto"} else {"off"}.into();
+                let nat_urls = config::split_lines(&form.nat_stun_urls);
+                if !nat_urls.is_empty() || conn.ice.nat_stun_urls.is_some() {conn.ice.nat_stun_urls=Some(nat_urls);}
                 conn.ice.direct_probe_timeout = form.direct_probe_timeout.trim().into();
                 conn.ice.gather_timeout = form.gather_timeout.trim().into();
                 conn.ice.connectivity_timeout = form.connectivity_timeout.trim().into();

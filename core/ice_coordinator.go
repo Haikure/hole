@@ -21,6 +21,9 @@ type iceSignalSink struct {
 	messages chan iceSignalMessage
 }
 type iceCoordinator struct {
+	natSlots                 chan struct{}
+	natMu                    sync.Mutex
+	natSnapshot              NATSnapshot
 	ctx                      context.Context
 	cancel                   context.CancelFunc
 	platform                 Platform
@@ -70,6 +73,8 @@ func newICECoordinator(ctx context.Context, r Request, platform Platform, sessio
 		c.voice = newConfiguredVoiceRuntime(ctx)
 	}
 	c.networkEpoch.Store(epoch)
+	c.natSlots = make(chan struct{}, 1)
+	c.natSnapshot = natUnknown()
 	return c
 }
 func (c *iceCoordinator) request() Request {
@@ -138,6 +143,9 @@ func (c *iceCoordinator) submit(r Request) {
 }
 func (c *iceCoordinator) networkChanged() {
 	c.networkEpoch.Add(1)
+	c.natMu.Lock()
+	c.natSnapshot = natUnknown()
+	c.natMu.Unlock()
 	select {
 	case c.reset <- struct{}{}:
 	default:
@@ -172,6 +180,9 @@ func (c *iceCoordinator) send(m iceSignalMessage) error {
 	}
 }
 func (c *iceCoordinator) run() error {
+	natDone := make(chan struct{})
+	go func() { defer close(natDone); c.monitorNAT() }()
+	defer func() { c.cancel(); <-natDone }()
 	monitorDone := make(chan struct{})
 	if _, bound := c.platform.(NetworkSnapshotter); bound {
 		close(monitorDone)
@@ -325,6 +336,9 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 	}
 	if endpoint := r.Config.Transport.FixedEndpoint; endpoint != nil {
 		join.FixedEndpoint = endpoint.Advertise
+	}
+	if r.Config.ICE.UDPPunching != "off" && !r.Config.ICE.RelayOnly && r.Config.Transport.FixedEndpoint == nil {
+		join.UDPPunchVersion = udpPunchVersion
 	}
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err = conn.WriteJSON(join); err != nil {
@@ -564,7 +578,7 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if m.Profile != ProfileFixed {
 			c.requestTURN()
 		}
-	case "ice_description", "ice_candidate":
+	case "ice_description", "ice_candidate", "nat_report", "nat_status":
 		c.mu.Lock()
 		p := c.peers[m.TransportID]
 		c.mu.Unlock()

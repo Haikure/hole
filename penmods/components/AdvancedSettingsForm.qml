@@ -13,6 +13,32 @@ Column {
 
     spacing: Theme.cardSpacing
 
+    SwitchRow {
+        width: parent.width
+        height: implicitHeight
+        title: "自动尝试 UDP 直连"
+        summary: "普通探测后最多继续 15 秒"
+        checked: settings.form && settings.form.udpPunching !== "off"
+        onToggled: function(value) { settings.form.udpPunching = value ? "auto" : "off"; settings.form.syncConfig() }
+    }
+    SwitchRow {
+        width: parent.width
+        height: implicitHeight
+        title: "自动映射 UDP 端口"
+        summary: "申请当前网关的临时映射"
+        checked: settings.form && settings.form.portMapping !== "off"
+        onToggled: function(value) { settings.form.portMapping = value ? "auto" : "off"; settings.form.syncConfig() }
+    }
+    Field {
+        width: parent.width
+        height: implicitHeight
+        hostKeyboard: settings.hostKeyboard
+        label: "NAT 探测 STUN 地址"
+        value: settings.form && settings.form.natStunUrls ? settings.form.natStunUrls.join(", ") : ""
+        placeholder: "默认复用 STUN 并补充静态服务"
+        onEdited: function(value) { settings.form.natStunUrls = settings.form.parseList(value); settings.form.syncConfig() }
+    }
+
     Field {
         width: parent.width
         height: implicitHeight

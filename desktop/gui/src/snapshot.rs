@@ -39,6 +39,9 @@ pub struct Mapping {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Peer {
+    pub local_nat: String,
+    pub peer_nat: String,
+    pub direct_strategy: String,
     pub relay_device: String,
     pub relay_endpoint: String,
     pub relay_access_address: String,
@@ -84,6 +87,7 @@ pub struct Peer {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Network {
+    pub nat: String,
     pub handle: String,
     pub transport: String,
     pub interface: String,
@@ -263,6 +267,7 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
         .map(|a| {
             a.iter()
                 .map(|p| Peer {
+                    local_nat: nat_text(&p["local_nat"],true), peer_nat: nat_text(&p["peer_nat"],false), direct_strategy: s(p,"direct_strategy"),
                     relay_device: s(p, "relay_device"),
                     relay_endpoint: s(p, "relay_endpoint"),
                     relay_access_address: s(p, "relay_access_address"),
@@ -331,6 +336,7 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
         mappings,
         peers,
         network: Network {
+            nat: nat_text(&n["nat"],true),
             handle: s(n, "handle"),
             transport: s(n, "transport"),
             interface: s(n, "interface"),
@@ -578,6 +584,13 @@ pub fn fixed_peer_details(p: &Peer) -> Vec<(&'static str, String)> {
         if !address.is_empty() { details.push((key, selected_connection_label(kind, address))); }
     }
     details
+}
+
+pub fn nat_text(n: &Value, local: bool) -> String {
+    let status = match n["status"].as_str().unwrap_or("") { "" => return if local {"信息不足"} else {"对端未上报"}.into(), "probing"=>"探测中 · ", "insufficient"=>"信息不足 · ", "expired"=>"已过期 · ", "not_applicable"=>"IPv4 不适用 · ", _=>"" };
+    let kind = match n["type"].as_str().unwrap_or("") { "open"=>"公网直连", "full_cone"=>"完全锥型", "restricted_cone"=>"地址受限锥型", "port_restricted_cone"=>"端口受限锥型", "symmetric"=>"对称型", _=>"未知" };
+    let pattern = match n["predictability"].as_str().unwrap_or("") { "stable"=>"映射稳定", "incremental"=>"可能可预测（递增）", "decremental"=>"可能可预测（递减）", "irregular"=>"未观察到规律", _=>"可预测性未知" };
+    format!("{status}{kind} · {pattern} · {}",n["probed_at"].as_str().unwrap_or("暂无探测时间"))
 }
 
 pub fn profile_label(profile: &str) -> &'static str {

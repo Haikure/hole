@@ -6,6 +6,23 @@ import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_POLICY, n
 import {HOLE_VERSION,deviceRelayPlan} from './worker_ice.mjs';
 
 const holeCaps={hole_version:HOLE_VERSION,relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1',relay_order:[],relay_enabled:false};
+test('UDP punching negotiates only for eligible pairs and replays generation reports after sleep',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const caps={udp_punch_version:'udp-punch-v1'};
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+ const record=[...r.ice.records.values()][0],ready=a.messages.filter(m=>m.type==='transport_ready').at(-1);
+ assert.equal(ready.udp_punch_version,caps.udp_punch_version);assert.match(ready.punch_key,/^[a-f0-9]{64}$/);
+ const nat={snapshot:{status:'complete',type:'symmetric',predictability:'incremental',samples:3},addresses:['198.51.100.1:40000']};
+ const report={type:'nat_report',transport_id:record.id,transport_generation:record.generation,to_peer_id:'beta',nat};
+ await r.webSocketMessage(a,JSON.stringify(report));assert.deepEqual(b.messages.at(-1).nat,nat);
+ const sleeping=new Room(f.state,{});await sleeping.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));assert.deepEqual(b.messages.at(-1).nat,nat);
+ await r.webSocketMessage(a,JSON.stringify({...report,transport_generation:'0'}));assert.equal(b.messages.filter(m=>m.type==='nat_report').length,2);
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'direct'}));
+ assert.notEqual(a.messages.filter(m=>m.type==='transport_ready').at(-1).punch_key,ready.punch_key);
+ const replacement=f.socket();await r.webSocketMessage(replacement,JSON.stringify(join('beta',[],['one'])));
+ assert.equal(a.messages.filter(m=>m.type==='transport_ready').at(-1).udp_punch_version,undefined);
+});
 async function holeFixture({two=false,offline=false,only=true}={}) {
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket(),relay=f.socket();
  const jr={...join('relay-node'),...holeCaps,transport_profiles:[ICE_PROFILE,FIXED_PROFILE],fixed_endpoint:'relay.example:40000',hole_serve:{enabled:true,max_pairs:1,bandwidth_mbps:0}};

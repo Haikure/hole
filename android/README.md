@@ -1,5 +1,7 @@
 # Android 客户端
 
+手机与 Wear 共用 UDP 直连和自动 UDP 端口映射开关、分类 STUN 地址输入；配置备份和 CLI 交换保留新字段。网络与设备详情分别显示本机/对端 NAT 类型、可预测性和探测时间，具体策略只进入诊断。网关来自所选 Network 的 LinkProperties，不使用猜测地址。
+
 Kotlin / Jetpack Compose 原生客户端，与 CLI 共用 `core/` 中的传输和会话实现。
 采用 Material 3 原生界面，支持 TCP / UDP 映射、运行中重配、配置导入导出、房间语音和结构化连接报告。
 
