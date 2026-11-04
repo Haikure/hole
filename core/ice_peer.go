@@ -17,6 +17,9 @@ import (
 )
 
 type iceAttempt struct {
+	supplement   bool
+	natTried     bool
+	natEvents    chan iceSignalMessage
 	ctx          context.Context
 	cancel       context.CancelFunc
 	ready        iceSignalMessage
@@ -55,6 +58,7 @@ func (t *liveICETransport) close() {
 }
 
 type icePeer struct {
+	natPublished        string
 	coordinator         *iceCoordinator
 	ctx                 context.Context
 	cancel              context.CancelFunc
@@ -114,6 +118,10 @@ func (p *icePeer) update(m iceSignalMessage) {
 		return
 	}
 	old := p.ready
+	if old.TransportGeneration != m.TransportGeneration {
+		p.stats.PeerNAT = NATSnapshot{}
+		p.natPublished = ""
+	}
 	wasOnline := p.online
 	p.online = true
 	identityChanged := old.PeerFingerprint != "" && (old.PeerFingerprint != m.PeerFingerprint || old.PeerRuntimeID != m.PeerRuntimeID)
@@ -244,9 +252,29 @@ func (p *icePeer) update(m iceSignalMessage) {
 }
 func (p *icePeer) receive(m iceSignalMessage) {
 	p.mu.Lock()
+	if m.Type == "nat_status" {
+		if m.TransportGeneration == p.ready.TransportGeneration && m.NAT != nil {
+			p.stats.PeerNAT = m.NAT.Snapshot.Current()
+		}
+		p.mu.Unlock()
+		return
+	}
 	a := p.pending
 	p.mu.Unlock()
 	if a == nil || a.ready.Profile == ProfileFixed || m.TransportGeneration != a.ready.TransportGeneration {
+		return
+	}
+	if m.Type == "nat_report" {
+		p.mu.Lock()
+		if a.natEvents == nil {
+			a.natEvents = make(chan iceSignalMessage, 4)
+		}
+		ch := a.natEvents
+		p.mu.Unlock()
+		select {
+		case ch <- m:
+		default:
+		}
 		return
 	}
 	select {
@@ -469,6 +497,14 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 	if a.ctx.Err() != nil {
 		return
 	}
+	if !a.natTried && a.ready.UDPPunchVersion == udpPunchVersion && a.ready.Phase == "direct" && a.ready.Profile == ProfileICE && !a.ready.RelayRequired && p.coordinator.request().Config.ICE.UDPPunching != "off" {
+		f := classifyError(err)
+		if f.Code != "peer_identity_mismatch" && f.Code != "protocol_mismatch" {
+			a.natTried = true
+			a.supplement = true
+			return
+		}
+	}
 	fault := classifyError(err)
 	if fault.Code == "network_error" {
 		fault = &Fault{Code: "ice_path_failed", Message: "当前网络路径尚未连通，正在尝试下一条路径"}
@@ -527,6 +563,10 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 func (p *icePeer) attempt(a *iceAttempt) {
 	owned := false
 	defer func() {
+		if a.supplement {
+			p.attemptNAT(a)
+			return
+		}
 		if !owned {
 			a.cancel()
 		}
@@ -653,7 +693,9 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	}
 	defer func() {
 		if !owned {
-			a.cancel()
+			if !a.supplement {
+				a.cancel()
+			}
 			_ = agent.Close()
 		}
 	}()
@@ -1039,6 +1081,7 @@ func (p *icePeer) maintain() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
+			p.publishNAT()
 			p.mu.Lock()
 			active := p.active
 			lease := p.ready.LeaseUntil
@@ -1076,6 +1119,8 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 		s.Error = &f
 	}
 	p.mu.Unlock()
+	s.LocalNAT = p.coordinator.localNAT()
+	s.PeerNAT = s.PeerNAT.Current()
 	if active != nil && active.mux.ctx.Err() == nil {
 		s.State = "active"
 		if !online {

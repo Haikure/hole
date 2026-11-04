@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tarfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,7 +74,7 @@ class BuildTests(unittest.TestCase):
         self.root = Path(self.temporary.name) / "source tree"
         self.root.mkdir()
         for relative in (
-            "build.sh", "scripts/build-env.sh", "scripts/build_meta.py", "scripts/sync_versions.py", "versions.json",
+            "build.sh", "scripts/build-env.sh", "scripts/build_meta.py", "scripts/package_licenses.py", "scripts/sync_versions.py", "versions.json",
             "desktop/gui/Cargo.toml", "desktop/gui/Cargo.lock", "penmods/xmake.lua", "penmods/metadata.json",
         ):
             target = self.root / relative
@@ -89,6 +90,9 @@ class BuildTests(unittest.TestCase):
             target = binary_dir / name
             target.write_text(TOOL)
             target.chmod(0o755)
+        shutil.copy2(ROOT / "LICENSE", self.root / "LICENSE")
+        shutil.copytree(ROOT / "LICENSES", self.root / "LICENSES", dirs_exist_ok=True)
+        shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", self.root / "THIRD_PARTY_NOTICES.md")
         gui = self.root / "desktop/gui"
         gui.mkdir(parents=True, exist_ok=True)
         wrapper = self.root / "android/gradlew"
@@ -438,6 +442,20 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(previous, module.core_build_id(), "desktop changes invalidated the shared AAR source identity")
         (self.root / "core/core.go").write_text("changed core\n")
         self.assertNotEqual(previous, module.core_build_id())
+
+    def test_source_delivery_includes_licenses_and_excludes_local_credentials(self):
+        (self.root / "signing.release.env").write_text("private-signing-fixture")
+        (self.root / "config.yaml").write_text("private-config-fixture")
+        self.invoke("cli")
+        output = self.root / "dist"
+        self.assertTrue((output / "licenses/GPL-2.0.txt").is_file())
+        self.assertTrue((output / "licenses/LGPL-3.0.txt").is_file())
+        with tarfile.open(output / "hole-source.tar.gz") as archive:
+            names = archive.getnames()
+        self.assertIn("hole/core/core.go", names)
+        self.assertIn("hole/scripts/build-env.sh", names)
+        self.assertNotIn("hole/config.yaml", names)
+        self.assertFalse(any("signing.release.env" in name or "signing.env" == Path(name).name or "/.cache/" in name for name in names))
 
 
 if __name__ == "__main__":

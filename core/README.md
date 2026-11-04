@@ -1,5 +1,7 @@
 # 共享 Go 核心
 
+`internal/nat` 包含 UDP 分类、预测、socket 探测及 IGD / NAT-PMP；`nat_transport.go` 负责代次、信令、15 秒预算和 QUIC 接入。`Network.NAT` 为本机网络结果，`PeerTransports.local_nat/peer_nat` 分别为本机/对端结果，`direct_strategy` 仅用于诊断。分类与映射状态独立；仅中继及固定入口不执行补充策略。新核心源码自动进入 `scripts/build_meta.py` 的递归摘要。
+
 `relay.device` / `relay.order` 提供 Hole 设备中继配置，`relay.serve` 仅由根 CLI 显式能力
 `Options.AllowRelayServe` 开放。固定 UDP socket 由单一分流器读取；Linux 批量后端和其他
 平台数据报后端共用授权、限速、公平队列和统计。`Snapshot.Relay` 为服务端统计，

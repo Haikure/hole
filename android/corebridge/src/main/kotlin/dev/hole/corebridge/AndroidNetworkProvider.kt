@@ -27,11 +27,12 @@ class AndroidNetworkProvider(context: Context) : NetworkBinding, AutoCloseable {
     private var preferred: Network? = null
     private var snapshot = JSONObject().put("available", false).put("handle", "0").toString()
     private val lost = mutableSetOf<Network>()
-    private data class LinkFacts(val interfaceName: String?, val addresses: List<String>, val dns: List<String>)
+    private data class LinkFacts(val interfaceName: String?, val addresses: List<String>, val dns: List<String>, val gateway: String?)
     private fun linkFacts(value: LinkProperties) = LinkFacts(
         value.interfaceName,
         value.linkAddresses.mapNotNull { it.address.hostAddress?.substringBefore('%') },
         value.dnsServers.mapNotNull { it.hostAddress },
+        value.routes.firstOrNull { it.isDefaultRoute && it.gateway is java.net.Inet4Address }?.gateway?.hostAddress,
     )
     private val properties = mutableMapOf<Network, LinkFacts>()
     private val capabilities = mutableMapOf<Network, NetworkCapabilities>()
@@ -112,6 +113,7 @@ class AndroidNetworkProvider(context: Context) : NetworkBinding, AutoCloseable {
             put("interface", properties?.interfaceName ?: "")
             put("addresses", JSONArray(properties?.addresses?.sorted().orEmpty()))
             put("dns", JSONArray(properties?.dns?.sorted().orEmpty()))
+            put("gateway", properties?.gateway ?: "")
             put("validated", capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true)
             put("metered", capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true)
             put("transport", when {

@@ -36,6 +36,9 @@ data class CoreTransport(
 )
 @Serializable
 data class IceSettings(
+	@SerialName("udp_punching") val udpPunching: String = "auto",
+	@SerialName("port_mapping") val portMapping: String = "auto",
+	@SerialName("nat_stun_urls") val natStunUrls: List<String>? = null,
     @SerialName("stun_urls") val stunUrls: List<String> = listOf(DEFAULT_STUN_URL),
     @SerialName("direct_probe_timeout") val directProbeTimeout: String = "3s",
     @SerialName("gather_timeout") val gatherTimeout: String = "6s",

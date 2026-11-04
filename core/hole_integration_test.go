@@ -128,7 +128,22 @@ func TestHoleThreeDevices(t *testing.T) {
 			if err != nil || string(got[:n]) != string(payload) {
 				t.Fatal("UDP", err)
 			}
-			for _, port := range []int{relayExpose, alphaExpose, reverseExpose} {
+			for _, item := range []struct {
+				engine *Engine
+				id     string
+				port   int
+			}{{relay, "tcp", relayExpose}, {a, "relay-tcp", alphaExpose}, {a, "reverse", reverseExpose}} {
+				// The shared Hole transport can finish before an independent fixed
+				// mapping. Wait for the listener being exercised, not another path.
+				waitSnapshotWithin(t, item.engine, 5*time.Second, func(s Snapshot) bool {
+					for _, m := range s.Mappings {
+						if m.ID == item.id && m.State == "active" {
+							return true
+						}
+					}
+					return false
+				})
+				port := item.port
 				conn, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
 				if err != nil {
 					t.Fatal("relay's ordinary service", err)

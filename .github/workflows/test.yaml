@@ -1,0 +1,127 @@
+name: Test desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/nat-direct']
+  pull_request:
+    paths:
+      - '.github/workflows/test.yaml'
+      - 'desktop/**'
+      - 'core/**'
+      - 'mobile/**'
+      - 'scripts/**'
+      - 'build.sh'
+      - 'go.mod'
+      - 'go.sum'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: Desktop / ${{ matrix.os }} / amd64
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-24.04
+          - os: windows
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: always
+      GOTOOLCHAIN: local
+      GOWORK: off
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.3'
+          cache: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            .cache/go-build
+            .cache/go/pkg/mod
+            .cache/cargo-home
+            .cache/cargo-target
+          key: test-desktop-${{ runner.os }}-${{ hashFiles('go.sum', 'desktop/gui/Cargo.lock') }}
+          restore-keys: |
+            test-desktop-${{ runner.os }}-
+
+      - name: Install Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev libfontconfig1-dev
+
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+        with:
+          arch: x64
+
+      - name: Configure Windows tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
+          if (-not (Test-Path $linker)) { throw 'MSVC linker is missing' }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Make python3 available on Windows
+        if: runner.os == 'Windows'
+        run: |
+          if ! command -v python3 >/dev/null 2>&1; then
+            mkdir -p .ci-bin
+            printf '%s\n' '#!/usr/bin/env bash' 'exec python "$@"' > .ci-bin/python3
+            chmod +x .ci-bin/python3
+            echo "$PWD/.ci-bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Build embedded desktop Release
+        run: bash ./build.sh desktop --os '${{ matrix.os }}' --arch amd64
+
+      - name: Test Rust, configuration, snapshots and Slint
+        run: |
+          set -euo pipefail
+          source scripts/build-env.sh
+          core_binary="$PWD/dist/core/hole-core-${{ matrix.os }}-amd64"
+          if [[ '${{ matrix.os }}' == windows ]]; then core_binary+=.exe; fi
+          export HOLE_EMBED_CORE="$core_binary"
+          cd desktop/gui
+          cargo test --locked --release --features embedded-core
+
+      - name: Upload tested executable and license materials
+        if: success()
+        uses: actions/upload-artifact@v6
+        with:
+          name: tested-desktop-${{ matrix.os }}-amd64
+          path: |
+            dist/desktop/${{ matrix.os }}-amd64/
+            dist/licenses/
+            dist/hole-source.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

@@ -2,6 +2,19 @@ package dev.hole.corebridge
 
 import org.json.JSONObject
 
+data class NATSnapshot(val status: String = "", val type: String = "unknown", val predictability: String = "unknown", val samples: Int = 0, val probedAt: String = "", val reason: String = "") {
+    fun description(local: Boolean = false): String {
+        val state = mapOf("probing" to "探测中", "insufficient" to "信息不足", "expired" to "已过期", "not_applicable" to "IPv4 不适用")[status]
+        if (status.isBlank()) return if (local) "信息不足" else "对端未上报"
+        val kind = mapOf("open" to "公网直连", "full_cone" to "完全锥型", "restricted_cone" to "地址受限锥型", "port_restricted_cone" to "端口受限锥型", "symmetric" to "对称型")[type] ?: "未知"
+        val pattern = mapOf("stable" to "映射稳定", "incremental" to "可能可预测（递增）", "decremental" to "可能可预测（递减）", "irregular" to "未观察到规律")[predictability] ?: "可预测性未知"
+        return listOfNotNull(state, kind, pattern).joinToString(" · ")
+    }
+    companion object {
+        fun fromJson(j: JSONObject?) = if (j == null) NATSnapshot() else NATSnapshot(j.optString("status"), j.optString("type"), j.optString("predictability"), j.optInt("samples"), j.optString("probed_at"), j.optString("reason"))
+    }
+}
+
 data class MappingSnapshot(
     val id: String, val role: String, val protocol: String, val state: String,
     val endpoint: String = "", val peer: String = "", val path: String = "",
@@ -26,9 +39,13 @@ data class PeerSnapshot(
     val relayOrder: List<String> = emptyList(), val peerRelayOrder: List<String> = emptyList(),
     val relayRound: Int = 0, val relayOrderFallback: Boolean = false,
     val fixedEndpoint: String = "", val listenerId: String = "", val dialerId: String = "",
+    val localNAT: NATSnapshot = NATSnapshot(), val peerNAT: NATSnapshot = NATSnapshot(),
+    val directStrategy: String = "", val portMapping: String = "",
 ) {
     companion object {
         fun fromJson(j: JSONObject): PeerSnapshot = PeerSnapshot(
+            localNAT = NATSnapshot.fromJson(j.optJSONObject("local_nat")), peerNAT = NATSnapshot.fromJson(j.optJSONObject("peer_nat")),
+            directStrategy = j.optString("direct_strategy"), portMapping = j.optJSONObject("port_mapping")?.toString().orEmpty(),
             relayDevice = j.optString("relay_device"), relayEndpoint = j.optString("relay_endpoint"), relayAccessAddress = j.optString("relay_access_address"),
             peerId = j.optString("peer_id"), transportId = j.optString("transport_id"), generation = j.optString("generation", "0"),
             profile = j.optString("profile"), state = j.optString("state"), phase = j.optString("phase"), pendingPhase = j.optString("pending_phase"),
@@ -52,6 +69,7 @@ data class NetworkSnapshot(
     val handle: String = "0", val transport: String = "none", val interfaceName: String = "",
     val addresses: List<String> = emptyList(), val dns: List<String> = emptyList(),
     val available: Boolean = false, val validated: Boolean = false, val metered: Boolean = false,
+    val nat: NATSnapshot = NATSnapshot(),
 )
 
 data class VoiceMemberSnapshot(
@@ -166,6 +184,7 @@ data class CoreSnapshot(
                 startedAt = json.optString("started_at"),
                 mappings = details,
                 network = NetworkSnapshot(
+                    nat = NATSnapshot.fromJson(network.optJSONObject("nat")),
                     handle = network.optString("handle", "0"), transport = network.optString("transport", "none"),
                     interfaceName = network.optString("interface"), addresses = strings("addresses"), dns = strings("dns"),
                     available = network.optBoolean("available"), validated = network.optBoolean("validated"), metered = network.optBoolean("metered"),

@@ -538,6 +538,7 @@ func (e *Engine) Snapshot() Snapshot {
 		StartedAt: e.startedAt, Network: e.network.clone(),
 		Mappings: []MappingSnapshot{}, PeerTransports: []PeerTransportSnapshot{}, Voice: VoiceSnapshot{State: "disabled", Members: []VoiceMemberSnapshot{}, Peers: []VoicePeerSnapshot{}}, Capabilities: Capabilities{Transport: "IPv6 / QUIC / hole-v2", RequiresIPv6: true, LiveConfiguration: true},
 	}
+	s.Network.NAT = natUnknown()
 	s.Capabilities.HoleRelay = true
 	s.Capabilities.RelayServe = e.allowRelayServe
 	if p, ok := e.platform.(NetworkSnapshotter); ok {
@@ -564,6 +565,9 @@ func (e *Engine) Snapshot() Snapshot {
 	if e.run != nil {
 		manager = e.run.sessions
 		coordinator = e.run.ice
+	}
+	if coordinator != nil {
+		s.Network.NAT = coordinator.localNAT()
 	}
 	appendMapping := func(id string) {
 		mapping := e.mappings[id]

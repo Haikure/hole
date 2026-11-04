@@ -80,6 +80,7 @@ impl PeerData {
     pub(crate) fn from_peer(p: &snap::Peer) -> Self {
         let fixed = snap::is_fixed_peer(p);
         let mut details = vec![kv("连接过程", &snap::peer_phase_label(p))];
+        details.extend([kv("本机 NAT", &p.local_nat),kv("对端 NAT", &p.peer_nat),kv("直连策略", &p.direct_strategy)]);
         if !p.relay_device.is_empty() {
             details.extend([
                 kv("Hole 中继设备", &p.relay_device),
@@ -1017,6 +1018,7 @@ impl Worker {
             kv("网卡", if s.network.interface.is_empty() { "由系统选择" } else { &s.network.interface }),
             kv("本机地址", &if s.network.addresses.is_empty() { "桌面平台未提供".to_string() } else { s.network.addresses.join("\n") }),
             kv("DNS", &if s.network.dns.is_empty() { "由当前网络提供".to_string() } else { s.network.dns.join("\n") }),
+            kv("本机 NAT", &s.network.nat),
             kv("STUN", &if ipv6_only { "未使用（仅 IPv6 模式）".to_string() } else if c.ice.stun_urls.is_empty() { "未启用，仅探测本地地址".to_string() } else { c.ice.stun_urls.join("\n") }),
             kv("计费网络", if s.network.metered { "是" } else { "未提供" }),
             kv("网络绑定", if s.network_binding { "外部连接与 DNS 跟随所选网络" } else { "使用系统网络" }),

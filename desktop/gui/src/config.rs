@@ -73,6 +73,9 @@ pub struct ConsumeEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IceSettings {
+    pub udp_punching: String,
+    pub port_mapping: String,
+    pub nat_stun_urls: Option<Vec<String>>,
     pub stun_urls: Vec<String>,
     pub direct_probe_timeout: String,
     pub gather_timeout: String,
@@ -86,6 +89,7 @@ pub struct IceSettings {
 impl Default for IceSettings {
     fn default() -> Self {
         IceSettings {
+            udp_punching: "auto".into(), port_mapping: "auto".into(), nat_stun_urls: None,
             stun_urls: vec![DEFAULT_STUN_URL.into()],
             direct_probe_timeout: "3s".into(),
             gather_timeout: "6s".into(),
@@ -415,6 +419,8 @@ pub fn find_id_conflict(provide: &[ProvideEntry], consume: &[ConsumeEntry]) -> O
 }
 
 pub fn find_connection_error(c: &ConnectionSettings, secrets: &Secrets) -> Option<String> {
+    if !["auto","off"].contains(&c.ice.udp_punching.as_str()) || !["auto","off"].contains(&c.ice.port_mapping.as_str()) { return Some("UDP 直连和端口映射只接受 auto 或 off".into()); }
+    if c.ice.nat_stun_urls.as_ref().is_some_and(|urls|urls.len()>8 || urls.iter().any(|u|!u.starts_with("stun:"))) {return Some("NAT 探测最多接受 8 条 UDP STUN 地址".into());}
     if let Some(e) = validate_server_url(&c.server_url) {
         return Some(e);
     }
@@ -558,6 +564,9 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
             "voice": { "enabled": cfg.voice.enabled },
             "transport": transport,
             "ice": {
+                "udp_punching": c.ice.udp_punching,
+                "port_mapping": c.ice.port_mapping,
+                "nat_stun_urls": c.ice.nat_stun_urls,
                 "stun_urls": c.ice.stun_urls,
                 "direct_probe_timeout": c.ice.direct_probe_timeout,
                 "gather_timeout": c.ice.gather_timeout,
@@ -643,6 +652,9 @@ pub fn from_portable_document(doc: &Value, current: &StoredConfig) -> Result<(St
         connection_mode: connection_mode.into(),
         allow_insecure_signal: transport["allow_insecure_signal"].as_bool().unwrap_or(false),
         ice: IceSettings {
+            udp_punching: ice["udp_punching"].as_str().unwrap_or("auto").into(),
+            port_mapping: ice["port_mapping"].as_str().unwrap_or("auto").into(),
+            nat_stun_urls: ice["nat_stun_urls"].as_array().map(|_|list(&ice["nat_stun_urls"])),
             stun_urls: if ice["stun_urls"].is_array() { list(&ice["stun_urls"]) } else { ice_defaults.stun_urls.clone() },
             direct_probe_timeout: dur(&ice["direct_probe_timeout"], &ice_defaults.direct_probe_timeout),
             gather_timeout: dur(&ice["gather_timeout"], &ice_defaults.gather_timeout),
@@ -792,6 +804,9 @@ fn android_backup(config: &Value, version: i64, current: &StoredConfig) -> Resul
             connection_mode,
             allow_insecure_signal: conn["allowInsecureSignal"].as_bool().unwrap_or(false),
             ice: IceSettings {
+                udp_punching: ice["udp_punching"].as_str().unwrap_or("auto").into(),
+                port_mapping: ice["port_mapping"].as_str().unwrap_or("auto").into(),
+                nat_stun_urls: ice["nat_stun_urls"].as_array().map(|_|list(&ice["nat_stun_urls"])),
                 stun_urls: if ice["stun_urls"].is_array() { list(&ice["stun_urls"]) } else { d.stun_urls.clone() },
                 direct_probe_timeout: or(&ice["direct_probe_timeout"], &d.direct_probe_timeout),
                 gather_timeout: or(&ice["gather_timeout"], &d.gather_timeout),
@@ -931,6 +946,20 @@ mod tests {
         assert_eq!(back.connection.connection_mode, "auto");
         assert_eq!(back.connection.turn.order, vec!["tls", "udp"]);
         assert_eq!(back_secrets.password, "");
+    }
+
+    #[test]
+    fn nat_survives_portable_and_backup_exchange() {
+        let mut cfg = StoredConfig::default();
+        cfg.connection.ice.udp_punching = "off".into();
+        cfg.connection.ice.port_mapping = "off".into();
+        cfg.connection.ice.nat_stun_urls = Some(vec![]);
+        let secrets = Secrets::default();
+        let doc = to_portable_document(&cfg, &secrets, true).unwrap();
+        assert_eq!(doc["ice"]["udp_punching"], "off");
+        assert_eq!(doc["ice"]["nat_stun_urls"], json!([]));
+        let (restored,_) = from_portable_document(&doc,&StoredConfig::default()).unwrap();
+        assert_eq!(restored.connection.ice,cfg.connection.ice);
     }
 
     #[test]

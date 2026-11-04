@@ -105,6 +105,7 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
     line(&mut out, format!("网络 {} / {} / handle={}", s.network.transport, s.network.interface, s.network.handle));
     line(&mut out, format!("可用 {} · 验证 {} · 计费 {}", s.network.available, s.network.validated, s.network.metered));
     line(&mut out, format!("地址 {} · DNS {}", s.network.addresses.join(", "), s.network.dns.join(", ")));
+    line(&mut out, format!("本机 NAT {}",s.network.nat));
     line(&mut out, format!("登录恢复 {} · {}", ctx.resume_at_login, ctx.last_resume_error));
     if let Some(e) = &s.error {
         line(&mut out, format!("错误 {}: {}", e.code, e.message));
@@ -136,6 +137,7 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
         if is_fixed_peer(p) {
             for (key, value) in fixed_peer_details(p) { line(&mut out, format!("  {key} {value}")); }
         } else {
+            line(&mut out, format!("  本机 NAT {} · 对端 NAT {} · 直连策略 {}",p.local_nat,p.peer_nat,p.direct_strategy));
             let local = if p.local_relay_protocol.is_empty() { "非本机中继" } else { &p.local_relay_protocol };
             let remote = if p.remote_relay_protocol.is_empty() { "未上报" } else { &p.remote_relay_protocol };
             let policy = if p.relay_policy.is_empty() { "兼容阶段" } else { &p.relay_policy };

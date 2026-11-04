@@ -15,6 +15,9 @@ transport:
   #   listen: 0.0.0.0:40000
   #   advertise: gateway.example.com:50000
 ice:
+  udp_punching: auto # auto / off；普通 ICE 后最多补充尝试 15 秒
+  port_mapping: auto # auto / off；仅映射隧道 UDP 端口
+  nat_stun_urls: null # null 复用 STUN 并补充静态 UDP 服务；[] 不使用分类服务
   stun_urls:
     - stun:stun.cloudflare.com:3478
   direct_probe_timeout: 3s  # 优先直连时间

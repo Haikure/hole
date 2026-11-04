@@ -1,6 +1,17 @@
 // ICE signaling is scoped by an authenticated socket and a persisted device pair.
 export const ICE_PROFILE = "ice-quic-mux-v1";
 export const FIXED_PROFILE = "fixed-quic-mux-v1";
+export const UDP_PUNCH_VERSION = "udp-punch-v1";
+export function validNATPlan(plan) {
+  if (!plan || JSON.stringify(plan).length > 4096 || !plan.snapshot || !Array.isArray(plan.addresses) || plan.addresses.length > 8) return false;
+  const s=plan.snapshot;
+  return ['insufficient','probing','complete','expired','not_applicable'].includes(s.status) &&
+    ['unknown','open','full_cone','restricted_cone','port_restricted_cone','symmetric'].includes(s.type) &&
+    ['unknown','stable','incremental','decremental','irregular'].includes(s.predictability) &&
+    Number.isSafeInteger(s.samples) && s.samples>=0 && s.samples<=64 &&
+    (s.reason===undefined || typeof s.reason==='string' && s.reason.length<=256) &&
+    plan.addresses.every(a=>typeof a==='string' && /^(?:\d{1,3}\.){3}\d{1,3}:[1-9]\d{0,4}$/.test(a) && a.split(':')[0].split('.').every(p=>Number(p)<=255) && Number(a.split(':')[1])<=65535);
+}
 export const LEGACY_PROFILE = "legacy-ipv6-quic-v2";
 // Renewals arrive every five minutes; keep a full five-minute grace window.
 const LEASE_MS = 10 * 60_000;
@@ -118,8 +129,9 @@ export function iceJoinFields(message) {
   if (message.relay_order!==undefined && !(hole ? Array.isArray(message.relay_order) && message.relay_order.length<=6 && message.relay_order.every((t,i)=>(t==='hole'?!!message.hole_device:relayTypes.has(t)) && message.relay_order.indexOf(t)===i) : validRelayOrder(message.relay_order))) return null;
   if (message.relay_pairing !== undefined && (message.relay_pairing !== ALL_PAIRS || message.relay_order === undefined)) return null;
   const relayEnabled = message.relay_enabled ?? true;
+  if (message.udp_punch_version !== undefined && message.udp_punch_version !== UDP_PUNCH_VERSION) return null;
   if (message.voice !== undefined && typeof message.voice !== "boolean") return null;
-  return { ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
+  return { ...(message.udp_punch_version===UDP_PUNCH_VERSION?{udp_punch_version:UDP_PUNCH_VERSION}:{}), ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
 }
 export function negotiateProfile(left, right) {
   const a = left.transport_profiles ?? [LEGACY_PROFILE];
@@ -154,7 +166,10 @@ export class RoomICE {
   async setRoomName(name) {
     if (!this.roomName && name) { this.roomName = name; await this.state.storage.put("room_name", name); }
   }
-  async persist(record) { await this.state.storage.put(`transport:${record.id}`, record); }
+  async persist(record) {
+    if (record.punch_generation!==record.generation) { record.punch_generation=record.generation;record.punch_key=randomHex(32); }
+    await this.state.storage.put(`transport:${record.id}`, record);
+  }
   async scheduleCleanup() {
     let next = null;
     for (const record of this.records.values()) {
@@ -250,6 +265,7 @@ export class RoomICE {
     record.relay_only = relayOnly;
     record.relay_required = relayRequired;
     record.profile = profile;
+    record.udp_punch_version = profile===ICE_PROFILE && !relayRequired && [a,b].every(v=>v.member.udp_punch_version===UDP_PUNCH_VERSION) ? UDP_PUNCH_VERSION : '';
     record.fixed_endpoints = fixedEndpoints;
     if (resetPath) {
       record.fixed_direction = 0;
@@ -303,13 +319,17 @@ export class RoomICE {
     if (!fixed && record.relay_pairing) ready.relay_pairing = record.relay_pairing;
     Object.assign(ready, {relay_only_policy:RELAY_ONLY_POLICY, relay_required:record.relay_required === true,
       relay_only:record.relay_only?.[index] === true, peer_relay_only:record.relay_only?.[1-index] === true});
+    if (record.udp_punch_version && phase==='direct') Object.assign(ready,{udp_punch_version:UDP_PUNCH_VERSION,punch_key:record.punch_key});
     send(own.ws, ready);
+    // Capability and credentials are scoped to this authorized generation.
     if (replay && !fixed) {
       const cached = record.ice[peerName]; if (!cached) return;
       const common = { transport_id: record.id, transport_generation: record.generation, peer_device: peerName };
       if (cached.description) send(own.ws, { ...common, type: "ice_description", ...cached.description });
       for (const candidate of cached.candidates ?? []) send(own.ws, { ...common, type: "ice_candidate", candidate });
       if (cached.end) send(own.ws, { ...common, type: "ice_candidate", end_of_candidates: true });
+      if (cached.nat) send(own.ws, {...common,type:'nat_report',nat:cached.nat});
+      if (cached.nat_status) send(own.ws, {...common,type:'nat_status',nat:cached.nat_status});
     }
   }
   async finish(seen) {
@@ -347,7 +367,7 @@ export class RoomICE {
     return attachment.ice_rate_count <= 512;
   }
   async handle(ws, member, message) {
-    if (!['hole_failed','transport_sync','transport_renew','transport_restart','ice_description','ice_candidate','transport_established','transport_failed','turn_request'].includes(message.type)) return false;
+    if (!['nat_status','nat_report','hole_failed','transport_sync','transport_renew','transport_restart','ice_description','ice_candidate','transport_established','transport_failed','turn_request'].includes(message.type)) return false;
     if (member.signal_version !== 2) { fault(ws, "protocol_mismatch", "此消息需要新版协调协议", message); return true; }
     if (!this.takeRate(ws) || new TextEncoder().encode(JSON.stringify(message)).length > 64*1024) { fault(ws, "rate_limited", "协调消息过于频繁", message); return true; }
     const name = member.device_name;
@@ -446,7 +466,16 @@ export class RoomICE {
     if (message.to_peer_id !== peerName) { fault(ws, "transport_not_authorized", "ICE 消息目标不属于该传输", message); return true; }
     const cached = record.ice[name] ?? { candidates: [], candidate_bytes: 0 };
     let outgoing;
-    if (message.type === "ice_description") {
+    if(message.type==='nat_status') {
+      const index=record.a===name?0:1;
+      if(!record.udp_punch_version || record.relay_required || record.lease_until<=Date.now() || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch || !validNATPlan(message.nat) || (cached.nat_status_at && Date.now()-cached.nat_status_at<30_000))return true;
+      cached.nat_status=message.nat;cached.nat_status_at=Date.now();outgoing={type:'nat_status',nat:message.nat};
+    } else if (message.type === 'nat_report') {
+      const index=record.a===name?0:1;
+      const phase=record.round_mode?recordPhase(record,record.round??0,index):record.phase;
+      if (!record.udp_punch_version || record.relay_required || phase!=='direct' || record.lease_until<=Date.now() || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch || !validNATPlan(message.nat) || cached.nat) { fault(ws,'invalid_nat_report','NAT 报告不符合当前传输代次',message);return true; }
+      cached.nat=message.nat;outgoing={type:'nat_report',nat:message.nat};
+    } else if (message.type === "ice_description") {
       if (typeof message.ufrag !== "string" || !/^[A-Za-z0-9+/_=-]{4,256}$/.test(message.ufrag) || typeof message.pwd !== "string" || message.pwd.length < 22 || message.pwd.length > 256) { fault(ws,"invalid_ice_description","ICE 描述格式无效",message); return true; }
       const description = { ufrag: message.ufrag, pwd: message.pwd };
       if (cached.description && !same(cached.description, description)) { fault(ws,"invalid_ice_description","同一代次的 ICE 凭据已固定",message); return true; }

@@ -33,6 +33,7 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
         appendLine("服务器 $server · 房间 ${config.config.connection.room} · 设备 ${config.config.connection.deviceName}")
         appendLine("重连 ${snapshot.reconnects} · 切网 ${snapshot.networkChanges} · 丢弃事件 ${snapshot.eventsDropped}")
         appendLine("网络 ${snapshot.network.transport} / ${snapshot.network.interfaceName} / handle=${snapshot.network.handle}")
+        appendLine("本机 NAT ${snapshot.network.nat.description(local = true)} · 探测时间 ${snapshot.network.nat.probedAt}")
         appendLine("可用 ${snapshot.network.available} · 验证 ${snapshot.network.validated} · 计费 ${snapshot.network.metered}")
         appendLine("地址 ${snapshot.network.addresses.joinToString()} · DNS ${snapshot.network.dns.joinToString()}")
         appendLine("电池不优化 ${background.batteryExempt} · 后台受限 ${background.backgroundRestricted} · 通知 ${background.notificationsEnabled}")
@@ -51,6 +52,8 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
             if (isFixedPeer(peer)) {
                 fixedPeerDetails(peer).forEach { (label, value) -> appendLine("  $label $value") }
             } else {
+                appendLine("  本机 NAT ${peer.localNAT.description()} · 对端 NAT ${peer.peerNAT.description()}")
+                appendLine("  探测时间 ${peer.localNAT.probedAt} / ${peer.peerNAT.probedAt} · 直连策略 ${peer.directStrategy} · 端口映射 ${peer.portMapping}")
                 if (peer.relayDevice.isNotBlank()) appendLine("  Hole 中继设备 ${peer.relayDevice} · 公布入口 ${peer.relayEndpoint} · 实际接入 ${peer.relayAccessAddress}")
                 appendLine("  本机接入 ${peer.localRelayProtocol.ifBlank { peer.relayProtocol }.ifBlank { "非本机中继" }} · 对端接入 ${peer.remoteRelayProtocol.ifBlank { "未上报" }} · 中继使用方 ${peer.relaySide}")
                 appendLine("  本机中继顺序 ${relayOrderLabel(peer.relayOrder)} · 对端中继顺序 ${relayOrderLabel(peer.peerRelayOrder)} · 轮次 ${peer.relayRound}${if (peer.relayOrderFallback) " · 已回退默认顺序" else ""}")
