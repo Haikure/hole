@@ -61,7 +61,7 @@ func (c *iceCoordinator) monitorNAT() {
 		if !cfg.ICE.RelayOnly && cfg.Transport.FixedEndpoint == nil && (epoch != lastEpoch || time.Now().After(next)) {
 			lastEpoch = epoch
 			next = time.Now().Add(nat.Lifetime)
-			ctx, cancel := context.WithTimeout(c.ctx, 4*time.Second)
+			ctx, cancel := context.WithTimeout(c.ctx, nat.ProbeTimeout)
 			platform, err := c.pin(ctx)
 			if err == nil {
 				if v, ok := platform.(interface{ NATIPv4Available() bool }); ok && !v.NATIPv4Available() {
@@ -164,7 +164,7 @@ func (p *icePeer) attemptNAT(a *iceAttempt) {
 		}
 	}()
 	p.transportEvent(a, "checking", nil)
-	probeCtx, stopProbe := context.WithTimeout(ctx, 4*time.Second)
+	probeCtx, stopProbe := context.WithTimeout(ctx, nat.ProbeTimeout)
 	local, addresses := nat.Probe(probeCtx, platform, pc, natURLs(c.request().Config.ICE))
 	stopProbe()
 	local.Epoch = epoch

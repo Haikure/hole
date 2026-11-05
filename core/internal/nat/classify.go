@@ -11,6 +11,7 @@ import (
 
 const Lifetime = 5 * time.Minute
 const Budget = 15 * time.Second
+const ProbeTimeout = 10 * time.Second
 const HardSockets = 84
 const BothSockets = 25
 

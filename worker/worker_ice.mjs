@@ -319,7 +319,10 @@ export class RoomICE {
     if (!fixed && record.relay_pairing) ready.relay_pairing = record.relay_pairing;
     Object.assign(ready, {relay_only_policy:RELAY_ONLY_POLICY, relay_required:record.relay_required === true,
       relay_only:record.relay_only?.[index] === true, peer_relay_only:record.relay_only?.[1-index] === true});
-    if (record.udp_punch_version && phase==='direct') Object.assign(ready,{udp_punch_version:UDP_PUNCH_VERSION,punch_key:record.punch_key});
+    if (record.udp_punch_version) {
+      ready.udp_punch_version = UDP_PUNCH_VERSION;
+      if (phase === 'direct') ready.punch_key = record.punch_key;
+    }
     send(own.ws, ready);
     // Capability and credentials are scoped to this authorized generation.
     if (replay && !fixed) {

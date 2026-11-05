@@ -99,6 +99,8 @@ NAT 辅助尝试在普通 ICE 直连失败后运行。Worker 与双方客户端�
 
 NAT 类型、端口可预测性和探测时间用于诊断，不保证直连一定成功；支持的图形客户端会在网络或设备详情中显示这些信息。协商时 NAT 快照和最多 8 个 IPv4 映射地址会经 Worker 转交对端；Worker 不因此承载业务流量。底层协商细节见 [协议说明：UDP 直连子阶段](docs/PROTOCOL.md#udp-直连子阶段)。
 
+仓库提供独立的 NAT 诊断命令 `go run ./tools/natprobe`，可查看本机 NAT 映射类型和端口变化趋势；参数说明见 [tools/README.md](tools/README.md)。
+
 Android / Wear、桌面和 PenMods 的设置页可控制 UDP 直连与端口映射，并填写分类 STUN 地址；配置导入导出会保留这些选项。CLI 使用上表中的 YAML 字段。
 
 ## 固定入口与设备中继

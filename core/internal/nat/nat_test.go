@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,6 +94,77 @@ func (n *fixtureNetwork) ListenPacket(ctx context.Context, network, address stri
 }
 func (n *fixtureNetwork) ResolveUDP(_ context.Context, a string) (*net.UDPAddr, error) {
 	return net.ResolveUDPAddr("udp4", a)
+}
+
+func startDelayedChangeSTUN(t *testing.T, primary, alternate net.PacketConn, requests *atomic.Int32) {
+	t.Helper()
+	serve := func(socket net.PacketConn, changedResponse net.PacketConn) {
+		go func() {
+			buf := make([]byte, 2048)
+			for {
+				n, from, err := socket.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				request := new(stun.Message)
+				request.Raw = append(request.Raw, buf[:n]...)
+				if request.Decode() != nil {
+					continue
+				}
+				requests.Add(1)
+				responseSocket := socket
+				if attr, err := request.Get(stun.AttrChangeRequest); err == nil && len(attr) == 4 && attr[3] != 0 {
+					responseSocket = changedResponse
+				}
+				tid := request.TransactionID
+				go func(from net.Addr, responseSocket net.PacketConn, tid [stun.TransactionIDSize]byte) {
+					time.Sleep(450 * time.Millisecond)
+					reply := stun.MustBuild(stun.NewTransactionIDSetter(tid), stun.BindingSuccess,
+						&stun.XORMappedAddress{IP: net.ParseIP("198.51.100.10"), Port: 40000})
+					_, _ = responseSocket.WriteTo(reply.Raw, from)
+				}(from, responseSocket, tid)
+			}
+		}()
+	}
+	serve(primary, alternate)
+	serve(alternate, alternate)
+}
+
+func TestProbeUsesLongerConcurrentSTUNResponses(t *testing.T) {
+	var requests atomic.Int32
+	var urls []string
+	for range 2 {
+		primary, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		alternate, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		if err != nil {
+			primary.Close()
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = primary.Close(); _ = alternate.Close() })
+		startDelayedChangeSTUN(t, primary, alternate, &requests)
+		urls = append(urls, "stun:"+primary.LocalAddr().String())
+	}
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	started := time.Now()
+	snapshot, addresses := Probe(ctx, &fixtureNetwork{}, pc, urls)
+	if snapshot.Status != "complete" || snapshot.Type != "restricted_cone" || snapshot.Samples < 2 {
+		t.Fatalf("slow valid STUN responses were lost: %+v", snapshot)
+	}
+	if len(addresses) != 1 || requests.Load() < 12 {
+		t.Fatalf("probe did not collect and correlate repeated request samples: addresses=%v requests=%d", addresses, requests.Load())
+	}
+	if elapsed := time.Since(started); elapsed >= 4*time.Second {
+		t.Fatalf("parallel STUN rounds took too long: %s", elapsed)
+	}
 }
 
 func TestAuthenticatedPunchHandoff(t *testing.T) {

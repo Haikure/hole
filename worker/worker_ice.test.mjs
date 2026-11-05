@@ -6,9 +6,9 @@ import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_POLICY, n
 import {HOLE_VERSION,deviceRelayPlan} from './worker_ice.mjs';
 
 const holeCaps={hole_version:HOLE_VERSION,relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1',relay_order:[],relay_enabled:false};
-test('UDP punching negotiates only for eligible pairs and replays generation reports after sleep',async()=>{
+test('UDP punching negotiates only for eligible pairs and NAT status remains reportable over relay',async()=>{
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
- const caps={udp_punch_version:'udp-punch-v1'};
+ const caps={udp_punch_version:'udp-punch-v1',relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};
  await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
  await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
  const record=[...r.ice.records.values()][0],ready=a.messages.filter(m=>m.type==='transport_ready').at(-1);
@@ -18,7 +18,13 @@ test('UDP punching negotiates only for eligible pairs and replays generation rep
  await r.webSocketMessage(a,JSON.stringify(report));assert.deepEqual(b.messages.at(-1).nat,nat);
  const sleeping=new Room(f.state,{});await sleeping.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));assert.deepEqual(b.messages.at(-1).nat,nat);
  await r.webSocketMessage(a,JSON.stringify({...report,transport_generation:'0'}));assert.equal(b.messages.filter(m=>m.type==='nat_report').length,2);
- await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'direct'}));
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'relay_udp',relay_round:1}));
+ const relayReady=a.messages.filter(m=>m.type==='transport_ready').at(-1);
+ assert.equal(relayReady.phase,'relay_udp');assert.equal(relayReady.udp_punch_version,caps.udp_punch_version);assert.equal(relayReady.punch_key,undefined);
+ const status={type:'nat_status',transport_id:record.id,transport_generation:record.generation,to_peer_id:'beta',nat:{snapshot:{status:'complete',type:'restricted_cone',predictability:'stable',samples:4},addresses:[]}};
+ await r.webSocketMessage(a,JSON.stringify(status));assert.deepEqual(b.messages.at(-1).nat,status.nat);
+ const resumed=new Room(f.state,{});await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));assert.deepEqual(b.messages.at(-1).nat,status.nat);
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'direct',relay_round:0}));
  assert.notEqual(a.messages.filter(m=>m.type==='transport_ready').at(-1).punch_key,ready.punch_key);
  const replacement=f.socket();await r.webSocketMessage(replacement,JSON.stringify(join('beta',[],['one'])));
  assert.equal(a.messages.filter(m=>m.type==='transport_ready').at(-1).udp_punch_version,undefined);
