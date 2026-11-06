@@ -588,8 +588,8 @@ pub fn fixed_peer_details(p: &Peer) -> Vec<(&'static str, String)> {
 
 pub fn nat_text(n: &Value, local: bool) -> String {
     let status = match n["status"].as_str().unwrap_or("") { "" => return if local {"信息不足"} else {"对端未上报"}.into(), "probing"=>"探测中 · ", "insufficient"=>"信息不足 · ", "expired"=>"已过期 · ", "not_applicable"=>"IPv4 不适用 · ", _=>"" };
-    let kind = match n["type"].as_str().unwrap_or("") { "open"=>"公网直连", "full_cone"=>"完全锥型", "restricted_cone"=>"地址受限锥型", "port_restricted_cone"=>"端口受限锥型", "symmetric"=>"对称型", _=>"未知" };
-    let pattern = match n["predictability"].as_str().unwrap_or("") { "stable"=>"映射稳定", "incremental"=>"可能可预测（递增）", "decremental"=>"可能可预测（递减）", "irregular"=>"未观察到规律", _=>"可预测性未知" };
+    let kind = match n["type"].as_str().unwrap_or("") { "open"=>"公网直连", "firewall"=>"防火墙过滤", "full_cone"=>"完全锥型", "restricted_cone"=>"地址受限锥型", "port_restricted_cone"=>"端口受限锥型", "symmetric"=>"对称型", "endpoint_independent"=>"端点无关映射", _=>"未知" };
+    let pattern = match n["predictability"].as_str().unwrap_or("") { "stable"=>"映射稳定", "predictable_incremental"=>"可预测（递增）", "predictable_decremental"=>"可预测（递减）", "incremental"=>"可能可预测（递增）", "decremental"=>"可能可预测（递减）", "irregular"=>"未观察到规律", _=>"可预测性未知" };
     format!("{status}{kind} · {pattern} · {}",n["probed_at"].as_str().unwrap_or("暂无探测时间"))
 }
 

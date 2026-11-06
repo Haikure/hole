@@ -21,17 +21,17 @@ func TestClassificationEvidence(t *testing.T) {
 		want  string
 		kind  string
 	}{
-		{"stable", []uint16{40000, 40000}, 40000, "stable", "unknown"},
-		{"increment", []uint16{40000, 40001, 40002}, 40003, "incremental", "symmetric"},
-		{"decrement", []uint16{40002, 40001, 40000}, 39999, "decremental", "symmetric"},
+		{"stable", []uint16{40000, 40000}, 40000, "stable", "endpoint_independent"},
+		{"increment", []uint16{40000, 40001, 40002}, 40003, "predictable_incremental", "symmetric"},
+		{"decrement", []uint16{40002, 40001, 40000}, 39999, "predictable_decremental", "symmetric"},
 		{"random", []uint16{40000, 50000, 30000}, 45000, "irregular", "symmetric"},
 		{"insufficient", []uint16{40000}, 40001, "unknown", "unknown"},
-		{"direction_unknown", []uint16{40000, 40001}, 0, "irregular", "symmetric"},
+		{"direction_unknown", []uint16{40000, 40001}, 0, "unknown", "symmetric"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			samples := []Sample{}
 			for i, p := range tc.ports {
-				server := netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), uint16(3478+i))
+				server := netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)}), 3478)
 				samples = append(samples, Sample{Server: server, Source: server, Mapped: netip.AddrPortFrom(netip.MustParseAddr("198.51.100.1"), p)})
 			}
 			var extra *Sample
@@ -47,12 +47,12 @@ func TestClassificationEvidence(t *testing.T) {
 	base := Sample{Server: ap("192.0.2.1:3478"), Source: ap("192.0.2.1:3478"), Mapped: ap("198.51.100.1:40000")}
 	changed := base
 	changed.Source = ap("192.0.2.2:3479")
-	changed.ChangeIP = true
-	if s := Classify(ap("10.0.0.1:10000"), []Sample{base, changed}, nil); s.Type != "full_cone" {
+	changed.Change = 6
+	if s := Classify(ap("10.0.0.1:10000"), []Sample{base, changed}, nil); s.Type != "unknown" || s.Samples != 1 {
 		t.Fatal(s)
 	}
 	changed.Mapped = ap("198.51.100.2:40001")
-	if s := Classify(ap("10.0.0.1:10000"), []Sample{base, changed}, &base); s.Predictability != "irregular" {
+	if s := Classify(ap("10.0.0.1:10000"), []Sample{base, changed}, &base); s.Status != "insufficient" {
 		t.Fatal(s)
 	}
 }
@@ -156,7 +156,7 @@ func TestProbeUsesLongerConcurrentSTUNResponses(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	snapshot, addresses := Probe(ctx, &fixtureNetwork{}, pc, urls)
-	if snapshot.Status != "complete" || snapshot.Type != "restricted_cone" || snapshot.Samples < 2 {
+	if snapshot.Status != "insufficient" || snapshot.Type != "unknown" || snapshot.Samples != 6 {
 		t.Fatalf("slow valid STUN responses were lost: %+v", snapshot)
 	}
 	if len(addresses) != 1 || requests.Load() < 12 {
@@ -164,6 +164,71 @@ func TestProbeUsesLongerConcurrentSTUNResponses(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed >= 4*time.Second {
 		t.Fatalf("parallel STUN rounds took too long: %s", elapsed)
+	}
+}
+
+func TestProbeKeepsPortTrendWhenFilteringProbeTimesOut(t *testing.T) {
+	type allocationTable struct {
+		mu   sync.Mutex
+		next uint16
+	}
+	type mappedServer struct {
+		conn     net.PacketConn
+		mu       sync.Mutex
+		mappings map[string]uint16
+	}
+	allocations := &allocationTable{next: 40000}
+	urls := make([]string, 0, 2)
+	for range 2 {
+		conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := &mappedServer{conn: conn, mappings: map[string]uint16{}}
+		t.Cleanup(func() { _ = conn.Close() })
+		urls = append(urls, "stun:"+conn.LocalAddr().String())
+		go func(server *mappedServer) {
+			buf := make([]byte, 2048)
+			for {
+				n, from, err := server.conn.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				request := new(stun.Message)
+				request.Raw = append([]byte(nil), buf[:n]...)
+				if request.Decode() != nil {
+					continue
+				}
+				if _, err := request.Get(stun.AttrChangeRequest); err == nil {
+					continue
+				}
+				server.mu.Lock()
+				mappedPort, ok := server.mappings[from.String()]
+				if !ok {
+					allocations.mu.Lock()
+					mappedPort = allocations.next
+					allocations.next++
+					allocations.mu.Unlock()
+					server.mappings[from.String()] = mappedPort
+				}
+				server.mu.Unlock()
+				response := stun.MustBuild(stun.NewTransactionIDSetter(request.TransactionID), stun.BindingSuccess,
+					&stun.XORMappedAddress{IP: net.ParseIP("198.51.100.10"), Port: int(mappedPort)},
+					&stun.OtherAddress{IP: net.ParseIP("8.8.8.8"), Port: 3479})
+				_, _ = server.conn.WriteTo(response.Raw, from)
+			}
+		}(server)
+	}
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	snapshot, _ := Probe(ctx, &fixtureNetwork{}, pc, urls)
+	if snapshot.Status != "complete" || snapshot.Type != "symmetric" || snapshot.Predictability != "incremental" {
+		t.Fatalf("filter timeout discarded available fresh-socket trend evidence: %+v", snapshot)
 	}
 }
 

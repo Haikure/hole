@@ -4,7 +4,9 @@
 
 join 声明 `udp_punch_version: udp-punch-v1`。仅在 Worker 与双方共同支持、ICE profile、双方允许直连时，`transport_ready` 返回同名能力及本代次随机 256 位 `punch_key`。公开 phase/path_type 仍为 `direct`，固定入口、仅中继和旧客户端沿用原流程。
 
-普通 ICE 失败后最多执行 15 秒补充尝试，包含实例内多 socket 任务排队、准备、探测、QUIC 与 mux 握手。`nat_report` 携带 snapshot 和最多 8 个 IPv4 UDP 地址，复用 transport_id、generation、to_peer_id、运行实例和网络代次、租约检查。每端每代次一份报告，不超过 4096 字节并计入已有信令限流；`nat_status` 单独更新展示快照，每端至少间隔 30 秒。Worker 持久化报告，休眠后可回放。凭据每代次轮换。探测包为带角色字段的 HMAC-SHA256 消息，成功 socket 保持单 reader 并交给现有证书指纹认证和业务 mux。
+普通 ICE 失败后最多执行 15 秒补充尝试，包含实例内多 socket 任务排队、准备、探测、QUIC 与 mux 握手。`nat_report` 携带 snapshot 和最多 8 个 IPv4 UDP 地址，复用 transport_id、generation、to_peer_id、运行实例和网络代次、租约检查。每端每代次一份报告，不超过 4096 字节并计入已有信令限流；`nat_status` 单独更新展示快照，每端至少间隔 30 秒；它适用于允许直连的 ICE 关系，不依赖 `udp_punch_version` 或补充打洞是否启动，普通 ICE 成功及回退中继后仍可发送。发布缓存按 transport_id 和 generation 区分，代次变化后重新发送；接收端同时从有效的 `nat_report` 更新展示快照，即使此时没有补充打洞任务。固定入口与仅中继关系不启动探测或交换 NAT 状态。Worker 持久化报告，休眠后可回放。凭据每代次轮换。探测包为带角色字段的 HMAC-SHA256 消息，成功 socket 保持单 reader 并交给现有证书指纹认证和业务 mux。
+
+快照包含 `mapping_behavior`、`filtering_behavior`、`filtering_server`、`port_preservation` 和 `no_pat`，未携带这些字段的旧快照仍可接受。`type` 支持 `endpoint_independent`（映射稳定、过滤未知）和 `firewall`（无地址转换、存在受限过滤）；`predictability` 的 `predictable_incremental` / `predictable_decremental` 表示原 socket 对至少三个不同目标的首次映射端口按探测顺序全部依次加 1 / 减 1，且已由新 socket 在同一公网 IP 上按同一步长延续验证的有限样本结论（包含新 socket 端口的总跨度不超过 1024）；新 socket 样本不补足三个目标。`incremental` / `decremental` 表示跨 socket 仍延续整体趋势、但未满足严格连续条件的可能可预测。缺少有效的新 socket 样本时，端口变化可预测性为 `unknown`，已确认的映射类型及端口稳定性仍保留；`reason` 说明跨 socket 验证结果。所有趋势结论均不能保证后续端口。
 
 分类与可预测性独立。缺少有效来源或服务器忽略 CHANGE-REQUEST 时保留信息不足，不把请求超时当作确定过滤结论。本机结果按网络代次失效，5 分钟过期并在运行期间刷新；对端未上报与信息不足分别展示。映射结果仅作为地址来源，不改写 NAT 分类，私网外部地址不证明公网可达。
 

@@ -205,7 +205,7 @@ func Punch(ctx context.Context, network Network, base net.PacketConn, local, rem
 	for _, a := range addresses {
 		if strategy == "both_predictable" {
 			port := int(a.Port()) + 20
-			if remote.Predictability == "decremental" {
+			if remote.Predictability == "decremental" || remote.Predictability == "predictable_decremental" {
 				port = int(a.Port()) - 20
 			}
 			port = max(1, min(65535, port))

@@ -7,8 +7,8 @@ func NATDescription(s NATSnapshot) string {
 	if s.Status == "" {
 		return "对端未上报"
 	}
-	typ := map[string]string{"open": "公网直连", "full_cone": "完全锥型", "restricted_cone": "地址受限锥型", "port_restricted_cone": "端口受限锥型", "symmetric": "对称型", "unknown": "未知"}[s.Type]
-	predict := map[string]string{"stable": "映射稳定", "incremental": "可能可预测（递增）", "decremental": "可能可预测（递减）", "irregular": "未观察到规律", "unknown": "可预测性未知"}[s.Predictability]
+	typ := map[string]string{"open": "公网直连", "firewall": "防火墙过滤", "full_cone": "完全锥型", "restricted_cone": "地址受限锥型", "port_restricted_cone": "端口受限锥型", "symmetric": "对称型", "endpoint_independent": "端点无关映射", "unknown": "未知"}[s.Type]
+	predict := map[string]string{"stable": "映射稳定", "predictable_incremental": "可预测（递增）", "predictable_decremental": "可预测（递减）", "incremental": "可能可预测（递增）", "decremental": "可能可预测（递减）", "irregular": "未观察到规律", "unknown": "可预测性未知"}[s.Predictability]
 	if status != "" {
 		return status + " · " + typ + " · " + predict
 	}

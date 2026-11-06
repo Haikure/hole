@@ -942,8 +942,8 @@ Item {
     function natText(n, local) {
         if (!n || !n.status) return local ? "信息不足" : "对端未上报"
         var states = {probing: "探测中", insufficient: "信息不足", expired: "已过期", not_applicable: "IPv4 不适用"}
-        var kinds = {open: "公网直连", full_cone: "完全锥型", restricted_cone: "地址受限锥型", port_restricted_cone: "端口受限锥型", symmetric: "对称型"}
-        var patterns = {stable: "映射稳定", incremental: "可能可预测（递增）", decremental: "可能可预测（递减）", irregular: "未观察到规律"}
+        var kinds = {open: "公网直连", firewall: "防火墙过滤", full_cone: "完全锥型", restricted_cone: "地址受限锥型", port_restricted_cone: "端口受限锥型", symmetric: "对称型", endpoint_independent: "端点无关映射"}
+        var patterns = {stable: "映射稳定", predictable_incremental: "可预测（递增）", predictable_decremental: "可预测（递减）", incremental: "可能可预测（递增）", decremental: "可能可预测（递减）", irregular: "未观察到规律"}
         return (states[n.status] ? states[n.status] + " · " : "") + (kinds[n.type] || "未知") + " · " + (patterns[n.predictability] || "可预测性未知") + " · " + (n.probed_at || "暂无探测时间")
     }
 

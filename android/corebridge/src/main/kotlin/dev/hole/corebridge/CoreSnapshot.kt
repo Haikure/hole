@@ -6,8 +6,8 @@ data class NATSnapshot(val status: String = "", val type: String = "unknown", va
     fun description(local: Boolean = false): String {
         val state = mapOf("probing" to "探测中", "insufficient" to "信息不足", "expired" to "已过期", "not_applicable" to "IPv4 不适用")[status]
         if (status.isBlank()) return if (local) "信息不足" else "对端未上报"
-        val kind = mapOf("open" to "公网直连", "full_cone" to "完全锥型", "restricted_cone" to "地址受限锥型", "port_restricted_cone" to "端口受限锥型", "symmetric" to "对称型")[type] ?: "未知"
-        val pattern = mapOf("stable" to "映射稳定", "incremental" to "可能可预测（递增）", "decremental" to "可能可预测（递减）", "irregular" to "未观察到规律")[predictability] ?: "可预测性未知"
+        val kind = mapOf("open" to "公网直连", "firewall" to "防火墙过滤", "full_cone" to "完全锥型", "restricted_cone" to "地址受限锥型", "port_restricted_cone" to "端口受限锥型", "symmetric" to "对称型", "endpoint_independent" to "端点无关映射")[type] ?: "未知"
+        val pattern = mapOf("stable" to "映射稳定", "predictable_incremental" to "可预测（递增）", "predictable_decremental" to "可预测（递减）", "incremental" to "可能可预测（递增）", "decremental" to "可能可预测（递减）", "irregular" to "未观察到规律")[predictability] ?: "可预测性未知"
         return listOfNotNull(state, kind, pattern).joinToString(" · ")
     }
     companion object {

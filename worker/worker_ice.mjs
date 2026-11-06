@@ -6,8 +6,12 @@ export function validNATPlan(plan) {
   if (!plan || JSON.stringify(plan).length > 4096 || !plan.snapshot || !Array.isArray(plan.addresses) || plan.addresses.length > 8) return false;
   const s=plan.snapshot;
   return ['insufficient','probing','complete','expired','not_applicable'].includes(s.status) &&
-    ['unknown','open','full_cone','restricted_cone','port_restricted_cone','symmetric'].includes(s.type) &&
-    ['unknown','stable','incremental','decremental','irregular'].includes(s.predictability) &&
+    ['unknown','open','firewall','full_cone','restricted_cone','port_restricted_cone','symmetric','endpoint_independent'].includes(s.type) &&
+    ['unknown','stable','incremental','decremental','predictable_incremental','predictable_decremental','irregular'].includes(s.predictability) &&
+    (s.mapping_behavior===undefined || ['unknown','endpoint_independent','endpoint_dependent'].includes(s.mapping_behavior)) &&
+    (s.filtering_behavior===undefined || ['unknown','endpoint_independent','address_dependent','address_port_dependent'].includes(s.filtering_behavior)) &&
+    (s.port_preservation===undefined || ['unknown','preserved','translated','mixed'].includes(s.port_preservation)) &&
+    (s.no_pat===undefined || ['unknown','suspected','not_detected','not_applicable'].includes(s.no_pat)) &&
     Number.isSafeInteger(s.samples) && s.samples>=0 && s.samples<=64 &&
     (s.reason===undefined || typeof s.reason==='string' && s.reason.length<=256) &&
     plan.addresses.every(a=>typeof a==='string' && /^(?:\d{1,3}\.){3}\d{1,3}:[1-9]\d{0,4}$/.test(a) && a.split(':')[0].split('.').every(p=>Number(p)<=255) && Number(a.split(':')[1])<=65535);
@@ -471,7 +475,7 @@ export class RoomICE {
     let outgoing;
     if(message.type==='nat_status') {
       const index=record.a===name?0:1;
-      if(!record.udp_punch_version || record.relay_required || record.lease_until<=Date.now() || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch || !validNATPlan(message.nat) || (cached.nat_status_at && Date.now()-cached.nat_status_at<30_000))return true;
+      if(record.relay_required || record.lease_until<=Date.now() || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch || !validNATPlan(message.nat) || (cached.nat_status_at && Date.now()-cached.nat_status_at<30_000))return true;
       cached.nat_status=message.nat;cached.nat_status_at=Date.now();outgoing={type:'nat_status',nat:message.nat};
     } else if (message.type === 'nat_report') {
       const index=record.a===name?0:1;

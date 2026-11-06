@@ -4,7 +4,7 @@ Hole 原创代码由 Hole 贡献者以 **GPL-2.0-or-later** 授权，全文见 [
 
 | 范围 | 来源与固定版本 | 许可与修改 |
 | --- | --- | --- |
-| `core/internal/nat/classify.go`、`probe.go`、`punch.go` | EasyTier，提交 `24e0303fc55e4e645a11818954dd5b712fb94510`；`easytier-core/src/connectivity/stun/client.rs`、`hole_punch/udp/{common,client,server,socket_array}.rs`、`config/mod.rs` | Copyright EasyTier contributors；保留 LGPL-3.0，全文见 `LICENSES/LGPL-3.0.txt`。Go 重写分类证据、递增/递减预测、84/25 socket 策略、静态 UDP STUN 列表；增加代次认证、单 reader 分流、取消与时间预算。未移植 TCP 打洞或 TXT 发现。 |
+| `core/internal/nat/classify.go`、`probe.go`、`punch.go` | EasyTier，提交 `24e0303fc55e4e645a11818954dd5b712fb94510`；`easytier-core/src/connectivity/stun/client.rs`、`hole_punch/udp/{common,client,server,socket_array}.rs`、`config/mod.rs` | Copyright EasyTier contributors；保留 LGPL-3.0，全文见 `LICENSES/LGPL-3.0.txt`。Go 重写分类证据、递增/递减预测、84/25 socket 策略、静态 UDP STUN 列表；增加代次认证、单 reader 分流、取消与时间预算。未移植 TCP 打洞或 TXT 发现。当前 STUN 探测、保守分类、端口保持及 No-PAT 特征统一由原创的 `core/natprobe` 实现，`core/internal/nat` 保留平台适配、移植策略及原许可。 |
 | Go 依赖及 `core/compat/anet` | 根及 Android 独立 `go.mod` / `go.sum` | 保留模块中的 LICENSE / COPYING / NOTICE；交付脚本从实际模块缓存收集原文及模块版本。 |
 | 桌面 Rust / Slint 依赖 | `desktop/gui/Cargo.lock` | 保留每个 crate 的原许可；交付脚本从本地 Cargo 缓存收集原文和版本。 |
 | Android 依赖 | `android/*.gradle.kts` 及各模块依赖声明 | 保留 Android SDK、Kotlin、AndroidX 及依赖各自许可；SDK / NDK / JDK 为单独获取的构建工具，不随应用重标许可。 |

@@ -59,6 +59,7 @@ func (t *liveICETransport) close() {
 
 type icePeer struct {
 	natPublished        string
+	natPublishedAt      time.Time
 	coordinator         *iceCoordinator
 	ctx                 context.Context
 	cancel              context.CancelFunc
@@ -121,6 +122,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 	if old.TransportGeneration != m.TransportGeneration {
 		p.stats.PeerNAT = NATSnapshot{}
 		p.natPublished = ""
+		p.natPublishedAt = time.Time{}
 	}
 	wasOnline := p.online
 	p.online = true
@@ -252,12 +254,16 @@ func (p *icePeer) update(m iceSignalMessage) {
 }
 func (p *icePeer) receive(m iceSignalMessage) {
 	p.mu.Lock()
-	if m.Type == "nat_status" {
-		if m.TransportGeneration == p.ready.TransportGeneration && m.NAT != nil {
-			p.stats.PeerNAT = m.NAT.Snapshot.Current()
+	if m.Type == "nat_status" || m.Type == "nat_report" {
+		if p.closed || m.TransportID != p.ready.TransportID || m.TransportGeneration != p.ready.TransportGeneration || m.NAT == nil {
+			p.mu.Unlock()
+			return
 		}
-		p.mu.Unlock()
-		return
+		p.stats.PeerNAT = m.NAT.Snapshot.Current()
+		if m.Type == "nat_status" {
+			p.mu.Unlock()
+			return
+		}
 	}
 	a := p.pending
 	p.mu.Unlock()

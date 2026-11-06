@@ -2,10 +2,12 @@ package core
 
 import (
 	"context"
-	"gopkg.in/yaml.v3"
 	"reflect"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
+	"hole/core/natprobe"
 )
 
 func TestNATBudgetIncludesSemaphoreWaitAndOldNetworkCannotPublish(t *testing.T) {
@@ -34,7 +36,7 @@ func TestNATConfigProbeConsentAndRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		raw  string
 		want int
-	}{{"ice: {stun_urls: []}", 0}, {"ice: {stun_urls: [], nat_stun_urls: ['stun:127.0.0.1:3478']}", 1}, {"ice: {nat_stun_urls: []}", 0}, {"ice: {}", 4}} {
+	}{{"ice: {stun_urls: []}", 0}, {"ice: {stun_urls: [], nat_stun_urls: ['stun:127.0.0.1:3478']}", 1}, {"ice: {nat_stun_urls: []}", 0}, {"ice: {}", 6}} {
 		cfg, e := ParseConfig([]byte(tc.raw))
 		if e != nil {
 			t.Fatal(e)
@@ -54,5 +56,16 @@ func TestNATConfigProbeConsentAndRoundTrip(t *testing.T) {
 		if !reflect.DeepEqual(restored.NATSTUNURLs, cfg.ICE.NATSTUNURLs) {
 			t.Fatalf("NAT service presence lost: %s", data)
 		}
+	}
+}
+
+func TestNATProbeDefaultServersMatchNatprobe(t *testing.T) {
+	cfg, err := ParseConfig([]byte("ice: {}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := natprobe.DefaultServers()
+	if got := natURLs(cfg.Normalized().ICE); !reflect.DeepEqual(got, want) {
+		t.Fatalf("default NAT STUN servers: %v, want %v", got, want)
 	}
 }

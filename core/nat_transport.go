@@ -6,15 +6,21 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/netip"
 	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
 	"hole/core/internal/nat"
+	"hole/core/natprobe"
 )
 
-func natUnknown() NATSnapshot { return nat.Unknown("尚未探测") }
+func natUnknown() NATSnapshot {
+	s := nat.Unknown("尚未探测")
+	s.ProbedAt = ""
+	return s
+}
 
 func (p *icePeer) publishNAT() {
 	s := p.coordinator.localNAT()
@@ -24,9 +30,11 @@ func (p *icePeer) publishNAT() {
 	p.mu.Lock()
 	ready := p.ready
 	published := p.natPublished
+	lastPublished := p.natPublishedAt
+	online := p.online && !p.closed
 	p.mu.Unlock()
-	key := ready.PunchKey + s.ProbedAt
-	if ready.UDPPunchVersion != udpPunchVersion || key == published {
+	key := fmt.Sprintf("%s/%d/%s", ready.TransportID, ready.TransportGeneration, s.ProbedAt)
+	if !online || ready.Profile != ProfileICE || ready.RelayRequired || ready.LeaseUntil <= time.Now().UnixMilli() || key == published || time.Since(lastPublished) < 30*time.Second {
 		return
 	}
 	m := signalMessage("nat_status")
@@ -37,6 +45,7 @@ func (p *icePeer) publishNAT() {
 	if p.coordinator.send(m) == nil {
 		p.mu.Lock()
 		p.natPublished = key
+		p.natPublishedAt = time.Now()
 		p.mu.Unlock()
 	}
 }
@@ -61,7 +70,7 @@ func (c *iceCoordinator) monitorNAT() {
 		if !cfg.ICE.RelayOnly && cfg.Transport.FixedEndpoint == nil && (epoch != lastEpoch || time.Now().After(next)) {
 			lastEpoch = epoch
 			next = time.Now().Add(nat.Lifetime)
-			ctx, cancel := context.WithTimeout(c.ctx, nat.ProbeTimeout)
+			ctx, cancel := context.WithTimeout(c.ctx, natprobe.DefaultTimeout)
 			platform, err := c.pin(ctx)
 			if err == nil {
 				if v, ok := platform.(interface{ NATIPv4Available() bool }); ok && !v.NATIPv4Available() {
@@ -117,7 +126,17 @@ func natURLs(cfg ICEConfig) []string {
 		return nil
 	}
 	out := append([]string{}, cfg.STUNURLs...)
-	return append(out, "stun:stun.miwifi.com:3478", "stun:stun.chat.bilibili.com:3478", "stun:stun.hitv.com:3478")
+	seen := make(map[string]bool, len(out))
+	for _, raw := range out {
+		seen[raw] = true
+	}
+	for _, raw := range natprobe.DefaultServers() {
+		if !seen[raw] {
+			out = append(out, raw)
+			seen[raw] = true
+		}
+	}
+	return out
 }
 
 func (p *icePeer) attemptNAT(a *iceAttempt) {
@@ -205,9 +224,8 @@ func (p *icePeer) attemptNAT(a *iceAttempt) {
 		fail(errors.New("网络代次已改变"))
 		return
 	}
-	c.natMu.Lock()
-	c.natSnapshot = local
-	c.natMu.Unlock()
+	// This socket's shorter preparation budget is for punching. Keep the
+	// independent diagnostic snapshot, which has the same budget as natprobe.
 	p.mu.Lock()
 	if a.natEvents == nil {
 		a.natEvents = make(chan iceSignalMessage, 4)

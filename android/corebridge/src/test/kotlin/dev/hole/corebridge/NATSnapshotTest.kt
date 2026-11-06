@@ -10,6 +10,11 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26])
 class NATSnapshotTest {
+    @Test fun sharedProbeValuesRemainReadable() {
+        assertEquals("防火墙过滤 · 映射稳定", NATSnapshot(status = "complete", type = "firewall", predictability = "stable").description())
+        assertEquals("对称型 · 可预测（递增）", NATSnapshot(status = "complete", type = "symmetric", predictability = "predictable_incremental").description())
+        assertEquals("对称型 · 可预测（递减）", NATSnapshot(status = "complete", type = "symmetric", predictability = "predictable_decremental").description())
+    }
     @Test fun statusesAndPredictabilityRemainIndependent() {
         val n = NATSnapshot.fromJson(JSONObject("""{"status":"complete","type":"symmetric","predictability":"decremental","samples":3,"probed_at":"2026-11-04T00:00:00Z"}"""))
         assertEquals("对称型 · 可能可预测（递减）", n.description())
