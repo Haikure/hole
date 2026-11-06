@@ -1,4 +1,4 @@
-import { RoomICE, TurnBroker, iceJoinFields, negotiateProfile, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_ONLY_POLICY, VOICE_MEMBER_LIMIT, HOLE_VERSION, UDP_PUNCH_VERSION } from "./worker_ice.mjs";
+import { RoomICE, TurnBroker, iceJoinFields, negotiateProfile, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_ONLY_POLICY, VOICE_MEMBER_LIMIT, HOLE_VERSION } from "./worker_ice.mjs";
 export { TurnBroker };
 const ROOM_PATH = "/ws";
 const MAX_MESSAGE_SIZE = 256 * 1024;
@@ -233,7 +233,6 @@ export class Room {
       signal_version: 2,
       auth_mode: "shared-secret",
       lease_renewal: true,
-      udp_punch_version: UDP_PUNCH_VERSION,
       hole_version: HOLE_VERSION,
       relay_only_policy: RELAY_ONLY_POLICY,
       room_members: [...this.members.keys()],

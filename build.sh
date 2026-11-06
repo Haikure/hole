@@ -286,5 +286,4 @@ if (( BUILD_ANDROID || BUILD_WEAR )); then
       --module wear --variant release --output "$OUTPUT/wear"
   fi
 fi
-python3 "$ROOT/scripts/package_licenses.py" "$OUTPUT"
 printf '\n构建完成：%s\n' "$OUTPUT"

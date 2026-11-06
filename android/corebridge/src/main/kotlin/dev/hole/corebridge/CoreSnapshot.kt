@@ -40,12 +40,12 @@ data class PeerSnapshot(
     val relayRound: Int = 0, val relayOrderFallback: Boolean = false,
     val fixedEndpoint: String = "", val listenerId: String = "", val dialerId: String = "",
     val localNAT: NATSnapshot = NATSnapshot(), val peerNAT: NATSnapshot = NATSnapshot(),
-    val directStrategy: String = "", val portMapping: String = "",
+    val portMapping: String = "",
 ) {
     companion object {
         fun fromJson(j: JSONObject): PeerSnapshot = PeerSnapshot(
             localNAT = NATSnapshot.fromJson(j.optJSONObject("local_nat")), peerNAT = NATSnapshot.fromJson(j.optJSONObject("peer_nat")),
-            directStrategy = j.optString("direct_strategy"), portMapping = j.optJSONObject("port_mapping")?.toString().orEmpty(),
+            portMapping = j.optJSONObject("port_mapping")?.toString().orEmpty(),
             relayDevice = j.optString("relay_device"), relayEndpoint = j.optString("relay_endpoint"), relayAccessAddress = j.optString("relay_access_address"),
             peerId = j.optString("peer_id"), transportId = j.optString("transport_id"), generation = j.optString("generation", "0"),
             profile = j.optString("profile"), state = j.optString("state"), phase = j.optString("phase"), pendingPhase = j.optString("pending_phase"),

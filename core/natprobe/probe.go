@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-3.0-only
 // Package natprobe implements the shared UDP STUN diagnostics used by Hole and its CLI tool.
 package natprobe
 
@@ -66,7 +66,7 @@ func ProbeWithListener(ctx context.Context, servers []*net.UDPAddr, listen func(
 	return ProbeSocket(ctx, pc, servers, listen, localSocket(ctx, pc, servers[0]))
 }
 
-// ProbeSocket leaves pc open, with deadlines cleared, for UDP punching.
+// ProbeSocket leaves the caller's socket open with its deadlines cleared.
 // listen must use the same network as pc; localEndpoint is the selected local IPv4 endpoint.
 func ProbeSocket(ctx context.Context, pc net.PacketConn, servers []*net.UDPAddr, listen func(string, string) (net.PacketConn, error), localEndpoint netip.AddrPort) (string, Snapshot, []netip.AddrPort) {
 	localText := pc.LocalAddr().String()

@@ -21,7 +21,6 @@ type iceSignalSink struct {
 	messages chan iceSignalMessage
 }
 type iceCoordinator struct {
-	natSlots                 chan struct{}
 	natMu                    sync.Mutex
 	natSnapshot              NATSnapshot
 	ctx                      context.Context
@@ -73,7 +72,6 @@ func newICECoordinator(ctx context.Context, r Request, platform Platform, sessio
 		c.voice = newConfiguredVoiceRuntime(ctx)
 	}
 	c.networkEpoch.Store(epoch)
-	c.natSlots = make(chan struct{}, 1)
 	c.natSnapshot = natUnknown()
 	return c
 }
@@ -337,9 +335,6 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 	if endpoint := r.Config.Transport.FixedEndpoint; endpoint != nil {
 		join.FixedEndpoint = endpoint.Advertise
 	}
-	if r.Config.ICE.UDPPunching != "off" && !r.Config.ICE.RelayOnly && r.Config.Transport.FixedEndpoint == nil {
-		join.UDPPunchVersion = udpPunchVersion
-	}
 	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err = conn.WriteJSON(join); err != nil {
 		return err, false
@@ -578,7 +573,7 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if m.Profile != ProfileFixed {
 			c.requestTURN()
 		}
-	case "ice_description", "ice_candidate", "nat_report", "nat_status":
+	case "ice_description", "ice_candidate", "nat_status":
 		c.mu.Lock()
 		p := c.peers[m.TransportID]
 		c.mu.Unlock()

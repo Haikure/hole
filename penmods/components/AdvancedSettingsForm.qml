@@ -16,14 +16,6 @@ Column {
     SwitchRow {
         width: parent.width
         height: implicitHeight
-        title: "自动尝试 UDP 直连"
-        summary: "普通探测后最多继续 15 秒"
-        checked: settings.form && settings.form.udpPunching !== "off"
-        onToggled: function(value) { settings.form.udpPunching = value ? "auto" : "off"; settings.form.syncConfig() }
-    }
-    SwitchRow {
-        width: parent.width
-        height: implicitHeight
         title: "自动映射 UDP 端口"
         summary: "申请当前网关的临时映射"
         checked: settings.form && settings.form.portMapping !== "off"

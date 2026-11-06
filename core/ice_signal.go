@@ -2,8 +2,6 @@ package core
 
 import "hole/core/internal/nat"
 
-const udpPunchVersion = "udp-punch-v1"
-
 type NATSnapshot = nat.Snapshot
 type natPlan struct {
 	Snapshot  NATSnapshot `json:"snapshot"`
@@ -19,15 +17,13 @@ type peerMappingRecord struct {
 	Expose   HostPort        `json:"expose"`
 }
 type iceSignalMessage struct {
-	UDPPunchVersion string            `json:"udp_punch_version,omitempty"`
-	PunchKey        string            `json:"punch_key,omitempty"`
-	NAT             *natPlan          `json:"nat,omitempty"`
-	HoleVersion     string            `json:"hole_version,omitempty"`
-	HoleDevice      string            `json:"hole_device,omitempty"`
-	PeerHoleDevice  string            `json:"peer_hole_device,omitempty"`
-	HoleServe       *RelayServeConfig `json:"hole_serve,omitempty"`
-	RelayPlan       []relayPathStep   `json:"relay_plan,omitempty"`
-	Hole            *holeGrant        `json:"hole,omitempty"`
+	NAT            *natPlan          `json:"nat,omitempty"`
+	HoleVersion    string            `json:"hole_version,omitempty"`
+	HoleDevice     string            `json:"hole_device,omitempty"`
+	PeerHoleDevice string            `json:"peer_hole_device,omitempty"`
+	HoleServe      *RelayServeConfig `json:"hole_serve,omitempty"`
+	RelayPlan      []relayPathStep   `json:"relay_plan,omitempty"`
+	Hole           *holeGrant        `json:"hole,omitempty"`
 	SignalMessage
 	SignalVersion       int                 `json:"signal_version,omitempty"`
 	LeaseRenewal        bool                `json:"lease_renewal,omitempty"`
@@ -90,7 +86,6 @@ type PeerTransportSnapshot struct {
 	PortMapping        nat.MappingSnapshot `json:"port_mapping"`
 	LocalNAT           NATSnapshot         `json:"local_nat"`
 	PeerNAT            NATSnapshot         `json:"peer_nat"`
-	DirectStrategy     string              `json:"direct_strategy,omitempty"`
 	RelayDevice        string              `json:"relay_device,omitempty"`
 	RelayEndpoint      string              `json:"relay_endpoint,omitempty"`
 	RelayAccessAddress string              `json:"relay_access_address,omitempty"`

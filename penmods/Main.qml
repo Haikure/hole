@@ -25,7 +25,6 @@ Item {
     property bool allowLegacy: true
     property bool allowInsecureSignal: false
     property string stunUrls: ""
-    property string udpPunching: "auto"
     property string portMapping: "auto"
     property var natStunUrls: null
     property string turnMode: "worker"
@@ -392,7 +391,6 @@ Item {
         allowInsecureSignal = asBool(transport.allow_insecure_signal, false)
 
         var ice = config.ice && typeof config.ice === "object" ? config.ice : null
-        udpPunching = ice && ice.udp_punching ? ice.udp_punching : "auto"
         portMapping = ice && ice.port_mapping ? ice.port_mapping : "auto"
         natStunUrls = ice && Array.isArray(ice.nat_stun_urls) ? ice.nat_stun_urls : null
         stunUrls = ice ? formatList(ice.stun_urls) : defaultStun
@@ -500,7 +498,6 @@ Item {
                 allow_insecure_signal: allowInsecureSignal
             },
             ice: {
-                udp_punching: udpPunching,
                 port_mapping: portMapping,
                 nat_stun_urls: natStunUrls,
                 // The core validates the complete transport object even when

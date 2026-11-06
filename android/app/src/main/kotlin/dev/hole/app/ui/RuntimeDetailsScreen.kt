@@ -143,7 +143,6 @@ fun RuntimeDetailsScreen(
                     DetailRow("对端 NAT", peer.peerNAT.description())
                     DetailRow("本机探测时间", peer.localNAT.probedAt.ifBlank { "暂无" })
                     DetailRow("对端探测时间", peer.peerNAT.probedAt.ifBlank { "暂无" })
-                    DetailRow("直连策略", peer.directStrategy.ifBlank { "普通探测" })
                     DetailRow("端口映射", peer.portMapping.ifBlank { "暂无" })
                     DetailRow("本机连接", selectedConnectionLabel(peer.localType, peer.localAddress))
                     DetailRow("对端连接", selectedConnectionLabel(peer.remoteType, peer.remoteAddress))

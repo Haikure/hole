@@ -1,8 +1,8 @@
 # 构建、签名与验证
 
-桌面 Rust 编译与测试使用独立的 `.github/workflows/test.yaml`，在 Linux / Windows amd64 runner 上构建内嵌核心的 Release 并运行 Rust、配置、快照和 Slint 测试，不修改发布工作流。本机不执行 Cargo 构建。工作流进入远端后，可用 `gh workflow run test.yaml --repo Haikure/hole --ref <分支>` 触发，`gh run view` 查看结果、`gh run download` 下载产物与许可材料。临时分支 `codex/nat-direct` 的推送也会触发测试，便于在新工作流进入默认分支前验证。未提交源码必须先获准提交到远端分支，远端工作流不会读取本机工作树。
+桌面 Rust 编译与测试使用独立的 `.github/workflows/test.yaml`，在 Linux / Windows amd64 runner 上构建内嵌核心的 Release 并运行 Rust、配置、快照和 Slint 测试，不修改发布工作流。本机不执行 Cargo 构建。工作流进入远端后，可用 `gh workflow run test.yaml --repo Haikure/hole --ref <分支>` 触发，`gh run view` 查看结果，`gh run download` 下载测试产物。临时分支 `codex/nat-direct` 的推送也会触发测试，便于在新工作流进入默认分支前验证。未提交源码必须先获准提交到远端分支，远端工作流不会读取本机工作树。
 
-交付目录附带 `licenses/` 和当前工作树的 `hole-source.tar.gz`，由 `scripts/package_licenses.py` 生成；许可说明见 `THIRD_PARTY_NOTICES.md`。源码摘要递归覆盖 `core/internal/nat`。源码包排除本地配置、签名密钥、缓存和生成物；使用相同构建入口和锁定依赖重建。自动 NAT 测试使用本地 STUN / 内存路由器 fixture，不能视为真实路由器、运营商 NAT、移动切网或成功率验收。
+核心构建标识覆盖 `core/internal/nat`。自动 NAT 测试使用本地 STUN / 内存路由器 fixture，不能视为真实路由器、运营商 NAT、移动切网或成功率验收。
 
 仓库根目录的 `build.sh` 是统一发布构建入口。只生成 Release，不部署 Worker、不安装到设备，
 也不创建或替换签名密钥。核心版本和各前端版本集中维护在仓库根目录的 `versions.json`。
@@ -35,8 +35,7 @@ Android 自动化工具安装脚本面向 Linux x86_64。已有 Go 1.27.3、JDK 
 bash android/scripts/setup-toolchain.sh
 ```
 
-脚本准备 SDK / NDK、Gradle 和同版本 gomobile / gobind，默认安装到 `~/.local/share/hole-android/`，
-SDK 许可交互确认；`--accept-licenses` 用于显式自动接受。
+脚本准备 SDK / NDK、Gradle 和同版本 gomobile / gobind，默认安装到 `~/.local/share/hole-android/`。
 普通构建脚本不安装 SDK 或 Rust 工具链；首次在线构建会下载所需 Go、Cargo、Maven 依赖及 Gradle Wrapper 分发包。
 
 Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `HOLE_TOOLCHAIN_ENV` 指定其他环境文件，
@@ -127,7 +126,6 @@ HOLE_SIGNING_KEY_PASSWORD='KEY_PASSWORD'
 
 手机和 Wear 使用同一组签名设置。覆盖升级沿用原签名身份；脚本不会静默改用新生成的调试密钥。
 本地 `signing.env` / `signing.*.env`、`*.keystore`、`*.jks` 和 `android/signing/` 不进入 Git。
-仅包含占位信息的 `signing.env.example` 随源码发布。
 
 ## 缓存与产物
 

@@ -1,6 +1,6 @@
 # 桌面 Go 桥接
 
-连接设置支持 UDP 直连、自动端口映射和分类 STUN 服务，导入导出/备份保留对应配置。网络详情和设备详情显示 NAT 类型、可预测性及探测时间；连接报告包含具体直连策略。Linux 默认网关读取 `/proc/net/route`，Windows 使用系统 IPv4 路由表及接口优先级；其他平台缺少适配时映射不可用，不猜测网关地址。
+连接设置支持自动端口映射和分类 STUN 服务，导入导出/备份保留对应配置。网络详情和设备详情显示 NAT 类型、可预测性及探测时间。Linux 默认网关读取 `/proc/net/route`，Windows 使用系统 IPv4 路由表及接口优先级；其他平台缺少适配时映射不可用，不猜测网关地址。
 
 `hole/desktop` 为 Windows / Linux GUI 提供独立的 stdio 宿主，入口为
 `cmd/hole-core`；Rust + Slint GUI 源码位于 `desktop/gui/`。

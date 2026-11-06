@@ -137,7 +137,7 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
         if is_fixed_peer(p) {
             for (key, value) in fixed_peer_details(p) { line(&mut out, format!("  {key} {value}")); }
         } else {
-            line(&mut out, format!("  本机 NAT {} · 对端 NAT {} · 直连策略 {}",p.local_nat,p.peer_nat,p.direct_strategy));
+            line(&mut out, format!("  本机 NAT {} · 对端 NAT {}",p.local_nat,p.peer_nat));
             let local = if p.local_relay_protocol.is_empty() { "非本机中继" } else { &p.local_relay_protocol };
             let remote = if p.remote_relay_protocol.is_empty() { "未上报" } else { &p.remote_relay_protocol };
             let policy = if p.relay_policy.is_empty() { "兼容阶段" } else { &p.relay_policy };

@@ -1,30 +1,17 @@
 package core
 
 import (
-	"context"
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
-	"time"
 
 	"gopkg.in/yaml.v3"
 	"hole/core/natprobe"
 )
 
-func TestNATBudgetIncludesSemaphoreWaitAndOldNetworkCannotPublish(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	c := &iceCoordinator{natSlots: make(chan struct{}, 1)}
-	c.natSlots <- struct{}{}
-	a := &iceAttempt{ctx: ctx, cancel: cancel, natTried: true}
-	p := &icePeer{coordinator: c, pending: a}
-	start := time.Now()
-	p.attemptNAT(a)
-	if time.Since(start) > time.Second {
-		t.Fatal("queue exceeded parent deadline")
-	}
-	if len(c.natSlots) != 1 {
-		t.Fatal("queue consumed another task's slot")
-	}
+func TestNATOldNetworkCannotPublish(t *testing.T) {
+	c := &iceCoordinator{}
 	c.natSnapshot = NATSnapshot{Status: "complete", Type: "symmetric", Epoch: 1}
 	c.networkEpoch.Store(2)
 	if s := c.localNAT(); s.Type != "unknown" || s.Status != "insufficient" {
@@ -67,5 +54,31 @@ func TestNATProbeDefaultServersMatchNatprobe(t *testing.T) {
 	want := natprobe.DefaultServers()
 	if got := natURLs(cfg.Normalized().ICE); !reflect.DeepEqual(got, want) {
 		t.Fatalf("default NAT STUN servers: %v, want %v", got, want)
+	}
+}
+
+func TestNATConfigRetainsMappingAndDropsRemovedOption(t *testing.T) {
+	if _, err := ParseConfig([]byte("ice: {udp_punching: off}")); err == nil {
+		t.Fatal("removed option was accepted")
+	}
+	cfg, err := ParseConfig([]byte("ice: {port_mapping: off, nat_stun_urls: []}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = cfg.Normalized()
+	if cfg.ICE.PortMapping != "off" || cfg.ICE.NATSTUNURLs == nil {
+		t.Fatal(cfg.ICE)
+	}
+	for _, marshal := range []func(any) ([]byte, error){json.Marshal, yaml.Marshal} {
+		data, err := marshal(cfg.ICE)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "udp_punching") {
+			t.Fatalf("removed option serialized: %s", data)
+		}
+	}
+	if cfg := (Config{}).Normalized(); cfg.ICE.PortMapping != "auto" {
+		t.Fatal(cfg.ICE)
 	}
 }

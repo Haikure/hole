@@ -21,7 +21,7 @@ export component TransportPage inherits VerticalLayout {
         form.direct-probe-timeout != App.transport.direct-probe-timeout || form.gather-timeout != App.transport.gather-timeout ||
         form.connectivity-timeout != App.transport.connectivity-timeout || form.retry-max-delay != App.transport.retry-max-delay ||
         form.turn-ttl != App.transport.turn-ttl || form.interface-allowlist != App.transport.interface-allowlist ||
-        form.relay-only != App.transport.relay-only || form.allow-insecure-signal != App.transport.allow-insecure-signal || form.udp-punching != App.transport.udp-punching || form.port-mapping != App.transport.port-mapping || form.nat-stun-urls != App.transport.nat-stun-urls;
+        form.relay-only != App.transport.relay-only || form.allow-insecure-signal != App.transport.allow-insecure-signal || form.port-mapping != App.transport.port-mapping || form.nat-stun-urls != App.transport.nat-stun-urls;
 
     public function reset() { form = App.transport; save-error = ""; }
     public function save() {
@@ -111,7 +111,6 @@ export component TransportPage inherits VerticalLayout {
                     Field { label: "允许使用的网卡"; text <=> root.form.interface-allowlist; hint: "逗号分隔；留空表示自动选择"; edited(t) => { root.form.interface-allowlist = t; } }
                 }
                 SwitchRow { title: "仅用中继"; summary: "跳过直连，使用 Hole 或 TURN。"; checked <=> root.form.relay-only; toggled(v) => { root.form.relay-only = v; } }
-                SwitchRow { title: "自动尝试 UDP 直连"; summary: "普通探测后继续尝试直连，最多 15 秒。"; checked <=> root.form.udp-punching; toggled(v) => { root.form.udp-punching = v; } }
                 SwitchRow { title: "自动映射 UDP 端口"; summary: "向当前网关申请临时映射。"; checked <=> root.form.port-mapping; toggled(v) => { root.form.port-mapping = v; } }
                 Field { label: "NAT 探测 STUN 地址"; multiline: true; lines: 3; text <=> root.form.nat-stun-urls; hint: "默认复用 STUN 并补充静态服务；每行一条。"; edited(t) => { root.form.nat-stun-urls = t; } }
                 SwitchRow { title: "允许本地 ws 测试"; summary: "默认使用 wss://，此项只为显式配置的本地测试入口启用。"; checked <=> root.form.allow-insecure-signal; toggled(v) => { root.form.allow-insecure-signal = v; } }

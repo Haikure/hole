@@ -36,7 +36,6 @@ data class CoreTransport(
 )
 @Serializable
 data class IceSettings(
-	@SerialName("udp_punching") val udpPunching: String = "auto",
 	@SerialName("port_mapping") val portMapping: String = "auto",
 	@SerialName("nat_stun_urls") val natStunUrls: List<String>? = null,
     @SerialName("stun_urls") val stunUrls: List<String> = listOf(DEFAULT_STUN_URL),

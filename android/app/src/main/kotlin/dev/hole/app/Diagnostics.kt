@@ -53,7 +53,7 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
                 fixedPeerDetails(peer).forEach { (label, value) -> appendLine("  $label $value") }
             } else {
                 appendLine("  本机 NAT ${peer.localNAT.description()} · 对端 NAT ${peer.peerNAT.description()}")
-                appendLine("  探测时间 ${peer.localNAT.probedAt} / ${peer.peerNAT.probedAt} · 直连策略 ${peer.directStrategy} · 端口映射 ${peer.portMapping}")
+                appendLine("  探测时间 ${peer.localNAT.probedAt} / ${peer.peerNAT.probedAt} · 端口映射 ${peer.portMapping}")
                 if (peer.relayDevice.isNotBlank()) appendLine("  Hole 中继设备 ${peer.relayDevice} · 公布入口 ${peer.relayEndpoint} · 实际接入 ${peer.relayAccessAddress}")
                 appendLine("  本机接入 ${peer.localRelayProtocol.ifBlank { peer.relayProtocol }.ifBlank { "非本机中继" }} · 对端接入 ${peer.remoteRelayProtocol.ifBlank { "未上报" }} · 中继使用方 ${peer.relaySide}")
                 appendLine("  本机中继顺序 ${relayOrderLabel(peer.relayOrder)} · 对端中继顺序 ${relayOrderLabel(peer.peerRelayOrder)} · 轮次 ${peer.relayRound}${if (peer.relayOrderFallback) " · 已回退默认顺序" else ""}")

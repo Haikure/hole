@@ -113,15 +113,12 @@ jobs:
           cd desktop/gui
           cargo test --locked --release --features embedded-core
 
-      - name: Upload tested executable and license materials
+      - name: Upload tested executable
         if: success()
         uses: actions/upload-artifact@v6
         with:
           name: tested-desktop-${{ matrix.os }}-amd64
-          path: |
-            dist/desktop/${{ matrix.os }}-amd64/
-            dist/licenses/
-            dist/hole-source.tar.gz
+          path: dist/desktop/${{ matrix.os }}-amd64/
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

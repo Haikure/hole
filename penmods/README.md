@@ -1,6 +1,6 @@
 # Hole PenMods 插件
 
-高级设置支持自动 UDP 直连、自动 UDP 端口映射和 NAT 分类 STUN 地址，导入导出保留 null/空数组差异。运行快照显示本机/对端 NAT、可预测性及探测时间，算法由 `hole-core` 提供。插件仍使用原有标准生命周期和 Qt 资源，不增加宿主 Hook。
+高级设置支持自动 UDP 端口映射和 NAT 分类 STUN 地址，导入导出保留 null/空数组差异。运行快照显示本机/对端 NAT、可预测性及探测时间，算法由 `hole-core` 提供。插件仍使用原有标准生命周期和 Qt 资源，不增加宿主 Hook。
 
 插件版本统一维护在仓库根目录的 [versions.json](../versions.json)。修改后运行 `python3 scripts/sync_versions.py`，同步 `metadata.json`、`xmake.lua`、桌面 Cargo 元数据和锁文件。
 
@@ -46,7 +46,7 @@ QT=/path/to/qt CROSS=aarch64-linux-gnu.2.27 ./penmods/build.sh
 脚本先调用根目录 `build.sh core --os linux --arch arm64` 构建核心，再使用 xmake
 构建 Release `libhole_plugin.so`。核心使用 `CGO_ENABLED=0`、`-mod=readonly`、`-trimpath`、
 `-s -w`，并通过 `scripts/build_meta.py` 写入与 CLI / 核心宿主 / Android AAR 一致的核心版本号和构建标识。
-每次打包都从当前源码构建核心并复制 QML；仅复制 QML 不会更新设备上的核心程序。
+每次构建都会重新生成核心程序并更新 QML 运行资源；仅复制 QML 不会更新设备上的核心程序。
 最终输出到：
 
 ```text

@@ -76,32 +76,30 @@ consume:
 普通 ICE 连接按以下思路工作：
 
 1. 先尝试 IPv4 / IPv6 UDP 直连。
-2. 普通 ICE 直连失败后，符合条件时追加 NAT 感知的 UDP 直连尝试，最多 15 秒。
-3. 仍未连通时，按中继顺序尝试可用的 Hole 或 TURN。配置了 Hole 中继时默认先尝试 Hole，再试 TURN/UDP、TURN/TCP、TURN/TLS；可用 `relay.order` 调整。
+2. ICE 直连失败后，按中继顺序尝试可用的 Hole 或 TURN。配置了 Hole 中继时默认先尝试 Hole，再试 TURN/UDP、TURN/TCP、TURN/TLS；可用 `relay.order` 调整。
 
 `transport.preferred` 支持 `ice`、`auto` 和 `ipv6`。`ice` 使用 ICE；`auto` 使用 ICE 并兼容旧 IPv6 对端；`ipv6` 只使用旧 IPv6 路径。省略该设置仍使用 IPv6 模式。`allow_legacy` 用于协商旧对端，不是 ICE 失败后的自动回退开关。
 
 开启 `ice.relay_only: true` 后跳过直连，仅使用可用的 Hole 或 TURN。Worker 和客户端都要支持该策略，才能在连接失败和切网重连时保持约束。
 
-## NAT 探测与 UDP 直连
+## NAT 探测与 UDP 端口映射
 
-NAT 辅助尝试在普通 ICE 直连失败后运行。Worker 与双方客户端都支持该能力、双方允许直连且使用 ICE 时才会启用；固定入口、仅中继关系和旧版客户端沿用各自原有路径。15 秒预算包含排队、探测、端口映射和 QUIC 握手。尝试失败后继续原有 Hole / TURN 中继顺序。自管 Worker 升级时先更新 Worker，再更新两端客户端。
+ICE 负责直连候选收集、连通性检查和路径选择；失败后按既有顺序回退到 Hole / TURN 中继。允许直连的 ICE 关系可自动为当前网络的 UDP 候选端口申请 IGD 或 NAT-PMP 映射，并通过普通 ICE 候选信令发布映射地址。NAT-PMP 在 IGD 不可用时自动尝试，无需独立开关。
 
 配置项位于 `ice` 下：
 
 | 配置 | 默认值 | 作用 |
 | --- | --- | --- |
-| `udp_punching` | `auto` | `auto` 启用 NAT 感知的 UDP 直连补充尝试；`off` 禁用。 |
 | `port_mapping` | `auto` | 在平台和路由器支持时，尝试为隧道 UDP 端口创建 UPnP IGD 或 NAT-PMP 映射；`off` 禁用。它不会映射 `provide` / `consume` 的业务端口。 |
 | `nat_stun_urls` | `null` | NAT 分类用的 UDP STUN 地址。`null` 复用 `ice.stun_urls` 并补充默认服务；`[]` 不使用分类服务；也可自定义，最多 8 条。 |
 
 `ice.stun_urls` 用于常规 ICE 候选收集；`ice.nat_stun_urls` 用于 NAT 分类。自动端口映射会在连接使用期间续租，并在路径结束时尝试删除。路由器或平台不支持映射时，Hole 会继续运行其他直连或中继路径。
 
-核心与 `tools/natprobe` 共用 `core/natprobe` 的 UDP STUN 探测和分类实现，每个目标最多采集三轮基础映射响应。只有原 socket 的普通 Binding 响应参与映射分类；同一目标的映射不稳定、或仅一个目标 IP 无法确认端点无关映射时保留信息不足。多个公网 IP 而端口一致时报告端口稳定，NAT 类型保留未知。
+核心与 `tools/natprobe` 共用 `core/natprobe` 的 UDP STUN 探测和分类实现，每个目标最多采集三轮基础映射响应。只有原 socket 的普通 Binding 响应参与映射分类；同一目标的映射不稳定、或仅一个目标 IP 无法确认端点无关映射时保留信息不足。多个公网 IP 而端口一致时报告端口稳定，NAT 类型保留未知。端口趋势仅用于诊断，不用于推算打洞目标端口。
 
-过滤测试为每个候选服务使用独立 socket，依据 RFC 5780 `OTHER-ADDRESS` 和实际 `CHANGE-REQUEST` 响应分类，并在总时限内重传请求；扩展被忽略或备用地址不可达时保留未知。未发生地址转换仍保留过滤结果，受限时报告 `firewall`。端口趋势、端口保持和 No-PAT 采用相同规则，详见 [工具说明](tools/README.md)。核心后台诊断与独立工具共用 6 个默认 STUN 端点，默认总时限均为 20 秒；补充直连的探测最多 10 秒，并受 15 秒总预算约束，其结果不覆盖后台诊断快照。不同网络、时刻、自定义 STUN 列表及本地端口仍可能产生不同结果。
+过滤测试为每个候选服务使用独立 socket，依据 RFC 5780 `OTHER-ADDRESS` 和实际 `CHANGE-REQUEST` 响应分类，并在总时限内重传请求；扩展被忽略或备用地址不可达时保留未知。未发生地址转换仍保留过滤结果，受限时报告 `firewall`。端口趋势、端口保持和 No-PAT 采用相同规则，详见 [工具说明](tools/README.md)。核心后台诊断与独立工具共用 6 个默认 STUN 端点，默认总时限均为 20 秒。不同网络、时刻、自定义 STUN 列表及本地端口仍可能产生不同结果。
 
-NAT 类型、端口可预测性和探测时间用于诊断，不保证直连一定成功；支持的图形客户端会在网络或设备详情中显示这些信息。允许直连的 ICE 关系会独立上报 NAT 快照，普通 ICE 成功、UDP 补充打洞关闭或回退中继后仍可查看对端状态；补充打洞另行交换最多 8 个 IPv4 映射地址。状态上报需要包含相应修复的 Worker 和客户端，旧端没有上报时仍显示“对端未上报”；Worker 不因此承载业务流量。底层协商细节见 [协议说明：UDP 直连子阶段](docs/PROTOCOL.md#udp-直连子阶段)。
+NAT 类型、端口可预测性和探测时间用于诊断，不保证直连一定成功；支持的图形客户端会在网络或设备详情中显示这些信息。允许直连的 ICE 关系会独立上报 NAT 快照，普通 ICE 成功或回退中继后仍可查看对端状态。未上报的旧端显示“对端未上报”；Worker 不因此承载业务流量。底层协商细节见 [协议说明：ICE 直连、NAT 状态与端口映射](docs/PROTOCOL.md#ice-直连nat-状态与端口映射)。
 
 仓库提供独立的 NAT 诊断命令 `go run ./tools/natprobe`，可查看本机 NAT 映射类型、端口变化趋势、内外端口是否保持一致及 No-PAT 特征。只有多目标映射稳定、IP 已转换且端口全部保持时才报告“疑似 No-PAT”；保留端口的 PAT 也能产生相同样本，无法仅凭 STUN 确认设备的转换模式。参数和 JSON 字段说明见 [tools/README.md](tools/README.md)。
 
@@ -173,10 +171,9 @@ Hole 中继与该设备的固定业务共用 UDP 监听端口，不新开监听�
 
 ## 文档
 
+项目采用 `GPL-3.0-only`，完整许可证见 [LICENSE](LICENSE)。
+
 - [配置示例](config.example.yaml)：CLI 常用 YAML 配置样例。
 - [协议说明](docs/PROTOCOL.md)：连接协商、NAT、固定入口、中继、语音和会话恢复边界。
 - [Worker 部署指南](docs/WORKER.md)：信令服务、TURN 凭据和协议升级顺序。
 - [Android 客户端](android/README.md) · [Wear OS](android/wear/README.md) · [桌面客户端](desktop/README.md) · [PenMods 插件](penmods/README.md)。
-- [第三方许可清单](THIRD_PARTY_NOTICES.md)：移植组件来源、许可与修改说明。
-
-项目原创部分采用 GPL-2.0-or-later；第三方组件继续按其原许可分发。包含移植组件的组合交付许可与源码材料见 [许可清单](THIRD_PARTY_NOTICES.md)。

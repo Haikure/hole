@@ -80,7 +80,7 @@ impl PeerData {
     pub(crate) fn from_peer(p: &snap::Peer) -> Self {
         let fixed = snap::is_fixed_peer(p);
         let mut details = vec![kv("连接过程", &snap::peer_phase_label(p))];
-        details.extend([kv("本机 NAT", &p.local_nat),kv("对端 NAT", &p.peer_nat),kv("直连策略", &p.direct_strategy)]);
+        details.extend([kv("本机 NAT", &p.local_nat),kv("对端 NAT", &p.peer_nat)]);
         if !p.relay_device.is_empty() {
             details.extend([
                 kv("Hole 中继设备", &p.relay_device),

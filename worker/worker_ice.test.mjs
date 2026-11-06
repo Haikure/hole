@@ -6,35 +6,37 @@ import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_POLICY, n
 import {HOLE_VERSION,deviceRelayPlan} from './worker_ice.mjs';
 
 const holeCaps={hole_version:HOLE_VERSION,relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1',relay_order:[],relay_enabled:false};
-test('UDP punching negotiates only for eligible pairs and NAT status remains reportable over relay',async()=>{
+test('NAT status survives relay fallback and validates lease, runtime, epoch and policy',async()=>{
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
- const caps={udp_punch_version:'udp-punch-v1',relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};
+ const caps={relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};
  await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
  await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
- const record=[...r.ice.records.values()][0],ready=a.messages.filter(m=>m.type==='transport_ready').at(-1);
- assert.equal(ready.udp_punch_version,caps.udp_punch_version);assert.match(ready.punch_key,/^[a-f0-9]{64}$/);
- const nat={snapshot:{status:'complete',type:'endpoint_independent',predictability:'stable',samples:3},addresses:['198.51.100.1:40000']};
- const report={type:'nat_report',transport_id:record.id,transport_generation:record.generation,to_peer_id:'beta',nat};
- await r.webSocketMessage(a,JSON.stringify(report));assert.deepEqual(b.messages.at(-1).nat,nat);
- const sleeping=new Room(f.state,{});await sleeping.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));assert.deepEqual(b.messages.at(-1).nat,nat);
- await r.webSocketMessage(a,JSON.stringify({...report,transport_generation:'0'}));assert.equal(b.messages.filter(m=>m.type==='nat_report').length,2);
- await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'relay_udp',relay_round:1}));
- const relayReady=a.messages.filter(m=>m.type==='transport_ready').at(-1);
- assert.equal(relayReady.phase,'relay_udp');assert.equal(relayReady.udp_punch_version,caps.udp_punch_version);assert.equal(relayReady.punch_key,undefined);
- const status={type:'nat_status',transport_id:record.id,transport_generation:record.generation,to_peer_id:'beta',nat:{snapshot:{status:'complete',type:'restricted_cone',predictability:'stable',samples:4},addresses:[]}};
- await r.webSocketMessage(a,JSON.stringify(status));assert.deepEqual(b.messages.at(-1).nat,status.nat);
- const resumed=new Room(f.state,{});await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));assert.deepEqual(b.messages.at(-1).nat,status.nat);
- await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'direct',relay_round:0}));
- assert.notEqual(a.messages.filter(m=>m.type==='transport_ready').at(-1).punch_key,ready.punch_key);
- const replacement=f.socket();await r.webSocketMessage(replacement,JSON.stringify(join('beta',[],['one'])));
- assert.equal(a.messages.filter(m=>m.type==='transport_ready').at(-1).udp_punch_version,undefined);
+ const record=[...r.ice.records.values()][0];
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,relay_round:1,phase:'relay_udp'}));
+ assert.equal(a.messages.filter(m=>m.type==='transport_ready').at(-1).phase,'relay_udp');
+ const nat={snapshot:{status:'complete',type:'endpoint_independent',predictability:'stable',samples:6},addresses:[]};
+ const status={type:'nat_status',transport_id:record.id,transport_generation:record.generation,to_peer_id:'beta',nat};
+ const count=()=>b.messages.filter(m=>m.type==='nat_status').length;
+ for (const field of ['lease_until','runtime','epochs','relay_required']) {
+   const saved=record[field];
+   record[field]=field==='lease_until'?0:field==='runtime'?['stale','stale']:field==='epochs'?['0','0']:true;
+   await r.webSocketMessage(a,JSON.stringify(status));
+   assert.equal(count(),0,field);
+   record[field]=saved;
+ }
+ await r.webSocketMessage(a,JSON.stringify({...status,nat:{...nat,snapshot:{...nat.snapshot,reason:'x'.repeat(4097)}}}));
+ assert.equal(count(),0);
+ await r.webSocketMessage(a,JSON.stringify(status));
+ assert.equal(count(),1);assert.deepEqual(b.messages.at(-1).nat,nat);
+ const resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));
+ assert.equal(count(),2);assert.deepEqual(b.messages.at(-1).nat,nat);
 });
-test('NAT status is independent of UDP punching and is replayed and renewed per generation',async()=>{
+test('NAT status is replayed and renewed per generation',async()=>{
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
  await r.webSocketMessage(a,JSON.stringify(join('alpha',['one'])));
  await r.webSocketMessage(b,JSON.stringify(join('beta',[],['one'])));
  const record=[...r.ice.records.values()][0];
- assert.equal(record.udp_punch_version,'');
  const nat={snapshot:{status:'complete',type:'firewall',predictability:'stable',mapping_behavior:'endpoint_independent',filtering_behavior:'address_dependent',port_preservation:'preserved',no_pat:'not_applicable',samples:6},addresses:[]};
  const status={type:'nat_status',transport_id:record.id,transport_generation:record.generation,to_peer_id:'beta',nat};
  await r.webSocketMessage(a,JSON.stringify(status));

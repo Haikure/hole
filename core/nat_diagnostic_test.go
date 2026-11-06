@@ -39,33 +39,3 @@ func TestNATMonitorUsesToolBudget(t *testing.T) {
 		t.Fatal("background probe did not start")
 	}
 }
-
-func TestNATPreparationDoesNotOverwriteDiagnosticTrend(t *testing.T) {
-	c, p := lifecycleCoordinator(t)
-	c.desired.Config.ICE.NATSTUNURLs = natFixtureSTUNURLs(t)
-	c.desired.Config.ICE.PortMapping = "off"
-	want := NATSnapshot{Status: "complete", Type: "symmetric", Predictability: "predictable_decremental", Epoch: c.networkEpoch.Load(), ProbedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	c.natSnapshot = want
-	ctx, cancel := context.WithCancel(c.ctx)
-	a := &iceAttempt{ctx: ctx, cancel: cancel, ready: p.ready}
-	p.pending = a
-	done := make(chan struct{})
-	go func() { defer close(done); p.attemptNAT(a) }()
-	defer func() { cancel(); <-done }()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	for {
-		select {
-		case m := <-c.sink.messages:
-			if m.Type != "nat_report" {
-				continue
-			}
-			if got := c.localNAT(); got != want {
-				t.Fatalf("preparation overwrote diagnostic trend: %+v", got)
-			}
-			return
-		case <-deadline.C:
-			t.Fatal("preparation did not report its socket")
-		}
-	}
-}

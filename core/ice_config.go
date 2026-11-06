@@ -62,7 +62,6 @@ type FixedEndpointConfig struct {
 	Advertise string `yaml:"advertise" json:"advertise"`
 }
 type ICEConfig struct {
-	UDPPunching         string         `yaml:"udp_punching" json:"udp_punching"`
 	PortMapping         string         `yaml:"port_mapping" json:"port_mapping"`
 	NATSTUNURLs         []string       `yaml:"nat_stun_urls" json:"nat_stun_urls"`
 	STUNURLs            []string       `yaml:"stun_urls" json:"stun_urls"`
@@ -106,9 +105,6 @@ type ICEServer struct {
 }
 
 func (c *Config) normalizeTransport() {
-	if c.ICE.UDPPunching == "" {
-		c.ICE.UDPPunching = "auto"
-	}
 	if c.ICE.PortMapping == "" {
 		c.ICE.PortMapping = "auto"
 	}
@@ -158,8 +154,8 @@ func (c *Config) normalizeTransport() {
 }
 func (c Config) validateTransport() error {
 	c.normalizeTransport()
-	if (c.ICE.UDPPunching != "auto" && c.ICE.UDPPunching != "off") || (c.ICE.PortMapping != "auto" && c.ICE.PortMapping != "off") {
-		return fmt.Errorf("ice.udp_punching 和 ice.port_mapping 只接受 auto 或 off")
+	if c.ICE.PortMapping != "auto" && c.ICE.PortMapping != "off" {
+		return fmt.Errorf("ice.port_mapping 只接受 auto 或 off")
 	}
 	if len(c.ICE.NATSTUNURLs) > 8 {
 		return fmt.Errorf("ice.nat_stun_urls 最多 8 条")

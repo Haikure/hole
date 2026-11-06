@@ -1,6 +1,6 @@
 # Android Go 桥接 API
 
-`ice.udp_punching`、`ice.port_mapping` 默认 `auto`，可设为 `off`；`ice.nat_stun_urls` 保留 null / 空数组语义，CLI 交换与备份使用同一核心字段。NetworkJSON 的 `gateway` 来自所选 Network 的 LinkProperties 默认 IPv4 路由；所有映射流量与 DNS 继续经过该 Network，不回退到默认网络。
+`ice.port_mapping` 默认 `auto`，可设为 `off`；`ice.nat_stun_urls` 保留 null / 空数组语义，CLI 交换与备份使用同一核心字段。NetworkJSON 的 `gateway` 来自所选 Network 的 LinkProperties 默认 IPv4 路由；所有映射流量与 DNS 继续经过该 Network，不回退到默认网络。
 
 配置中的 `relay.device` 和 `relay.order` 原样进入共享核心及 CLI 导入导出；省略顺序和
 显式空数组分别保留。`relay.serve.enabled: true` 在导入和启动时明确返回“仅 CLI 支持”，

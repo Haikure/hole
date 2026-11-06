@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestNATStatusPublishedWithoutPunchNegotiationAndAfterGenerationChange(t *testing.T) {
+func TestNATStatusPublishedAfterGenerationChange(t *testing.T) {
 	c, p := lifecycleCoordinator(t)
 	p.ready.Profile = ProfileICE
 	p.ready.Mappings = nil
@@ -21,8 +21,7 @@ func TestNATStatusPublishedWithoutPunchNegotiationAndAfterGenerationChange(t *te
 	if len(c.sink.messages) != 0 {
 		t.Fatal("unchanged status was sent twice")
 	}
-	// Relay generations have no punch key. They still need the same cached
-	// network result as soon as the new generation is authorized.
+	// Relay generations need the cached network result as soon as authorized.
 	ready := p.ready
 	ready.TransportGeneration++
 	ready.Phase = "relay_udp"
@@ -49,17 +48,17 @@ func TestNATStatusPublishedWithoutPunchNegotiationAndAfterGenerationChange(t *te
 	}
 }
 
-func TestNATReportUpdatesDisplayWithoutPendingAttempt(t *testing.T) {
+func TestNATStatusUpdatesDisplayWithoutPendingAttempt(t *testing.T) {
 	_, p := lifecycleCoordinator(t)
 	want := NATSnapshot{Status: "complete", Type: "firewall", Predictability: "stable", MappingBehavior: "endpoint_independent", FilteringBehavior: "address_dependent", PortPreservation: "preserved", NoPAT: "not_applicable"}
-	m := signalMessage("nat_report")
+	m := signalMessage("nat_status")
 	m.TransportID, m.TransportGeneration = p.ready.TransportID, p.ready.TransportGeneration
 	m.NAT = &natPlan{Snapshot: want}
 	p.receive(m)
 	if !reflect.DeepEqual(p.stats.PeerNAT, want) {
 		t.Fatalf("peer NAT = %+v", p.stats.PeerNAT)
 	}
-	for _, kind := range []string{"nat_report", "nat_status"} {
+	for _, kind := range []string{"nat_status"} {
 		m.Type = kind
 		m.TransportGeneration--
 		m.NAT.Snapshot.Type = "symmetric"

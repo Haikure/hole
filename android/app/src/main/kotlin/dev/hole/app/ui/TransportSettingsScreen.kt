@@ -53,7 +53,6 @@ fun TransportSettingsScreen(
     var interfaces by rememberSaveable { mutableStateOf(current.ice.interfaceAllowlist.joinToString(", ")) }
     var insecure by rememberSaveable { mutableStateOf(current.allowInsecureSignal) }
     var relayOnly by rememberSaveable { mutableStateOf(current.ice.relayOnly) }
-    var udpPunching by rememberSaveable { mutableStateOf(current.ice.udpPunching != "off") }
     var portMapping by rememberSaveable { mutableStateOf(current.ice.portMapping != "off") }
     var natStun by rememberSaveable { mutableStateOf(current.ice.natStunUrls?.joinToString("\n") ?: "") }
     var advanced by rememberSaveable { mutableStateOf(false) }
@@ -62,7 +61,7 @@ fun TransportSettingsScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var turnOrderDragging by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val ice = current.ice.copy(udpPunching = if (udpPunching) "auto" else "off", portMapping = if (portMapping) "auto" else "off", natStunUrls = if (natStun.isBlank()) current.ice.natStunUrls?.let { emptyList() } else splitListField(natStun), stunUrls = splitListField(stun), directProbeTimeout = probe.trim(), gatherTimeout = gather.trim(), connectivityTimeout = check.trim(), retryMaxDelay = retry.trim(), interfaceAllowlist = splitListField(interfaces), relayOnly = relayOnly)
+    val ice = current.ice.copy(portMapping = if (portMapping) "auto" else "off", natStunUrls = if (natStun.isBlank()) current.ice.natStunUrls?.let { emptyList() } else splitListField(natStun), stunUrls = splitListField(stun), directProbeTimeout = probe.trim(), gatherTimeout = gather.trim(), connectivityTimeout = check.trim(), retryMaxDelay = retry.trim(), interfaceAllowlist = splitListField(interfaces), relayOnly = relayOnly)
     val relayOrder = splitListField(relayOrderText)
     val turn = TurnSettings(relay, ttl.trim(), splitListField(urls), username.trim(), current.turn.order)
     val holeRelay = current.relay.copy(device = relayDevice.trim(), order = if (relayOrderEdited) relayOrder else current.relay.order)
@@ -135,7 +134,6 @@ fun TransportSettingsScreen(
                     HoleTextField(ttl, { ttl = it }, "请求的中继凭据有效期", supportingText = { Text("默认 6h；以 Worker 签发期限为准。") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     HoleTextField(interfaces, { interfaces = it }, "允许使用的网卡", supportingText = { Text("留空自动选择；Android 跟随系统网络。") }, modifier = Modifier.fillMaxWidth())
                     HoleSwitchPreference("仅用中继", "跳过直连，使用 Hole 或 TURN。", checked = relayOnly, onCheckedChange = { relayOnly = it })
-                    HoleSwitchPreference("自动尝试 UDP 直连", "普通探测后继续尝试直连，最多 15 秒。", checked = udpPunching, onCheckedChange = { udpPunching = it })
                     HoleSwitchPreference("自动映射 UDP 端口", "向当前网络网关申请临时端口映射。", checked = portMapping, onCheckedChange = { portMapping = it })
                     HoleTextField(natStun, { natStun = it }, "NAT 探测 STUN 地址", supportingText = { Text("默认复用 STUN 并补充静态服务；每行一条。") }, modifier = Modifier.fillMaxWidth())
                     HoleSwitchPreference("允许本地 ws 测试", "仅本地测试使用 ws://；生产环境请用 wss://。", checked = insecure, onCheckedChange = { insecure = it })

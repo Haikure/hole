@@ -41,7 +41,6 @@ pub struct Mapping {
 pub struct Peer {
     pub local_nat: String,
     pub peer_nat: String,
-    pub direct_strategy: String,
     pub relay_device: String,
     pub relay_endpoint: String,
     pub relay_access_address: String,
@@ -267,7 +266,7 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
         .map(|a| {
             a.iter()
                 .map(|p| Peer {
-                    local_nat: nat_text(&p["local_nat"],true), peer_nat: nat_text(&p["peer_nat"],false), direct_strategy: s(p,"direct_strategy"),
+                    local_nat: nat_text(&p["local_nat"],true), peer_nat: nat_text(&p["peer_nat"],false),
                     relay_device: s(p, "relay_device"),
                     relay_endpoint: s(p, "relay_endpoint"),
                     relay_access_address: s(p, "relay_access_address"),

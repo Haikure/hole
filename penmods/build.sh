@@ -41,6 +41,4 @@ rm -rf "$OUT/components"
 cp -R "$HERE/components" "$OUT/components"
 chmod 0755 "$OUT/libhole_plugin.so" "$OUT/hole-core"
 python3 "$ROOT/scripts/build_meta.py" checksum "$OUT/hole-core"
-python3 "$ROOT/scripts/package_licenses.py" "$OUT"
-
 printf 'Plugin package: %s\n' "$OUT"

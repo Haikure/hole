@@ -7,7 +7,6 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-import tarfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +73,7 @@ class BuildTests(unittest.TestCase):
         self.root = Path(self.temporary.name) / "source tree"
         self.root.mkdir()
         for relative in (
-            "build.sh", "scripts/build-env.sh", "scripts/build_meta.py", "scripts/package_licenses.py", "scripts/sync_versions.py", "versions.json",
+            "build.sh", "scripts/build-env.sh", "scripts/build_meta.py", "scripts/sync_versions.py", "versions.json",
             "desktop/gui/Cargo.toml", "desktop/gui/Cargo.lock", "penmods/xmake.lua", "penmods/metadata.json",
         ):
             target = self.root / relative
@@ -90,9 +89,6 @@ class BuildTests(unittest.TestCase):
             target = binary_dir / name
             target.write_text(TOOL)
             target.chmod(0o755)
-        shutil.copy2(ROOT / "LICENSE", self.root / "LICENSE")
-        shutil.copytree(ROOT / "LICENSES", self.root / "LICENSES", dirs_exist_ok=True)
-        shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", self.root / "THIRD_PARTY_NOTICES.md")
         gui = self.root / "desktop/gui"
         gui.mkdir(parents=True, exist_ok=True)
         wrapper = self.root / "android/gradlew"
@@ -162,6 +158,9 @@ class BuildTests(unittest.TestCase):
                          *[str(p.relative_to(ROOT / "penmods")) for p in (ROOT / "penmods/components").glob("*") if p.is_file()]):
             self.assertEqual((self.root / "penmods" / relative).read_bytes(), (output / relative).read_bytes())
         self.assertEqual("release-plugin-fixture", (output / "libhole_plugin.so").read_text())
+        self.assertEqual({"libhole_plugin.so", "hole-core", "hole-core.sha256", "metadata.json", "icon.png",
+                          "Main.qml", "SettingsPage.qml", "ConfigPage.qml", "components"},
+                         {p.name for p in output.iterdir()})
         self.assertTrue(os.access(output / "hole-core", os.X_OK))
         checksum = (output / "hole-core.sha256").read_text().split()
         self.assertEqual([hashlib.sha256((output / "hole-core").read_bytes()).hexdigest(), "hole-core"], checksum)
@@ -229,6 +228,8 @@ class BuildTests(unittest.TestCase):
         self.invoke("cli")
         self.assertTrue((self.root / "dist/cli/hole-linux-amd64").is_file())
         self.assertTrue((self.root / "dist/cli/hole-linux-amd64.sha256").is_file())
+        self.assertEqual({"cli/hole-linux-amd64", "cli/hole-linux-amd64.sha256"},
+                         {str(p.relative_to(self.root / "dist")) for p in (self.root / "dist").rglob("*") if p.is_file()})
         self.assertFalse(self.calls("gradlew"))
         build = next(call for call in self.calls("go") if call["args"][0] == "build")
         self.assertIn("-trimpath", build["args"])
@@ -442,21 +443,6 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(previous, module.core_build_id(), "desktop changes invalidated the shared AAR source identity")
         (self.root / "core/core.go").write_text("changed core\n")
         self.assertNotEqual(previous, module.core_build_id())
-
-    def test_source_delivery_includes_licenses_and_excludes_local_credentials(self):
-        (self.root / "signing.release.env").write_text("private-signing-fixture")
-        (self.root / "config.yaml").write_text("private-config-fixture")
-        self.invoke("cli")
-        output = self.root / "dist"
-        self.assertTrue((output / "licenses/GPL-2.0.txt").is_file())
-        self.assertTrue((output / "licenses/LGPL-3.0.txt").is_file())
-        with tarfile.open(output / "hole-source.tar.gz") as archive:
-            names = archive.getnames()
-        self.assertIn("hole/core/core.go", names)
-        self.assertIn("hole/scripts/build-env.sh", names)
-        self.assertNotIn("hole/config.yaml", names)
-        self.assertFalse(any("signing.release.env" in name or "signing.env" == Path(name).name or "/.cache/" in name for name in names))
-
 
 if __name__ == "__main__":
     unittest.main()

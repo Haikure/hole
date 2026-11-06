@@ -9,6 +9,7 @@ import (
 	"github.com/pion/ice/v4"
 	"github.com/pion/stun/v4"
 	"github.com/quic-go/quic-go"
+	"hole/core/internal/nat"
 	"net"
 	"slices"
 	"sync"
@@ -17,9 +18,6 @@ import (
 )
 
 type iceAttempt struct {
-	supplement   bool
-	natTried     bool
-	natEvents    chan iceSignalMessage
 	ctx          context.Context
 	cancel       context.CancelFunc
 	ready        iceSignalMessage
@@ -187,6 +185,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 		}
 		p.stats.LocalCandidates = 0
 		p.stats.RemoteCandidates = 0
+		p.stats.PortMapping = nat.MappingSnapshot{}
 		p.stats.LocalRelayProtocol = ""
 		p.stats.RelayProtocol = ""
 		p.stats.RemoteRelayProtocol = ""
@@ -254,33 +253,18 @@ func (p *icePeer) update(m iceSignalMessage) {
 }
 func (p *icePeer) receive(m iceSignalMessage) {
 	p.mu.Lock()
-	if m.Type == "nat_status" || m.Type == "nat_report" {
+	if m.Type == "nat_status" {
 		if p.closed || m.TransportID != p.ready.TransportID || m.TransportGeneration != p.ready.TransportGeneration || m.NAT == nil {
 			p.mu.Unlock()
 			return
 		}
 		p.stats.PeerNAT = m.NAT.Snapshot.Current()
-		if m.Type == "nat_status" {
-			p.mu.Unlock()
-			return
-		}
+		p.mu.Unlock()
+		return
 	}
 	a := p.pending
 	p.mu.Unlock()
 	if a == nil || a.ready.Profile == ProfileFixed || m.TransportGeneration != a.ready.TransportGeneration {
-		return
-	}
-	if m.Type == "nat_report" {
-		p.mu.Lock()
-		if a.natEvents == nil {
-			a.natEvents = make(chan iceSignalMessage, 4)
-		}
-		ch := a.natEvents
-		p.mu.Unlock()
-		select {
-		case ch <- m:
-		default:
-		}
 		return
 	}
 	select {
@@ -503,14 +487,6 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 	if a.ctx.Err() != nil {
 		return
 	}
-	if !a.natTried && a.ready.UDPPunchVersion == udpPunchVersion && a.ready.Phase == "direct" && a.ready.Profile == ProfileICE && !a.ready.RelayRequired && p.coordinator.request().Config.ICE.UDPPunching != "off" {
-		f := classifyError(err)
-		if f.Code != "peer_identity_mismatch" && f.Code != "protocol_mismatch" {
-			a.natTried = true
-			a.supplement = true
-			return
-		}
-	}
 	fault := classifyError(err)
 	if fault.Code == "network_error" {
 		fault = &Fault{Code: "ice_path_failed", Message: "当前网络路径尚未连通，正在尝试下一条路径"}
@@ -569,10 +545,6 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 func (p *icePeer) attempt(a *iceAttempt) {
 	owned := false
 	defer func() {
-		if a.supplement {
-			p.attemptNAT(a)
-			return
-		}
 		if !owned {
 			a.cancel()
 		}
@@ -699,9 +671,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	}
 	defer func() {
 		if !owned {
-			if !a.supplement {
-				a.cancel()
-			}
+			a.cancel()
 			_ = agent.Close()
 		}
 	}()
@@ -720,7 +690,18 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	var localMu sync.Mutex
 	localGathered := make(chan struct{})
 	var gatheredOnce sync.Once
-	_ = agent.OnCandidate(func(candidate ice.Candidate) {
+	var mapper *icePortMapper
+	if a.ready.Phase == "direct" && cfg.ICE.PortMapping != "off" {
+		mapper = newICEPortMapper(a.ctx, platform, func(snapshot nat.MappingSnapshot) {
+			p.mu.Lock()
+			if p.ready.TransportGeneration == a.ready.TransportGeneration {
+				p.stats.PortMapping = snapshot
+			}
+			p.mu.Unlock()
+		}, func() { fail(errors.New("UDP port mapping changed")) })
+		defer mapper.close()
+	}
+	publishCandidate := func(candidate ice.Candidate) {
 		m := signalMessage("ice_candidate")
 		m.TransportID = a.ready.TransportID
 		m.TransportGeneration = a.ready.TransportGeneration
@@ -745,6 +726,14 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 		if e := p.coordinator.send(m); e != nil {
 			fail(e)
+		}
+	}
+	_ = agent.OnCandidate(func(candidate ice.Candidate) {
+		publishCandidate(candidate)
+		if mapper != nil {
+			if mapped := mapper.candidate(candidate); mapped != nil {
+				publishCandidate(mapped)
+			}
 		}
 	})
 	_ = agent.OnSelectedCandidatePairChange(func(local, remote ice.Candidate) {

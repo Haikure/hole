@@ -1,16 +1,15 @@
-// SPDX-License-Identifier: LGPL-3.0-only
-// See classify.go for provenance and modifications.
+// SPDX-License-Identifier: GPL-3.0-only
 package nat
 
 import (
 	"context"
-	"errors"
-	"github.com/pion/stun/v4"
-	"hole/core/natprobe"
 	"net"
 	"net/netip"
 	"strconv"
 	"time"
+
+	"github.com/pion/stun/v4"
+	"hole/core/natprobe"
 )
 
 type Network interface {
@@ -20,12 +19,12 @@ type Network interface {
 
 const maxProbeServers = 8
 
-func addrPort(a net.Addr) netip.AddrPort {
-	if a == nil {
+func addrPort(address net.Addr) netip.AddrPort {
+	if address == nil {
 		return netip.AddrPort{}
 	}
-	v, _ := netip.ParseAddrPort(a.String())
-	return v
+	endpoint, _ := netip.ParseAddrPort(address.String())
+	return endpoint
 }
 
 func Binding(ctx context.Context, pc net.PacketConn, server *net.UDPAddr, change uint32) (Sample, error) {
@@ -33,44 +32,52 @@ func Binding(ctx context.Context, pc net.PacketConn, server *net.UDPAddr, change
 }
 
 func Probe(ctx context.Context, network Network, pc net.PacketConn, urls []string) (Snapshot, []netip.AddrPort) {
-	var endpoints []*net.UDPAddr
-	seen := map[string]bool{}
+	capacity := min(len(urls), maxProbeServers)
+	endpoints := make([]*net.UDPAddr, 0, capacity)
+	seen := make(map[string]struct{}, capacity)
 	for _, raw := range urls {
-		if ctx.Err() != nil || len(endpoints) >= maxProbeServers {
+		if ctx.Err() != nil || len(endpoints) == maxProbeServers {
 			break
 		}
-		u, err := stun.ParseURI(raw)
-		if err != nil {
+		uri, err := stun.ParseURI(raw)
+		if err != nil || uri.Scheme != stun.SchemeTypeSTUN || uri.Proto != stun.ProtoTypeUDP {
 			continue
 		}
-		a, err := network.ResolveUDP(ctx, net.JoinHostPort(u.Host, uPort(u.Port)))
-		if err != nil || a.IP.To4() == nil || seen[a.String()] {
+		address, err := network.ResolveUDP(ctx, net.JoinHostPort(uri.Host, strconv.Itoa(uri.Port)))
+		if err != nil || address.IP.To4() == nil {
 			continue
 		}
-		seen[a.String()] = true
-		endpoints = append(endpoints, a)
+		key := address.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		endpoints = append(endpoints, address)
 	}
 	if len(endpoints) == 0 {
-		s := Unknown("没有可用的 IPv4 STUN 地址")
-		s.ProbedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		return s, nil
+		snapshot := natprobe.Unknown("没有可用的 IPv4 STUN 地址")
+		snapshot.ProbedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		return snapshot, nil
 	}
 
-	_, snapshot, addresses := natprobe.ProbeSocket(ctx, pc, endpoints, func(n, a string) (net.PacketConn, error) {
-		return network.ListenPacket(ctx, n, a)
-	}, localEndpoint(ctx, network, pc, endpoints[0]))
+	_, snapshot, addresses := natprobe.ProbeSocket(ctx, pc, endpoints, func(networkName, address string) (net.PacketConn, error) {
+		return network.ListenPacket(ctx, networkName, address)
+	}, selectedLocalEndpoint(ctx, network, pc, endpoints[0]))
 	return snapshot, addresses
 }
 
-func localEndpoint(ctx context.Context, network Network, pc net.PacketConn, remote *net.UDPAddr) netip.AddrPort {
+func selectedLocalEndpoint(ctx context.Context, network Network, pc net.PacketConn, remote *net.UDPAddr) netip.AddrPort {
 	local := addrPort(pc.LocalAddr())
 	if local.IsValid() && !local.Addr().IsUnspecified() {
 		return local
 	}
+	if local.Port() == 0 {
+		return netip.AddrPort{}
+	}
 	dialer, ok := network.(interface {
 		DialUDP(context.Context, *net.UDPAddr) (*net.UDPConn, error)
 	})
-	if !ok || local.Port() == 0 {
+	if !ok {
 		return netip.AddrPort{}
 	}
 	conn, err := dialer.DialUDP(ctx, remote)
@@ -84,7 +91,3 @@ func localEndpoint(ctx context.Context, network Network, pc net.PacketConn, remo
 	}
 	return netip.AddrPortFrom(selected.Addr(), local.Port())
 }
-
-func uPort(p int) string { return strconv.Itoa(p) }
-
-var ErrNoStrategy = errors.New("当前 NAT 组合没有适用的 UDP 策略")
