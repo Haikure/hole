@@ -38,7 +38,7 @@ func TestClassifyMappingEvidence(t *testing.T) {
 		{"changed source is not a second destination", []Sample{a, changed}, nil, "insufficient", "unknown", "unknown", "unknown"},
 		{"unexpected ordinary source", []Sample{a, foreign}, nil, "insufficient", "unknown", "unknown", "unknown"},
 		{"only one destination IP", []Sample{a, mapping("192.0.2.1:3479", a.Mapped.String())}, nil, "insufficient", "unknown", "unknown", "unknown"},
-		{"multiple public IPs stable port", []Sample{a, mapping(b.Server.String(), "198.51.100.2:40000")}, &extra, "complete", "unknown", "endpoint_dependent", "stable"},
+		{"multiple public IPs without enough targets per IP", []Sample{a, mapping(b.Server.String(), "198.51.100.2:40000")}, &extra, "insufficient", "unknown", "unknown", "stable"},
 		{"fresh socket does not affect base mapping", []Sample{a, b}, &extra, "complete", "endpoint_independent", "endpoint_independent", "stable"},
 		{"symmetric without fresh socket", []Sample{a, mapping(b.Server.String(), "198.51.100.1:45000")}, nil, "complete", "symmetric", "endpoint_dependent", "unknown"},
 	} {
@@ -52,6 +52,89 @@ func TestClassifyMappingEvidence(t *testing.T) {
 	got := Classify(netip.AddrPort{}, []Sample{a, changed}, nil, "endpoint_independent", "")
 	if got.Status != "insufficient" || got.Type != "unknown" || got.FilteringBehavior != "endpoint_independent" || got.Samples != 1 {
 		t.Fatalf("single-target filtering evidence = %+v", got)
+	}
+}
+
+func TestClassifyAddressPool(t *testing.T) {
+	a := mapping("192.0.2.1:3478", "198.51.100.1:40000")
+	b := mapping("192.0.2.2:3478", a.Mapped.String())
+	c := mapping("192.0.2.3:3478", "198.51.100.2:40000")
+	d := mapping("192.0.2.4:3478", c.Mapped.String())
+	changed := b
+	changed.Change = 6
+	foreign := b
+	foreign.Source = c.Server
+	extra := mapping(a.Server.String(), "198.51.100.3:40003")
+	for _, tc := range []struct {
+		name                               string
+		samples                            []Sample
+		extra                              *Sample
+		kind, predictability, preservation string
+		noPAT                              string
+		validSamples                       int
+	}{
+		{"one classifiable IP", []Sample{a, b, c}, nil, "cone", "stable", "preserved", "unknown", 3},
+		{"two classifiable IPs", []Sample{a, b, c, d}, nil, "cone", "stable", "preserved", "unknown", 4},
+		{"fresh socket does not change type", []Sample{a, b, c}, &extra, "cone", "stable", "preserved", "unknown", 3},
+		{"different stable ports per IP", []Sample{a, b, mapping(c.Server.String(), "198.51.100.2:45000")}, nil, "cone", "unknown", "mixed", "not_detected", 3},
+		{"different stable ports with fresh socket", []Sample{a, b, mapping(c.Server.String(), "198.51.100.2:45000")}, &extra, "cone", "irregular", "mixed", "not_detected", 3},
+		{"same target rotates IP", []Sample{a, mapping(a.Server.String(), c.Mapped.String()), b, c}, nil, "cone", "stable", "preserved", "unknown", 4},
+		{"unstable group does not hide valid group", []Sample{a, mapping(a.Server.String(), "198.51.100.1:40001"), b, c, d}, nil, "cone", "unknown", "mixed", "not_detected", 5},
+		{"symmetric group takes priority", []Sample{a, b, c, mapping(d.Server.String(), "198.51.100.2:40001")}, nil, "symmetric", "unknown", "mixed", "not_detected", 4},
+		{"symmetric group and singleton", []Sample{a, mapping(b.Server.String(), "198.51.100.1:40001"), c}, &extra, "symmetric", "irregular", "mixed", "not_detected", 3},
+		{"same target IP different ports can be symmetric", []Sample{a, mapping("192.0.2.1:3479", "198.51.100.1:40001"), c}, nil, "symmetric", "unknown", "mixed", "not_detected", 3},
+		{"singletons cannot establish a cone", []Sample{a, c}, nil, "unknown", "stable", "preserved", "unknown", 2},
+		{"singletons cannot establish symmetric NAT", []Sample{a, mapping(c.Server.String(), "198.51.100.2:45000")}, nil, "unknown", "unknown", "mixed", "not_detected", 2},
+		{"repeated responses do not add targets", []Sample{a, a, c, c}, nil, "unknown", "stable", "preserved", "unknown", 4},
+		{"only one target IP per group", []Sample{a, mapping("192.0.2.1:3479", a.Mapped.String()), c}, nil, "unknown", "stable", "preserved", "unknown", 3},
+		{"unstable group and singleton", []Sample{a, mapping(a.Server.String(), "198.51.100.1:40001"), b, c}, nil, "unknown", "unknown", "mixed", "not_detected", 4},
+		{"changed response excluded", []Sample{a, changed, c}, nil, "unknown", "stable", "preserved", "unknown", 2},
+		{"foreign response excluded", []Sample{a, foreign, c}, nil, "unknown", "stable", "preserved", "unknown", 2},
+		{"invalid mapping excluded", []Sample{a, mapping(b.Server.String(), "198.51.100.1:0"), c}, nil, "unknown", "stable", "preserved", "unknown", 2},
+	} {
+		for _, filter := range []struct{ behavior, cone string }{
+			{"endpoint_independent", "full_cone"},
+			{"address_dependent", "restricted_cone"},
+			{"address_port_dependent", "port_restricted_cone"},
+			{"unknown", "endpoint_independent"},
+		} {
+			t.Run(tc.name+"/"+filter.behavior, func(t *testing.T) {
+				kind, behavior, status := tc.kind, "endpoint_independent", "complete"
+				switch kind {
+				case "cone":
+					kind = filter.cone
+				case "symmetric":
+					behavior = "endpoint_dependent"
+				case "unknown":
+					behavior, status = "unknown", "insufficient"
+				}
+				// A pool must never report the whole path as open or No-PAT,
+				// even when the local endpoint happens to match one pool entry.
+				for _, local := range []netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:40000"), a.Mapped} {
+					samples := append([]Sample(nil), tc.samples...)
+					var reason string
+					for order := 0; order < 2; order++ {
+						got := Classify(local, samples, tc.extra, filter.behavior, "filter detail")
+						if got.Type != kind || got.MappingBehavior != behavior || got.Status != status || got.FilteringBehavior != filter.behavior {
+							t.Fatalf("classification = %+v, want %s / %s / %s", got, kind, behavior, status)
+						}
+						if got.Predictability != tc.predictability || got.PortPreservation != tc.preservation || got.NoPAT != tc.noPAT || got.Samples != tc.validSamples {
+							t.Fatalf("aggregate observations changed: %+v", got)
+						}
+						if !strings.Contains(got.Reason, "运营商地址池") || !strings.Contains(got.Reason, "filter detail") {
+							t.Fatalf("missing pool or filtering explanation: %+v", got)
+						}
+						if order == 1 && got.Reason != reason {
+							t.Fatalf("classification depends on sample order: %q vs %q", got.Reason, reason)
+						}
+						reason = got.Reason
+						for i, j := 0, len(samples)-1; i < j; i, j = i+1, j-1 {
+							samples[i], samples[j] = samples[j], samples[i]
+						}
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -254,6 +337,7 @@ type stunFixture struct {
 	ignoreChange, unreachableOther bool
 	preservePort                   bool
 	mappedPorts                    map[uint16]map[netip.AddrPort]uint16
+	mappedIPs                      map[netip.AddrPort]netip.Addr
 	connections                    []*fixtureConn
 }
 
@@ -339,8 +423,12 @@ func (c *fixtureConn) WriteTo(raw []byte, destination net.Addr) (int, error) {
 			return len(raw), nil
 		}
 	}
+	mappedIP := netip.MustParseAddr("198.51.100.1")
+	if ip, ok := f.mappedIPs[to]; ok {
+		mappedIP = ip
+	}
 	response := stun.MustBuild(stun.NewTransactionIDSetter(request.TransactionID), stun.BindingSuccess,
-		&stun.XORMappedAddress{IP: net.ParseIP("198.51.100.1"), Port: mappedPort},
+		&stun.XORMappedAddress{IP: net.IP(mappedIP.AsSlice()), Port: mappedPort},
 		&stun.OtherAddress{IP: net.IP(other.Addr().AsSlice()), Port: int(other.Port())})
 	c.response = response.Raw
 	return len(raw), nil
@@ -457,6 +545,40 @@ func TestProbeIsolatesFilteringSocket(t *testing.T) {
 		if !conn.closed {
 			t.Fatal("probe left a socket open")
 		}
+	}
+}
+
+func TestProbeAddressPool(t *testing.T) {
+	for _, tc := range []struct{ filtering, kind string }{
+		{"endpoint_independent", "full_cone"},
+		{"address_dependent", "restricted_cone"},
+		{"address_port_dependent", "port_restricted_cone"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(tc.filtering)
+			third := netip.MustParseAddrPort("192.0.2.3:3478")
+			f.mappedIPs = map[netip.AddrPort]netip.Addr{third: netip.MustParseAddr("198.51.100.2")}
+			servers := []*net.UDPAddr{net.UDPAddrFromAddrPort(f.primary), net.UDPAddrFromAddrPort(f.other), net.UDPAddrFromAddrPort(third)}
+			_, got, mapped := ProbeWithListener(context.Background(), servers, f.listen)
+			if got.Type != tc.kind || got.MappingBehavior != "endpoint_independent" || got.FilteringBehavior != tc.filtering || got.Predictability != "stable" {
+				t.Fatalf("address pool probe = %+v", got)
+			}
+			if got.Status != "complete" || got.Samples != 3*probeRounds || got.PortPreservation != "translated" || got.NoPAT != "not_detected" {
+				t.Fatalf("address pool observations = %+v", got)
+			}
+			if len(mapped) != 2 || mapped[0] != netip.MustParseAddrPort("198.51.100.1:40000") || mapped[1] != netip.MustParseAddrPort("198.51.100.2:40000") {
+				t.Fatalf("address pool mappings = %v", mapped)
+			}
+			if got.FilteringServer != f.primary.String() || len(f.connections) != 3 {
+				t.Fatalf("unexpected filtering endpoint or socket count: %+v, %d sockets", got, len(f.connections))
+			}
+			for _, conn := range f.connections {
+				if !conn.closed {
+					t.Fatal("address pool probe left a socket open")
+				}
+			}
+		})
 	}
 }
 

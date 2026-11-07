@@ -359,7 +359,7 @@ func Classify(local netip.AddrPort, samples []Sample, extra *Sample, filteringBe
 	servers := make(map[netip.AddrPort]netip.AddrPort)
 	serverIPs := make(map[netip.Addr]bool)
 	mappings := make(map[netip.AddrPort]bool)
-	publicIPs := make(map[netip.Addr]bool)
+	publicIPs := make(map[netip.Addr][]Sample)
 	ports := make(map[uint16]bool)
 	unstable := false
 	localKnown := local.IsValid() && local.Addr().Is4() && !local.Addr().IsUnspecified() && local.Port() != 0
@@ -375,7 +375,7 @@ func Classify(local netip.AddrPort, samples []Sample, extra *Sample, filteringBe
 		servers[value.Server] = value.Mapped
 		serverIPs[value.Server.Addr()] = true
 		mappings[value.Mapped] = true
-		publicIPs[value.Mapped.Addr()] = true
+		publicIPs[value.Mapped.Addr()] = append(publicIPs[value.Mapped.Addr()], value)
 		ports[value.Mapped.Port()] = true
 		if localKnown {
 			if value.Mapped.Port() == local.Port() {
@@ -397,6 +397,48 @@ func Classify(local netip.AddrPort, samples []Sample, extra *Sample, filteringBe
 	}
 	if translated {
 		result.NoPAT = "not_detected"
+	}
+	if len(publicIPs) > 1 {
+		// An address pool can rotate IPs even for the same destination. Apply
+		// the usual evidence requirements within each IP before considering
+		// that rotation unstable. Keep aggregate observations on the result.
+		var selected Snapshot
+		var selectedIP netip.Addr
+		for ip, group := range publicIPs {
+			// Multiple external IPs rule out calling the whole path open or
+			// untranslated, even if one of them matches the local endpoint.
+			candidate := Classify(netip.AddrPort{}, group, nil, filteringBehavior, "")
+			if candidate.Status != "complete" {
+				continue
+			}
+			// Positive evidence of destination-dependent ports takes priority
+			// over stable groups. Break ties by IP for deterministic reporting.
+			if !selectedIP.IsValid() || (candidate.Type == "symmetric" && selected.Type != "symmetric") ||
+				(candidate.Type == selected.Type && ip.Less(selectedIP)) {
+				selected, selectedIP = candidate, ip
+			}
+		}
+		result.Reason = "探测到多个公网 IP，可能来自运营商地址池"
+		if selectedIP.IsValid() {
+			result.Status = "complete"
+			result.Type = selected.Type
+			result.MappingBehavior = selected.MappingBehavior
+			result.Reason += "；根据公网 IP " + selectedIP.String() + " 的组内映射行为分类"
+		} else {
+			result.Reason += "；各 IP 组内样本不足或映射不稳定，无法确定 NAT 类型"
+		}
+		if len(ports) == 1 {
+			result.Predictability = "stable"
+		} else {
+			if portTrend(samples, extra) != "unknown" {
+				result.Predictability = "irregular"
+			}
+			result.Reason += "；跨公网 IP 的端口变化无法确认可预测趋势"
+		}
+		if filteringReason != "" {
+			result.Reason += "；" + filteringReason
+		}
+		return result
 	}
 	if unstable {
 		result.Reason = "同一 STUN 目标的映射响应不稳定，无法确定映射行为"
@@ -458,17 +500,6 @@ func Classify(local netip.AddrPort, samples []Sample, extra *Sample, filteringBe
 		result.Reason = filteringReason
 		return result
 	}
-	if len(publicIPs) > 1 && len(ports) == 1 {
-		result.Type = "unknown"
-		result.MappingBehavior = "endpoint_dependent"
-		result.Predictability = "stable"
-		result.Reason = "不同目标映射到多个公网 IP，但映射端口一致；仅凭该现象无法确认 NAT 类型"
-		if filteringReason != "" {
-			result.Reason += "；" + filteringReason
-		}
-		return result
-	}
-
 	result.Type = "symmetric"
 	result.MappingBehavior = "endpoint_dependent"
 	result.Predictability = "irregular"
