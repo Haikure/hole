@@ -26,28 +26,30 @@ type Sample struct {
 }
 
 type Snapshot struct {
-	Status            string `json:"status"`
-	Type              string `json:"type"`
-	MappingBehavior   string `json:"mapping_behavior"`
-	FilteringBehavior string `json:"filtering_behavior"`
-	FilteringServer   string `json:"filtering_server,omitempty"`
-	Predictability    string `json:"predictability"`
-	PortStep          int    `json:"port_step,omitempty"`
-	PublicIP          string `json:"public_ip,omitempty"`
-	LastMappingPort   int    `json:"last_mapping_port,omitempty"`
-	AllocationScope   string `json:"allocation_scope,omitempty"`
-	PortPreservation  string `json:"port_preservation"`
-	NoPAT             string `json:"no_pat"`
-	Samples           int    `json:"samples"`
-	ProbedAt          string `json:"probed_at"`
-	Reason            string `json:"reason,omitempty"`
-	Network           string `json:"network,omitempty"`
-	Epoch             uint64 `json:"epoch,string"`
+	Status            string       `json:"status"`
+	Type              string       `json:"type"`
+	MappingBehavior   string       `json:"mapping_behavior"`
+	FilteringBehavior string       `json:"filtering_behavior"`
+	FilteringServer   string       `json:"filtering_server,omitempty"`
+	Predictability    string       `json:"predictability"`
+	PortStep          int          `json:"port_step,omitempty"`
+	PublicIP          string       `json:"public_ip,omitempty"`
+	LastMappingPort   int          `json:"last_mapping_port,omitempty"`
+	AllocationScope   string       `json:"allocation_scope,omitempty"`
+	IPEvidence        []IPEvidence `json:"ip_evidence,omitempty"`
+	PortPreservation  string       `json:"port_preservation"`
+	NoPAT             string       `json:"no_pat"`
+	Samples           int          `json:"samples"`
+	ProbedAt          string       `json:"probed_at"`
+	Reason            string       `json:"reason,omitempty"`
+	Network           string       `json:"network,omitempty"`
+	Epoch             uint64       `json:"epoch,string"`
 }
 
 const Lifetime = 5 * time.Minute
 
 func (s Snapshot) Current() Snapshot {
+	s.IPEvidence = append([]IPEvidence(nil), s.IPEvidence...)
 	if t, err := time.Parse(time.RFC3339Nano, s.ProbedAt); err == nil && time.Since(t) >= Lifetime {
 		s.Status = "expired"
 	}
@@ -449,17 +451,24 @@ func Classify(local netip.AddrPort, samples []Sample, extra *Sample, filteringBe
 		// that rotation unstable. Keep aggregate observations on the result.
 		var selected Snapshot
 		var selectedIP netip.Addr
+		result.IPEvidence = poolEvidence(publicIPs)
 		for ip, group := range publicIPs {
 			// Multiple external IPs rule out calling the whole path open or
 			// untranslated, even if one of them matches the local endpoint.
 			candidate := Classify(netip.AddrPort{}, group, nil, filteringBehavior, "")
+			for _, evidence := range result.IPEvidence {
+				if evidence.IP == ip.String() {
+					candidate.Predictability = evidence.Trend
+				}
+			}
 			if candidate.Status != "complete" {
 				continue
 			}
 			// Positive evidence of destination-dependent ports takes priority
 			// over stable groups. Break ties by IP for deterministic reporting.
 			if !selectedIP.IsValid() || (candidate.Type == "symmetric" && selected.Type != "symmetric") ||
-				(candidate.Type == selected.Type && ip.Less(selectedIP)) {
+				(candidate.Type == selected.Type && (poolTrendRank(candidate.Predictability) > poolTrendRank(selected.Predictability) ||
+					poolTrendRank(candidate.Predictability) == poolTrendRank(selected.Predictability) && ip.Less(selectedIP))) {
 				selected, selectedIP = candidate, ip
 			}
 		}
@@ -470,10 +479,22 @@ func Classify(local netip.AddrPort, samples []Sample, extra *Sample, filteringBe
 			result.MappingBehavior = selected.MappingBehavior
 			result.Reason += "；根据公网 IP " + selectedIP.String() + " 的组内映射行为分类"
 		} else {
-			result.Reason += "；各 IP 组内样本不足或映射不稳定，无法确定 NAT 类型"
+			result.Status, result.Type = "complete", "address_pool"
+			result.Reason += "；组内证据不足以区分锥形或对称型"
 		}
 		if len(ports) == 1 {
 			result.Predictability = "stable"
+		} else if selected.Type == "symmetric" || result.Type == "address_pool" {
+			result.Predictability = "irregular"
+			for _, evidence := range result.IPEvidence {
+				if evidence.Trend == "unknown" {
+					result.Predictability = "unverified"
+				}
+			}
+			if selected.Predictability == "incremental" || selected.Predictability == "decremental" {
+				result.Predictability = selected.Predictability
+			}
+			result.Reason += "；端口趋势按 IP 分别判断，未验证后续出口；样本不足的出口仅默认递增试探"
 		} else {
 			if portTrend(samples, extra) != "unknown" {
 				result.Predictability = "irregular"

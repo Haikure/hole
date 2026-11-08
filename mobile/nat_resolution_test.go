@@ -131,7 +131,7 @@ func TestManualNATMatchesToolWithIPv6FirstDNS(t *testing.T) {
 	for _, address := range mapped {
 		wantMappings = append(wantMappings, address.String())
 	}
-	if d.Result != tool || !reflect.DeepEqual(d.Mappings, wantMappings) {
+	if !reflect.DeepEqual(d.Result, tool) || !reflect.DeepEqual(d.Mappings, wantMappings) {
 		t.Fatalf("manual=%+v %v; tool=%+v %v", d.Result, d.Mappings, tool, wantMappings)
 	}
 }

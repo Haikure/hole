@@ -7,10 +7,12 @@ import (
 	"time"
 
 	"hole/core/internal/nat"
+	"hole/core/natprobe"
 )
 
 // Shared explanatory text keeps all graphical hosts faithful to the same evidence.
 func (d NATDiagnostic) view() NATDiagnostic {
+	d.Result.IPEvidence = append([]natprobe.IPEvidence(nil), d.Result.IPEvidence...)
 	d.Network = d.Network.clone()
 	d.Servers = append([]string{}, d.Servers...)
 	d.Mappings = append([]string{}, d.Mappings...)
@@ -30,6 +32,7 @@ func (d NATDiagnostic) view() NATDiagnostic {
 	}
 	d.Title, d.Summary = "检测当前网络", "检查 IPv4 NAT 的映射与过滤方式，了解 UDP 打洞条件。无需加入房间。"
 	kinds := map[string]string{"open": "公网直连", "firewall": "防火墙过滤", "full_cone": "完全锥型", "restricted_cone": "地址受限锥型", "port_restricted_cone": "端口受限锥型", "symmetric": "对称型", "endpoint_independent": "端点无关映射"}
+	kinds["address_pool"] = "地址池"
 	explanations := map[string]string{
 		"open":                 "未观察到地址转换或过滤限制，UDP 直连条件较好。实际连接仍需双方检查可达性。",
 		"firewall":             "未观察到地址转换，但存在入站过滤；通常需要双方先发送数据建立放行状态。",
@@ -38,6 +41,7 @@ func (d NATDiagnostic) view() NATDiagnostic {
 		"port_restricted_cone": "不同目标共用映射，但只接收曾主动联系过的 IP 和端口发来的数据。",
 		"symmetric":            "不同目标可能获得不同公网端口，普通打洞难度较高；能否预测取决于端口证据，必要时使用中继。",
 		"endpoint_independent": "已确认不同目标共用映射；过滤证据尚不完整，不能进一步判定为哪一种锥型。",
+		"address_pool":         "观测到多个出口 IP，组内样本尚不足以区分锥形或对称型；可按本轮出口作有限端口试探。",
 	}
 	switch d.State {
 	case "queued":
@@ -79,12 +83,14 @@ func (d NATDiagnostic) view() NATDiagnostic {
 			d.Tone, d.Badge = "green", "直连条件较好"
 		case "restricted_cone", "port_restricted_cone", "firewall":
 			d.Tone, d.Badge = "blue", "入站受限"
-		case "symmetric":
+		case "symmetric", "address_pool":
 			switch s.Predictability {
 			case "predictable_incremental", "predictable_decremental":
 				d.Tone, d.Badge = "yellow", "可预测 · 有限样本"
 			case "incremental", "decremental":
-				d.Tone, d.Badge = "yellow", "可能可预测"
+				d.Tone, d.Badge = "yellow", "存在端口趋势"
+			case "unverified":
+				d.Badge = "待验证"
 			case "irregular":
 				d.Tone, d.Badge = "red", "不可预测 · 本次采样"
 			}
@@ -127,13 +133,23 @@ func (d NATDiagnostic) view() NATDiagnostic {
 		field("预测基准端口", positiveNumber(s.LastMappingPort), "仅在形成递增分配模型时提供；它可能来自后续新 socket 验证，不一定在原 socket 的映射列表中。"),
 	}})
 	d.Sections = append(d.Sections, DiagnosticSection{"端口特征", []DiagnosticField{
-		field("端口规律", label(s.Predictability, map[string]string{"stable": "映射稳定", "incremental": "可能递增", "decremental": "可能递减", "predictable_incremental": "已验证递增趋势", "predictable_decremental": "已验证递减趋势", "irregular": "未观察到规律"}), "趋势与可预测性是不同证据等级；出现规律也不保证实际打洞成功。"),
+		field("端口规律", label(s.Predictability, map[string]string{"stable": "映射稳定", "incremental": "可能递增", "decremental": "可能递减", "predictable_incremental": "已验证递增趋势", "predictable_decremental": "已验证递减趋势", "irregular": "未观察到规律", "unverified": "待验证"}), "趋势与可预测性是不同证据等级；地址池中的趋势仅属于对应 IP，出现规律也不保证实际打洞成功。"),
 		field("端口步长", positiveNumber(s.PortStep), "递增模型采用不同映射端口间最小非零差值，并校验步长余数；没有模型时保留未知。"),
 		field("分配范围", label(s.AllocationScope, map[string]string{"same_socket": "同一 socket", "cross_socket": "跨 socket"}), "说明端口规律是否在新建 UDP 连接后仍成立。"),
 		field("端口保持", label(s.PortPreservation, map[string]string{"mixed": "部分保持", "translated": "发生端口转换", "preserved": "已观察到保持"}), "检查公网映射端口是否与本地 UDP 端口相同。"),
 		field("无端口转换（No-PAT）", label(s.NoPAT, map[string]string{"not_detected": "未检测到", "suspected": "疑似 No-PAT", "not_applicable": "不适用（未发生地址转换）"}), "疑似结论来自映射与端口保持证据，不作为确定的网络类型。"),
 	}})
-	if s.PortStep == 0 && !d.busy() {
+	if len(s.IPEvidence) > 1 {
+		for _, evidence := range s.IPEvidence {
+			trend := label(evidence.Trend, map[string]string{"stable": "端口稳定", "incremental": "可能递增", "decremental": "可能递减", "unknown": "待验证", "irregular": "未观察到规律"})
+			detail := fmt.Sprintf("%d 个不同目标，%d 个不同端口。", evidence.Targets, evidence.Ports)
+			if evidence.Step > 0 {
+				detail += fmt.Sprintf("观测步长 %d。", evidence.Step)
+			}
+			detail += "仅用于本轮校准命中该 IP 时的有限试探；样本不足默认递增，已观察到不规则则跳过。"
+			d.Sections[1].Fields = append(d.Sections[1].Fields, field(evidence.IP, trend, detail))
+		}
+	} else if s.PortStep == 0 && !d.busy() {
 		detail := "需要同一公网 IP 上至少 3 个不同目标的递增映射、至少 2 个目标 IP，以及稳定的重复响应。类型相同不代表这些条件已满足。"
 		if s.Type != "symmetric" && s.Type != "unknown" {
 			detail = "当前映射类型不使用对称型 NAT 的递增端口模型，因此不提供预测基准端口、步长和分配范围。"

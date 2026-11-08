@@ -102,6 +102,9 @@ func (p *icePeer) refreshNATPunchModel(a *iceAttempt, platform Platform, cfg Con
 	p.stats.PeerNAT = s.remote.Current()
 	p.mu.Unlock()
 	s.mode = punchMode(s.local, s.remote)
+	if s.mode == "pool" && s.poolPrediction {
+		return nil
+	}
 	if s.mode != "single" && s.mode != "fixed" && s.mode != "next" {
 		return errors.New("refreshed NAT model does not support prediction")
 	}

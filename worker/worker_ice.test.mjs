@@ -3,7 +3,49 @@ import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { Room } from './worker.js';
 import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_POLICY, negotiateProfile, iceJoinFields, validateTurnResponse, relayPairs, validFixedEndpoint } from './worker_ice.mjs';
-import {HOLE_VERSION,deviceRelayPlan} from './worker_ice.mjs';
+import {HOLE_VERSION,deviceRelayPlan,validNATPlan,validPunch} from './worker_ice.mjs';
+
+test('address pool evidence stays bounded and does not assert a global model',()=>{
+ const snapshot={status:'complete',type:'address_pool',predictability:'unverified',samples:2,ip_evidence:[
+  {ip:'198.51.100.1',targets:1,ports:1,trend:'unknown'},
+  {ip:'198.51.100.2',targets:1,ports:1,trend:'unknown'}
+ ]};
+ assert.equal(validNATPlan({snapshot,addresses:[]}),true);
+ for(const ip_evidence of [null,[],[snapshot.ip_evidence[0]],Array(25).fill(snapshot.ip_evidence[0]),
+  [snapshot.ip_evidence[0],snapshot.ip_evidence[0]],
+  [snapshot.ip_evidence[0],{...snapshot.ip_evidence[1],trend:'incremental'}],
+  [snapshot.ip_evidence[0],{...snapshot.ip_evidence[1],step:1}],
+  [snapshot.ip_evidence[0],{...snapshot.ip_evidence[1],ip:'invalid'}]]) {
+  assert.equal(validNATPlan({snapshot:{...snapshot,ip_evidence},addresses:[]}),false);
+ }
+ const evidence={ip:'198.51.100.2',targets:3,ports:3,trend:'decremental',step:2};
+ assert.equal(validNATPlan({snapshot:{...snapshot,type:'symmetric',predictability:'decremental',ip_evidence:[snapshot.ip_evidence[0],evidence]},addresses:[]}),true);
+ assert.equal(validPunch({kind:'ready',round:1,mode:'pool',plan:{ip:'198.51.100.2',port:40000,target:39980,width:20,sockets:10}}),true);
+ // Worst ordinary probe: three different exits for each of eight targets.
+ const maximal={...snapshot,samples:24,reason:'测'.repeat(256),ip_evidence:Array.from({length:24},(_,i)=>({ip:`198.51.100.${i+1}`,targets:1,ports:1,trend:'unknown'}))};
+ assert.equal(validNATPlan({snapshot:maximal,addresses:[]}),true);
+});
+
+test('pool ready requires both offers and survives Worker replay',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const caps={punch_version:'nat-punch-v1'};
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+ const record=[...r.ice.records.values()][0];
+ const send=(ws,to,punch)=>r.webSocketMessage(ws,JSON.stringify({type:'nat_punch',transport_id:record.id,transport_generation:record.generation,to_peer_id:to,punch}));
+ const ready={kind:'ready',round:1,mode:'pool',plan:{ip:'198.51.100.1',port:40000,target:40001,width:20,sockets:10}};
+ const count=()=>b.messages.filter(m=>m.type==='nat_punch').length;
+ await send(a,'beta',ready);assert.equal(count(),0);
+ const offer={kind:'offer',pool_prediction:true,nonce:'a'.repeat(64),snapshot:{status:'complete',type:'address_pool',predictability:'unverified',samples:2,ip_evidence:[{ip:'198.51.100.1',targets:1,ports:1,trend:'unknown'},{ip:'198.51.100.2',targets:1,ports:1,trend:'unknown'}]},config:{sockets:10,scan_width:20,dual_sockets:32,dual_retry_sockets:64,timeout:'10s',round_timeout:'2.5s'}};
+ await send(a,'beta',offer);assert.equal(count(),1);
+ await send(a,'beta',ready);assert.equal(count(),1);
+ await send(b,'alpha',offer);
+ await send(a,'beta',ready);assert.equal(count(),2);
+ const resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));
+ assert.equal(count(),4);
+ assert.deepEqual(b.messages.filter(m=>m.type==='nat_punch').at(-2).punch.snapshot.ip_evidence,offer.snapshot.ip_evidence);
+});
 
 const holeCaps={hole_version:HOLE_VERSION,relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1',relay_order:[],relay_enabled:false};
 test('ICE first switches generation before NAT punching and preserves its retry budget',async()=>{

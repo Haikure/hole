@@ -19,13 +19,14 @@ import (
 )
 
 type natPunchSignal struct {
-	Kind     string          `json:"kind"`
-	Round    int             `json:"round,omitempty"`
-	Mode     string          `json:"mode,omitempty"`
-	Nonce    string          `json:"nonce,omitempty"`
-	Snapshot *NATSnapshot    `json:"snapshot,omitempty"`
-	Config   *NATPunchConfig `json:"config,omitempty"`
-	Plan     *natPunchPlan   `json:"plan,omitempty"`
+	Kind           string          `json:"kind"`
+	Round          int             `json:"round,omitempty"`
+	Mode           string          `json:"mode,omitempty"`
+	Nonce          string          `json:"nonce,omitempty"`
+	Snapshot       *NATSnapshot    `json:"snapshot,omitempty"`
+	Config         *NATPunchConfig `json:"config,omitempty"`
+	Plan           *natPunchPlan   `json:"plan,omitempty"`
+	PoolPrediction bool            `json:"pool_prediction,omitempty"`
 }
 
 type natPunchPlan struct {
@@ -37,10 +38,11 @@ type natPunchPlan struct {
 }
 
 type natPunchSession struct {
-	local, remote NATSnapshot
-	config        NATPunchConfig
-	mode          string
-	key           []byte
+	local, remote  NATSnapshot
+	config         NATPunchConfig
+	mode           string
+	key            []byte
+	poolPrediction bool
 }
 
 var errNATPunchModel = errors.New("calibration no longer follows allocation model")
@@ -71,6 +73,9 @@ func natGroup(s NATSnapshot) string {
 	if s.Type == "symmetric" && s.MappingBehavior == "endpoint_dependent" {
 		return "symmetric"
 	}
+	if s.Type == "address_pool" && len(s.IPEvidence) > 1 {
+		return "pool"
+	}
 	return "unknown"
 }
 
@@ -81,6 +86,26 @@ func punchMode(a, b NATSnapshot) string {
 	}
 	predictable := func(s NATSnapshot) bool {
 		return s.Predictability == "predictable_incremental" || s.Predictability == "predictable_decremental" || s.Predictability == "incremental" || s.Predictability == "decremental"
+	}
+	pool := func(s NATSnapshot) bool {
+		if len(s.IPEvidence) < 2 || natGroup(s) == "unknown" || natGroup(s) == "cone" {
+			return false
+		}
+		for _, evidence := range s.IPEvidence {
+			if evidence.Trend != "irregular" {
+				return true
+			}
+		}
+		return false
+	}
+	if len(a.IPEvidence) > 1 && ag != "cone" || len(b.IPEvidence) > 1 && bg != "cone" {
+		eligible := func(s NATSnapshot) bool {
+			return natGroup(s) == "cone" || pool(s) || len(s.IPEvidence) < 2 && natGroup(s) == "symmetric" && predictable(s)
+		}
+		if eligible(a) && eligible(b) {
+			return "pool"
+		}
+		return "ice"
 	}
 	if ag == "cone" && bg == "symmetric" && predictable(b) || bg == "cone" && ag == "symmetric" && predictable(a) {
 		return "single"
@@ -106,6 +131,7 @@ func (p *icePeer) sendNATPunch(a *iceAttempt, value natPunchSignal) error {
 	}
 	if value.Snapshot != nil {
 		copy := *value.Snapshot
+		copy.IPEvidence = append([]natprobe.IPEvidence(nil), copy.IPEvidence...)
 		value.Snapshot = &copy
 	}
 	if value.Plan != nil {
@@ -187,7 +213,7 @@ func (p *icePeer) prepareNATPunch(a *iceAttempt, cfg Config) (*natPunchSession, 
 	if len(natURLs(cfg.ICE)) == 0 || local.Status == "not_applicable" {
 		offerMode = "disabled"
 	}
-	if err := p.sendNATPunch(a, natPunchSignal{Kind: "offer", Mode: offerMode, Nonce: encoded, Snapshot: &local, Config: &config}); err != nil {
+	if err := p.sendNATPunch(a, natPunchSignal{Kind: "offer", Mode: offerMode, Nonce: encoded, Snapshot: &local, Config: &config, PoolPrediction: true}); err != nil {
 		return nil, err
 	}
 	peer, err := p.waitNATPunch(ctx, a, "offer", 0)
@@ -211,6 +237,10 @@ func (p *icePeer) prepareNATPunch(a *iceAttempt, cfg Config) (*natPunchSession, 
 	}
 	key := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%d/%s/%s", natPunchVersion, a.ready.TransportID, a.ready.TransportGeneration, first, second)))
 	s := &natPunchSession{local: local, remote: *peer.Snapshot, config: config, mode: punchMode(local, *peer.Snapshot), key: key[:]}
+	s.poolPrediction = peer.PoolPrediction
+	if s.mode == "pool" && !s.poolPrediction {
+		s.mode = "ice"
+	}
 	if offerMode == "disabled" || peer.Mode == "disabled" {
 		s.mode = "ordinary"
 	}
@@ -226,6 +256,9 @@ func makeNATPunchPlan(mapped netip.AddrPort, model NATSnapshot, mode string, cou
 		return nil, errors.New("invalid punch calibration")
 	}
 	plan := &natPunchPlan{IP: mapped.Addr().String(), Port: int(mapped.Port()), Target: int(mapped.Port()), Sockets: count, Width: 1}
+	if mode == "pool" {
+		return makePoolPunchPlan(plan, model, width)
+	}
 	if model.PublicIP != "" && plan.IP != model.PublicIP {
 		return nil, fmt.Errorf("%w: public IP changed", errNATPunchModel)
 	}
@@ -328,8 +361,13 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 					count = s.config.DualRetrySockets
 				}
 			}
-			if s.mode == "single" && natGroup(model) == "symmetric" {
+			if s.mode == "single" && natGroup(model) == "symmetric" || s.mode == "pool" && natGroup(model) != "cone" {
 				count = s.config.Sockets
+			}
+			if s.mode == "pool" && natGroup(s.remote) != "cone" {
+				// Keep the total socket/target tasks within the existing scan
+				// ceiling, including when both peers need a port window.
+				count = min(count, max(1, 256/max(1, s.config.ScanWidth)))
 			}
 			var sockets []net.PacketConn
 			for range count {
@@ -340,7 +378,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				sockets = append(sockets, pc)
 			}
 			calibrator := sockets[0]
-			if s.mode == "fixed" || s.mode == "single" && natGroup(model) == "symmetric" {
+			if s.mode == "fixed" || s.mode == "single" && natGroup(model) == "symmetric" || s.mode == "pool" && natGroup(model) != "cone" {
 				var e error
 				calibrator, e = open()
 				if e != nil {
@@ -389,10 +427,17 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			for port := want.Target; port < want.Target+want.Width; port++ {
 				targets = append(targets, &net.UDPAddr{IP: net.ParseIP(want.IP), Port: port})
 			}
+			if s.mode == "pool" && want.Target < want.Port {
+				// Try the nearest predicted decrement first, preserving the
+				// allocation order when the two peers have opposite directions.
+				for i, j := 0, len(targets)-1; i < j; i, j = i+1, j-1 {
+					targets[i], targets[j] = targets[j], targets[i]
+				}
+			}
 			// A cone scans from its retained STUN socket; the symmetric side
 			// opens ten fresh mappings to that one exact endpoint (testnat).
 			dialer := controlling
-			if s.mode == "single" {
+			if s.mode == "single" || s.mode == "pool" && (natGroup(model) == "cone" || natGroup(s.remote) == "cone") {
 				dialer = natGroup(model) == "cone"
 			}
 			attempt := newNATPunchAttempt(sockets)

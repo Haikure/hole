@@ -84,7 +84,7 @@ func (a *natPunchAttempt) close() {
 }
 
 func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key []byte, targets []*net.UDPAddr, tlsConfig *tls.Config) (*quic.Conn, error) {
-	if len(targets) == 0 || len(targets) > 256 || len(a.sockets) == 0 || len(a.sockets) > 64 || len(targets) > 1 && len(a.sockets) > 1 {
+	if len(targets) == 0 || len(targets) > 256 || len(a.sockets) == 0 || len(a.sockets) > 64 || len(targets)*len(a.sockets) > 256 {
 		return nil, errors.New("invalid punch task count")
 	}
 	ctx, cancel := context.WithCancel(ctx)

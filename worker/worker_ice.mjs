@@ -11,21 +11,35 @@ export function validPunch(p) {
   if (p.kind==='offer') {
     const c=p.config;
     const duration=v=>typeof v==='string' && /^(?:\d+(?:\.\d+)?)(?:ms|s)$/.test(v) ? parseFloat(v)*(v.endsWith('ms')?1:1000) : NaN;
-    return /^[a-f0-9]{64}$/.test(p.nonce??'') && (p.mode===undefined || p.mode==='disabled') && validNATPlan({snapshot:p.snapshot,addresses:[]}) && c && integer(c.sockets,1,64) && integer(c.scan_width,1,256) && integer(c.dual_sockets,1,64) && integer(c.dual_retry_sockets,c.dual_sockets,64) && duration(c.timeout)>=1000 && duration(c.timeout)<=30000 && duration(c.round_timeout)>=500 && duration(c.round_timeout)<=duration(c.timeout);
+    return /^[a-f0-9]{64}$/.test(p.nonce??'') && (p.mode===undefined || p.mode==='disabled') && (p.pool_prediction===undefined || typeof p.pool_prediction==='boolean') && validNATPlan({snapshot:p.snapshot,addresses:[]}) && c && integer(c.sockets,1,64) && integer(c.scan_width,1,256) && integer(c.dual_sockets,1,64) && integer(c.dual_retry_sockets,c.dual_sockets,64) && duration(c.timeout)>=1000 && duration(c.timeout)<=30000 && duration(c.round_timeout)>=500 && duration(c.round_timeout)<=duration(c.timeout);
   }
   if (['abort','ice_start','reserve','reserved'].includes(p.kind)) return p.round===undefined;
   if (!integer(p.round,1,3)) return false;
   if (p.kind==='model') return validNATPlan({snapshot:p.snapshot,addresses:[]});
   if (p.kind==='go' || p.kind==='failed') return true;
   const v=p.plan;
-  return p.kind==='ready' && ['single','fixed','next'].includes(p.mode) && v && ipv4(v.ip) && integer(v.port,1,65535) && integer(v.target,1,65535) && integer(v.width,1,256) && v.target+v.width-1<=65535 && integer(v.sockets,1,64);
+  return p.kind==='ready' && ['single','fixed','next','pool'].includes(p.mode) && v && ipv4(v.ip) && integer(v.port,1,65535) && integer(v.target,1,65535) && integer(v.width,1,256) && v.target+v.width-1<=65535 && integer(v.sockets,1,64);
+}
+function validIPEvidence(entries) {
+  if (!Array.isArray(entries) || entries.length<2 || entries.length>24) return false;
+  const seen=new Set();
+  return entries.every(e=>{
+    if (!e || !ipv4(e.ip) || seen.has(e.ip)) return false;
+    seen.add(e.ip);
+    return integer(e.targets,1,8) && integer(e.ports,1,24) && ['unknown','stable','incremental','decremental','irregular'].includes(e.trend) &&
+      (e.step===undefined || integer(e.step,1,1024)) &&
+      (!['incremental','decremental'].includes(e.trend) || e.targets>=3 && e.ports>=3) &&
+      (e.step===undefined || ['incremental','decremental'].includes(e.trend));
+  });
 }
 export function validNATPlan(plan) {
   if (!plan || JSON.stringify(plan).length > 4096 || !plan.snapshot || !Array.isArray(plan.addresses) || plan.addresses.length > 8) return false;
   const s=plan.snapshot;
   return ['insufficient','probing','complete','expired','not_applicable'].includes(s.status) &&
-    ['unknown','open','firewall','full_cone','restricted_cone','port_restricted_cone','symmetric','endpoint_independent'].includes(s.type) &&
-    ['unknown','stable','incremental','decremental','predictable_incremental','predictable_decremental','irregular'].includes(s.predictability) &&
+    ['unknown','open','firewall','full_cone','restricted_cone','port_restricted_cone','symmetric','endpoint_independent','address_pool'].includes(s.type) &&
+    ['unknown','stable','incremental','decremental','predictable_incremental','predictable_decremental','irregular','unverified'].includes(s.predictability) &&
+    (s.ip_evidence===undefined || validIPEvidence(s.ip_evidence)) &&
+    (s.type!=='address_pool' && s.predictability!=='unverified' || s.ip_evidence!==undefined) &&
     (s.mapping_behavior===undefined || ['unknown','endpoint_independent','endpoint_dependent'].includes(s.mapping_behavior)) &&
     (s.filtering_behavior===undefined || ['unknown','endpoint_independent','address_dependent','address_port_dependent'].includes(s.filtering_behavior)) &&
     (s.port_preservation===undefined || ['unknown','preserved','translated','mixed'].includes(s.port_preservation)) &&
@@ -523,6 +537,7 @@ export class RoomICE {
       if(previous) return true;
       if(cached.punch.length>=(record.punch_schedule?20:12)) return true;
       const other=record.ice[peerName]?.punch??[];
+      if(p.kind==='ready' && p.mode==='pool' && (!cached.punch.some(v=>v.kind==='offer' && v.pool_prediction===true) || !other.some(v=>v.kind==='offer' && v.pool_prediction===true))) return true;
       if(['reserve','reserved','model'].includes(p.kind) && record.punch_schedule!==PUNCH_SCHEDULE) return true;
       if(p.kind==='reserve' && name!==record.a) return true;
       if(p.kind==='reserved' && (name!==record.b || !other.some(v=>v.kind==='reserve'))) return true;

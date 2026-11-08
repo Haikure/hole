@@ -38,7 +38,7 @@ func TestClassifyMappingEvidence(t *testing.T) {
 		{"changed source is not a second destination", []Sample{a, changed}, nil, "insufficient", "unknown", "unknown", "unknown"},
 		{"unexpected ordinary source", []Sample{a, foreign}, nil, "insufficient", "unknown", "unknown", "unknown"},
 		{"only one destination IP", []Sample{a, mapping("192.0.2.1:3479", a.Mapped.String())}, nil, "insufficient", "unknown", "unknown", "unknown"},
-		{"multiple public IPs without enough targets per IP", []Sample{a, mapping(b.Server.String(), "198.51.100.2:40000")}, &extra, "insufficient", "unknown", "unknown", "stable"},
+		{"multiple public IPs without enough targets per IP", []Sample{a, mapping(b.Server.String(), "198.51.100.2:40000")}, &extra, "complete", "address_pool", "unknown", "stable"},
 		{"fresh socket does not affect base mapping", []Sample{a, b}, &extra, "complete", "endpoint_independent", "endpoint_independent", "stable"},
 		{"symmetric without fresh socket", []Sample{a, mapping(b.Server.String(), "198.51.100.1:45000")}, nil, "complete", "symmetric", "endpoint_dependent", "unknown"},
 	} {
@@ -80,17 +80,17 @@ func TestClassifyAddressPool(t *testing.T) {
 		{"different stable ports with fresh socket", []Sample{a, b, mapping(c.Server.String(), "198.51.100.2:45000")}, &extra, "cone", "irregular", "mixed", "not_detected", 3},
 		{"same target rotates IP", []Sample{a, mapping(a.Server.String(), c.Mapped.String()), b, c}, nil, "cone", "stable", "preserved", "unknown", 4},
 		{"unstable group does not hide valid group", []Sample{a, mapping(a.Server.String(), "198.51.100.1:40001"), b, c, d}, nil, "cone", "unknown", "mixed", "not_detected", 5},
-		{"symmetric group takes priority", []Sample{a, b, c, mapping(d.Server.String(), "198.51.100.2:40001")}, nil, "symmetric", "unknown", "mixed", "not_detected", 4},
-		{"symmetric group and singleton", []Sample{a, mapping(b.Server.String(), "198.51.100.1:40001"), c}, &extra, "symmetric", "irregular", "mixed", "not_detected", 3},
-		{"same target IP different ports can be symmetric", []Sample{a, mapping("192.0.2.1:3479", "198.51.100.1:40001"), c}, nil, "symmetric", "unknown", "mixed", "not_detected", 3},
-		{"singletons cannot establish a cone", []Sample{a, c}, nil, "unknown", "stable", "preserved", "unknown", 2},
-		{"singletons cannot establish symmetric NAT", []Sample{a, mapping(c.Server.String(), "198.51.100.2:45000")}, nil, "unknown", "unknown", "mixed", "not_detected", 2},
-		{"repeated responses do not add targets", []Sample{a, a, c, c}, nil, "unknown", "stable", "preserved", "unknown", 4},
-		{"only one target IP per group", []Sample{a, mapping("192.0.2.1:3479", a.Mapped.String()), c}, nil, "unknown", "stable", "preserved", "unknown", 3},
-		{"unstable group and singleton", []Sample{a, mapping(a.Server.String(), "198.51.100.1:40001"), b, c}, nil, "unknown", "unknown", "mixed", "not_detected", 4},
-		{"changed response excluded", []Sample{a, changed, c}, nil, "unknown", "stable", "preserved", "unknown", 2},
-		{"foreign response excluded", []Sample{a, foreign, c}, nil, "unknown", "stable", "preserved", "unknown", 2},
-		{"invalid mapping excluded", []Sample{a, mapping(b.Server.String(), "198.51.100.1:0"), c}, nil, "unknown", "stable", "preserved", "unknown", 2},
+		{"symmetric group takes priority", []Sample{a, b, c, mapping(d.Server.String(), "198.51.100.2:40001")}, nil, "symmetric", "unverified", "mixed", "not_detected", 4},
+		{"symmetric group and singleton", []Sample{a, mapping(b.Server.String(), "198.51.100.1:40001"), c}, &extra, "symmetric", "unverified", "mixed", "not_detected", 3},
+		{"same target IP different ports can be symmetric", []Sample{a, mapping("192.0.2.1:3479", "198.51.100.1:40001"), c}, nil, "symmetric", "unverified", "mixed", "not_detected", 3},
+		{"singletons cannot establish a cone", []Sample{a, c}, nil, "address_pool", "stable", "preserved", "unknown", 2},
+		{"singletons cannot establish symmetric NAT", []Sample{a, mapping(c.Server.String(), "198.51.100.2:45000")}, nil, "address_pool", "unverified", "mixed", "not_detected", 2},
+		{"repeated responses do not add targets", []Sample{a, a, c, c}, nil, "address_pool", "stable", "preserved", "unknown", 4},
+		{"only one target IP per group", []Sample{a, mapping("192.0.2.1:3479", a.Mapped.String()), c}, nil, "address_pool", "stable", "preserved", "unknown", 3},
+		{"unstable group and singleton", []Sample{a, mapping(a.Server.String(), "198.51.100.1:40001"), b, c}, nil, "address_pool", "unverified", "mixed", "not_detected", 4},
+		{"changed response excluded", []Sample{a, changed, c}, nil, "address_pool", "stable", "preserved", "unknown", 2},
+		{"foreign response excluded", []Sample{a, foreign, c}, nil, "address_pool", "stable", "preserved", "unknown", 2},
+		{"invalid mapping excluded", []Sample{a, mapping(b.Server.String(), "198.51.100.1:0"), c}, nil, "address_pool", "stable", "preserved", "unknown", 2},
 	} {
 		for _, filter := range []struct{ behavior, cone string }{
 			{"endpoint_independent", "full_cone"},
@@ -107,6 +107,8 @@ func TestClassifyAddressPool(t *testing.T) {
 					behavior = "endpoint_dependent"
 				case "unknown":
 					behavior, status = "unknown", "insufficient"
+				case "address_pool":
+					behavior = "unknown"
 				}
 				// A pool must never report the whole path as open or No-PAT,
 				// even when the local endpoint happens to match one pool entry.

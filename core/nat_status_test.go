@@ -14,7 +14,7 @@ func TestNATStatusPublishedAfterGenerationChange(t *testing.T) {
 	c.natSnapshot = NATSnapshot{Status: "complete", Type: "endpoint_independent", Predictability: "stable", Epoch: c.networkEpoch.Load(), ProbedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	p.publishNAT()
 	first := <-c.sink.messages
-	if first.Type != "nat_status" || first.NAT.Snapshot != c.natSnapshot || first.TransportGeneration != 1 {
+	if first.Type != "nat_status" || !reflect.DeepEqual(first.NAT.Snapshot, c.natSnapshot) || first.TransportGeneration != 1 {
 		t.Fatalf("initial status = %+v", first)
 	}
 	p.publishNAT()
@@ -67,7 +67,7 @@ func TestNATStatusUpdatesDisplayWithoutPendingAttempt(t *testing.T) {
 		m.TransportID = "other"
 		p.receive(m)
 		m.TransportID = p.ready.TransportID
-		if p.stats.PeerNAT != want {
+		if !reflect.DeepEqual(p.stats.PeerNAT, want) {
 			t.Fatalf("stale %s changed the display", kind)
 		}
 	}

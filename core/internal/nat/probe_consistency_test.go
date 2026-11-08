@@ -84,7 +84,7 @@ func TestCoreProbeMatchesToolPortTrends(t *testing.T) {
 			_, servers := trendSTUNServers(t, tc.step)
 			_, tool, toolMapped := natprobe.ProbeWithListener(ctx, servers, net.ListenPacket)
 			got.ProbedAt, tool.ProbedAt = "", ""
-			if got != tool || !reflect.DeepEqual(mapped, toolMapped) {
+			if !reflect.DeepEqual(got, tool) || !reflect.DeepEqual(mapped, toolMapped) {
 				t.Fatalf("core = %+v %v; tool = %+v %v", got, mapped, tool, toolMapped)
 			}
 			if len(mapped) != 3 {

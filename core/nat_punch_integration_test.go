@@ -109,17 +109,28 @@ func (p *punchSimPlatform) ResolveUDP(ctx context.Context, address string) (*net
 }
 
 func TestNATPunchActualWorkerAndSharedMux(t *testing.T) {
-	for _, cone := range []bool{true, false} {
-		t.Run(map[bool]string{true: "cone-symmetric", false: "dual-symmetric"}[cone], func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cone, pool bool
+		step       int
+	}{
+		{"cone-symmetric", true, false, 1}, {"dual-symmetric", false, false, 1},
+		{"cone-pool-increasing", true, true, 1}, {"cone-pool-decreasing", true, true, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			server, _ := actualWorkerFixture(t)
-			n, _, _ := simulatedNATs([2]int{1, 1}, [2]int{}, 0)
-			n.sides[1].cone = cone // The cone can be the non-initiator in mux signaling.
+			n, _, _ := simulatedNATs([2]int{tc.step, 1}, [2]int{}, 0)
+			n.sides[1].cone = tc.cone // The cone can be the non-initiator in mux signaling.
+			n.sides[0].pool = tc.pool
 			a, b := NewEngine(Options{Platform: &punchSimPlatform{nat: n.sides[0]}}), NewEngine(Options{Platform: &punchSimPlatform{nat: n.sides[1]}})
 			defer a.Close()
 			defer b.Close()
 			ra, rb := iceFixtureRequest(server, "alpha"), iceFixtureRequest(server, "beta")
 			for _, r := range []*Request{&ra, &rb} {
 				r.Config.ICE.NATSTUNURLs = []string{"stun:192.0.2.1:3478", "stun:192.0.2.2:3478", "stun:192.0.2.3:3478"}
+				if tc.pool {
+					r.Config.ICE.NATSTUNURLs = append(r.Config.ICE.NATSTUNURLs, "stun:192.0.2.4:3478")
+				}
 				r.Config.ICE.InterfaceAllowlist = nil
 				r.Config.ICE.PortMapping = "off"
 				r.Config.ICE.DirectProbeTimeout = ConfigDuration(time.Second)
@@ -141,6 +152,9 @@ func TestNATPunchActualWorkerAndSharedMux(t *testing.T) {
 			right := waitSnapshotWithin(t, b, 12*time.Second, active)
 			if left.PeerTransports[0].TransportID != right.PeerTransports[0].TransportID {
 				t.Fatal("device pair did not share a transport")
+			}
+			if tc.pool && (len(left.PeerTransports[0].LocalNAT.IPEvidence) != 2 || len(right.PeerTransports[0].PeerNAT.IPEvidence) != 2) {
+				t.Fatal("pool evidence lost between probe, Worker and peer")
 			}
 			for _, engine := range []*Engine{a, b} {
 				s := engine.Snapshot().PeerTransports[0]

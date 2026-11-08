@@ -177,6 +177,13 @@ func printReport(result report) {
 		fmt.Printf("过滤测试 STUN：%s\n", result.NAT.FilteringServer)
 	}
 	fmt.Printf("端口变化可预测性：%s\n", predictabilityLabel(result.NAT.Predictability))
+	for _, evidence := range result.NAT.IPEvidence {
+		trend := evidence.Trend
+		if trend == "unknown" {
+			trend = "unverified"
+		}
+		fmt.Printf("  %s：%s（%d 个目标，%d 个端口）\n", evidence.IP, predictabilityLabel(trend), evidence.Targets, evidence.Ports)
+	}
 	fmt.Printf("端口保持：%s\n", portPreservationLabel(result.NAT.PortPreservation))
 	fmt.Printf("No-PAT 判断：%s\n", noPATLabel(result.NAT.NoPAT))
 	fmt.Printf("探测状态：%s，样本数：%d\n", statusLabel(result.NAT.Status), result.NAT.Samples)
@@ -202,6 +209,7 @@ func natTypeLabel(value string) string {
 		"restricted_cone":      "地址受限型",
 		"port_restricted_cone": "端口受限型",
 		"symmetric":            "对称型",
+		"address_pool":         "地址池",
 		"endpoint_independent": "端点无关映射",
 		"unknown":              "未知",
 	}
@@ -235,9 +243,11 @@ func predictabilityLabel(value string) string {
 	case "predictable_decremental":
 		return "可预测，端口严格递减"
 	case "incremental":
-		return "可能可预测，端口递增"
+		return "可能递增"
 	case "decremental":
-		return "可能可预测，端口递减"
+		return "可能递减"
+	case "unverified":
+		return "待验证"
 	case "irregular":
 		return "不可预测，端口变化不规则"
 	default:

@@ -33,6 +33,7 @@ type simNAT struct {
 	next, step int
 	occupied   int
 	cone       bool
+	pool       bool
 	nextLocal  int
 	byPort     map[int]*simMapping
 }
@@ -89,7 +90,11 @@ func (s *simSocket) WriteTo(p []byte, addr net.Addr) (int, error) {
 	if target.IP.To4() != nil && target.IP.To4()[0] == 192 && stun.IsMessage(p) {
 		request := &stun.Message{Raw: p}
 		if request.Decode() == nil && request.Type == stun.BindingRequest {
-			response := stun.MustBuild(stun.NewTransactionIDSetter(request.TransactionID), stun.BindingSuccess, &stun.XORMappedAddress{IP: s.nat.ip, Port: m.port})
+			ip := s.nat.ip
+			if s.nat.pool && target.IP.Equal(net.IPv4(192, 0, 2, 4)) {
+				ip = net.IPv4(203, 0, 113, byte(s.nat.index+1))
+			}
+			response := stun.MustBuild(stun.NewTransactionIDSetter(request.TransactionID), stun.BindingSuccess, &stun.XORMappedAddress{IP: ip, Port: m.port})
 			s.incoming <- datagram{append([]byte(nil), response.Raw...), target}
 			return len(p), nil
 		}
