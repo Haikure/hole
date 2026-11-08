@@ -191,6 +191,17 @@ Android / Wear、桌面和 PenMods 通过固定 profile、`phase: fixed` 或 `pa
 固定通道隐藏 ICE 候选、TURN 顺序和中继凭据，保留通用连接统计；失败提示明确只重试固定入口。
 `rtt_ms` 使用 QUIC ACK 采样的平滑往返时间；CLI 在建立或恢复路径时显示该测量值。
 
+所有活动的 QUIC mux 通道（ICE 直连、TURN / Hole 中继及固定入口）的快照另含 `send_loss`：
+`window_seconds: 60`、字符串整数 `samples` / `lost_packets` 和数字或 null 的 `rate_percent`。
+核心观察 BBR 收到的 QUIC ACK / 判丢回调，以单调时钟按秒保存最近 60 个桶；比例为
+`lost_packets / samples × 100`，样本只包含本机发送后已 ACK 或判丢的包。未判定的在途包、纯 ACK、
+ECN 信号与 MTU 探测失败不计入丢失；判丢按事件时间累计，不因随后迟到而回退。
+统计随连接持续记录，与前端是否打开详情页、是否轮询快照无关；读取快照不重置窗口。
+无样本时比例为 null；未建立活动线路或旧核心不支持时省略对象；替换线路后重新采样。
+这是本机→对端的 QUIC 路径丢包估计，不能表示反向丢包或被 TCP / TLS 中继外层恢复的链路丢包。
+判定依据为 [QUIC 丢包检测](https://www.rfc-editor.org/rfc/rfc9002.html#section-6.1)，
+乱序可能产生误判；`retry_count`（连接重试）与 `dropped_datagrams`（本地接收丢弃）保持独立。
+
 本功能只扩展当前协议，没有固定入口的旧版兼容分支；发布顺序为 Worker、两端核心。
 Android / Wear、桌面和 PenMods 的固定监听配置界面后续接入。
 

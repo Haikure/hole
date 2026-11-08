@@ -128,40 +128,7 @@ fun RuntimeDetailsScreen(
         InspectionSheet("设备连接", { selectedPeer = null }) {
             val peer = snapshot.peers.firstOrNull { it.transportId == id }
             if (peer == null) Text("连接已结束") else {
-                Text(peer.peerId, style = MaterialTheme.typography.headlineSmall)
-                InspectionValue("线路", peerPathLabel(peer))
-                if (peer.relayDevice.isNotBlank()) {
-                    DetailRow("Hole 中继设备", peer.relayDevice)
-                    DetailRow("公布入口", peer.relayEndpoint)
-                    DetailRow("实际接入地址", peer.relayAccessAddress)
-                }
-                InspectionValue("状态", peerStateLabel(peer))
-                InspectionValue("延迟", "${peer.rttMs} ms")
-                InspectionValue("连接过程", peerPhaseLabel(peer))
-                if (isFixedPeer(peer)) {
-                    fixedPeerDetails(peer).forEach { (label, value) -> DetailRow(label, value) }
-                } else {
-                    DetailRow("本机 NAT", peer.localNAT.description())
-                    DetailRow("对端 NAT", peer.peerNAT.description())
-                    DetailRow("本机探测时间", peer.localNAT.probedAtDisplay.ifBlank { "暂无" })
-                    DetailRow("对端探测时间", peer.peerNAT.probedAtDisplay.ifBlank { "暂无" })
-                    DetailRow("端口映射", peer.portMapping.description())
-                    if (peer.portMapping.reason.isNotBlank()) DetailRow("映射说明", peer.portMapping.reason)
-                    DetailRow("本机连接", selectedConnectionLabel(peer.localType, peer.localAddress))
-                    DetailRow("对端连接", selectedConnectionLabel(peer.remoteType, peer.remoteAddress))
-                }
-                InspectionValue("上行 / 下行", "${formatBytes(peer.bytesSent)} / ${formatBytes(peer.bytesReceived)}")
-                InspectionValue("服务通道", "${peer.activeChannels} / ${peer.mappingCount}")
-                InspectionValue("建连耗时", "${peer.connectMs} ms")
-                InspectionValue("重试 / 丢包", "${peer.retryCount} / ${peer.droppedDatagrams}")
-                if (!isFixedPeer(peer) && peer.pathType in setOf("relay", "hole")) {
-                    InspectionValue("中继接入", if (peer.pathType == "hole") "Hole · UDP" else relayPathLabel(peer))
-                    InspectionValue("本机顺序", relayOrderLabel(peer.relayOrder))
-                    InspectionValue("对端顺序", relayOrderLabel(peer.peerRelayOrder))
-                    if (peer.pathType == "relay") InspectionValue("凭据有效期", remainingTime(peer.turnExpiresAt))
-                }
-                fixedConnectionIssue(peer.errorCode)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                peer.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                PeerDetailsContent(peer)
             }
         }
     }
@@ -282,7 +249,7 @@ private fun elapsedLabel(startedAt: String, running: Boolean): String {
         if (seconds >= 3600) "${seconds / 3600} 小时 ${seconds / 60 % 60} 分" else "${seconds / 60} 分 ${seconds % 60} 秒"
     }.getOrDefault("运行中")
 }
-private fun remainingTime(value: String): String {
+internal fun remainingTime(value: String): String {
     val seconds = ((value.toLongOrNull() ?: 0) - System.currentTimeMillis()) / 1000
     return if (seconds <= 0) "等待刷新" else if (seconds >= 3600) "约 ${seconds / 3600} 小时" else "约 ${(seconds + 59) / 60} 分钟"
 }

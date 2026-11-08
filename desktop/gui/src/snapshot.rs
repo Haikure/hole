@@ -39,6 +39,7 @@ pub struct Mapping {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Peer {
+    pub send_loss: Option<SendLoss>,
     pub local_nat: String,
     pub peer_nat: String,
     pub relay_device: String,
@@ -82,6 +83,40 @@ pub struct Peer {
     pub lease_until: i64,
     pub turn_expires_at: i64,
     pub error: Option<Fault>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendLoss {
+    pub window_seconds: u64,
+    pub samples: String,
+    pub lost_packets: String,
+    pub rate_percent: Option<f64>,
+}
+
+impl SendLoss {
+    fn from_json(v: &Value) -> Option<Self> {
+        let window_seconds = v["window_seconds"].as_u64().filter(|n| *n > 0)?;
+        let samples = v["samples"].as_str()?;
+        let lost_packets = v["lost_packets"].as_str()?;
+        let count = samples.parse::<u64>().ok()?;
+        if lost_packets.parse::<u64>().ok()? > count { return None; }
+        let rate_percent = match v.get("rate_percent")? {
+            Value::Null if count == 0 => None,
+            value if count > 0 => Some(value.as_f64().filter(|n| n.is_finite() && (0.0..=100.0).contains(n))?),
+            _ => return None,
+        };
+        Some(Self { window_seconds, samples: samples.into(), lost_packets: lost_packets.into(), rate_percent })
+    }
+}
+
+pub fn send_loss_label(loss: Option<&SendLoss>) -> String {
+    let Some(loss) = loss else { return "未上报".into() };
+    let window = if loss.window_seconds == 60 { "近 1 分钟".into() } else { format!("近 {} 秒", loss.window_seconds) };
+    let scope = format!("本机 → 对端 · {window}");
+    match loss.rate_percent {
+        Some(rate) => format!("{rate:.2}% · {scope} · 丢失 {} / 已判定 {} 包", loss.lost_packets, loss.samples),
+        None => format!("暂无样本 · {scope}"),
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -305,6 +340,7 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
                     bytes_received: u(p, "bytes_received"),
                     dropped_datagrams: s_or(p, "dropped_datagrams", "0"),
                     retry_count: s_or(p, "retry_count", "0"),
+                    send_loss: p.get("send_loss").and_then(SendLoss::from_json),
                     relay_state: s(p, "relay_state"),
                     lease_until: i(p, "lease_until"),
                     turn_expires_at: i(p, "turn_expires_at"),
@@ -758,6 +794,26 @@ mod tests {
     }
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn send_loss_keeps_core_rate_precision_and_distinct_availability() {
+        let parse = |loss: Value| parse_snapshot(&json!({"api_version":1,"peer_transports":[{
+            "retry_count":"99","dropped_datagrams":"999","send_loss":loss
+        }]})).unwrap().peers.remove(0).send_loss;
+        let loss = parse(json!({"window_seconds":60,"samples":"18446744073709551615","lost_packets":"9007199254740993","rate_percent":1.25}));
+        assert_eq!(send_loss_label(loss.as_ref()), "1.25% · 本机 → 对端 · 近 1 分钟 · 丢失 9007199254740993 / 已判定 18446744073709551615 包");
+        let zero = parse(json!({"window_seconds":60,"samples":"80","lost_packets":"0","rate_percent":0}));
+        assert_eq!(send_loss_label(zero.as_ref()), "0.00% · 本机 → 对端 · 近 1 分钟 · 丢失 0 / 已判定 80 包");
+        let idle = parse(json!({"window_seconds":60,"samples":"0","lost_packets":"0","rate_percent":null}));
+        assert_eq!(send_loss_label(idle.as_ref()), "暂无样本 · 本机 → 对端 · 近 1 分钟");
+        for loss in [Value::Null, json!({}), json!({"window_seconds":60,"samples":"1","lost_packets":"0","rate_percent":"0"}),
+            json!({"window_seconds":60,"samples":"1","lost_packets":"0","rate_percent":101}),
+            json!({"window_seconds":60,"samples":"0","lost_packets":"0","rate_percent":0})] {
+            assert_eq!(send_loss_label(parse(loss).as_ref()), "未上报");
+        }
+        let old = parse_snapshot(&json!({"api_version":1,"peer_transports":[{}]})).unwrap();
+        assert!(old.peers[0].send_loss.is_none());
+    }
 
     #[test]
     fn nat_times_keep_placeholders_and_normalize_source_offsets() {

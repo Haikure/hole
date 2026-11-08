@@ -654,6 +654,7 @@ Item {
     // ---------------------------------------------------------------- actions
 
     function stateTitle() {
+        if (holePlugin.reloading) return "正在重载核心"
         if (page.connectionEstablished) return "连接成功"
         if (holePlugin.state === "starting") return "正在连接"
         if (holePlugin.state === "reconfiguring") return "正在应用配置"
@@ -665,6 +666,7 @@ Item {
     }
 
     function stateDetail() {
+        if (holePlugin.reloading) return "正在更换核心进程，请稍候"
         if (page.connectionEstablished) {
             return "连接成功，正在运行 " + provides.count + " 项提供与 " + consumes.count + " 项使用映射"
         }
@@ -679,6 +681,7 @@ Item {
     }
 
     function beginConnection() {
+        if (holePlugin.reloading) return
         if (holePlugin.state === "starting" || holePlugin.state === "stopping") return
         var problem = page.validationMessage()
         localError = problem
@@ -692,6 +695,11 @@ Item {
     function stopConnection() {
         localError = ""
         holePlugin.stop()
+    }
+
+    function reloadCore() {
+        localError = ""
+        holePlugin.reloadCore()
     }
 
     function renominateTransports() {
@@ -713,11 +721,7 @@ Item {
     }
 
     function refreshSnapshot() {
-        if (holePlugin.running) holePlugin.refresh()
-        else {
-            statusLines = []
-            statusRaw = "核心未运行，开始连接后可查看会话快照"
-        }
+        if (!holePlugin.reloading) holePlugin.refresh()
     }
 
     function stateText(value) {
@@ -725,6 +729,7 @@ Item {
             starting: "正在启动",
             running: "运行中",
             reconfiguring: "重新配置中",
+            reloading: "重载核心中",
             recovering: "恢复中",
             stopping: "正在停止",
             stopped: "已停止",
@@ -768,6 +773,23 @@ Item {
     function appendSnapshotLine(lines, label, text) {
         var value = asString(text)
         if (value.length > 0) lines.push({label: label, text: value})
+    }
+
+    function counterText(value, unit) {
+        // Core counters are uint64 strings. Keep all digits and distinguish
+        // a missing counter from an explicitly reported zero.
+        var text = asString(value)
+        return /^[0-9]+$/.test(text) ? text + unit : "未上报"
+    }
+
+    function sendLossText(loss) {
+        if (!loss || typeof loss !== "object") return "未上报"
+        var window = loss.window_seconds === 60 ? "近 1 分钟" : "近 " + asString(loss.window_seconds) + " 秒"
+        if (loss.rate_percent === null) return "暂无样本 · " + window
+        var rate = loss.rate_percent
+        if (typeof rate !== "number" || !isFinite(rate) || rate < 0 || rate > 100) return "未上报"
+        return rate.toFixed(2) + "% · " + window
+                + " · 丢失 " + asString(loss.lost_packets) + " / 已判定 " + asString(loss.samples) + " 包"
     }
 
     function mappingText(mapping) {
@@ -931,6 +953,9 @@ Item {
         }
         if (Number(peer.rtt_ms) > 0) appendSnapshotLine(lines, "  延迟", asString(peer.rtt_ms) + " ms")
         appendSnapshotLine(lines, "  线路流量", "收 " + bytesText(peer.bytes_received) + " / 发 " + bytesText(peer.bytes_sent))
+        appendSnapshotLine(lines, "  上行丢包率", page.sendLossText(peer.send_loss))
+        appendSnapshotLine(lines, "  连接重试", page.counterText(peer.retry_count, " 次"))
+        appendSnapshotLine(lines, "  丢弃报文", page.counterText(peer.dropped_datagrams, " 个"))
         if (Number(peer.active_channels) > 0)
             appendSnapshotLine(lines, "  活动通道", asString(peer.active_channels) + " 个")
         if (peer.error && asString(peer.error.message).length > 0)
@@ -967,6 +992,7 @@ Item {
         appendSnapshotLine(lines, "配置", data.configured ? "已配置" : "未配置")
         appendSnapshotLine(lines, "运行请求", data.run_requested ? "运行中" : "已停止")
         appendSnapshotLine(lines, "核心版本", asString(data.core_version))
+        appendSnapshotLine(lines, "核心构建", asString(data.core_build_id))
         appendSnapshotLine(lines, "启动时间", asString(data.started_at))
         appendSnapshotLine(lines, "连接代次", asString(data.generation))
         appendSnapshotLine(lines, "重连次数", asString(data.reconnects) || "0")
@@ -1017,8 +1043,10 @@ Item {
     function refreshStatus() {
         var raw = holePlugin.snapshotJson
         if (!raw || raw.length === 0) {
+            natReport = {state: "idle", title: "检测当前网络", summary: "检查映射、过滤与端口特征，无需加入房间。", sections: []}
             statusLines = []
-            statusRaw = holePlugin.running ? "核心尚未返回快照，可点击刷新重试" : "核心未运行"
+            statusRaw = holePlugin.reloading ? "正在重载核心，请稍候"
+                      : holePlugin.running ? "核心尚未返回快照，可点击刷新重试" : "核心未运行"
             return
         }
         var data = null
@@ -1180,7 +1208,7 @@ Item {
                                 : page.runRequested ? "核心正在探测网络并建立连接"
                                 : "关闭后停止核心和所有映射"
                         checked: page.runRequested
-                        enabled: holePlugin.state !== "stopping"
+                        enabled: !holePlugin.reloading && holePlugin.state !== "stopping"
                         onToggled: function(nextValue) {
                             if (nextValue) page.beginConnection()
                             else page.stopConnection()
@@ -1217,7 +1245,15 @@ Item {
             ActionButton {
                 Layout.fillWidth: true
                 text: "NAT 检测 · " + (page.natReport.state === "idle" ? "查看网络条件" : page.natReport.title)
+                enabled: !holePlugin.reloading
                 onClicked: page.openSeparatePage("NATPage.qml", {form: page})
+            }
+
+            ActionButton {
+                Layout.fillWidth: true
+                text: holePlugin.reloading ? "正在重载核心…" : "重载核心"
+                enabled: !holePlugin.reloading && holePlugin.state !== "stopping"
+                onClicked: page.reloadCore()
             }
 
             Rectangle {
@@ -1270,6 +1306,7 @@ Item {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 36
                         text: "刷新快照"
+                        enabled: !holePlugin.reloading
                         onClicked: page.refreshSnapshot()
                     }
 
@@ -1352,7 +1389,7 @@ Item {
     Connections {
         target: holePlugin
         function onSnapshotChanged() { page.refreshStatus() }
-        function onStateChanged() { if (page.statusOpen) page.refreshSnapshot() }
+        function onStateChanged() { page.refreshStatus() }
         function onRunningChanged() { if (holePlugin.running) page.refreshSnapshot() }
     }
 

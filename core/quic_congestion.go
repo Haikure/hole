@@ -14,10 +14,15 @@ type bbrConnection interface {
 	SetCongestionControl(congestion.CongestionControl)
 }
 
-func useBBR(conn bbrConnection) {
+func useBBR(conn bbrConnection) *quicPacketLoss {
 	size := bbr.GetInitialPacketSize(conn.RemoteAddr())
 	if initial := conn.InitialPacketSize(); initial > 0 {
 		size = min(size, initial)
 	}
-	conn.SetCongestionControl(bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard))
+	loss := &quicPacketLoss{}
+	conn.SetCongestionControl(&observedCongestion{
+		CongestionControlEx: bbr.NewBbrSender(bbr.DefaultClock{}, size, bbr.ProfileStandard),
+		loss:                loss,
+	})
+	return loss
 }

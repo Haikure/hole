@@ -4,6 +4,7 @@
 #include <QProcess>
 #include <QObject>
 #include <QString>
+#include <QTimer>
 
 class QQmlEngine;
 
@@ -11,6 +12,7 @@ class HolePlugin final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString state READ state NOTIFY stateChanged)
     Q_PROPERTY(bool running READ running NOTIFY runningChanged)
+    Q_PROPERTY(bool reloading READ reloading NOTIFY stateChanged)
     Q_PROPERTY(QString serverUrl READ serverUrl WRITE setServerUrl NOTIFY configChanged)
     Q_PROPERTY(QString configJson READ configJson WRITE setConfigJson NOTIFY configChanged)
     Q_PROPERTY(QString mappingStateJson READ mappingStateJson WRITE setMappingStateJson NOTIFY configChanged)
@@ -25,6 +27,7 @@ public:
 
     QString state() const { return m_state; }
     bool running() const { return m_running; }
+    bool reloading() const { return m_reloading; }
     QString serverUrl() const { return m_serverUrl; }
     QString configJson() const { return m_configJson; }
     QString mappingStateJson() const { return m_mappingStateJson; }
@@ -40,6 +43,7 @@ public:
 
     Q_INVOKABLE void start();
     Q_INVOKABLE void stop();
+    Q_INVOKABLE void reloadCore();
     Q_INVOKABLE bool applyConfig();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void networkChanged();
@@ -66,6 +70,8 @@ private slots:
 
 private:
     void ensureProcess();
+    void clearProcessState();
+    void failReload(const QString& message);
     void sendHello();
     void sendStart(const QString& method);
     void sendRequest(const QString& method, const QJsonObject& params = {});
@@ -76,6 +82,10 @@ private:
     QString configPath() const;
 
     QProcess* m_process = nullptr;
+    QTimer m_reloadTimer;
+    bool m_reloading = false;
+    bool m_reloadStopping = false;
+    bool m_resumeAfterReload = false;
     QString m_pluginDirectory;
     QString m_state = QStringLiteral("stopped");
     QString m_serverUrl;

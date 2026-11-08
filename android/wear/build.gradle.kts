@@ -82,6 +82,9 @@ kotlin {
 }
 
 dependencies {
+    implementation(libs.markwon.core)
+    implementation(libs.markwon.tables)
+    implementation(libs.markwon.strikethrough)
     implementation(project(":corebridge"))
     implementation(files(rootProject.file("corebridge/libs/holecore.aar")).builtBy(coreBinding))
     implementation(platform(libs.compose.bom))

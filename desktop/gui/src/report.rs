@@ -147,7 +147,8 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
             line(&mut out, format!("  本地 {} ({}) · 对端 {} ({})", p.local_address, p.local_type, p.remote_address, p.remote_type));
         }
         line(&mut out, format!("  通道 {}/{} · RTT {} ms · 建连 {} ms", p.active_channels, p.mapping_count, p.rtt_ms, p.connect_ms));
-        line(&mut out, format!("  线路发送 {} / 接收 {} 字节 · UDP 丢弃 {}", p.bytes_sent, p.bytes_received, p.dropped_datagrams));
+        line(&mut out, format!("  线路发送 {} / 接收 {} 字节 · 本地丢弃 {}", p.bytes_sent, p.bytes_received, p.dropped_datagrams));
+        line(&mut out, format!("  QUIC 上行丢包率 {}", super::snapshot::send_loss_label(p.send_loss.as_ref())));
         line(&mut out, format!("  {} / generation {} / phase {}（{}） / retries {}", p.transport_id, p.generation, p.phase, peer_phase_label(p), p.retry_count));
         if !is_fixed_peer(p) && p.phase != "hole" { line(&mut out, format!("  中继状态 {} · 凭据到期 {}", p.relay_state, p.turn_expires_at)); }
         line(&mut out, format!("  授权到期 {}", p.lease_until));
@@ -164,6 +165,26 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quic_loss_report_includes_scope_samples_and_unavailable_states() {
+        for path in ["direct", "relay", "hole", "fixed"] {
+            let snapshot = crate::snapshot::parse_snapshot(&serde_json::json!({"api_version":1,"peer_transports":[
+                {"path_type":path,"dropped_datagrams":"999","send_loss":{"window_seconds":60,"samples":"80","lost_packets":"1","rate_percent":1.25}},
+                {"path_type":path,"send_loss":{"window_seconds":60,"samples":"0","lost_packets":"0","rate_percent":null}},
+                {"path_type":path}
+            ]})).unwrap();
+            let report = diagnostic_report(&ReportContext {
+                snapshot: &snapshot, config: &StoredConfig::default(), secrets: &Secrets::default(),
+                gui_version: "fixture", bridge_version: 1, os_label: "fixture", resume_at_login: false,
+                last_resume_error: "", now_rfc3339: "fixture",
+            });
+            for text in ["QUIC 上行丢包率 1.25% · 本机 → 对端 · 近 1 分钟 · 丢失 1 / 已判定 80 包",
+                "QUIC 上行丢包率 暂无样本", "QUIC 上行丢包率 未上报", "本地丢弃 999"] {
+                assert!(report.contains(text), "missing {text} for {path}");
+            }
+        }
+    }
 
     #[test]
     fn redacts_secrets_and_queries() {

@@ -17,7 +17,7 @@ class NATSnapshotTest {
     }
     @Test fun statusesAndPredictabilityRemainIndependent() {
         val n = NATSnapshot.fromJson(JSONObject("""{"status":"complete","type":"symmetric","predictability":"decremental","samples":3,"probed_at":"2026-11-04T00:00:00Z"}"""))
-        assertEquals("对称型 · 可能可预测（递减）", n.description())
+        assertEquals("对称型 · 可能递减", n.description())
         assertEquals(3, n.samples)
         assertTrue(n.copy(status = "expired").description().startsWith("已过期"))
         assertEquals("对端未上报", NATSnapshot.fromJson(null).description())
@@ -25,5 +25,12 @@ class NATSnapshotTest {
         assertTrue(n.copy(status = "insufficient", type = "unknown", predictability = "stable").description().contains("映射稳定"))
         val p = PeerSnapshot.fromJson(JSONObject().put("peer_nat", JSONObject("""{"status":"probing"}""")))
         assertTrue(p.peerNAT.description().contains("探测中"))
+    }
+    @Test fun poolEvidenceAndUnverifiedStatusRemainReadable() {
+        val json = JSONObject("""{"status":"complete","type":"address_pool","predictability":"unverified","ip_evidence":[{"ip":"198.51.100.1"},{"ip":"198.51.100.2"}]}""")
+        val pool = NATSnapshot.fromJson(json)
+        assertTrue(pool.addressPool)
+        assertEquals("地址池 · 待验证", pool.description())
+        assertEquals("对称型（地址池） · 可能递增", pool.copy(type = "symmetric", predictability = "incremental").description())
     }
 }

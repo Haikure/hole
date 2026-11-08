@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Environment
 import dev.hole.app.BuildConfig
 import java.net.URL
+import java.util.UUID
 import javax.net.ssl.HttpsURLConnection
 
 data class ReleaseDownloadRecord(val id: Long, val tag: String)
@@ -67,17 +68,26 @@ class ReleaseUpdateClient(context: Context) {
         val url = githubRequestUrl(asset.downloadUrl, accelerator.prefix)
         val filename = asset.name.replace(Regex("[^A-Za-z0-9._-]"), "_")
         require(filename.endsWith(".apk", ignoreCase = true)) { "发行版 APK 文件名无效" }
+        val manager = appContext.getSystemService(DownloadManager::class.java)
+            ?: throw IllegalStateException("Android 下载服务不可用")
+        val previous = savedDownload()
+        if (previous?.tag == release.tag && queryDownload(previous.id)?.status in setOf(
+                DownloadManager.STATUS_PENDING, DownloadManager.STATUS_RUNNING, DownloadManager.STATUS_PAUSED)) {
+            return previous
+        }
+        // DownloadManager never overwrites an existing destination, including
+        // a completed APK left behind after reinstalling the same version.
+        val destination = "${filename.removeSuffix(".apk")}-${UUID.randomUUID()}.apk"
         val request = DownloadManager.Request(Uri.parse(url)).apply {
             setTitle("Hole ${release.tag}")
             setDescription("正在下载 Android 安装包")
             setMimeType(APK_MIME_TYPE)
             setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            setDestinationInExternalFilesDir(appContext, Environment.DIRECTORY_DOWNLOADS, filename)
+            setDestinationInExternalFilesDir(appContext, Environment.DIRECTORY_DOWNLOADS, destination)
         }
-        val manager = appContext.getSystemService(DownloadManager::class.java)
-            ?: throw IllegalStateException("Android 下载服务不可用")
         val record = ReleaseDownloadRecord(manager.enqueue(request), release.tag)
         preferences.edit().putLong(KEY_DOWNLOAD_ID, record.id).putString(KEY_DOWNLOAD_TAG, record.tag).apply()
+        previous?.let { manager.remove(it.id) }
         return record
     }
 

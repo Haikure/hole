@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"github.com/apernet/quic-go"
+	"github.com/apernet/quic-go/monotime"
 	"github.com/pion/ice/v4"
 	"github.com/pion/stun/v4"
 	"hole/core/internal/nat"
@@ -1251,6 +1252,7 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 			s.BytesReceived = active.connection.BytesReceived()
 		}
 		s.DroppedDatagrams = active.mux.dropped.Load()
+		s.SendLoss = active.mux.sendLoss.snapshot(monotime.Now())
 		active.mux.mu.Lock()
 		s.ActiveChannels = 0
 		for _, channel := range active.mux.channels {

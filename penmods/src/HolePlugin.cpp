@@ -23,14 +23,30 @@ QString pluginDirectoryFromAddress(void* address) {
 
 HolePlugin::HolePlugin(QObject* parent) : QObject(parent) {
     m_pluginDirectory = pluginDirectoryFromAddress(reinterpret_cast<void*>(&init_plugin));
+    m_reloadTimer.setSingleShot(true);
+    connect(&m_reloadTimer, &QTimer::timeout, this, [this] {
+        if (m_reloadStopping) {
+            if (m_process) m_process->kill();
+        } else if (m_reloading) {
+            failReload(QStringLiteral("新核心握手超时，请检查核心文件后重试"));
+            if (m_process) m_process->kill();
+        }
+    });
     loadConfig();
 }
 
 HolePlugin::~HolePlugin() {
+    m_reloadTimer.stop();
+    m_reloading = m_reloadStopping = m_resumeAfterReload = false;
     if (!m_process) return;
+    // Teardown must never dispatch finished() into the reload path.
+    disconnect(m_process, nullptr, this, nullptr);
     if (m_process->state() != QProcess::NotRunning) {
         sendRequest(QStringLiteral("shutdown"));
-        if (!m_process->waitForFinished(2000)) m_process->kill();
+        if (!m_process->waitForFinished(2000)) {
+            m_process->kill();
+            m_process->waitForFinished(2000);
+        }
     }
     delete m_process;
 }
@@ -160,13 +176,17 @@ QJsonObject HolePlugin::requestObject() const {
 }
 
 void HolePlugin::ensureProcess() {
+    if (m_reloadStopping) return;
     if (m_process && m_process->state() != QProcess::NotRunning) return;
     if (m_pluginDirectory.isEmpty()) {
         setError(QStringLiteral("无法确定插件目录"));
         return;
     }
 
-    delete m_process;
+    if (m_process) {
+        disconnect(m_process, nullptr, this, nullptr);
+        m_process->deleteLater();
+    }
     m_process = new QProcess(this);
     m_process->setProgram(QDir(m_pluginDirectory).filePath(QStringLiteral("hole-core")));
     m_process->setWorkingDirectory(m_pluginDirectory);
@@ -177,15 +197,16 @@ void HolePlugin::ensureProcess() {
     connect(m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, &HolePlugin::onProcessFinished);
     connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error != QProcess::FailedToStart) return;
-        setError(QStringLiteral("无法启动 Hole 核心程序"));
-        setState(QStringLiteral("error"));
+        failReload(QStringLiteral("无法启动 Hole 核心程序，请检查文件和执行权限"));
     });
     m_helloReceived = false;
+    m_outputBuffer.clear();
     m_process->start();
 }
 
 void HolePlugin::onProcessStarted() {
-    sendHello();
+    if (m_reloadStopping) sendRequest(QStringLiteral("shutdown"));
+    else sendHello();
 }
 
 void HolePlugin::sendHello() {
@@ -202,6 +223,7 @@ void HolePlugin::sendStart(const QString& method) {
 }
 
 void HolePlugin::sendRequest(const QString& method, const QJsonObject& params) {
+    if (m_reloading && method != QStringLiteral("hello") && method != QStringLiteral("shutdown")) return;
     if (!m_process || m_process->state() == QProcess::NotRunning) return;
     QJsonObject request;
     const QString id = QStringLiteral("p%1").arg(++m_requestId);
@@ -215,7 +237,7 @@ void HolePlugin::sendRequest(const QString& method, const QJsonObject& params) {
 }
 
 void HolePlugin::start() {
-    if (m_running) return;
+    if (m_running || m_reloading) return;
     if (!saveConfig()) return;
     m_pendingMethod = QStringLiteral("start");
     ensureProcess();
@@ -226,6 +248,12 @@ void HolePlugin::start() {
 }
 
 void HolePlugin::stop() {
+    if (m_reloading) {
+        m_resumeAfterReload = false;
+        m_pendingMethod.clear();
+        if (m_running) { m_running = false; emit runningChanged(); }
+        return;
+    }
     if (!m_process || m_process->state() == QProcess::NotRunning) {
         setState(QStringLiteral("stopped"));
         return;
@@ -237,6 +265,7 @@ void HolePlugin::stop() {
 
 bool HolePlugin::applyConfig() {
     if (!saveConfig()) return false;
+    if (m_reloading) return true; // The new hello will use the latest config.
     if (!m_process || m_process->state() == QProcess::NotRunning) {
         start();
         return true;
@@ -258,6 +287,7 @@ bool HolePlugin::applyConfig() {
 }
 
 void HolePlugin::refresh() {
+    if (m_reloading) return;
     if (!m_process || m_process->state() == QProcess::NotRunning) {
         ensureProcess();
         return;
@@ -274,6 +304,7 @@ void HolePlugin::renominateTransports() {
 }
 
 void HolePlugin::startNATProbe(const QString& optionsJson) {
+    if (m_reloading) return;
     QJsonParseError error{};
     const auto document = QJsonDocument::fromJson(optionsJson.toUtf8(), &error);
     if (optionsJson.size() > 16384 || error.error != QJsonParseError::NoError || !document.isObject()) {
@@ -315,12 +346,14 @@ void HolePlugin::readStandardError() {
 }
 
 void HolePlugin::handleLine(const QByteArray& line) {
+    if (m_reloadStopping) return; // Discard the retiring process's late replies.
     QJsonParseError error{};
     const QJsonDocument document = QJsonDocument::fromJson(line, &error);
     if (error.error != QJsonParseError::NoError || !document.isObject()) return;
     const QJsonObject object = document.object();
 
     if (object.value(QStringLiteral("method")).toString() == QStringLiteral("event")) {
+        if (m_reloading) return; // Wait for the replacement core's hello first.
         const QJsonObject event = object.value(QStringLiteral("params")).toObject();
         const QString kind = event.value(QStringLiteral("kind")).toString();
         const QString state = event.value(QStringLiteral("state")).toString();
@@ -355,6 +388,11 @@ void HolePlugin::handleLine(const QByteArray& line) {
     const QJsonObject errorObject = object.value(QStringLiteral("error")).toObject();
     if (!errorObject.isEmpty()) {
         const QJsonObject data = errorObject.value(QStringLiteral("data")).toObject();
+        if (m_reloading) {
+            failReload(data.value(QStringLiteral("message")).toString(QStringLiteral("新核心握手失败")));
+            if (m_process) m_process->kill();
+            return;
+        }
         setError(data.value(QStringLiteral("message")).toString(QStringLiteral("核心请求失败")));
         if (object.value(QStringLiteral("id")).toString() == m_pendingRequestId) {
             m_pendingMethod.clear();
@@ -370,6 +408,15 @@ void HolePlugin::handleLine(const QByteArray& line) {
         // operation alive until its own reply arrives; otherwise the first
         // start request is lost and the UI gets a false running state.
         m_helloReceived = true;
+        if (m_reloading) {
+            m_reloadTimer.stop();
+            m_reloading = false;
+            const bool resume = m_resumeAfterReload;
+            m_resumeAfterReload = false;
+            // A new start failure must not inherit the old process's running flag.
+            if (m_running) { m_running = false; emit runningChanged(); }
+            setState(resume ? QStringLiteral("starting") : QStringLiteral("stopped"));
+        }
         if (!m_pendingMethod.isEmpty()) sendStart(m_pendingMethod);
         if (m_probePending) { m_probePending = false; sendRequest(QStringLiteral("start_nat_probe"), m_probeOptions); }
         refresh();
@@ -391,14 +438,75 @@ void HolePlugin::handleLine(const QByteArray& line) {
     }
 }
 
-void HolePlugin::onProcessFinished(int, QProcess::ExitStatus) {
+void HolePlugin::clearProcessState() {
     m_helloReceived = false;
+    m_outputBuffer.clear();
     m_pendingMethod.clear();
+    m_pendingRequestId.clear();
+    m_probePending = false;
+    m_probeOptions = {};
+    m_snapshotJson.clear();
+    emit snapshotChanged();
+}
+
+void HolePlugin::failReload(const QString& message) {
+    m_reloadTimer.stop();
+    m_reloading = m_reloadStopping = m_resumeAfterReload = false;
     if (m_running) {
         m_running = false;
         emit runningChanged();
     }
-    setState(QStringLiteral("stopped"));
+    setError(message);
+    setState(QStringLiteral("error"));
+    clearProcessState();
+}
+
+void HolePlugin::reloadCore() {
+    if (m_reloading) return;
+    if (m_pluginDirectory.isEmpty()) {
+        setError(QStringLiteral("无法确定插件目录"));
+        return;
+    }
+    const QFileInfo core(QDir(m_pluginDirectory).filePath(QStringLiteral("hole-core")));
+    if (!core.isFile() || !core.isExecutable()) {
+        setError(QStringLiteral("核心文件不存在或没有执行权限，无法重载"));
+        return;
+    }
+    m_resumeAfterReload = m_state != QStringLiteral("stopping")
+        && (m_running || m_pendingMethod == QStringLiteral("start") || m_pendingMethod == QStringLiteral("apply_config"));
+    m_reloading = true;
+    m_reloadStopping = m_process && m_process->state() != QProcess::NotRunning;
+    setError({});
+    setState(QStringLiteral("reloading"));
+    clearProcessState();
+    if (m_reloadStopping) {
+        m_reloadTimer.start(2000);
+        if (m_process->state() == QProcess::Running) sendRequest(QStringLiteral("shutdown"));
+    } else {
+        m_pendingMethod = m_resumeAfterReload ? QStringLiteral("start") : QString();
+        m_reloadTimer.start(10000);
+        ensureProcess();
+    }
+}
+
+void HolePlugin::onProcessFinished(int, QProcess::ExitStatus) {
+    clearProcessState();
+    if (m_reloadStopping) {
+        m_reloadStopping = false;
+        m_pendingMethod = m_resumeAfterReload ? QStringLiteral("start") : QString();
+        m_reloadTimer.start(10000);
+        ensureProcess();
+        return;
+    }
+    if (m_reloading) {
+        failReload(QStringLiteral("新核心在握手完成前退出，请检查核心文件后重试"));
+        return;
+    }
+    if (m_running) {
+        m_running = false;
+        emit runningChanged();
+    }
+    if (m_state != QStringLiteral("error")) setState(QStringLiteral("stopped"));
 }
 
 extern "C" void init_plugin() {

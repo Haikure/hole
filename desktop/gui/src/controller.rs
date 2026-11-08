@@ -121,7 +121,8 @@ impl PeerData {
         details.extend([
             kv("建连耗时", &if p.connect_ms == "0" { "尚未完成".to_string() } else { format!("{} ms", p.connect_ms) }),
             kv("路径重试", &format!("{} 次", p.retry_count)),
-            kv("丢弃的 UDP 报文", &p.dropped_datagrams),
+            kv("本地丢弃报文", &p.dropped_datagrams),
+            kv("QUIC 上行丢包率", &snap::send_loss_label(p.send_loss.as_ref())),
             kv("授权确认剩余时间", &snap::remaining_time(p.lease_until)),
             kv("传输标识", &format!("{} · 第 {} 次路径", p.transport_id, p.generation)),
         ]);
@@ -1140,6 +1141,26 @@ fn model_len<T: Clone + 'static>(m: &ModelRc<T>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quic_loss_details_update_independently_of_retries_and_receive_drops() {
+        for path in ["direct", "relay", "hole", "fixed"] {
+            for (loss, expected) in [
+                (serde_json::json!({"window_seconds":60,"samples":"80","lost_packets":"1","rate_percent":1.25}), "1.25%"),
+                (serde_json::json!({"window_seconds":60,"samples":"80","lost_packets":"0","rate_percent":0}), "0.00%"),
+                (serde_json::json!({"window_seconds":60,"samples":"0","lost_packets":"0","rate_percent":null}), "暂无样本"),
+                (Value::Null, "未上报"),
+            ] {
+                let s = snap::parse_snapshot(&serde_json::json!({"api_version":1,"peer_transports":[{
+                    "path_type":path,"retry_count":"99","dropped_datagrams":"999","send_loss":loss
+                }]})).unwrap();
+                let row = PeerData::from_peer(&s.peers[0]).into_row();
+                let details: Vec<_> = row.details.iter().collect();
+                assert!(details.iter().any(|d| d.key == "QUIC 上行丢包率" && d.value.starts_with(expected)));
+                assert!(details.iter().any(|d| d.key == "本地丢弃报文" && d.value == "999"));
+            }
+        }
+    }
 
     #[test]
     fn fixed_details_omit_ice_fields_but_keep_connection_statistics() {

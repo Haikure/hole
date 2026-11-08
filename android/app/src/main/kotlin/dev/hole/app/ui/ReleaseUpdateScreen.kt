@@ -55,6 +55,7 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
     var release by remember { mutableStateOf<GitHubRelease?>(null) }
     var download by remember { mutableStateOf(client.savedDownload()) }
     var downloadStatus by remember { mutableStateOf<ReleaseDownloadSnapshot?>(null) }
+    var queriedDownloadId by remember { mutableStateOf<Long?>(null) }
     var checking by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -63,6 +64,7 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
         while (true) {
             val latest = withContext(Dispatchers.IO) { client.queryDownload(current.id) }
             downloadStatus = latest
+            queriedDownloadId = current.id
             if (latest == null || latest.status == DownloadManager.STATUS_SUCCESSFUL || latest.status == DownloadManager.STATUS_FAILED) {
                 break
             }
@@ -97,6 +99,7 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
                 val record = download
                 if (record != null && record.tag == release?.tag) {
                     downloadStatus = withContext(Dispatchers.IO) { client.queryDownload(record.id) }
+                    queriedDownloadId = record.id
                 }
             } catch (failure: Exception) {
                 error = failure.message ?: "检查更新失败，请稍后重试"
@@ -116,8 +119,11 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
             if (acceleratorId == ReleaseAccelerators.CUSTOM) validateAcceleratorPrefix(customPrefix)
             client.enqueueApkDownload(item, acceleratorId, customPrefix)
         }.onSuccess {
+            if (download?.id != it.id) {
+                queriedDownloadId = null
+                downloadStatus = null
+            }
             download = it
-            downloadStatus = null
         }.onFailure {
             error = it.message ?: "无法开始下载"
         }
@@ -131,7 +137,7 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
                     Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
                         .setData(Uri.parse("package:${context.packageName}")),
                 )
-                error = "请允许 Hole 安装未知应用，然后返回此页点“安装更新”"
+                error = "请允许 Hole 安装未知应用，然后返回此页安装 APK"
                 return
             }
             val uri = client.downloadedUri(record.id) ?: throw IllegalStateException("找不到已下载的 APK")
@@ -214,36 +220,48 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
                         when {
                             comparison == null -> "无法识别版本号，请查看发行说明确认是否需要更新。"
                             hasUpdate -> "发现新版本，可下载 APK 后按 Android 提示安装。"
-                            comparison == 0 -> "当前已是最新版本。"
+                            comparison == 0 -> "当前已是最新版本，仍可重新下载并安装。"
                             else -> "本机版本高于 GitHub 当前正式发行版。"
                         },
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    val matchingDownload = download?.takeIf { it.tag == item.tag && hasUpdate }
+                    val matchingDownload = download?.takeIf { it.tag == item.tag }
                     val status = if (matchingDownload != null) downloadStatus else null
-                    when {
-                        matchingDownload != null && status?.status == DownloadManager.STATUS_SUCCESSFUL ->
-                            HoleButton("安装更新", { installApk(matchingDownload) })
-                        matchingDownload != null && status?.status?.let { it in setOf(
-                            DownloadManager.STATUS_PENDING,
-                            DownloadManager.STATUS_RUNNING,
-                            DownloadManager.STATUS_PAUSED,
-                        ) } == true -> Text(downloadStatusText(requireNotNull(status)))
-                        hasUpdate && item.appApk != null ->
-                            HoleButton("下载 APK", { downloadApk(item) })
-                        item.appApk == null ->
-                            Text("发行版没有附带手机版 APK，可打开发行页面查看。", style = MaterialTheme.typography.bodyMedium)
-                    }
+                    ReleaseApkActions(comparison, item.appApk != null, matchingDownload != null,
+                        matchingDownload != null && queriedDownloadId != matchingDownload.id, status,
+                        onDownload = { downloadApk(item) },
+                        onInstall = { matchingDownload?.let(::installApk) })
                     item.appApk?.let { Text("安装包：${it.name} · ${formatBytes(it.size)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     HoleTextButton("查看 GitHub 发行页面", { openReleasePage(item) })
                 }
                 if (item.notes.isNotBlank()) {
                     HoleSettingsGroup("发行说明") {
-                        Text(item.notes, style = MaterialTheme.typography.bodyMedium)
+                        ReleaseNotes(item.notes, item.pageUrl)
                     }
                 }
             }
             Spacer(Modifier.height(LocalFloatingInset.current + 12.dp))
+        }
+    }
+}
+
+@Composable
+internal fun ReleaseApkActions(comparison: Int?, hasApk: Boolean, hasDownload: Boolean,
+    querying: Boolean, status: ReleaseDownloadSnapshot?, onDownload: () -> Unit, onInstall: () -> Unit) {
+    when {
+        !hasApk -> Text("发行版没有附带手机版 APK，可打开发行页面查看。", style = MaterialTheme.typography.bodyMedium)
+        comparison == null || comparison < 0 -> Unit
+        querying -> Text("正在确认下载状态…")
+        status?.status in setOf(DownloadManager.STATUS_PENDING, DownloadManager.STATUS_RUNNING, DownloadManager.STATUS_PAUSED) ->
+            Text(downloadStatusText(requireNotNull(status)))
+        else -> {
+            if (status?.status == DownloadManager.STATUS_SUCCESSFUL) {
+                HoleButton(if (comparison == 0) "重新安装" else "安装更新", onInstall)
+                HoleTextButton("重新下载 APK", onDownload)
+            } else {
+                if (status?.status == DownloadManager.STATUS_FAILED) Text("下载失败，请重新下载或切换线路。", color = MaterialTheme.colorScheme.error)
+                HoleButton(if (comparison == 0 || hasDownload) "重新下载 APK" else "下载 APK", onDownload)
+            }
         }
     }
 }

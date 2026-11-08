@@ -64,6 +64,7 @@ type muxPeer struct {
 	streamSlots    chan struct{}
 	queuedBytes    atomic.Int64
 	dropped        atomic.Uint64
+	sendLoss       *quicPacketLoss
 	ready          iceSignalMessage
 	voiceEnabled   bool
 	voiceDatagrams chan []byte
@@ -109,9 +110,10 @@ func newMuxPeer(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceS
 
 // A shared fixed listener has already read the first hello to select its owner.
 func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceSignalMessage, incoming *fixedIncoming, deadline time.Time) (*muxPeer, error) {
-	useBBR(conn)
+	loss := useBBR(conn)
 	ctx, cancel := context.WithCancel(ctx)
 	p := &muxPeer{owner: owner, conn: conn, ctx: ctx, cancel: cancel, channels: map[uint32]*muxChannel{}, byMapping: map[string]*muxChannel{}, streamSlots: make(chan struct{}, maxSessionHandshakes), ready: ready, voiceEnabled: ready.Voice, voiceDatagrams: make(chan []byte, voiceJitterLimit), voiceFeedback: make(chan []byte, 2)}
+	p.sendLoss = loss
 	owner.mu.Lock()
 	localRelayProtocol := owner.stats.LocalRelayProtocol
 	if localRelayProtocol == "" {

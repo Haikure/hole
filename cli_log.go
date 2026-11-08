@@ -406,11 +406,11 @@ func (r *cliReporter) peer(p core.PeerTransportSnapshot) {
 	if !exists || !reflect.DeepEqual(previous, state) {
 		r.debugPeer(p)
 	}
-	if p.LocalNAT.ProbedAt != "" && p.LocalNAT != previous.LocalNAT {
+	if p.LocalNAT.ProbedAt != "" && !reflect.DeepEqual(p.LocalNAT, previous.LocalNAT) {
 		r.info("本机 NAT：%s", core.NATDescription(p.LocalNAT))
 		r.debugf("NAT 探测时间 %s", localNATTime(p.LocalNAT.ProbedAt))
 	}
-	if p.PeerNAT.ProbedAt != "" && p.PeerNAT != previous.PeerNAT {
+	if p.PeerNAT.ProbedAt != "" && !reflect.DeepEqual(p.PeerNAT, previous.PeerNAT) {
 		r.info("%s 对端 NAT：%s", logIdent(p.PeerID), core.NATDescription(p.PeerNAT))
 		r.debugf("对端 NAT 探测时间 %s", localNATTime(p.PeerNAT.ProbedAt))
 	}

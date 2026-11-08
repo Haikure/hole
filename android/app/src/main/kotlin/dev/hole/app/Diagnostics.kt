@@ -69,7 +69,8 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
                 appendLine("  本地 ${peer.localAddress} (${peer.localType}) · 对端 ${peer.remoteAddress} (${peer.remoteType})")
             }
             appendLine("  通道 ${peer.activeChannels}/${peer.mappingCount} · RTT ${peer.rttMs} ms · 建连 ${peer.connectMs} ms")
-            appendLine("  线路发送 ${peer.bytesSent} / 接收 ${peer.bytesReceived} 字节 · UDP 丢弃 ${peer.droppedDatagrams}")
+            appendLine("  线路发送 ${peer.bytesSent} / 接收 ${peer.bytesReceived} 字节 · 本地丢弃 ${peer.droppedDatagrams}")
+            appendLine("  QUIC 上行丢包率 ${peer.sendLoss?.description() ?: "未上报"}")
             appendLine("  ${peer.transportId} / generation ${peer.generation} / phase ${peer.phase}（${peerPhaseLabel(peer)}） / retries ${peer.retryCount}")
             if (!isFixedPeer(peer)) appendLine("  中继状态 ${peer.relayState} · 凭据到期 ${peer.turnExpiresAt}")
             appendLine("  授权到期 ${peer.leaseUntil}")

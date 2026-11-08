@@ -25,10 +25,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.hole.corebridge.NATDiagnostic
 
-private data class NATColors(val ink: Color, val surface: Color)
+internal data class NATColors(val ink: Color, val surface: Color)
 
 @Composable
-private fun natColors(tone: String): NATColors {
+internal fun natColors(tone: String): NATColors {
     val dark = MaterialTheme.colorScheme.surface.luminance() < .5f
     return when (tone) {
         "green" -> if (dark) NATColors(Color(0xFF8EE0AE), Color(0xFF183B2A)) else NATColors(Color(0xFF14643A), Color(0xFFE1F5E8))

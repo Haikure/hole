@@ -2,17 +2,18 @@ package dev.hole.corebridge
 
 import org.json.JSONObject
 
-data class NATSnapshot(val status: String = "", val type: String = "unknown", val predictability: String = "unknown", val samples: Int = 0, val probedAt: String = "", val reason: String = "") {
+data class NATSnapshot(val status: String = "", val type: String = "unknown", val predictability: String = "unknown", val samples: Int = 0, val probedAt: String = "", val reason: String = "", val addressPool: Boolean = false) {
     val probedAtDisplay: String get() = formatNATTime(probedAt)
     fun description(local: Boolean = false): String {
         val state = mapOf("probing" to "探测中", "insufficient" to "信息不足", "expired" to "已过期", "not_applicable" to "IPv4 不适用")[status]
         if (status.isBlank()) return if (local) "信息不足" else "对端未上报"
-        val kind = mapOf("open" to "公网直连", "firewall" to "防火墙过滤", "full_cone" to "完全锥型", "restricted_cone" to "地址受限锥型", "port_restricted_cone" to "端口受限锥型", "symmetric" to "对称型", "endpoint_independent" to "端点无关映射")[type] ?: "未知"
-        val pattern = mapOf("stable" to "映射稳定", "predictable_incremental" to "可预测（递增）", "predictable_decremental" to "可预测（递减）", "incremental" to "可能可预测（递增）", "decremental" to "可能可预测（递减）", "irregular" to "未观察到规律")[predictability] ?: "可预测性未知"
+        val kind = (mapOf("open" to "公网直连", "firewall" to "防火墙过滤", "full_cone" to "完全锥型", "restricted_cone" to "地址受限锥型", "port_restricted_cone" to "端口受限锥型", "symmetric" to "对称型", "endpoint_independent" to "端点无关映射", "address_pool" to "地址池")[type] ?: "未知") +
+            if (addressPool && type != "address_pool") "（地址池）" else ""
+        val pattern = mapOf("stable" to "映射稳定", "predictable_incremental" to "可预测（递增）", "predictable_decremental" to "可预测（递减）", "incremental" to "可能递增", "decremental" to "可能递减", "irregular" to "未观察到规律", "unverified" to "待验证")[predictability] ?: "可预测性未知"
         return listOfNotNull(state, kind, pattern).joinToString(" · ")
     }
     companion object {
-        fun fromJson(j: JSONObject?) = if (j == null) NATSnapshot() else NATSnapshot(j.optString("status"), j.optString("type"), j.optString("predictability"), j.optInt("samples"), j.optString("probed_at"), j.optString("reason"))
+        fun fromJson(j: JSONObject?) = if (j == null) NATSnapshot() else NATSnapshot(j.optString("status"), j.optString("type"), j.optString("predictability"), j.optInt("samples"), j.optString("probed_at"), j.optString("reason"), (j.optJSONArray("ip_evidence")?.length() ?: 0) > 1)
     }
 }
 
@@ -42,11 +43,13 @@ data class PeerSnapshot(
     val fixedEndpoint: String = "", val listenerId: String = "", val dialerId: String = "",
     val localNAT: NATSnapshot = NATSnapshot(), val peerNAT: NATSnapshot = NATSnapshot(),
     val portMapping: PortMappingSnapshot = PortMappingSnapshot(),
+    val sendLoss: SendLossSnapshot? = null,
 ) {
     companion object {
         fun fromJson(j: JSONObject): PeerSnapshot = PeerSnapshot(
             localNAT = NATSnapshot.fromJson(j.optJSONObject("local_nat")), peerNAT = NATSnapshot.fromJson(j.optJSONObject("peer_nat")),
             portMapping = PortMappingSnapshot.fromJson(j.optJSONObject("port_mapping")),
+            sendLoss = SendLossSnapshot.fromJson(j.optJSONObject("send_loss")),
             relayDevice = j.optString("relay_device"), relayEndpoint = j.optString("relay_endpoint"), relayAccessAddress = j.optString("relay_access_address"),
             peerId = j.optString("peer_id"), transportId = j.optString("transport_id"), generation = j.optString("generation", "0"),
             profile = j.optString("profile"), state = j.optString("state"), phase = j.optString("phase"), pendingPhase = j.optString("pending_phase"),

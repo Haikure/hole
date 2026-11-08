@@ -55,8 +55,10 @@ class ConnectionDetailsTest {
         } }
         compose.onNodeWithText("固定入口").performClick()
         compose.onNodeWithText("fixed-pending").assertExists()
+        compose.onNodeWithTag("connection-details").performScrollToNode(hasText("fixed-retrying"))
         compose.onNodeWithText("fixed-retrying").assertExists()
         compose.onNodeWithText("ice-peer").assertDoesNotExist()
+        compose.onNodeWithTag("connection-details").performScrollToNode(hasSetTextAction())
         compose.onNode(hasSetTextAction()).performTextInput("waiting.example")
         compose.onNodeWithText("fixed-pending").performClick()
         compose.onNodeWithText("waiting.example:40000").assertExists()
