@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"hole/core"
@@ -39,6 +40,10 @@ type cliPeerProgress struct {
 // Presentation is event-driven. Internal generations, leases and statistics do
 // not constitute user-visible progress; the latest snapshot supplies path facts.
 type cliReporter struct {
+	// Serializes events, reloads and logs emitted by library goroutines.
+	mu               sync.Mutex
+	secrets          map[string]string
+	urls             map[string]string
 	relayFacts       string
 	logger           *log.Logger
 	request          core.Request
@@ -60,37 +65,48 @@ type cliReporter struct {
 }
 
 func newCLIReporter(logger *log.Logger, request core.Request) *cliReporter {
-	secrets := map[string]bool{}
-	for _, secret := range []string{request.Config.Password, request.Config.Token, request.Config.TURN.Username, request.Config.TURN.Credential} {
-		if secret != "" {
-			for _, spelling := range logSpellings(secret) {
-				secrets[spelling] = true
-			}
-		}
-	}
-	keys := make([]string, 0, len(secrets))
-	for secret := range secrets {
-		keys = append(keys, secret)
-	}
-	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
-	pairs := make([]string, 0, len(keys)*2)
-	for _, secret := range keys {
-		pairs = append(pairs, secret, "[redacted]")
-	}
-	urlPairs := []string{}
-	if request.ServerURL != "" {
-		clean := logServer(request.ServerURL)
-		originals, replacements := logSpellings(request.ServerURL), logSpellings(clean)
-		for i, original := range originals {
-			urlPairs = append(urlPairs, original, replacements[i])
-		}
-	}
-	return &cliReporter{
-		logger: logger, request: request, redactor: strings.NewReplacer(pairs...), urlRedactor: strings.NewReplacer(urlPairs...),
+	r := &cliReporter{
+		logger: logger, request: request, secrets: map[string]string{}, urls: map[string]string{},
 		peers: map[string]core.PeerTransportSnapshot{}, progress: map[string]*cliPeerProgress{},
 		mappingFacts: map[string]core.Event{}, mappingReady: map[string]bool{},
 		messages: map[string]string{}, problems: map[string]cliProblem{},
 	}
+	r.protectRequest(request)
+	return r
+}
+
+// Keep old secrets too: events from a previous configuration may arrive late.
+// Call before starting goroutines or with mu held.
+func (r *cliReporter) protectRequest(request core.Request) {
+	for _, secret := range []string{request.Config.Password, request.Config.Token, request.Config.TURN.Username, request.Config.TURN.Credential} {
+		if secret != "" {
+			for _, spelling := range logSpellings(secret) {
+				r.secrets[spelling] = "[redacted]"
+			}
+		}
+	}
+	if request.ServerURL != "" {
+		clean := logServer(request.ServerURL)
+		originals, replacements := logSpellings(request.ServerURL), logSpellings(clean)
+		for i, original := range originals {
+			r.urls[original] = replacements[i]
+		}
+	}
+	r.redactor = cliLogReplacer(r.secrets)
+	r.urlRedactor = cliLogReplacer(r.urls)
+}
+
+func cliLogReplacer(values map[string]string) *strings.Replacer {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
+	pairs := make([]string, 0, len(keys)*2)
+	for _, key := range keys {
+		pairs = append(pairs, key, values[key])
+	}
+	return strings.NewReplacer(pairs...)
 }
 
 func logSpellings(value string) []string {
@@ -591,21 +607,32 @@ type cliEventSource interface {
 
 func (r *cliReporter) follow(engine cliEventSource) {
 	for e := range engine.Events() {
-		if e.Kind == "log" {
-			r.debugEvent(e)
-			continue
+		// Acquire engine state before the reporter lock: engine operations can
+		// themselves log through cliLibraryLog.
+		var snapshot core.Snapshot
+		if e.Kind != "log" {
+			snapshot = engine.Snapshot()
 		}
-		s := engine.Snapshot()
-		if e.Kind != "mapping" && e.Kind != "session" {
-			r.event(e)
-		}
-		// Print the device path before mapping readiness. Snapshots, rather than
-		// possibly queued mapping events, decide current readiness.
-		r.snapshot(s)
-		if e.Kind == "mapping" {
-			r.debugEvent(r.mappingContext(e))
-		} else if e.Kind == "session" {
-			r.event(e)
-		}
+		r.followEvent(e, snapshot)
+	}
+}
+
+func (r *cliReporter) followEvent(e core.Event, s core.Snapshot) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e.Kind == "log" {
+		r.debugEvent(e)
+		return
+	}
+	if e.Kind != "mapping" && e.Kind != "session" {
+		r.event(e)
+	}
+	// Print the device path before mapping readiness. Snapshots, rather than
+	// possibly queued mapping events, decide current readiness.
+	r.snapshot(s)
+	if e.Kind == "mapping" {
+		r.debugEvent(r.mappingContext(e))
+	} else if e.Kind == "session" {
+		r.event(e)
 	}
 }

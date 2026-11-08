@@ -6,6 +6,7 @@ toolchain go1.27.3
 
 require (
 	github.com/apernet/quic-go v0.63.1-0.20261004180939-a10df75c260c
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/ice/v4 v4.4.8
 	github.com/pion/logging v0.2.4

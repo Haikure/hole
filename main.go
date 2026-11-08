@@ -87,6 +87,12 @@ func cliRequest(data []byte, options cliOptions) (core.Request, error) {
 }
 
 func run(configPath string, options cliOptions) error {
+	// Subscribe before reading so a save during startup cannot be missed.
+	watcher, err := newCLIConfigWatcher(configPath)
+	if err != nil {
+		return err
+	}
+	defer watcher.Close()
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
@@ -111,7 +117,20 @@ func run(configPath string, options cliOptions) error {
 	}()
 	err = engine.Start(request)
 	if err == nil {
+		watchCtx, cancelWatch := context.WithCancel(ctx)
+		watchDone := make(chan struct{})
+		reloader := cliConfigReloader{path: configPath, options: options, current: request, reporter: reporter, apply: engine.ApplyConfig}
+		go func() {
+			defer close(watchDone)
+			watcher.run(watchCtx, reloader.reload, func(err error) {
+				reporter.mu.Lock()
+				defer reporter.mu.Unlock()
+				reporter.warn("配置监听异常: %s", logText(err.Error()))
+			})
+		}()
 		err = engine.Wait(ctx)
+		cancelWatch()
+		<-watchDone
 	}
 	_ = engine.Close()
 	<-logsDone

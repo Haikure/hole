@@ -12,6 +12,8 @@ type cliLibraryLog struct {
 }
 
 func (w *cliLibraryLog) Write(data []byte) (int, error) {
+	w.reporter.mu.Lock()
+	defer w.reporter.mu.Unlock()
 	message := strings.TrimSuffix(string(data), "\n")
 	if w.reporter.debug {
 		w.reporter.debugf("lib %s", logText(message))
