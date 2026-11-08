@@ -7,8 +7,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/apernet/quic-go"
 	"github.com/pion/ice/v4"
-	"github.com/quic-go/quic-go"
 )
 
 // Relay phases gather host, server-reflexive and relay candidates together,

@@ -34,7 +34,7 @@ internal class SnapshotSampler(
         var lastReadAt = nowMillis()
         emit(previous)
         while (currentCoroutineContext().isActive) {
-            val result = if (previous.runRequested) {
+            val result = if (previous.runRequested || previous.natDiagnostic.state != "idle") {
                 withTimeoutOrNull(if (uiVisible) FOREGROUND_INTERVAL_MS else BACKGROUND_INTERVAL_MS) { changed.receiveCatching() }
             } else {
                 // Lifecycle commands explicitly wake us even when the mobile

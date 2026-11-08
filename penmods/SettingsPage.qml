@@ -43,6 +43,12 @@ YBackButtonPage {
             width: scroll.width
             spacing: Theme.spacing
 
+            ActionButton {
+                Layout.fillWidth: true
+                text: "NAT 检测与详细结果"
+                onClicked: settingsPage.form.openSeparatePage("NATPage.qml", {form: settingsPage.form})
+            }
+
             Text {
                 Layout.fillWidth: true
                 text: "设置"

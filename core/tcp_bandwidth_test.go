@@ -3,7 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
-	"github.com/quic-go/quic-go"
+	"github.com/apernet/quic-go"
 	"io"
 	"testing"
 	"time"

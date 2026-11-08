@@ -6,10 +6,14 @@ Pion transport v4.1.0 会引入 anet v0.0.5；其 Android 实现引用私有 `ne
 
 ## 行为
 
-- 桌面接口委托给公开的 Go `net` API。
-- Android 默认发现入口返回明确错误；实际 ICE 网络始终由 `core/ice_network.go` 和
-  `mobile/boundPlatform` 注入，使用系统 ConnectivityManager / Network、DNS 和 fd 绑定。
-- 不使用私有运行时符号，不关闭链接检查，也不回退到受限 netlink。
+| 平台 | 接口发现 |
+| --- | --- |
+| 桌面 | 委托给公开的 Go `net` API |
+| Android | 默认入口返回明确错误；实际由 `core/ice_network.go` 和 `mobile/boundPlatform` 注入系统 ConnectivityManager / Network、DNS 和 fd 绑定 |
+
+不使用私有运行时符号，不关闭链接检查，也不回退到受限 netlink。
+
+## 依赖与移除条件
 
 根模块与 Android 绑定模块均通过 `replace` 指向本目录。
 源码与 `go.mod` 纳入 AAR 输入和核心构建标识，修改后需同时验证两套依赖图。

@@ -205,6 +205,7 @@ void HolePlugin::sendRequest(const QString& method, const QJsonObject& params) {
     if (!m_process || m_process->state() == QProcess::NotRunning) return;
     QJsonObject request;
     const QString id = QStringLiteral("p%1").arg(++m_requestId);
+    if (method == QStringLiteral("start") || method == QStringLiteral("apply_config")) m_pendingRequestId = id;
     request.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
     request.insert(QStringLiteral("id"), id);
     request.insert(QStringLiteral("method"), method);
@@ -272,6 +273,28 @@ void HolePlugin::renominateTransports() {
     if (m_process && m_process->state() != QProcess::NotRunning) sendRequest(QStringLiteral("renominate_transports"));
 }
 
+void HolePlugin::startNATProbe(const QString& optionsJson) {
+    QJsonParseError error{};
+    const auto document = QJsonDocument::fromJson(optionsJson.toUtf8(), &error);
+    if (optionsJson.size() > 16384 || error.error != QJsonParseError::NoError || !document.isObject()) {
+        setError(QStringLiteral("NAT 检测参数无效"));
+        return;
+    }
+    setError({});
+    m_probeOptions = document.object();
+    m_probePending = true;
+    ensureProcess();
+    if (m_helloReceived) {
+        m_probePending = false;
+        sendRequest(QStringLiteral("start_nat_probe"), m_probeOptions);
+    }
+}
+
+void HolePlugin::cancelNATProbe() {
+    m_probePending = false;
+    if (m_helloReceived) sendRequest(QStringLiteral("cancel_nat_probe"));
+}
+
 void HolePlugin::clearError() {
     setError({});
 }
@@ -325,6 +348,7 @@ void HolePlugin::handleLine(const QByteArray& line) {
         }
         if (kind == QStringLiteral("session") && event.contains(QStringLiteral("error"))) setError(QStringLiteral("映射会话失败"));
         emit eventReceived(QString::fromUtf8(line));
+        if (kind == QStringLiteral("nat_diagnostic")) refresh();
         return;
     }
 
@@ -332,8 +356,11 @@ void HolePlugin::handleLine(const QByteArray& line) {
     if (!errorObject.isEmpty()) {
         const QJsonObject data = errorObject.value(QStringLiteral("data")).toObject();
         setError(data.value(QStringLiteral("message")).toString(QStringLiteral("核心请求失败")));
-        m_pendingMethod.clear();
-        if (!m_running) setState(QStringLiteral("error"));
+        if (object.value(QStringLiteral("id")).toString() == m_pendingRequestId) {
+            m_pendingMethod.clear();
+            m_pendingRequestId.clear();
+            if (!m_running) setState(QStringLiteral("error"));
+        }
         return;
     }
 
@@ -344,16 +371,19 @@ void HolePlugin::handleLine(const QByteArray& line) {
         // start request is lost and the UI gets a false running state.
         m_helloReceived = true;
         if (!m_pendingMethod.isEmpty()) sendStart(m_pendingMethod);
+        if (m_probePending) { m_probePending = false; sendRequest(QStringLiteral("start_nat_probe"), m_probeOptions); }
+        refresh();
         return;
     }
 
     const QString method = m_pendingMethod;
-    if (method == QStringLiteral("start") || method == QStringLiteral("apply_config")) {
+    if ((method == QStringLiteral("start") || method == QStringLiteral("apply_config")) && object.value(QStringLiteral("id")).toString() == m_pendingRequestId) {
         if (m_running != true) {
             m_running = true;
             emit runningChanged();
         }
         m_pendingMethod.clear();
+        m_pendingRequestId.clear();
     }
     if (result.contains(QStringLiteral("snapshot"))) {
         m_snapshotJson = QString::fromUtf8(QJsonDocument(result.value(QStringLiteral("snapshot")).toObject()).toJson(QJsonDocument::Compact));

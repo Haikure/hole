@@ -1,19 +1,30 @@
 # 构建、签名与验证
 
-桌面 Rust 编译与测试使用独立的 `.github/workflows/test.yaml`，在 Linux / Windows amd64 runner 上构建内嵌核心的 Release 并运行 Rust、配置、快照和 Slint 测试，不修改发布工作流。本机不执行 Cargo 构建。工作流进入远端后，可用 `gh workflow run test.yaml --repo Haikure/hole --ref <分支>` 触发，`gh run view` 查看结果，`gh run download` 下载测试产物。临时分支 `codex/nat-direct` 的推送也会触发测试，便于在新工作流进入默认分支前验证。未提交源码必须先获准提交到远端分支，远端工作流不会读取本机工作树。
-
-核心构建标识覆盖 `core/internal/nat`。自动 NAT 测试使用本地 STUN / 内存路由器 fixture，不能视为真实路由器、运营商 NAT、移动切网或成功率验收。
-
 仓库根目录的 `build.sh` 是统一发布构建入口。只生成 Release，不部署 Worker、不安装到设备，
 也不创建或替换签名密钥。核心版本和各前端版本集中维护在仓库根目录的 `versions.json`。
 
+[工具链](#工具链) · [命令与参数](#命令与参数) · [CI](#github-actions-构建与发布) · [版本号](#版本号) · [签名](#签名) · [产物](#缓存与产物) · [验证](#回归测试) · [项目首页](../README.md)
+
+| 构建目标 | 常用命令 | 产物目录 |
+| --- | --- | --- |
+| CLI | `./build.sh cli` | `dist/cli/` |
+| 独立核心宿主 | `./build.sh core` | `dist/core/` |
+| Linux / Windows 桌面 | `./build.sh desktop` | `dist/desktop/` |
+| Android 手机 | `./build.sh android` | `dist/android/` |
+| Wear OS | `./build.sh wear` | `dist/wear/` |
+| CLI + 手机 + 手表 | `./build.sh all` | 各自目录；不含桌面或独立核心 |
+
+PenMods 使用 [插件构建入口](../penmods/README.md#构建)。
+
 ## 工具链
 
-CLI / `core` 需要 Bash、Python 3 和 Go 1.27.3；独立核心宿主不需要 Qt、Slint 或 CGo。
-完整 `desktop` 目标还需要 Rust stable / Cargo。桌面 GUI 支持 Linux、Windows 的 AMD64 / ARM64；
-Linux 桌面 GUI 与语音设备适配通过 Slint / fontconfig 和 CPAL / ALSA 构建，需要 `pkg-config`、
-Fontconfig 和 ALSA 开发包（Debian / Ubuntu 为 `libfontconfig1-dev`、`libasound2-dev`）；运行环境需系统
-ALSA 库及默认音频设备。Windows 使用系统 WASAPI。
+| 目标 | 工具与依赖 |
+| --- | --- |
+| CLI / `core` | Bash、Python 3、Go 1.27.3；独立宿主无需 Qt、Slint 或 CGo |
+| `desktop` | 额外需要 Rust stable / Cargo；支持 Linux / Windows AMD64、ARM64 |
+| Linux 桌面 | Slint / fontconfig、CPAL / ALSA；构建需 `pkg-config`、`libfontconfig1-dev`、`libasound2-dev`（Debian / Ubuntu），运行需系统 ALSA 库与默认音频设备 |
+| Windows 桌面 | 系统 WASAPI |
+
 交叉构建需提前安装对应 Rust target 和平台 linker / sysroot（Linux 含目标 ALSA 库），构建脚本不会自动安装 Rust 工具链或系统音频开发包。
 项目 Android 构建固定使用 Go 1.27.3。
 
@@ -44,6 +55,9 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 
 ## 命令与参数
 
+<details>
+<summary>目标组合、交叉编译与离线构建示例</summary>
+
 ```bash
 ./build.sh cli                         # 宿主系统 / 架构
 ./build.sh cli --os linux --arch arm64
@@ -61,6 +75,8 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 ./build.sh -t cli -t wear --offline
 ```
 
+</details>
+
 | 参数 | 含义 |
 | --- | --- |
 | `cli`、`core`、`desktop`、`android` / `phone`、`wear`、`all` | 位置参数，可组合；重复目标去重，`all` 不包含 `core` 或 `desktop` |
@@ -71,7 +87,14 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 | `--offline` | 只使用已缓存 Go / Cargo / Gradle 依赖；缓存缺项时报告错误 |
 | `-h` / `--help` | 显示帮助；无参数时同样显示帮助 |
 
+### 路径与目标隔离
+
+显式指定的输出目录和配置文件相对调用目录解析；密钥库相对路径固定相对仓库根目录。
+CLI / 核心宿主 / 桌面的交叉编译变量不传入 Android 绑定。不同目标、系统和架构的产物互不覆盖。
+
 ## GitHub Actions 构建与发布
+
+### 发布工作流
 
 `.github/workflows/build.yaml` 支持手动构建和版本 tag 推送。手动运行只上传 Artifact，不创建 GitHub Release；推送任意 tag
 时使用完整构建矩阵，并在所有构建成功后创建同名 GitHub Release，说明内容来自仓库根目录的 `CHANGELOG.md`。
@@ -83,7 +106,12 @@ Release 不再上传 `.sha256` / `SHA256SUMS` 校验文件；GitHub Release 页�
 - `core` 的 Linux / Windows AMD64 / ARM64；
 - `cli` 的 Linux / Windows AMD64 / ARM64。
 
-`type` 可以改为单一目标；`arch` 和 `os` 会筛选 CLI / `core` / `desktop` 矩阵。选择 `android` 时始终只构建手机 ARM64，并忽略 `arch` 和 `os`。每个矩阵任务单独上传一个 Artifact，名称包含目标、系统和架构；Android Artifact 只包含唯一的 `.apk`，不包含 mapping、构建清单或校验和文件。工作流设置 `compression-level: 0`，保留未压缩的文件内容；GitHub 下载接口仍会为 Artifact 提供归档容器。
+| 工作流选项 / 产物 | 行为 |
+| --- | --- |
+| `type` | 可选单一目标；`android` 固定构建手机 ARM64，忽略 `arch` / `os` |
+| `arch` / `os` | 筛选 CLI / `core` / `desktop` 矩阵 |
+| Artifact | 每个矩阵任务独立上传，名称含目标、系统、架构；Android 只含唯一 APK |
+| 压缩 | `compression-level: 0`；GitHub 下载接口仍提供归档容器 |
 
 Android Release 构建需要在仓库或组织中配置以下 Actions secrets：
 
@@ -94,13 +122,12 @@ Android Release 构建需要在仓库或组织中配置以下 Actions secrets：
 
 ## 版本号
 
+### 版本清单与同步
+
 编辑根目录 `versions.json`：`core.version` 是共享核心版本，CLI、独立核心宿主和 Android AAR 始终使用同一个值；Android 手机与 Wear OS 共用 `frontends.android` 的版本名和版本码。桌面 GUI 与 PenMods 插件各自维护前端版本。
 修改后运行 `python3 scripts/sync_versions.py`，同步 Cargo package/lock 元数据以及 PenMods 的 `xmake.lua` 和 `metadata.json`。Android Gradle 配置直接读取该清单。桌面 GUI 与 PenMods 正式构建会先检查同步状态；也可手动运行 `python3 scripts/sync_versions.py --check`。
 
 核心构建标识由提交标识和共享核心源码/依赖摘要自动生成，和手动维护的核心版本分开记录；Android APK 验证会同时核对核心版本与构建标识。
-
-显式指定的输出目录和配置文件相对调用目录解析；密钥库相对路径固定相对仓库根目录。
-CLI / 核心宿主 / 桌面的交叉编译变量不传入 Android 绑定。不同目标、系统和架构的产物互不覆盖。
 
 ## 签名
 
@@ -129,6 +156,8 @@ HOLE_SIGNING_KEY_PASSWORD='KEY_PASSWORD'
 
 ## 缓存与产物
 
+### 项目缓存
+
 构建脚本将以下路径固定在当前项目 `.cache/`，覆盖旧工具链环境中的历史缓存位置：
 
 | 路径 | 用途 |
@@ -148,7 +177,7 @@ SDK、NDK、JDK、gomobile 可执行文件和签名密钥不是构建缓存，�
 `android/*/build/` 和 `android/corebridge/libs/` 是模块生成物，仍在原处且被 Git 忽略。
 无需清缓存即可正常增量构建；仓库移动后路径随脚本所在目录重新计算。
 
-交付结构：
+### 交付结构
 
 ```text
 dist/
@@ -168,6 +197,8 @@ dist/
   wear/SHA256SUMS
 ```
 
+### 优化与自动检查
+
 CLI / 独立 Go 核心宿主使用 `CGO_ENABLED=0`、`-trimpath`、`-s -w`，不调用宿主 `strip` 处理其他架构二进制。
 桌面 GUI 使用 Cargo `release` profile 和 `embedded-core` feature；`desktop` 目录仅包含内嵌核心的 GUI
 与 SHA-256 文件。构建时通过 `HOLE_EMBED_CORE` 传入刚生成的同架构宿主，校验 ELF / PE 后压缩嵌入；
@@ -186,6 +217,38 @@ Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使�
 
 ## 回归测试
 
+按改动范围选择检查；下面的全量命令用于跨模块或发布验证，不是每次修改的固定清单。
+
+| 改动 | 最小检查 |
+| --- | --- |
+| 文档 | `git diff --check` |
+| Worker | 两个 Worker 测试文件 |
+| Go 单模块 | 受影响包测试；核心 / mobile 同时检查 Android 独立依赖图 |
+| 并发、传输、身份或资源限额 | 在相关包追加 race 检查 |
+| Android UI / 业务 | 相关 JVM 测试与 lint；构建、桥接、签名或交付变化时追加 Release |
+
+日常 Go 检查保留默认缓存，不无条件添加 `-count=1`。
+
+### 桌面 CI
+
+桌面 Rust 编译与测试使用独立的 [test.yaml](../.github/workflows/test.yaml)，在 Linux / Windows amd64 runner 上构建内嵌核心的 Release，并运行 Rust、配置、快照和 Slint 测试。本机不执行 Cargo 构建。
+
+| 项目 | 说明 |
+| --- | --- |
+| 自动触发 | `main`、临时分支 `codex/nat-direct` 推送涉及桌面、共享核心、构建脚本或版本的变更；相关 PR |
+| 手动触发 | `gh workflow run test.yaml --repo Haikure/hole --ref <分支>` |
+| 查看 / 下载 | `gh run view` / `gh run download` |
+| 源码范围 | 工作流只读取远端分支；未提交源码需先获准提交到远端 |
+
+CI 通过 `scripts/test_desktop_timezones.py` 在 UTC、上海、纽约分别启动独立 Rust 测试进程，验证 NAT 时间秒级格式、跨日、带偏移输入、夏令时及本机 / 对端展示。Linux 使用 `TZ`，Windows 切换 runner 时区并在结束后恢复；常规测试不修改时区。
+
+核心构建标识覆盖 `core/internal/nat`。自动 NAT 测试使用本地 STUN / 内存路由器 fixture，不代表真实路由器、运营商 NAT、移动切网或成功率验收。
+
+### Go、脚本与 Worker
+
+<details>
+<summary>跨模块 / 发布全量检查命令</summary>
+
 ```bash
 # 仓库根目录；手工调用工具也采用项目缓存
 source scripts/build-env.sh
@@ -199,6 +262,8 @@ node --test worker/worker_ice.test.mjs worker/worker_fixture.test.mjs
 (cd android/corebridge/gobuild && go test -race -count=1 hole/core hole/mobile && go vet hole/core hole/mobile)
 ```
 
+</details>
+
 `go test ./...` 包含桌面协议、真实 Engine 本地信令及宿主子进程测试；可单独执行
 `go test -race -count=1 ./desktop ./cmd/hole-core`。Windows 交叉编译只验证构建，
 Windows 管道、窗口与系统集成运行验收在相应系统单独执行。
@@ -210,6 +275,8 @@ PenMods 排序交互。可用 `go test ./core -run '^$' -bench BenchmarkHoleForw
 批次完成耗时的 p50/p95/p99；这是回环提交加接收时间，不是公网 RTT。
 CLI 中继及跨平台核心保留 `CGO_ENABLED=0`；Android/Wear、桌面和 PenMods 沿用各自
 Release 构建入口。真实跨 NAT、长时间稳定性及真机音频播放需单独验收。
+
+### Android JVM、lint 与 APK
 
 Go 集成测试使用本地 socket；Worker 测试需要提供 `node:test` 的 Node.js。
 Android UI 测试使用已有 JDK 21+，通过 `JDK_TEST_HOME` 指定其目录：

@@ -62,6 +62,7 @@ type FixedEndpointConfig struct {
 	Advertise string `yaml:"advertise" json:"advertise"`
 }
 type ICEConfig struct {
+	Punch               NATPunchConfig `yaml:"punch" json:"punch"`
 	PortMapping         string         `yaml:"port_mapping" json:"port_mapping"`
 	NATSTUNURLs         []string       `yaml:"nat_stun_urls" json:"nat_stun_urls"`
 	STUNURLs            []string       `yaml:"stun_urls" json:"stun_urls"`
@@ -105,6 +106,7 @@ type ICEServer struct {
 }
 
 func (c *Config) normalizeTransport() {
+	c.ICE.Punch.normalize()
 	if c.ICE.PortMapping == "" {
 		c.ICE.PortMapping = "auto"
 	}
@@ -154,6 +156,9 @@ func (c *Config) normalizeTransport() {
 }
 func (c Config) validateTransport() error {
 	c.normalizeTransport()
+	if err := c.ICE.Punch.validate(); err != nil {
+		return err
+	}
 	if c.ICE.PortMapping != "auto" && c.ICE.PortMapping != "off" {
 		return fmt.Errorf("ice.port_mapping 只接受 auto 或 off")
 	}

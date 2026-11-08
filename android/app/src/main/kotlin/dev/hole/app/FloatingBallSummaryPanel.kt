@@ -2,7 +2,6 @@ package dev.hole.app
 
 import android.content.Context
 import android.content.res.Configuration
-import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
@@ -12,7 +11,13 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
+import dev.hole.app.config.ThemeMode
+import dev.hole.app.config.ThemePalette
 import dev.hole.app.ui.engineLabel
+import dev.hole.app.ui.holeColorScheme
 import dev.hole.app.ui.formatBytes
 import dev.hole.app.ui.isFixedPeer
 import dev.hole.app.ui.peerPathLabel
@@ -40,18 +45,23 @@ internal class FloatingBallSummaryPanel(
         gravity = Gravity.START
     }
     private var snapshot = CoreSnapshot()
+    private var themeMode = ThemeMode.SYSTEM
+    private var dynamicColor = true
+    private var palette = ThemePalette.BLUE
+    private var colors = holeColorScheme(context, isDarkTheme(), dynamicColor, palette)
 
     init {
         isFillViewport = false
         clipToOutline = true
-        elevation = dp(10).toFloat()
-        background = roundedBackground(cardColor(), borderColor())
+        elevation = dp(4).toFloat()
         addView(content, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         update(snapshot)
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val availableHeight = (resources.displayMetrics.heightPixels * 0.78f).toInt().coerceAtLeast(dp(260))
+        val screenCap = (resources.displayMetrics.heightPixels * 0.78f).toInt()
+        val availableHeight = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) screenCap
+            else minOf(screenCap, MeasureSpec.getSize(heightMeasureSpec))
         val cappedHeight = MeasureSpec.makeMeasureSpec(availableHeight, MeasureSpec.AT_MOST)
         super.onMeasure(widthMeasureSpec, cappedHeight)
         val width = when (MeasureSpec.getMode(widthMeasureSpec)) {
@@ -63,8 +73,20 @@ internal class FloatingBallSummaryPanel(
 
     fun preferredWidth(): Int = desiredWidth
 
+    fun updateAppearance(mode: ThemeMode, dynamic: Boolean, themePalette: ThemePalette) {
+        themeMode = mode
+        dynamicColor = dynamic
+        palette = themePalette
+        update(snapshot)
+    }
+
     fun update(next: CoreSnapshot) {
         snapshot = next
+        colors = holeColorScheme(context, isDarkTheme(), dynamicColor, palette)
+        background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(
+            lerp(colors.surfaceContainerLow, ComposeColor.White, if (isDarkTheme()) .045f else .70f).toArgb(),
+            colors.surfaceContainerLow.toArgb(),
+        )).apply { cornerRadius = dp(20).toFloat() }
         content.removeAllViews()
         content.setPadding(dp(18), dp(16), dp(18), dp(14))
 
@@ -183,8 +205,11 @@ internal class FloatingBallSummaryPanel(
         return ImageButton(context).apply {
             tag = tagValue
             setImageResource(icon)
-            setColorFilter(Color.WHITE)
-            background = roundedBackground(primaryColor(), Color.TRANSPARENT, oval = true)
+            setColorFilter(colors.onPrimary.toArgb())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(primaryColor())
+            }
             contentDescription = description
             tooltipText = description
             setOnClickListener { listener() }
@@ -220,24 +245,17 @@ internal class FloatingBallSummaryPanel(
     private fun buttonParams(): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(dp(48), dp(48))
 
-    private fun roundedBackground(fill: Int, stroke: Int, oval: Boolean = false): GradientDrawable =
-        GradientDrawable().apply {
-            shape = if (oval) GradientDrawable.OVAL else GradientDrawable.RECTANGLE
-            setColor(fill)
-            if (stroke != Color.TRANSPARENT) setStroke(dp(1), stroke)
-            if (!oval) cornerRadius = dp(24).toFloat()
-        }
-
     private fun dp(value: Int): Int = (value * density).toInt().coerceAtLeast(1)
 
-    private fun cardColor(): Int = if (isDarkTheme()) Color.rgb(32, 31, 37) else Color.rgb(238, 238, 243)
-    private fun primaryTextColor(): Int = if (isDarkTheme()) Color.rgb(229, 225, 233) else Color.rgb(27, 27, 32)
-    private fun secondaryTextColor(): Int = if (isDarkTheme()) Color.rgb(203, 197, 209) else Color.rgb(72, 71, 79)
-    private fun primaryColor(): Int = if (isDarkTheme()) Color.rgb(173, 198, 255) else Color.rgb(67, 94, 145)
-    private fun dividerColor(): Int = if (isDarkTheme()) Color.rgb(72, 69, 79) else Color.rgb(203, 201, 210)
-    private fun borderColor(): Int = if (isDarkTheme()) Color.rgb(72, 69, 79) else Color.rgb(203, 201, 210)
-    private fun isDarkTheme(): Boolean =
-        resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+    private fun primaryTextColor(): Int = colors.onSurface.toArgb()
+    private fun secondaryTextColor(): Int = colors.onSurfaceVariant.toArgb()
+    private fun primaryColor(): Int = colors.primary.toArgb()
+    private fun dividerColor(): Int = colors.outlineVariant.copy(alpha = .45f).toArgb()
+    private fun isDarkTheme(): Boolean = when (themeMode) {
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+        ThemeMode.SYSTEM -> resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+    }
 
     private fun statusText(snapshot: CoreSnapshot): String =
         engineLabel(snapshot)

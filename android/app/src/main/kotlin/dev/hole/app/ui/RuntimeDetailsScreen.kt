@@ -34,6 +34,7 @@ fun RuntimeDetailsScreen(
     snapshot: CoreSnapshot, config: ConfigUiState, commandError: String?,
     onBack: () -> Unit, onReconnect: () -> Unit, onExport: () -> Unit, onBackground: () -> Unit,
     snackbarHostState: SnackbarHostState? = null, onTransportSettings: () -> Unit = {},
+    onNATDetection: () -> Unit = {},
 ) {
     var tab by rememberSaveable { mutableStateOf("devices") }
     var query by rememberSaveable { mutableStateOf("") }
@@ -73,6 +74,7 @@ fun RuntimeDetailsScreen(
                     tab, { tab = it; filter = "all" },
                 )
             }
+            item { NATDetectionEntry(snapshot.natDiagnostic, onNATDetection) }
             item {
                 TextField(query, { query = it }, Modifier.fillMaxWidth(),
                     placeholder = { Text(if (tab == "devices") "搜索设备或地址" else "搜索服务或端口") },
@@ -141,9 +143,10 @@ fun RuntimeDetailsScreen(
                 } else {
                     DetailRow("本机 NAT", peer.localNAT.description())
                     DetailRow("对端 NAT", peer.peerNAT.description())
-                    DetailRow("本机探测时间", peer.localNAT.probedAt.ifBlank { "暂无" })
-                    DetailRow("对端探测时间", peer.peerNAT.probedAt.ifBlank { "暂无" })
-                    DetailRow("端口映射", peer.portMapping.ifBlank { "暂无" })
+                    DetailRow("本机探测时间", peer.localNAT.probedAtDisplay.ifBlank { "暂无" })
+                    DetailRow("对端探测时间", peer.peerNAT.probedAtDisplay.ifBlank { "暂无" })
+                    DetailRow("端口映射", peer.portMapping.description())
+                    if (peer.portMapping.reason.isNotBlank()) DetailRow("映射说明", peer.portMapping.reason)
                     DetailRow("本机连接", selectedConnectionLabel(peer.localType, peer.localAddress))
                     DetailRow("对端连接", selectedConnectionLabel(peer.remoteType, peer.remoteAddress))
                 }
@@ -183,7 +186,7 @@ fun RuntimeDetailsScreen(
         InspectionValue("房间", signalLabel(snapshot.signalState))
         InspectionValue("网络", snapshot.network.transport)
         DetailRow("本机 NAT", snapshot.network.nat.description(local = true))
-        DetailRow("探测时间", snapshot.network.nat.probedAt.ifBlank { "暂无" })
+        DetailRow("探测时间", snapshot.network.nat.probedAtDisplay.ifBlank { "暂无" })
         InspectionValue("互联网", if (snapshot.network.validated) "已验证" else "未验证")
         DetailRow("网卡", snapshot.network.interfaceName.ifBlank { "系统选择" })
         DetailRow("地址", snapshot.network.addresses.joinToString("\n").ifBlank { "暂无" })

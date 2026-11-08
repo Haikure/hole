@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
+	"github.com/apernet/quic-go"
 )
 
 func TestSessionWireAndConfig(t *testing.T) {

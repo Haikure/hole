@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/netip"
 	"time"
+
+	"hole/core/netresolve"
 )
 
 // Platform is the external-network boundary. Local application listeners never
@@ -51,7 +53,7 @@ func (DefaultPlatform) InterfaceSnapshots(ctx context.Context) ([]InterfaceSnaps
 	return result, nil
 }
 func (DefaultPlatform) LookupIP(ctx context.Context, host string) ([]net.IP, error) {
-	return net.DefaultResolver.LookupIP(ctx, "ip", host)
+	return netresolve.LookupIP(ctx, "ip", host)
 }
 
 // NetworkSnapshotter pins every external transport in a cycle to one Network.
@@ -119,10 +121,10 @@ func (DefaultPlatform) ResolveUDP(ctx context.Context, address string) (*net.UDP
 	if err != nil {
 		return nil, err
 	}
-	if net.ParseIP(host) != nil {
+	if _, literalErr := netip.ParseAddr(host); literalErr == nil {
 		return net.ResolveUDPAddr("udp", address)
 	}
-	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	addresses, err := netresolve.LookupIP(ctx, "ip", host)
 	if err != nil {
 		return nil, err
 	}
@@ -132,12 +134,25 @@ func (DefaultPlatform) ResolveUDP(ctx context.Context, address string) (*net.UDP
 	// Match net.ResolveUDPAddr's default IPv4 preference when both families exist.
 	selected := addresses[0]
 	for _, address := range addresses {
-		if address.IP.To4() != nil {
+		if address.To4() != nil {
 			selected = address
 			break
 		}
 	}
 	return net.ResolveUDPAddr("udp", net.JoinHostPort(selected.String(), port))
+}
+
+// ResolveUDP4 is used by IPv4 NAT diagnostics so AAAA results cannot hide A records.
+func (DefaultPlatform) ResolveUDP4(ctx context.Context, address string) (*net.UDPAddr, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := netresolve.LookupIP(ctx, "ip4", host)
+	if err != nil {
+		return nil, err
+	}
+	return net.ResolveUDPAddr("udp4", net.JoinHostPort(ips[0].String(), port))
 }
 
 func (DefaultPlatform) DialUDP(ctx context.Context, address *net.UDPAddr) (*net.UDPConn, error) {

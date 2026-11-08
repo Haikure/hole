@@ -645,6 +645,12 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
     // ---- 诊断 ----
     {
         let c = controller.clone();
+        app.on_start_nat_probe(move || c.send(Command::NATProbe));
+        let c = controller.clone();
+        app.on_cancel_nat_probe(move || c.send(Command::CancelNATProbe));
+    }
+    {
+        let c = controller.clone();
         app.on_build_report(move || c.send(Command::BuildReport));
     }
     {
@@ -724,7 +730,7 @@ fn screenshot_mode(window: &MainWindow) {
 
 thread_local! { static SCREENSHOT_TIMER: std::cell::RefCell<Option<Rc<Timer>>> = const { std::cell::RefCell::new(None) }; }
 
-const SCREENSHOT_PAGES: &[&str] = &["overview", "mappings", "devices", "runtime", "voice", "diagnostics", "settings", "transport", "appearance", "behavior", "exchange"];
+const SCREENSHOT_PAGES: &[&str] = &["overview", "mappings", "devices", "runtime", "voice", "nat", "diagnostics", "settings", "transport", "appearance", "behavior", "exchange"];
 
 fn screenshot_pages(value: &str) -> Result<Vec<&'static str>, String> {
     if value.is_empty() { return Ok(SCREENSHOT_PAGES.to_vec()); }

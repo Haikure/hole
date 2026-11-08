@@ -2,6 +2,7 @@ import QtQuick 2.12
 import QtQuick.Layouts 1.12
 import "qrc:/qml/commons"
 import "components"
+import "components/NATTime.js" as NATTime
 
 Item {
     id: page
@@ -56,6 +57,7 @@ Item {
     property string saveState: ""
     property var statusLines: []
     property string statusRaw: ""
+    property var natReport: ({state: "idle", title: "检测当前网络", summary: "检查映射、过滤与端口特征，无需加入房间。", sections: []})
 
     readonly property string defaultStun: "stun:stun.cloudflare.com:3478"
     readonly property string errorText: localError.length > 0 ? localError : holePlugin.lastError
@@ -941,7 +943,7 @@ Item {
         var states = {probing: "探测中", insufficient: "信息不足", expired: "已过期", not_applicable: "IPv4 不适用"}
         var kinds = {open: "公网直连", firewall: "防火墙过滤", full_cone: "完全锥型", restricted_cone: "地址受限锥型", port_restricted_cone: "端口受限锥型", symmetric: "对称型", endpoint_independent: "端点无关映射"}
         var patterns = {stable: "映射稳定", predictable_incremental: "可预测（递增）", predictable_decremental: "可预测（递减）", incremental: "可能可预测（递增）", decremental: "可能可预测（递减）", irregular: "未观察到规律"}
-        return (states[n.status] ? states[n.status] + " · " : "") + (kinds[n.type] || "未知") + " · " + (patterns[n.predictability] || "可预测性未知") + " · " + (n.probed_at || "暂无探测时间")
+        return (states[n.status] ? states[n.status] + " · " : "") + (kinds[n.type] || "未知") + " · " + (patterns[n.predictability] || "可预测性未知") + " · " + NATTime.format(n.probed_at || "暂无探测时间")
     }
 
     function orderedPeers(peers) {
@@ -1027,6 +1029,7 @@ Item {
             statusRaw = raw
             return
         }
+        if (data && data.nat_diagnostic) natReport = data.nat_diagnostic
         statusLines = data && typeof data === "object" && !Array.isArray(data)
                       ? page.humanSnapshot(data)
                       : [{label: "快照", text: "数据格式不是对象"}]
@@ -1211,6 +1214,12 @@ Item {
                 }
             }
 
+            ActionButton {
+                Layout.fillWidth: true
+                text: "NAT 检测 · " + (page.natReport.state === "idle" ? "查看网络条件" : page.natReport.title)
+                onClicked: page.openSeparatePage("NATPage.qml", {form: page})
+            }
+
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: visible ? errorColumn.implicitHeight + 2 * Theme.cardPadding : 0
@@ -1336,7 +1345,7 @@ Item {
         id: statusPoller
         interval: 2000
         repeat: true
-        running: holePlugin.running
+        running: holePlugin.running || page.natReport.state === "queued" || page.natReport.state === "probing"
         onTriggered: holePlugin.refresh()
     }
 

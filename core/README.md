@@ -1,32 +1,15 @@
 # 共享 Go 核心
 
-`natprobe` 提供核心与 `tools/natprobe` 共用的 UDP STUN 探测、分类、端口保持和 No-PAT 特征；`internal/nat` 负责平台探测适配及 IGD / NAT-PMP；`nat_transport.go` 负责独立诊断与状态上报，`ice_port_mapping.go` 为 ICE 候选端口管理映射租约。`Network.NAT` 为本机网络结果，`PeerTransports.local_nat/peer_nat` 分别为本机/对端结果。分类与映射状态独立；仅中继及固定入口不启动 NAT 探测与自动映射。新核心源码自动进入 `scripts/build_meta.py` 的递归摘要。
-
-`relay.device` / `relay.order` 提供 Hole 设备中继配置，`relay.serve` 仅由根 CLI 显式能力
-`Options.AllowRelayServe` 开放。固定 UDP socket 由单一分流器读取；Linux 批量后端和其他
-平台数据报后端共用授权、限速、公平队列和统计。`Snapshot.Relay` 为服务端统计，
-`PeerTransports` 包含实际中继设备、公布入口与接入地址。配置及三方生命周期见
-[Hole 协议](../docs/PROTOCOL.md#hole-设备中继)。mobile、桌面与插件只消费该共享实现。
-
-`hole/core` 供 CLI 与 Android 共用，实现信令、ICE / 固定入口 QUIC、TCP / UDP 映射及可恢复应用会话。
+`hole/core` 实现信令、ICE / 固定入口 QUIC、TCP / UDP 映射及可恢复应用会话，供 CLI、Android、桌面与插件共用。
 本包不读取配置文件、不解析命令行参数，不安装进程信号处理器，也不退出宿主进程。
 
-`transport.fixed_endpoint` 在 `auto` / `ice` 配置下提供固定 UDP 监听与公布地址。
-对端无需填写连接地址；新版核心自动处理 Worker 下发的 `fixed-quic-mux-v1`，复用平台网络
-绑定、DNS、mux、会话恢复与限额。固定设备对失败只重试固定入口，不启动 ICE / TURN。
-Android / Wear 重打包新版 AAR 后具备自动拨号能力，固定入口配置界面后续接入。
-配置和部署顺序见 [固定入口直连](../docs/PROTOCOL.md#固定入口直连)。
+[宿主接入](#宿主接入) · [网络与诊断](#网络与诊断) · [平台与恢复](#平台与恢复) · [构建与测试](#构建与测试) · [项目首页](../README.md)
 
-配置中的 `voice.enabled` 默认关闭。开启后，核心只接受平台提供的 48 kHz、单声道、PCM16
-20 ms 帧（每帧 960 个采样），通过同一 room 的 voice-only ICE / QUIC 传输发送 Opus 帧。
-`PCMSource` / `PCMSink` 是内部接口；gomobile 使用 `PushVoicePCM` / `PullVoicePCM` 批量方法
-传递 PCM，不经过 JSON 事件桥，每次最多处理 4 帧。Android corebridge 通过 `AudioRecord` /
-`AudioTrack` 接入设备。语音成员、传输和媒体统计从 `Snapshot.voice` 读取，事件只作刷新提示。
-语音会话绑定具体 ICE 连接实例，旧线路退出不会解绑已替换的新线路（包括同代次重连）。
-语音与转发共用传输时，信令重连只替换数据路径，未变更的 TCP / UDP 应用会话继续恢复。
-关闭语音会取消媒体及反馈发送；发送队列拥塞时关闭旧 QUIC 路径来解除阻塞，不等待网络恢复。
-采样时间戳与发送包序号独立，静音间隔保留在播放时钟中，不计入网络丢包；码率按最近反馈区间调整。
-缺包保留最多 8 个包序号、160 ms 的乱序等待窗口，窗口内补齐不计丢包；反馈只覆盖已经确认的序号区间。
+| 宿主负责 | 核心负责 |
+| --- | --- |
+| 配置存储、界面和进程生命周期 | 严格解析、身份、重配与资源限额 |
+| 平台 Network、DNS 与 socket 绑定 | 信令、直连、中继与传输重连 |
+| 音频设备采集和播放 | Opus、混音、媒体传输与统计 |
 
 ## 宿主接入
 
@@ -61,11 +44,15 @@ func run(ctx context.Context, data []byte) error {
 | `ApplyConfig` | 停止态暂存，运行态由 supervisor 串行重配 |
 | `NetworkChanged` | 更换外部网络路径，保留符合恢复条件的应用会话 |
 | `RenominateTransports` | 对已有 ICE active 路径发起新代次；无可用路径时是幂等 no-op |
+| `StartNATProbe` / `CancelNATProbe` | 开始或取消无需房间的手动 NAT 检测，结果在独立诊断快照中 |
 | `Stop` | 取消网络活动并等待资源清理，实例可再次启动 |
 | `Close` | 最终关闭实例和事件通道 |
 
 配置应用按完整配置内容比较；相同配置幂等，变更配置由 supervisor 串行重配。
 快照复制内部对象且不包含配置凭据；事件通道有界，宿主通过快照核对最新状态。
+
+<details>
+<summary>底层日志事件与脱敏</summary>
 
 ICE / TURN 底层诊断复用 `kind=log` 事件，附带 `peer`、`phase`、`transport_generation` 和
 表示日志来源的 `stage`。Pion warning/error 使用 `state=warning/error` 与 `message`；
@@ -73,6 +60,74 @@ ICE / TURN 底层诊断复用 `kind=log` 事件，附带 `peer`、`phase`、`tra
 CLI 仅在 `-debug` 下展示这些诊断。每次尝试最多输出 64 条底层日志及一条省略提示，最终失败原因不占该额度。
 产生事件前按本次尝试的配置、动态 TURN 凭据和 ICE 凭据脱敏，再进入 Engine 的统一脱敏流程；
 不受 `PION_LOG_*` 环境变量影响，不启用 info/debug/trace 报文日志。
+
+</details>
+
+## 网络与诊断
+
+### 手动 NAT 检测
+
+`Engine.StartNATProbe` / `CancelNATProbe` 提供无需房间的手动 IPv4 NAT 检测，复用 `natprobe`。
+每实例最多一项检测；与自动 NAT 探测、预测打洞共用分配锁，排队及执行总限时 60 秒，实际采集最多 20 秒。
+结果独立保存在 `Snapshot.NATDiagnostic`，不覆盖路径选择证据；Stop / Close 取消并等待清理，
+NetworkChanged 使记录失效，完成的分类在 5 分钟后标为过期。原始字段及中文说明供各图形前端共同展示。
+共享探测使用平台的 IPv4 解析入口，避免双栈 DNS 返回顺序丢失 STUN 目标。手动结果另含逐服务的解析地址、
+基础样本、去重映射及失败原因，区分目标数、样本数和映射数；预测字段仅在对应模型成立时提供。
+
+### DNS 与直连顺序
+
+`netresolve` 提供默认网络与独立 NAT 工具共用的系统 DNS 和纯 Go 备用解析（`223.5.5.5:53`）。默认网络查询先尝试系统 DNS，系统及备用各最多 2 秒，并受调用者总时限限制；Android 绑定网络继续使用平台 DNS。信令连接沿用先尝试系统拨号、失败后备用解析的顺序。
+
+允许直连的设备对始终先尝试普通 ICE，不等待 NAT 分类，也不因对称型或证据不足跳过。双方与 Worker 协商 `direct_order: ice-first-v1` 后，ICE 失败才切换新代次进入 NAT 分类及后续打洞；成功直接使用连接，打洞耗尽再进入中继。后台 NAT 探测及展示独立运行。旧 Worker 或混合能力设备对保留普通 ICE，失败后进入中继。
+
+<details>
+<summary>NAT 实现文件与快照字段</summary>
+
+| 文件 / 包 | 职责 |
+| --- | --- |
+| `natprobe` | 与独立工具共用 UDP STUN 探测、分类、端口保持及 No-PAT 特征 |
+| `internal/nat` | 平台探测适配、IGD / NAT-PMP |
+| `nat_transport.go` | 最多三次完整分类探测与状态上报 |
+| `nat_punch*.go` | NAT 分组、有限端口预测与认证 UDP 探测 |
+| `ice_check_pacing.go` | 锥形 ICE 的实际请求间隔 |
+| `ice_port_mapping.go` | ICE 候选端口的映射租约 |
+
+所有成功路径复用同一个设备对 mux。`Network.NAT` 为本机网络结果，`PeerTransports.local_nat/peer_nat` 分别为本机/对端结果。
+分类与映射状态独立；仅中继及固定入口不启动 NAT 探测与自动映射。新核心源码自动进入 `scripts/build_meta.py` 的递归摘要。
+
+</details>
+
+### 固定入口与设备中继
+
+`relay.device` / `relay.order` 提供 Hole 设备中继配置，`relay.serve` 仅由根 CLI 显式能力
+`Options.AllowRelayServe` 开放。固定 UDP socket 由单一分流器读取；Linux 批量后端和其他
+平台数据报后端共用授权、限速、公平队列和统计。`Snapshot.Relay` 为服务端统计，
+`PeerTransports` 包含实际中继设备、公布入口与接入地址。配置及三方生命周期见
+[Hole 协议](../docs/PROTOCOL.md#hole-设备中继)。mobile、桌面与插件只消费该共享实现。
+
+`transport.fixed_endpoint` 在 `auto` / `ice` 配置下提供固定 UDP 监听与公布地址。
+对端无需填写连接地址；新版核心自动处理 Worker 下发的 `fixed-quic-mux-v1`，复用平台网络
+绑定、DNS、mux、会话恢复与限额。固定设备对失败只重试固定入口，不启动 ICE / TURN。
+Android / Wear 重打包新版 AAR 后具备自动拨号能力，固定入口配置界面后续接入。
+配置和部署顺序见 [固定入口直连](../docs/PROTOCOL.md#固定入口直连)。
+
+### 语音
+
+<details>
+<summary>PCM 接入、连接生命周期与反馈</summary>
+
+配置中的 `voice.enabled` 默认关闭。开启后，核心只接受平台提供的 48 kHz、单声道、PCM16
+20 ms 帧（每帧 960 个采样），通过同一 room 的 voice-only ICE / QUIC 传输发送 Opus 帧。
+`PCMSource` / `PCMSink` 是内部接口；gomobile 使用 `PushVoicePCM` / `PullVoicePCM` 批量方法
+传递 PCM，不经过 JSON 事件桥，每次最多处理 4 帧。Android corebridge 通过 `AudioRecord` /
+`AudioTrack` 接入设备。语音成员、传输和媒体统计从 `Snapshot.voice` 读取，事件只作刷新提示。
+语音会话绑定具体 ICE 连接实例，旧线路退出不会解绑已替换的新线路（包括同代次重连）。
+语音与转发共用传输时，信令重连只替换数据路径，未变更的 TCP / UDP 应用会话继续恢复。
+关闭语音会取消媒体及反馈发送；发送队列拥塞时关闭旧 QUIC 路径来解除阻塞，不等待网络恢复。
+采样时间戳与发送包序号独立，静音间隔保留在播放时钟中，不计入网络丢包；码率按最近反馈区间调整。
+缺包保留最多 8 个包序号、160 ms 的乱序等待窗口，窗口内补齐不计丢包；反馈只覆盖已经确认的序号区间。
+
+</details>
 
 ## 平台与恢复
 

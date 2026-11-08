@@ -6,6 +6,10 @@ export struct KV {
     value: string,
 }
 
+export struct NATField { label: string, value: string, detail: string }
+export struct NATSection { title: string, fields: [NATField] }
+export struct NATTile { icon: string, label: string, value: string }
+
 export struct Status {
     bridge-ready: bool,
     bridge-error: string,

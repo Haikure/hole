@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.MutableTransitionState
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
@@ -81,5 +80,5 @@ fun RaisedPanel(modifier: Modifier = Modifier, color: Color = MaterialTheme.colo
     Column(modifier.dropShadow(shape, Shadow(radius = 10.dp, color = Color(0xFF071B3C).copy(alpha = if (dark) .28f else .08f), offset = DpOffset(0.dp, 4.dp)))
         .clip(shape).background(Brush.linearGradient(listOf(
             if (dark) lerp(color, Color.White, .045f) else lerp(color, Color.White, .70f), color,
-        ))).border(.8.dp, Brush.linearGradient(listOf(Color.White.copy(alpha = if (dark) .16f else .95f), Color.Transparent)), shape), content = content)
+        ))), content = content)
 }

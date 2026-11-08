@@ -21,8 +21,10 @@ type iceSignalSink struct {
 	messages chan iceSignalMessage
 }
 type iceCoordinator struct {
+	natAllocation            *natAllocationGate
 	natMu                    sync.Mutex
 	natSnapshot              NATSnapshot
+	natCancel                context.CancelFunc
 	ctx                      context.Context
 	cancel                   context.CancelFunc
 	platform                 Platform
@@ -73,6 +75,7 @@ func newICECoordinator(ctx context.Context, r Request, platform Platform, sessio
 	}
 	c.networkEpoch.Store(epoch)
 	c.natSnapshot = natUnknown()
+	c.natAllocation = &natAllocationGate{}
 	return c
 }
 func (c *iceCoordinator) request() Request {
@@ -122,6 +125,12 @@ func (c *iceCoordinator) submit(r Request) {
 	}
 	if !reflect.DeepEqual(old.Config.ICE, r.Config.ICE) || !reflect.DeepEqual(old.Config.TURN, r.Config.TURN) || !reflect.DeepEqual(old.Config.Transport, r.Config.Transport) || !reflect.DeepEqual(old.Config.Relay, r.Config.Relay) {
 		c.networkEpoch.Add(1)
+		c.natMu.Lock()
+		if c.natCancel != nil {
+			c.natCancel()
+		}
+		c.natSnapshot = natUnknown()
+		c.natMu.Unlock()
 		c.turnMu.Lock()
 		c.turnServers = nil
 		c.turnLast = time.Time{}
@@ -142,6 +151,9 @@ func (c *iceCoordinator) submit(r Request) {
 func (c *iceCoordinator) networkChanged() {
 	c.networkEpoch.Add(1)
 	c.natMu.Lock()
+	if c.natCancel != nil {
+		c.natCancel()
+	}
 	c.natSnapshot = natUnknown()
 	c.natMu.Unlock()
 	select {
@@ -321,6 +333,9 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS,
 		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll, RelayOnly: r.Config.ICE.RelayOnly}
 	join.Voice = r.Config.Voice.Enabled
+	join.PunchVersion = natPunchVersion
+	join.DirectOrder = directOrderICEFirst
+	join.PunchSchedule = natPunchSchedule
 	join.HoleVersion = HoleRelayVersion
 	join.HoleDevice = r.Config.Relay.Device
 	// Keep the legacy relay-disabled wire contract unless Hole is requested.
@@ -487,6 +502,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			if m.RelayPairing != "" && m.RelayPairing != relayPairingAll {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不支持的中继配对策略"}
 			}
+			if m.DirectOrder != "" && (m.DirectOrder != directOrderICEFirst || m.PunchVersion != natPunchVersion || (m.DirectStage != "ice" && m.DirectStage != "punch") || m.RelayRequired) {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了无效的直连尝试顺序"}
+			}
 			if m.RelayPolicy != "" && m.RelayPolicy != RelayPolicyUDPTCPTLS {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不受支持的中继策略"}
 			}
@@ -573,7 +591,7 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if m.Profile != ProfileFixed {
 			c.requestTURN()
 		}
-	case "ice_description", "ice_candidate", "nat_status":
+	case "ice_description", "ice_candidate", "nat_status", "nat_punch":
 		c.mu.Lock()
 		p := c.peers[m.TransportID]
 		c.mu.Unlock()

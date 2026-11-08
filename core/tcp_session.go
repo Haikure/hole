@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go"
+	"github.com/apernet/quic-go"
 )
 
 // tcpSession outlives its QUIC streams. Bytes read from the application remain

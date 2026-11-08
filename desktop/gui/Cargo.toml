@@ -26,6 +26,7 @@ slint = { version = "1.18", default-features = false, features = [
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = { version = "6" }
 arboard = { version = "3", default-features = false }

@@ -6,7 +6,7 @@ import (
 	"net"
 	"syscall"
 
-	"github.com/quic-go/quic-go"
+	"github.com/apernet/quic-go"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/sys/unix"
 )

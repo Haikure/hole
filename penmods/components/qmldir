@@ -7,6 +7,8 @@ ConnectionModeRow 1.0 ConnectionModeRow.qml
 Field 1.0 Field.qml
 MappingCard 1.0 MappingCard.qml
 MappingSection 1.0 MappingSection.qml
+NATPanel 1.0 NATPanel.qml
+NATIcon 1.0 NATIcon.qml
 Section 1.0 Section.qml
 SwitchRow 1.0 SwitchRow.qml
 TurnOrderBoard 1.0 TurnOrderBoard.qml

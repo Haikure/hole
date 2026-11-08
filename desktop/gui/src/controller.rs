@@ -181,6 +181,8 @@ pub struct PendingImport {
 }
 
 pub enum Command {
+    NATProbe,
+    CancelNATProbe,
     Start,
     Stop,
     Reconnect,
@@ -331,7 +333,8 @@ impl Worker {
 
     fn run(mut self, _wake_tx: Sender<Inbound>) {
         loop {
-            let timeout = if self.snapshot.run_requested && self.client.is_some() {
+            let diagnostic = self.snapshot.nat_diagnostic["state"].as_str().is_some_and(|s| s != "idle");
+            let timeout = if (self.snapshot.run_requested || diagnostic) && self.client.is_some() {
                 if self.snapshot.voice.enabled { Duration::from_millis(500) }
                 else if self.visible { FOREGROUND_INTERVAL } else { BACKGROUND_INTERVAL }
             } else {
@@ -353,7 +356,7 @@ impl Worker {
                 }
                 Ok(command) => self.handle_command(command),
                 Err(RecvTimeoutError::Timeout) => {
-                    if self.snapshot.run_requested {
+                    if self.snapshot.run_requested || diagnostic {
                         self.read_snapshot();
                         self.push_ui();
                     }
@@ -474,6 +477,22 @@ impl Worker {
 
     fn handle_command(&mut self, command: Command) {
         match command {
+            Command::NATProbe | Command::CancelNATProbe => {
+                let start = matches!(command, Command::NATProbe);
+                let options = if start {
+                    let shared = self.shared.lock().unwrap();
+                    let ice = &shared.config.connection.ice;
+                    Some(serde_json::json!({"stun_urls": ice.stun_urls, "nat_stun_urls": ice.nat_stun_urls, "interface_allowlist": ice.interface_allowlist}))
+                } else { None };
+                if let Some(client) = &self.client {
+                    match client.call(if start { "start_nat_probe" } else { "cancel_nat_probe" }, options) {
+                        Ok(_) => self.command_error.clear(),
+                        Err(e) => self.command_error = format!("NAT 检测失败：{e}"),
+                    }
+                }
+                self.read_snapshot();
+                self.push_ui();
+            }
             Command::Start => {
                 self.set_busy(true);
                 match self.start() {
@@ -791,6 +810,7 @@ impl Worker {
     }
 
     fn push_ui(&mut self) {
+        let nat = self.snapshot.nat_diagnostic.clone();
         let status = self.build_status();
         let (provides, consumes, runtime) = self.build_mappings();
         let peers = self.build_peers();
@@ -803,6 +823,32 @@ impl Worker {
         let voice_peers = self.snapshot.voice.peers.clone();
         let _ = self.window.upgrade_in_event_loop(move |w| {
             let app = w.global::<App>();
+            app.set_nat_state(nat["state"].as_str().unwrap_or("idle").into());
+            app.set_nat_tone(nat["tone"].as_str().unwrap_or("neutral").into());
+            app.set_nat_badge(nat["badge"].as_str().unwrap_or("待检测").into());
+            let highlights = nat["highlights"].as_array().map(|tiles| tiles.iter().map(|tile| crate::NATTile {
+                icon: tile["icon"].as_str().unwrap_or_default().into(),
+                label: tile["label"].as_str().unwrap_or_default().into(),
+                value: tile["value"].as_str().unwrap_or_default().into(),
+            }).collect::<Vec<_>>()).unwrap_or_default();
+            app.set_nat_highlights(ModelRc::new(VecModel::from(highlights)));
+            app.set_nat_title(nat["title"].as_str().unwrap_or("检测当前网络").into());
+            app.set_nat_summary(nat["summary"].as_str().unwrap_or("检查 IPv4 NAT 的映射、过滤与端口特征。无需加入房间。").into());
+            let mut report = format!("NAT 检测\n{}\n{}\n", app.get_nat_title(), app.get_nat_summary());
+            let sections = nat["sections"].as_array().map(|sections| sections.iter().map(|section| {
+                let title = section["title"].as_str().unwrap_or_default();
+                report.push_str(&format!("\n{title}\n"));
+                let fields = section["fields"].as_array().map(|fields| fields.iter().map(|field| {
+                    let label = field["label"].as_str().unwrap_or_default();
+                    let value = snap::nat_time(field["value"].as_str().unwrap_or_default());
+                    let detail = field["detail"].as_str().unwrap_or_default();
+                    report.push_str(&format!("{label}：{value}\n{detail}\n"));
+                    crate::NATField { label: label.into(), value: value.into(), detail: detail.into() }
+                }).collect::<Vec<_>>()).unwrap_or_default();
+                crate::NATSection { title: title.into(), fields: ModelRc::new(VecModel::from(fields)) }
+            }).collect::<Vec<_>>()).unwrap_or_default();
+            app.set_nat_sections(ModelRc::new(VecModel::from(sections)));
+            app.set_nat_report(report.into());
             app.set_status(status);
             app.set_voice(voice);
             app.set_voice_members(ModelRc::new(VecModel::from(members)));

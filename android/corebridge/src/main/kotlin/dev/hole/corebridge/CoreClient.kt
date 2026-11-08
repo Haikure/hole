@@ -36,6 +36,8 @@ class CoreClient(context: Context) : CoreController {
     }
     @Volatile private var voiceAudio: VoiceAudio? = null
 
+    init { network.startMonitoring { pendingNetworks.trySend(it) } }
+
     override val snapshots = sampler.snapshots {
         val snapshot = CoreSnapshot.fromJson(engine.snapshotJSON())
         voiceAudio?.let { snapshot.copy(voice = it.snapshot(snapshot.voice)) } ?: snapshot
@@ -58,7 +60,7 @@ class CoreClient(context: Context) : CoreController {
 
     override suspend fun stop(): Unit = lifecycle.withLock {
         withContext(Dispatchers.IO) {
-            try { voiceAudio?.close(); voiceAudio = null; network.close(); engine.stop() } finally { sampler.wake() }
+            try { voiceAudio?.close(); voiceAudio = null; engine.stop() } finally { sampler.wake() }
         }
     }
 
@@ -72,6 +74,14 @@ class CoreClient(context: Context) : CoreController {
 
     override suspend fun renominateTransports(): Unit = lifecycle.withLock {
         withContext(Dispatchers.IO) { try { engine.renominateTransports() } finally { sampler.wake() } }
+    }
+
+    override suspend fun startNATProbe(optionsJSON: String): Unit = lifecycle.withLock {
+        withContext(Dispatchers.IO) { try { engine.startNATProbe(optionsJSON) } finally { sampler.wake() } }
+    }
+
+    override suspend fun cancelNATProbe(): Unit = lifecycle.withLock {
+        withContext(Dispatchers.IO) { try { engine.cancelNATProbe() } finally { sampler.wake() } }
     }
 
     override suspend fun startVoiceAudio(requestJSON: String, microphoneSource: String): Unit = lifecycle.withLock {

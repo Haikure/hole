@@ -32,6 +32,10 @@ type Snapshot struct {
 	FilteringBehavior string `json:"filtering_behavior"`
 	FilteringServer   string `json:"filtering_server,omitempty"`
 	Predictability    string `json:"predictability"`
+	PortStep          int    `json:"port_step,omitempty"`
+	PublicIP          string `json:"public_ip,omitempty"`
+	LastMappingPort   int    `json:"last_mapping_port,omitempty"`
+	AllocationScope   string `json:"allocation_scope,omitempty"`
 	PortPreservation  string `json:"port_preservation"`
 	NoPAT             string `json:"no_pat"`
 	Samples           int    `json:"samples"`
@@ -69,6 +73,12 @@ func ProbeWithListener(ctx context.Context, servers []*net.UDPAddr, listen func(
 // ProbeSocket leaves the caller's socket open with its deadlines cleared.
 // listen must use the same network as pc; localEndpoint is the selected local IPv4 endpoint.
 func ProbeSocket(ctx context.Context, pc net.PacketConn, servers []*net.UDPAddr, listen func(string, string) (net.PacketConn, error), localEndpoint netip.AddrPort) (string, Snapshot, []netip.AddrPort) {
+	return ProbeSocketObserved(ctx, pc, servers, listen, localEndpoint, nil)
+}
+
+// ProbeSocketObserved reports each base mapping response/error synchronously.
+// Extra sockets validate the model and are deliberately excluded from base counts.
+func ProbeSocketObserved(ctx context.Context, pc net.PacketConn, servers []*net.UDPAddr, listen func(string, string) (net.PacketConn, error), localEndpoint netip.AddrPort, observe func(netip.AddrPort, Sample, error)) (string, Snapshot, []netip.AddrPort) {
 	localText := pc.LocalAddr().String()
 	if localEndpoint.IsValid() {
 		localText = localEndpoint.String()
@@ -83,6 +93,9 @@ func ProbeSocket(ctx context.Context, pc net.PacketConn, servers []*net.UDPAddr,
 		}
 		for round := 0; round < probeRounds && ctx.Err() == nil; round++ {
 			value, err := pacedBinding(ctx, pc, server, 0, &lastRequest)
+			if observe != nil {
+				observe(addrPort(server), value, err)
+			}
 			if err != nil {
 				break
 			}
@@ -95,13 +108,13 @@ func ProbeSocket(ctx context.Context, pc net.PacketConn, servers []*net.UDPAddr,
 	if ctx.Err() == nil && mappingVaries(samples) && len(servers) > 1 {
 		fresh, err := listen("udp4", "0.0.0.0:0")
 		if err == nil {
+			defer fresh.Close()
 			// Verify against a responding destination; the first configured
 			// server may have failed while later servers supplied the trend.
 			server := net.UDPAddrFromAddrPort(samples[0].Server)
 			if value, e := pacedBinding(ctx, fresh, server, 0, &lastRequest); e == nil {
 				extra = &value
 			}
-			_ = fresh.Close()
 		}
 	}
 
@@ -123,6 +136,38 @@ func ProbeSocket(ctx context.Context, pc net.PacketConn, servers []*net.UDPAddr,
 	}
 
 	result := Classify(localEndpoint, samples, extra, filteringBehavior, filteringReason)
+	// Validate on additional, held-out sockets and different destinations.
+	// Keep their local ports reserved until discovery finishes.
+	if result.AllocationScope == "cross_socket" {
+		var held []net.PacketConn
+		defer func() {
+			for _, conn := range held {
+				_ = conn.Close()
+			}
+		}()
+		for i := 0; i < 3; i++ {
+			fresh, err := listen("udp4", "0.0.0.0:0")
+			if err != nil {
+				result.AllocationScope = "same_socket"
+				break
+			}
+			held = append(held, fresh)
+			server := net.UDPAddrFromAddrPort(samples[(i+1)*probeRounds%len(samples)].Server)
+			value, err := pacedBinding(ctx, fresh, server, 0, &lastRequest)
+			if err != nil || !advanceModel(&result, value) {
+				result.AllocationScope = "same_socket"
+				break
+			}
+			reused, err := pacedBinding(ctx, fresh, server, 0, &lastRequest)
+			if err != nil || reused.Mapped != value.Mapped {
+				result.AllocationScope = "unknown"
+				break
+			}
+		}
+		if result.AllocationScope != "cross_socket" {
+			result.Reason += "；额外跨 socket 验证未通过，禁用固定目标多 socket 阶段"
+		}
+	}
 	result.FilteringServer = filteringServer
 	if ctx.Err() != nil && result.Status == "insufficient" {
 		result.Reason = "探测总时限已到"
@@ -502,6 +547,7 @@ func Classify(local netip.AddrPort, samples []Sample, extra *Sample, filteringBe
 	}
 	result.Type = "symmetric"
 	result.MappingBehavior = "endpoint_dependent"
+	allocationModel(&result, samples, extra)
 	result.Predictability = "irregular"
 	result.Reason = "不同 STUN 目标得到不同公网映射，跨 socket 样本未能确认可预测的端口趋势"
 	if filteringReason != "" {

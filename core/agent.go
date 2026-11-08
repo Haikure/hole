@@ -21,8 +21,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/apernet/quic-go"
 	"github.com/gorilla/websocket"
-	"github.com/quic-go/quic-go"
+	"hole/core/netresolve"
 )
 
 type Candidate struct {
@@ -496,12 +497,7 @@ func dialWithFallback(ctx context.Context, network, address string) (net.Conn, e
 	if splitErr != nil {
 		return nil, err
 	}
-	fallbackResolver := &net.Resolver{
-		PreferGo: true,
-		Dial: func(resolveCtx context.Context, _, _ string) (net.Conn, error) {
-			return dialer.DialContext(resolveCtx, "udp", "223.5.5.5:53")
-		},
-	}
+	fallbackResolver := netresolve.NewFallbackResolver()
 	ips, lookupErr := fallbackResolver.LookupIP(ctx, "ip", host)
 	if lookupErr != nil {
 		return nil, fmt.Errorf("系统 DNS 失败（%v），备用 DNS 也失败：%w", err, lookupErr)
@@ -894,6 +890,7 @@ func (a *Agent) dialAny(ctx context.Context, targets []*net.UDPAddr, t tunnel, t
 		_ = extra.conn.CloseWithError(0, "duplicate path")
 	}
 	a.logf("✅ 映射 %s QUIC 连接已建立：%s", t.id, winner.addr)
+	useBBR(winner.conn)
 	a.emit(Event{Kind: "mapping", MappingID: t.id, State: "active", Peer: t.peer, Path: winner.addr.String()})
 	return winner.conn
 }
@@ -1025,6 +1022,7 @@ func (a *Agent) acceptProvider(ctx context.Context, listener *quic.Listener) {
 }
 
 func (a *Agent) handleProvider(ctx context.Context, conn *quic.Conn) {
+	useBBR(conn)
 	a.logf("已接受来自 %s 的 QUIC 连接", conn.RemoteAddr())
 	for {
 		stream, err := conn.AcceptStream(ctx)

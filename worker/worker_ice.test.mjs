@@ -6,6 +6,151 @@ import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_POLICY, n
 import {HOLE_VERSION,deviceRelayPlan} from './worker_ice.mjs';
 
 const holeCaps={hole_version:HOLE_VERSION,relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1',relay_order:[],relay_enabled:false};
+test('ICE first switches generation before NAT punching and preserves its retry budget',async()=>{
+ for(const rounds of [false,true]) {
+  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+  const caps={punch_version:'nat-punch-v1',direct_order:'ice-first-v1',...(rounds?{relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'}:{})};
+  await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+  await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+  let record=[...r.ice.records.values()][0];
+  assert.equal(a.messages.filter(m=>m.type==='transport_ready').at(-1).direct_stage,'ice');
+  const punch={type:'nat_punch',transport_id:record.id,transport_generation:record.generation,to_peer_id:'beta',punch:{kind:'abort'}};
+  await r.webSocketMessage(a,JSON.stringify(punch));
+  assert.equal(b.messages.filter(m=>m.type==='nat_punch').length,0);
+  const restart={type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'relay_udp',...(rounds?{relay_round:1}:{}),reason:'ice_failed'};
+  await r.webSocketMessage(a,JSON.stringify(restart));
+  await r.webSocketMessage(b,JSON.stringify(restart));
+  assert.equal(record.generation,'2');
+  assert.equal(record.direct_stage,'punch');
+  assert.equal(record.direct_failures,0);
+  assert.equal(record.retry_after_ms,0);
+  await r.webSocketMessage(a,JSON.stringify(punch));
+  assert.equal(b.messages.filter(m=>m.type==='nat_punch').length,0);
+  await r.webSocketMessage(a,JSON.stringify({...punch,transport_generation:record.generation}));
+  assert.equal(b.messages.filter(m=>m.type==='nat_punch').length,1);
+  const resumed=new Room(f.state,{});
+  await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));
+  record=[...resumed.ice.records.values()][0];
+  assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).direct_stage,'punch');
+  for(let attempt=1;attempt<=3;attempt++) {
+   const failed={...restart,expected_generation:record.generation,reason:'path_failed'};
+   await resumed.webSocketMessage(a,JSON.stringify(failed));
+   await resumed.webSocketMessage(b,JSON.stringify(failed));
+   const ready=a.messages.filter(m=>m.type==='transport_ready').at(-1);
+   assert.equal(ready.phase,attempt<3?'direct':'relay_udp');
+   assert.equal(ready.direct_stage,attempt<3?'punch':'ice');
+  }
+  await resumed.webSocketMessage(a,JSON.stringify({...restart,expected_generation:record.generation,phase:'direct',...(rounds?{relay_round:0}:{}),reason:'retry'}));
+  assert.equal(record.direct_stage,'ice');
+  assert.equal(record.direct_failures,0);
+ }
+});
+test('ICE first falls back directly to relay after unsupported NAT and disables mixed ordering',async()=>{
+ for(const compatible of [false,true]) {
+  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+  const caps={punch_version:'nat-punch-v1',relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};
+  await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps,direct_order:'ice-first-v1'}));
+  await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps,...(compatible?{direct_order:'ice-first-v1'}:{})}));
+  const record=[...r.ice.records.values()][0];
+  assert.equal(!!record.punch_version,compatible);
+  assert.equal(!!record.direct_order,compatible);
+  const restart={type:'transport_restart',transport_id:record.id,relay_round:1};
+  if(compatible) {
+   await r.webSocketMessage(a,JSON.stringify({...restart,expected_generation:record.generation,reason:'ice_failed'}));
+   assert.equal(record.round,0);
+   assert.equal(record.direct_stage,'punch');
+  }
+  await r.webSocketMessage(a,JSON.stringify({...restart,expected_generation:record.generation,reason:compatible?'direct_exhausted':'path_failed'}));
+  assert.equal(record.round,1);
+ }
+ assert.equal(iceJoinFields({...join('alpha',['one']),punch_version:'nat-punch-v1',direct_order:'invalid'}),null);
+});
+test('ordered punch reservations require negotiated capability and preserve model rounds on replay',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket();let b=f.socket();
+ const caps={punch_version:'nat-punch-v1',punch_schedule:'ordered-v1',relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps,punch_schedule:undefined}));
+ let record=[...r.ice.records.values()][0];
+ const sendPunch=(ws,to,punch,generation=record.generation)=>r.webSocketMessage(ws,JSON.stringify({type:'nat_punch',transport_id:record.id,transport_generation:generation,to_peer_id:to,punch}));
+ const punches=ws=>ws.messages.filter(m=>m.type==='nat_punch');
+ assert.equal(record.punch_schedule,'');
+ await sendPunch(a,'beta',{kind:'reserve'}); assert.equal(punches(b).length,0);
+ const previous=record.generation;
+ b=f.socket();
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+ record=[...r.ice.records.values()][0];
+ assert.notEqual(record.generation,previous);
+ assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).punch_schedule,'ordered-v1');
+ const model={kind:'model',round:1,snapshot:{status:'complete',type:'symmetric',mapping_behavior:'endpoint_dependent',predictability:'incremental',samples:9,port_step:1,public_ip:'198.51.100.1',last_mapping_port:40000,allocation_scope:'cross_socket'}};
+ await sendPunch(a,'beta',model); assert.equal(punches(b).length,0);
+ await sendPunch(b,'alpha',{kind:'reserve'}); assert.equal(punches(a).length,0);
+ await sendPunch(b,'alpha',{kind:'reserved'}); assert.equal(punches(a).length,0);
+ await sendPunch(a,'beta',{kind:'reserve'},previous); assert.equal(punches(b).length,0);
+ await sendPunch(a,'beta',{kind:'reserve'}); assert.equal(punches(b).length,1);
+ await sendPunch(b,'alpha',{kind:'reserved'}); assert.equal(punches(a).length,1);
+ await sendPunch(a,'beta',{...model,snapshot:{...model.snapshot,port_step:-1}}); assert.equal(punches(b).length,1);
+ for(let round=1;round<=3;round++) {
+  await sendPunch(a,'beta',{...model,round});
+  await sendPunch(a,'beta',{kind:'ready',round,mode:'fixed',plan:{ip:'198.51.100.1',port:40000,target:40016,width:1,sockets:32}});
+  await sendPunch(b,'alpha',{kind:'ready',round,mode:'fixed',plan:{ip:'198.51.100.2',port:50000,target:50016,width:1,sockets:32}});
+  await sendPunch(a,'beta',{kind:'go',round});
+  await sendPunch(a,'beta',{kind:'failed',round});
+ }
+ assert.equal(punches(b).length,13);
+ const resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));
+ assert.equal(punches(b).length,26);
+ assert.deepEqual(punches(b).slice(13).map(m=>m.punch),punches(b).slice(0,13).map(m=>m.punch));
+});
+test('NAT punching negotiates capabilities, gates GO and rejects stale rounds and policies',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const caps={punch_version:'nat-punch-v1',relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+ const record=[...r.ice.records.values()][0];
+ assert.equal(a.messages.filter(m=>m.type==='transport_ready').at(-1).punch_version,'nat-punch-v1');
+ const sendPunch=(ws,to,punch,generation=record.generation)=>r.webSocketMessage(ws,JSON.stringify({type:'nat_punch',transport_id:record.id,transport_generation:generation,to_peer_id:to,punch}));
+ const count=()=>b.messages.filter(m=>m.type==='nat_punch').length;
+ await sendPunch(a,'beta',{kind:'go',round:1}); assert.equal(count(),0);
+ const ready={kind:'ready',round:1,mode:'fixed',plan:{ip:'198.51.100.1',port:40000,target:40016,width:1,sockets:32}};
+ await sendPunch(a,'beta',{...ready,round:4}); assert.equal(count(),0);
+ await sendPunch(a,'beta',{...ready,plan:{...ready.plan,target:65536}}); assert.equal(count(),0);
+ await sendPunch(a,'beta',ready,'0'); assert.equal(count(),0);
+ const lease=record.lease_until;record.lease_until=0;
+ await sendPunch(a,'beta',ready);assert.equal(count(),0);record.lease_until=lease;
+ await sendPunch(a,'beta',ready);assert.equal(count(),1);
+ await sendPunch(b,'alpha',ready);
+ await sendPunch(a,'beta',{kind:'go',round:1});assert.equal(count(),2);
+ await sendPunch(a,'beta',{kind:'go',round:1});assert.equal(count(),2);
+ const resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));assert.equal(count(),4);
+});
+test('NAT punching retries direct three times then enters relay without double-counting both peers',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const caps={punch_version:'nat-punch-v1',relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+ const record=[...r.ice.records.values()][0];
+ for(let attempt=1;attempt<=3;attempt++) {
+  const expected=record.generation;
+  const restart={type:'transport_restart',transport_id:record.id,expected_generation:expected,relay_round:1,reason:'path_failed'};
+  await r.webSocketMessage(a,JSON.stringify(restart));await r.webSocketMessage(b,JSON.stringify(restart));
+  assert.equal(BigInt(record.generation),BigInt(expected)+1n);
+  assert.equal(record.round,attempt<3?0:1);
+ }
+});
+test('prediction exhausted skips another direct retry and older peers keep ordinary ICE',async()=>{
+ for(const enabled of [true,false]) {
+  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+  const caps={relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};
+  await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps,punch_version:'nat-punch-v1'}));
+  await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps,...(enabled?{punch_version:'nat-punch-v1'}:{})}));
+  const record=[...r.ice.records.values()][0];
+  assert.equal(!!record.punch_version,enabled);
+  await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,relay_round:1,reason:'direct_exhausted'}));
+  assert.equal(record.round,1);
+ }
+});
 test('NAT status survives relay fallback and validates lease, runtime, epoch and policy',async()=>{
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
  const caps={relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};

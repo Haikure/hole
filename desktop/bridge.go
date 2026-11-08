@@ -307,6 +307,36 @@ func (h *host) dispatch(r request) (any, *rpcError, bool) {
 	accepted := struct {
 		Accepted bool `json:"accepted"`
 	}{true}
+	if r.Method == "start_nat_probe" || r.Method == "cancel_nat_probe" {
+		probe, ok := h.engine.(interface {
+			StartNATProbe(core.NATProbeOptions) error
+			CancelNATProbe() error
+		})
+		if !ok {
+			return nil, rpcFault(methodNotFound, "method_not_found", "核心不支持 NAT 检测"), false
+		}
+		var err error
+		if r.Method == "start_nat_probe" {
+			params := r.Params
+			if noParams(params) {
+				params = []byte("{}")
+			}
+			options, parseErr := core.ParseNATProbeOptions(params)
+			if parseErr != nil {
+				return nil, rpcFault(invalidParams, "invalid_params", parseErr.Error()), false
+			}
+			err = probe.StartNATProbe(options)
+		} else {
+			if !noParams(r.Params) {
+				return nil, rpcFault(invalidParams, "invalid_params", "取消检测不接受参数"), false
+			}
+			err = probe.CancelNATProbe()
+		}
+		if err != nil {
+			return nil, operationFault(err), false
+		}
+		return accepted, nil, false
+	}
 	if r.Method == "set_voice_audio" || r.Method == "set_voice_muted" {
 		return h.voiceControl(r.Method, r.Params)
 	}
@@ -351,7 +381,7 @@ func (h *host) dispatch(r request) (any, *rpcError, bool) {
 	case "hello":
 		return helloResult{
 			BridgeVersion: ProtocolVersion, APIVersion: core.APIVersion, CoreVersion: core.CoreVersion,
-			Methods: []string{"hello", "validate", "start", "apply_config", "stop", "snapshot", "network_changed", "renominate_transports", "decode_cli_config", "encode_cli_config", "set_voice_audio", "set_voice_muted", "shutdown"},
+			Methods: []string{"hello", "validate", "start", "apply_config", "stop", "snapshot", "network_changed", "renominate_transports", "start_nat_probe", "cancel_nat_probe", "decode_cli_config", "encode_cli_config", "set_voice_audio", "set_voice_muted", "shutdown"},
 			Limits:  protocolLimits{MaxRequestBytes, MaxConfigBytes, MaxOutputBytes, eventCapacity, responseCapacity, int(writeTimeout / time.Millisecond)},
 		}, nil, false
 	case "snapshot":

@@ -22,15 +22,16 @@ type EventSink interface {
 }
 
 type Engine struct {
-	operations      sync.Mutex
-	callbacks       sync.Mutex
-	engine          *core.Engine
-	sink            EventSink
-	enabled         bool
-	generation      uint64
-	pumpDone        chan struct{}
-	network         *networkPlatform
-	networkSequence uint64
+	operations         sync.Mutex
+	callbacks          sync.Mutex
+	engine             *core.Engine
+	sink               EventSink
+	enabled            bool
+	diagnosticsEnabled bool
+	generation         uint64
+	pumpDone           chan struct{}
+	network            *networkPlatform
+	networkSequence    uint64
 }
 
 func Version() int { return core.APIVersion }
@@ -57,7 +58,7 @@ func (e *Engine) pump() {
 			continue
 		}
 		e.callbacks.Lock()
-		if e.enabled && e.sink != nil && event.Generation == e.generation {
+		if e.sink != nil && (e.enabled && event.Generation == e.generation || e.diagnosticsEnabled && event.Kind == "nat_diagnostic") {
 			e.sink.OnEvent(string(data))
 		}
 		e.callbacks.Unlock()
@@ -88,6 +89,7 @@ func (e *Engine) Stop() error {
 	defer e.operations.Unlock()
 	e.callbacks.Lock()
 	e.enabled = false
+	e.diagnosticsEnabled = false
 	e.callbacks.Unlock()
 	return bridgeError(e.engine.Stop())
 }
@@ -151,6 +153,28 @@ func (e *Engine) RenominateTransports() error {
 	e.operations.Lock()
 	defer e.operations.Unlock()
 	return bridgeError(e.engine.RenominateTransports())
+}
+
+func (e *Engine) StartNATProbe(optionsJSON string) error {
+	options, err := core.ParseNATProbeOptions([]byte(optionsJSON))
+	if err != nil {
+		return bridgeError(err)
+	}
+	e.operations.Lock()
+	defer e.operations.Unlock()
+	e.callbacks.Lock()
+	defer e.callbacks.Unlock()
+	if err := e.engine.StartNATProbe(options); err != nil {
+		return bridgeError(err)
+	}
+	e.diagnosticsEnabled = true
+	return nil
+}
+
+func (e *Engine) CancelNATProbe() error {
+	e.operations.Lock()
+	defer e.operations.Unlock()
+	return bridgeError(e.engine.CancelNATProbe())
 }
 
 // VoicePCMFrameSamples is the number of mono PCM16 samples in one 20 ms

@@ -276,6 +276,10 @@ private fun AppRoot(
       pageState.SaveableStateProvider(page) {
        when {
         page == "settings" -> SettingsHub(::navigate)
+        page == "nat-detection" -> dev.hole.app.ui.NATDetectionScreen(
+            snapshot.natDiagnostic, snapshot.nativeReady && configState.loaded, commandError,
+            model::startNATProbe, model::cancelNATProbe, { goBack() }, { navigate("transport") },
+        )
         page == "release-update" -> ReleaseUpdateScreen(onBack = { goBack() })
         page == "appearance" -> HoleScaffold(title = "外观", navigationIcon = { HoleBackButton { goBack() } }) { insets ->
             Column(Modifier.padding(insets).verticalScroll(rememberScrollState()).padding(20.dp)) {
@@ -342,6 +346,7 @@ private fun AppRoot(
                 report = diagnosticReport(snapshot, configState, readBackgroundInfo(context))
                 exportReport.launch("hole-diagnostics.txt")
             }, onBackground = { navigate("background") }, onTransportSettings = { navigate("transport") },
+            onNATDetection = { navigate("nat-detection") },
         )
         page.startsWith("provide") -> ProvideEditScreen(
             entryId = page.removePrefix("provide/").ifEmpty { null },

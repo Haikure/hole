@@ -44,6 +44,8 @@ public:
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void networkChanged();
     Q_INVOKABLE void renominateTransports();
+    Q_INVOKABLE void startNATProbe(const QString& optionsJson);
+    Q_INVOKABLE void cancelNATProbe();
     Q_INVOKABLE bool saveConfig();
     Q_INVOKABLE bool loadConfig();
     Q_INVOKABLE void clearError();
@@ -87,6 +89,9 @@ private:
     bool m_running = false;
     bool m_helloReceived = false;
     QString m_pendingMethod;
+    QString m_pendingRequestId;
+    bool m_probePending = false;
+    QJsonObject m_probeOptions;
 };
 
 extern "C" void init_plugin();

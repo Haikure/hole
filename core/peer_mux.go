@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"github.com/quic-go/quic-go"
+	"github.com/apernet/quic-go"
 	"io"
 	"net"
 	"sync"
@@ -109,6 +109,7 @@ func newMuxPeer(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceS
 
 // A shared fixed listener has already read the first hello to select its owner.
 func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceSignalMessage, incoming *fixedIncoming, deadline time.Time) (*muxPeer, error) {
+	useBBR(conn)
 	ctx, cancel := context.WithCancel(ctx)
 	p := &muxPeer{owner: owner, conn: conn, ctx: ctx, cancel: cancel, channels: map[uint32]*muxChannel{}, byMapping: map[string]*muxChannel{}, streamSlots: make(chan struct{}, maxSessionHandshakes), ready: ready, voiceEnabled: ready.Voice, voiceDatagrams: make(chan []byte, voiceJitterLimit), voiceFeedback: make(chan []byte, 2)}
 	owner.mu.Lock()

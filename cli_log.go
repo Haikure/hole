@@ -14,6 +14,14 @@ import (
 	"hole/core"
 )
 
+func localNATTime(value string) string {
+	stamp, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return value
+	}
+	return stamp.Local().Format("2006-01-02 15:04:05")
+}
+
 type cliProblem struct {
 	message string
 	count   uint64
@@ -400,11 +408,11 @@ func (r *cliReporter) peer(p core.PeerTransportSnapshot) {
 	}
 	if p.LocalNAT.ProbedAt != "" && p.LocalNAT != previous.LocalNAT {
 		r.info("本机 NAT：%s", core.NATDescription(p.LocalNAT))
-		r.debugf("NAT 探测时间 %s", p.LocalNAT.ProbedAt)
+		r.debugf("NAT 探测时间 %s", localNATTime(p.LocalNAT.ProbedAt))
 	}
 	if p.PeerNAT.ProbedAt != "" && p.PeerNAT != previous.PeerNAT {
 		r.info("%s 对端 NAT：%s", logIdent(p.PeerID), core.NATDescription(p.PeerNAT))
-		r.debugf("对端 NAT 探测时间 %s", p.PeerNAT.ProbedAt)
+		r.debugf("对端 NAT 探测时间 %s", localNATTime(p.PeerNAT.ProbedAt))
 	}
 	progress := r.progress[id]
 	if progress == nil {

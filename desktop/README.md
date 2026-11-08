@@ -1,14 +1,21 @@
-# 桌面 Go 桥接
-
-连接设置支持自动端口映射和分类 STUN 服务，导入导出/备份保留对应配置。网络详情和设备详情显示 NAT 类型、可预测性及探测时间。Linux 默认网关读取 `/proc/net/route`，Windows 使用系统 IPv4 路由表及接口优先级；其他平台缺少适配时映射不可用，不猜测网关地址。
+# 桌面客户端与 Go 桥接
 
 `hole/desktop` 为 Windows / Linux GUI 提供独立的 stdio 宿主，入口为
 `cmd/hole-core`；Rust + Slint GUI 源码位于 `desktop/gui/`。
-界面功能范围和 Android 对齐验收项见 [桌面 GUI 计划](../docs/DESKTOP_GUI_PLAN.md)。
 
-```text
-Slint → Rust CoreClient → child stdin/stdout → desktop → core.Engine
-                                                        └─ ICE / QUIC / TCP / UDP
+[构建与启动](#构建与启动) · [界面操作](#桌面界面与操作) · [NAT 检测](#nat-检测) · [语音](#房间语音) · [桥接协议](#协议-v1) · [验证](#回归验证) · [项目首页](../README.md)
+
+| 使用桌面客户端 | 开发宿主或前端 |
+| --- | --- |
+| 单文件 GUI，内嵌同平台 Go 核心 | JSON-RPC 2.0 + NDJSON，桥接 API 1 |
+| TCP / UDP 映射、配置交换、NAT 诊断和语音 | 生命周期、事件、快照与可选二进制 PCM |
+| Linux / Windows | 传输、身份、限额及恢复统一由 `core/` 实现 |
+
+```mermaid
+flowchart LR
+    gui["Slint 界面"] <--> client["Rust CoreClient"]
+    client <-->|"stdin / stdout"| bridge["Go 桌面宿主"]
+    bridge <--> engine["core.Engine<br/>ICE / QUIC / TCP / UDP"]
 ```
 
 一个宿主进程持有一个 Engine；多条映射共享它。IPC 承载配置、控制、事件、快照和显式启用的语音 PCM，
@@ -48,6 +55,9 @@ stdin 消息中，不放到启动参数。Rust `CoreClient` 分离 stdout / stde
 
 ### 内嵌核心的加载与回收
 
+<details>
+<summary>平台加载方式、退出清理与开发覆盖</summary>
+
 `./build.sh desktop` 先构建同平台的 stripped Go 核心，再通过 Cargo 的 `embedded-core` feature
 把它嵌入 GUI。构建脚本校验 ELF / PE 架构，记录未压缩大小和 SHA-256；核心文件变化会使 Cargo
 重新嵌入。`dist/core/` 保留独立构建产物，分发客户端时只需复制 `dist/desktop/` 下的 GUI 文件。
@@ -80,6 +90,8 @@ Linux 测试中验证，Windows ACL / CreateProcess 仍需 Windows 系统运行�
 Linux 单文件运行验收可用 `xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop/linux-amd64/hole-desktop`：
 测试只复制 GUI，检查子进程来自 memfd、必需页面截图、正常关闭及强制结束 GUI 后核心沿 EOF 退出。
 
+</details>
+
 ## 桌面界面与操作
 
 窗口默认 1180×780、最小 860×560，保留系统标题栏。208px 侧栏固定为「首页、服务、连接、语音、设置」；
@@ -91,12 +103,30 @@ Linux 单文件运行验收可用 `xvfb-run -a python3 desktop/gui/tests/embedde
 编辑从右侧 400px 面板打开，更多菜单支持上移、下移、删除，删除后可跨页面撤销。
 离开未保存表单或关闭编辑面板会确认放弃；保存、取消后返回触发控件。
 
-Ctrl+1～5 切换一级导航；侧栏支持上／下键及 Enter / Space，Tab 遍历控件；
-Esc 关闭对话框／编辑面板，或从连接和设置子类返回首页。退出仍提供停止／取消，支持托盘的平台可仅隐藏窗口。
+| 按键 / 操作 | 行为 |
+| --- | --- |
+| Ctrl+1～5 | 切换一级导航 |
+| 上 / 下键、Enter / Space | 操作侧栏 |
+| Tab | 遍历控件 |
+| Esc | 关闭对话框 / 编辑面板，或从连接和设置子类返回首页 |
+| 退出 | 提供停止 / 取消；支持托盘的平台可仅隐藏窗口 |
 
 外观使用 Android 同源五组调色板和明暗层级。旧 teal 标识对应绿色，violet 对应紫色；
 主按钮、容器、前景及导航选中同步切换。减少动画会立即完成页面、导航和数字过渡。
-动画只影响展示，不重发启动、保存或语音命令。验证入口及 Windows 待验收边界见 [桌面 GUI 计划](../docs/DESKTOP_GUI_PLAN.md)。
+动画只影响展示，不重发启动、保存或语音命令。验证入口与平台验收边界见 [回归验证](#回归验证)。
+
+## NAT 检测
+
+“连接 → NAT 检测”打开独立诊断页，总览和设置页也有入口。无需加入房间，可开始、取消、重新检测及复制结果。
+
+| 展示 | 内容 |
+| --- | --- |
+| 概览 | 按窗口宽度排列 1–3 列图标信息块；类型色标与手机一致 |
+| 详情 | NAT 类型解释、映射 / 过滤、公网及本机地址、端口特征、样本与时间、逐 STUN 服务记录 |
+| 网络与设备详情 | 本机 / 对端 NAT 类型、可预测性及探测时间 |
+| 连接设置 | 自动端口映射、分类 STUN 服务；导入导出与备份保留配置 |
+
+Linux 默认网关读取 `/proc/net/route`，Windows 使用系统 IPv4 路由表及接口优先级；其他平台缺少适配时映射不可用，不猜测网关地址。
 
 ## 房间语音
 
@@ -116,6 +146,9 @@ Opus、混音、抖动缓冲、成员发现和网络传输全部复用共享 Go 
 Windows 设备或 Android 跨端通话验收。
 
 ## 协议 v1
+
+<details>
+<summary>展开完整桥接协议：分帧、方法、配置交换、快照与错误</summary>
 
 使用 **JSON-RPC 2.0 的单请求子集 + UTF-8 NDJSON 分帧**：
 
@@ -164,6 +197,8 @@ GUI 启动后主动发送 `hello`，核对协议与核心 API 版本后再发送
 | `snapshot` | 省略或 `{}` | 当前核心快照及桥接事件丢弃计数 |
 | `network_changed` | 省略或 `{}` | 通知已有核心重建网络路径；停止态不启动网络 |
 | `renominate_transports` | 省略或 `{}` | 对已有 ICE active 路径发起新代次；进行中或无可用路径时幂等 |
+| `start_nat_probe` | 可选 `stun_urls`、`nat_stun_urls`、`interface_allowlist` 的对象 | 异步返回 accepted；无需 `start` 或房间凭据，结果见 `snapshot.nat_diagnostic`，由 `nat_diagnostic` 事件通知 |
+| `cancel_nat_probe` | 省略或 `{}` | 取消手动 NAT 检测 |
 | `set_voice_audio` | `{"enabled":true}` | 运行且启用语音时返回新的十进制字符串 `stream_id`，启用下述二进制 PCM 扩展；false 停止扩展并返回 `"0"` |
 | `set_voice_muted` | `{"muted":true}` | 设置核心本机语音发送静音；不停止播放 |
 | `decode_cli_config` | `{"text":"YAML 或 JSON 文本"}` | `{"config":规范化便携配置}`；纯转换/预览，不改变 Engine |
@@ -305,6 +340,8 @@ Hole；没有本端设备名仍可参与对端指定的 Hole 路径。配置存�
 普通无效请求不会结束宿主，后续完整行继续处理。解析错误不回显原始配置；
 可识别的核心 Fault 沿用共享核心的脱敏消息。
 
+</details>
+
 ## 限额、背压与生命周期
 
 - 单请求信封最多 1 MiB、单输出消息最多 2 MiB，均不含行结束符。
@@ -335,6 +372,9 @@ cargo build --offline
 cargo test --offline
 ```
 
+<details>
+<summary>截图与交互验证入口</summary>
+
 界面截图模式通过 `HOLE_DESKTOP_SCREENSHOT_DIR` 指定输出目录，按必需页面名称保存 PPM 图片后退出。
 `HOLE_DESKTOP_SCREENSHOT_PAGES` 可指定逗号分隔的路由子集，默认覆盖五项导航及全部二级分类。
 `HOLE_DESKTOP_SCREENSHOT_SCENARIO` 可选 `empty`、`running`、`reconnecting`、`error`、`long-list`、`fixed`；
@@ -350,6 +390,8 @@ TURN 排序使用自动换行的小块，支持点按添加／移除和拖动排
 Linux 上可用 `xvfb-run -a python3 desktop/gui/tests/turn_order_x11.py .cache/cargo-target/debug/hole-desktop` 验证真实拖动与连续保存（需要 X11 / Xtst，使用隔离的临时配置）。
 语音开关、页面切换及仅 IPv6 模式拒绝可用 `xvfb-run -a python3 desktop/gui/tests/voice_x11.py dist/desktop/linux-amd64/hole-desktop` 验证；测试保持连接停止，不访问麦克风。
 密码与 TURN 凭据使用眼睛图标切换显示，保留键盘操作和无障碍标签。
+
+</details>
 
 ```bash
 source scripts/build-env.sh

@@ -3,6 +3,7 @@ package nat
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
@@ -32,38 +33,89 @@ func Binding(ctx context.Context, pc net.PacketConn, server *net.UDPAddr, change
 }
 
 func Probe(ctx context.Context, network Network, pc net.PacketConn, urls []string) (Snapshot, []netip.AddrPort) {
+	snapshot, addresses, _ := ProbeDetailed(ctx, network, pc, urls)
+	return snapshot, addresses
+}
+
+type ProbeTarget struct {
+	URL      string   `json:"url"`
+	Endpoint string   `json:"endpoint,omitempty"`
+	Samples  int      `json:"samples"`
+	Mappings []string `json:"mappings"`
+	Reason   string   `json:"reason,omitempty"`
+}
+
+// ProbeDetailed retains resolution failures and per-target base samples for hosts.
+func ProbeDetailed(ctx context.Context, network Network, pc net.PacketConn, urls []string) (Snapshot, []netip.AddrPort, []ProbeTarget) {
 	capacity := min(len(urls), maxProbeServers)
 	endpoints := make([]*net.UDPAddr, 0, capacity)
-	seen := make(map[string]struct{}, capacity)
-	for _, raw := range urls {
-		if ctx.Err() != nil || len(endpoints) == maxProbeServers {
-			break
+	seen := make(map[string]int, capacity)
+	targets := make([]ProbeTarget, capacity)
+	resolve := network.ResolveUDP
+	if ipv4, ok := network.(interface {
+		ResolveUDP4(context.Context, string) (*net.UDPAddr, error)
+	}); ok {
+		resolve = ipv4.ResolveUDP4
+	}
+	for i, raw := range urls[:capacity] {
+		target := &targets[i]
+		target.URL, target.Mappings = raw, []string{}
+		if ctx.Err() != nil {
+			target.Reason = "未解析：检测已取消或总时限已到"
+			continue
 		}
 		uri, err := stun.ParseURI(raw)
 		if err != nil || uri.Scheme != stun.SchemeTypeSTUN || uri.Proto != stun.ProtoTypeUDP {
+			target.Reason = "无效的 UDP STUN 地址"
 			continue
 		}
-		address, err := network.ResolveUDP(ctx, net.JoinHostPort(uri.Host, strconv.Itoa(uri.Port)))
-		if err != nil || address.IP.To4() == nil {
+		// A stalled Android Network lookup must not consume the entire probe.
+		resolveCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		address, err := resolve(resolveCtx, net.JoinHostPort(uri.Host, strconv.Itoa(uri.Port)))
+		cancel()
+		if err != nil {
+			target.Reason = "IPv4 解析失败：" + err.Error()
+			continue
+		}
+		if address == nil || address.IP.To4() == nil {
+			target.Reason = "DNS 未返回可用的 IPv4 地址"
 			continue
 		}
 		key := address.String()
-		if _, ok := seen[key]; ok {
+		target.Endpoint = key
+		if previous, ok := seen[key]; ok {
+			target.Reason = "重复端点，与 " + targets[previous].URL + " 合并采样"
 			continue
 		}
-		seen[key] = struct{}{}
+		target.Reason = "未采样：检测已取消或总时限已到"
+		seen[key] = i
 		endpoints = append(endpoints, address)
 	}
 	if len(endpoints) == 0 {
 		snapshot := natprobe.Unknown("没有可用的 IPv4 STUN 地址")
 		snapshot.ProbedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		return snapshot, nil
+		return snapshot, nil, targets
 	}
 
-	_, snapshot, addresses := natprobe.ProbeSocket(ctx, pc, endpoints, func(networkName, address string) (net.PacketConn, error) {
+	_, snapshot, addresses := natprobe.ProbeSocketObserved(ctx, pc, endpoints, func(networkName, address string) (net.PacketConn, error) {
 		return network.ListenPacket(ctx, networkName, address)
-	}, selectedLocalEndpoint(ctx, network, pc, endpoints[0]))
-	return snapshot, addresses
+	}, selectedLocalEndpoint(ctx, network, pc, endpoints[0]), func(endpoint netip.AddrPort, sample natprobe.Sample, err error) {
+		target := &targets[seen[endpoint.String()]]
+		if err != nil {
+			target.Reason = fmt.Sprintf("基础映射采样中止：%v", err)
+			return
+		}
+		target.Reason = ""
+		target.Samples++
+		raw := sample.Mapped.String()
+		for _, previous := range target.Mappings {
+			if previous == raw {
+				return
+			}
+		}
+		target.Mappings = append(target.Mappings, raw)
+	})
+	return snapshot, addresses, targets
 }
 
 func selectedLocalEndpoint(ctx context.Context, network Network, pc net.PacketConn, remote *net.UDPAddr) netip.AddrPort {

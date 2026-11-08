@@ -1,0 +1,164 @@
+package core
+
+import (
+	"context"
+	"net"
+	"sync"
+	"testing"
+	"time"
+)
+
+type punchSimPlatform struct {
+	DefaultPlatform
+	nat *simNAT
+}
+
+func TestNATPunchThreeFailedRoundsBeforeFallback(t *testing.T) {
+	n, _, _ := simulatedNATs([2]int{1, 1}, [2]int{}, 0)
+	n.blockOneWay = true
+	ca, pa := lifecycleCoordinator(t)
+	cb, pb := lifecycleCoordinator(t)
+	ca.desired.Config.DeviceName = "alpha"
+	cb.desired.Config.DeviceName = "beta"
+	pa.ready.InitiatorID = "alpha"
+	pb.ready.InitiatorID = "alpha"
+	pa.ready.PeerFingerprint = certFingerprint(cb.identity.Certificates[0])
+	pb.ready.PeerFingerprint = certFingerprint(ca.identity.Certificates[0])
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	aa := &iceAttempt{ctx: ctx, ready: pa.ready, events: make(chan iceSignalMessage, 32), failed: make(chan error, 1)}
+	ab := &iceAttempt{ctx: ctx, ready: pb.ready, events: make(chan iceSignalMessage, 32), failed: make(chan error, 1)}
+	var wg sync.WaitGroup
+	var rounds [2][]int
+	for side, c := range []*iceCoordinator{ca, cb} {
+		target := ab
+		if side == 1 {
+			target = aa
+		}
+		wg.Go(func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case m := <-c.sink.messages:
+					if m.Punch.Kind == "ready" {
+						rounds[side] = append(rounds[side], m.Punch.Round)
+					}
+					select {
+					case target.events <- m:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		})
+	}
+	model := func(ip string, port int) NATSnapshot {
+		return NATSnapshot{Status: "complete", Type: "symmetric", MappingBehavior: "endpoint_dependent", PublicIP: ip, PortStep: 1, LastMappingPort: port, AllocationScope: "cross_socket"}
+	}
+	models := [2]NATSnapshot{model("198.51.100.1", 40000), model("198.51.100.2", 50000)}
+	config := NATPunchConfig{Sockets: 10, ScanWidth: 20, DualSockets: 2, DualRetrySockets: 4, Timeout: ConfigDuration(3 * time.Second), RoundTimeout: ConfigDuration(500 * time.Millisecond)}
+	completed := make(chan error, 2)
+	for side, p := range []*icePeer{pa, pb} {
+		a := aa
+		if side == 1 {
+			a = ab
+		}
+		go func() {
+			_, err := p.predictNATPunch(a, &punchSimPlatform{nat: n.sides[side]}, Config{ICE: ICEConfig{NATSTUNURLs: []string{"stun:192.0.2.1:3478"}}}, &natPunchSession{local: models[side], remote: models[1-side], mode: "fixed", key: []byte("failed-rounds"), config: config})
+			completed <- err
+		}()
+	}
+	for range 2 {
+		if err := <-completed; err == nil {
+			t.Fatal("one-way network established")
+		}
+	}
+	cancel()
+	wg.Wait()
+	for _, got := range rounds {
+		if len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
+			t.Fatalf("rounds %v, want [1 2 3]", got)
+		}
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, side := range n.sides {
+		for _, mapping := range side.byPort {
+			select {
+			case <-mapping.socket.closed:
+			default:
+				t.Fatal("failed round leaked socket")
+			}
+		}
+	}
+}
+
+func (p *punchSimPlatform) ListenPacket(ctx context.Context, _, _ string) (net.PacketConn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	p.nat.network.mu.Lock()
+	defer p.nat.network.mu.Unlock()
+	p.nat.nextLocal++
+	return &simSocket{nat: p.nat, port: 20000 + p.nat.nextLocal, mappings: map[string]*simMapping{}, incoming: make(chan datagram, 512), closed: make(chan struct{}), changed: make(chan struct{})}, nil
+}
+
+func (p *punchSimPlatform) ResolveUDP(ctx context.Context, address string) (*net.UDPAddr, error) {
+	return net.ResolveUDPAddr("udp4", address)
+}
+
+func TestNATPunchActualWorkerAndSharedMux(t *testing.T) {
+	for _, cone := range []bool{true, false} {
+		t.Run(map[bool]string{true: "cone-symmetric", false: "dual-symmetric"}[cone], func(t *testing.T) {
+			server, _ := actualWorkerFixture(t)
+			n, _, _ := simulatedNATs([2]int{1, 1}, [2]int{}, 0)
+			n.sides[1].cone = cone // The cone can be the non-initiator in mux signaling.
+			a, b := NewEngine(Options{Platform: &punchSimPlatform{nat: n.sides[0]}}), NewEngine(Options{Platform: &punchSimPlatform{nat: n.sides[1]}})
+			defer a.Close()
+			defer b.Close()
+			ra, rb := iceFixtureRequest(server, "alpha"), iceFixtureRequest(server, "beta")
+			for _, r := range []*Request{&ra, &rb} {
+				r.Config.ICE.NATSTUNURLs = []string{"stun:192.0.2.1:3478", "stun:192.0.2.2:3478", "stun:192.0.2.3:3478"}
+				r.Config.ICE.InterfaceAllowlist = nil
+				r.Config.ICE.PortMapping = "off"
+				r.Config.ICE.DirectProbeTimeout = ConfigDuration(time.Second)
+			}
+			for _, id := range []string{"one", "two"} {
+				ra.Config.Provide = append(ra.Config.Provide, Provide{ID: id, Service: ServiceEndpoint{"tcp", "127.0.0.1", unusedTCPPort(t)}})
+				rb.Config.Consume = append(rb.Config.Consume, Consume{ID: id, Expose: HostPort{"127.0.0.1", unusedTCPPort(t)}})
+			}
+			if err := a.Start(ra); err != nil {
+				t.Fatal(err)
+			}
+			if err := b.Start(rb); err != nil {
+				t.Fatal(err)
+			}
+			active := func(s Snapshot) bool {
+				return len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].MappingCount == 2 && s.PeerTransports[0].PathType == "direct"
+			}
+			left := waitSnapshotWithin(t, a, 12*time.Second, active)
+			right := waitSnapshotWithin(t, b, 12*time.Second, active)
+			if left.PeerTransports[0].TransportID != right.PeerTransports[0].TransportID {
+				t.Fatal("device pair did not share a transport")
+			}
+			for _, engine := range []*Engine{a, b} {
+				s := engine.Snapshot().PeerTransports[0]
+				if s.LocalType != "srflx" || s.LocalCandidates != 0 || s.Generation != 2 {
+					t.Fatalf("prediction unexpectedly fell back: %+v", s)
+				}
+				engine.mu.Lock()
+				coordinator := engine.run.ice
+				engine.mu.Unlock()
+				for _, peer := range coordinator.peerList() {
+					peer.mu.Lock()
+					schedule := peer.ready.PunchSchedule
+					peer.mu.Unlock()
+					if schedule != natPunchSchedule {
+						t.Fatalf("Worker did not negotiate scheduling: %q", schedule)
+					}
+				}
+			}
+		})
+	}
+}

@@ -38,6 +38,7 @@ fun HomeScreen(
         LazyColumn(Modifier.fillMaxSize().padding(insets).testTag("dashboard"),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = floatingInset + 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item { HomeConnectionStatus(snapshot) }
+            item { NATDetectionEntry(snapshot.natDiagnostic) { onNavigate("nat-detection") } }
             item { DashboardPair("TCP 会话", snapshot.tcpSessions.toString(), "UDP 会话", snapshot.udpSessions.toString()) }
             item { DashboardPair(
                 "上行流量", formatBytes(snapshot.peers.sumOf { it.bytesSent.toLongOrNull() ?: 0L }.toString()),

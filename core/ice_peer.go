@@ -6,9 +6,9 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"github.com/apernet/quic-go"
 	"github.com/pion/ice/v4"
 	"github.com/pion/stun/v4"
-	"github.com/quic-go/quic-go"
 	"hole/core/internal/nat"
 	"net"
 	"slices"
@@ -18,14 +18,16 @@ import (
 )
 
 type iceAttempt struct {
-	ctx          context.Context
-	cancel       context.CancelFunc
-	ready        iceSignalMessage
-	events       chan iceSignalMessage
-	failed       chan error
-	diagnostics  *iceDiagnostics
-	incoming     chan *fixedIncoming
-	fixedClaimed bool // protected by icePeer.mu
+	directExhausted bool
+	punchBuffered   []natPunchSignal // owned by the attempt's signaling reader
+	ctx             context.Context
+	cancel          context.CancelFunc
+	ready           iceSignalMessage
+	events          chan iceSignalMessage
+	failed          chan error
+	diagnostics     *iceDiagnostics
+	incoming        chan *fixedIncoming
+	fixedClaimed    bool // protected by icePeer.mu
 }
 type liveICETransport struct {
 	ready        iceSignalMessage
@@ -50,8 +52,12 @@ func (t *liveICETransport) close() {
 			return
 		}
 		_ = t.quic.Close()
-		_ = t.packet.Close()
-		_ = t.agent.Close()
+		if t.packet != nil {
+			_ = t.packet.Close()
+		}
+		if t.agent != nil {
+			_ = t.agent.Close()
+		}
 	})
 }
 
@@ -526,19 +532,26 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 		report.Code = fault.Code
 		_ = p.coordinator.send(report)
 	} else {
+		reason := "path_failed"
+		if a.ready.Phase == "direct" && a.ready.DirectOrder == directOrderICEFirst && a.ready.DirectStage == "ice" {
+			reason = "ice_failed"
+		}
+		if a.directExhausted {
+			reason = "direct_exhausted"
+		}
 		if a.ready.Profile == ProfileFixed {
 			p.restart("fixed", "path_failed")
 		} else if a.ready.HoleVersion == HoleRelayVersion && a.ready.RelayRound != nil {
-			p.restartRound(nextICERound(*a.ready.RelayRound, len(a.ready.RelayPlan)), "", "path_failed")
+			p.restartRound(nextICERound(*a.ready.RelayRound, len(a.ready.RelayPlan)), "", reason)
 		} else if a.ready.RelayPairing == relayPairingAll && a.ready.RelayRound != nil {
 			limit := len(relayPairs(a.ready.RelayOrder, a.ready.PeerRelayOrder, true))
-			p.restartRound(nextICERound(*a.ready.RelayRound, limit), "", "path_failed")
+			p.restartRound(nextICERound(*a.ready.RelayRound, limit), "", reason)
 		} else if a.ready.RelayRound != nil {
 			nextRound, nextPhase := nextRelayRound(*a.ready.RelayRound, a.ready.RelayOrder, a.ready.PeerRelayOrder)
-			p.restartRound(nextRound, nextPhase, "path_failed")
+			p.restartRound(nextRound, nextPhase, reason)
 		} else {
 			next := nextICEPhase(a.ready.Phase, a.ready.RelayPolicy)
-			p.restart(next, "path_failed")
+			p.restart(next, reason)
 		}
 	}
 }
@@ -569,10 +582,50 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		p.failed(a, err)
 		return
 	}
+	var punch *natPunchSession
+	if a.ready.Phase == "direct" && a.ready.PunchVersion == natPunchVersion && a.ready.DirectOrder != directOrderICEFirst {
+		// Keep ICE first even when the Worker cannot coordinate fallback.
+		a.directExhausted = true
+		if err = p.offerOrdinaryICE(a, cfg); err != nil {
+			p.failed(a, err)
+			return
+		}
+	}
+	if a.ready.Phase == "direct" && a.ready.PunchVersion == natPunchVersion && a.ready.DirectOrder == directOrderICEFirst && a.ready.DirectStage == "punch" {
+		punch, err = p.prepareNATPunch(a, cfg)
+		if err != nil {
+			p.failed(a, err)
+			return
+		}
+		if punch != nil && (punch.mode == "ice" || punch.mode == "ordinary") {
+			a.directExhausted = true
+			p.failed(a, errors.New("NAT evidence insufficient or prediction unsupported"))
+			return
+		}
+		if punch != nil && punch.mode != "ice" && punch.mode != "cone" && punch.mode != "ordinary" {
+			started := time.Now()
+			live, e := p.predictNATPunch(a, platform, cfg, punch)
+			if e == nil {
+				owned = true
+				p.serveICETransport(a, live, started)
+				return
+			}
+			if a.ctx.Err() != nil {
+				return
+			}
+			p.transportEvent(a, "punch_fallback", nil)
+			a.directExhausted = true
+			p.failed(a, e)
+			return
+		}
+	}
 	network, err := newICENetwork(a.ctx, platform)
 	if err != nil {
 		p.failed(a, err)
 		return
+	}
+	if punch != nil && punch.mode == "cone" {
+		network.checkPace = newICECheckPacer()
 	}
 	urls := []*stun.URI{}
 	for _, raw := range cfg.ICE.STUNURLs {
@@ -770,6 +823,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		return
 	}
 	remoteCredentials := make(chan iceSignalMessage, 1)
+	peerStarted := make(chan struct{}, 1)
 	eventCtx, stopEvents := context.WithCancel(a.ctx)
 	defer stopEvents()
 	eventsDone := make(chan struct{})
@@ -787,6 +841,12 @@ func (p *icePeer) attempt(a *iceAttempt) {
 			case <-eventCtx.Done():
 				return
 			case m := <-a.events:
+				if m.Type == "nat_punch" && m.Punch != nil && m.Punch.Kind == "ice_start" {
+					select {
+					case peerStarted <- struct{}{}:
+					default:
+					}
+				}
 				if m.Type == "ice_description" {
 					if len(m.Ufrag) < 4 || len(m.Ufrag) > 256 || len(m.Pwd) < 22 || len(m.Pwd) > 256 {
 						fail(errors.New("invalid ICE description"))
@@ -867,6 +927,17 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	case remote = <-remoteCredentials:
 	}
 	var conn *ice.Conn
+	if punch != nil && punch.mode == "cone" && !controlling {
+		select {
+		case <-peerStarted:
+		case <-checkCtx.Done():
+			p.failed(a, checkCtx.Err())
+			return
+		case err = <-a.failed:
+			p.failed(a, err)
+			return
+		}
+	}
 	if controlling {
 		conn, err = agent.StartDial(remote.Ufrag, remote.Pwd)
 	} else {
@@ -877,6 +948,21 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		return
 	}
 	// Only an empty checklist can end the phase early. Failed pairs may still
+	if punch != nil && punch.mode == "cone" && controlling {
+		select {
+		case <-network.checkPace.first:
+		case <-checkCtx.Done():
+			p.failed(a, checkCtx.Err())
+			return
+		case err = <-a.failed:
+			p.failed(a, err)
+			return
+		}
+		if err = p.sendNATPunch(a, natPunchSignal{Kind: "ice_start"}); err != nil {
+			p.failed(a, err)
+			return
+		}
+	}
 	// receive delayed responses or checks after TURN permissions become ready.
 	exhausted := make(chan error, 1)
 	exhaustionCtx, stopExhaustion := context.WithCancel(checkCtx)
@@ -1015,6 +1101,17 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	}
 	live := &liveICETransport{ready: a.ready, mux: mux, agent: agent, connection: conn, packet: packet, quic: quicTransport, session: connection, cancel: a.cancel, expires: usedExpires}
 	p.mu.Lock()
+	p.stats.RelayState = relayState
+	p.stats.TURNExpiresAt = expires
+	p.mu.Unlock()
+	owned = true
+	p.serveICETransport(a, live, started)
+}
+
+// All direct and ICE paths enter the same per-device mux and lifecycle.
+func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, started time.Time) {
+	mux := live.mux
+	p.mu.Lock()
 	if p.pending != a || p.closed {
 		p.mu.Unlock()
 		live.close()
@@ -1026,10 +1123,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	p.stats.State = "active"
 	p.stats.Error = nil
 	p.stats.ConnectMS = time.Since(started).Milliseconds()
-	p.stats.RelayState = relayState
-	p.stats.TURNExpiresAt = expires
 	p.mu.Unlock()
-	owned = true
 	if a.ready.Voice {
 		if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
 			voice.bindPeer(a.ready.PeerDevice, a.ready.TransportID, a.ready.TransportGeneration, mux)
@@ -1047,7 +1141,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	select {
 	case <-mux.ctx.Done():
 	case <-a.ctx.Done():
-	case err = <-a.failed:
+	case <-a.failed:
 	}
 	live.close()
 	if a.ready.Voice {
@@ -1146,7 +1240,9 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 		}
 		if active.session != nil {
 			if active.agent == nil {
-				s.RTTMS = quicRTTMilliseconds(active.session.ConnectionStats().SmoothedRTT)
+				stats := active.session.ConnectionStats()
+				s.RTTMS = quicRTTMilliseconds(stats.SmoothedRTT)
+				s.BytesSent, s.BytesReceived = stats.BytesSent, stats.BytesReceived
 			}
 			s.DatagramLimit = datagramLimit(active.session)
 		}

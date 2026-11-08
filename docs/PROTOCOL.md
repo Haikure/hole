@@ -1,25 +1,22 @@
 # 传输、会话与兼容性
 
-## ICE 直连、NAT 状态与端口映射
+本文件描述共享核心与 Worker 的当前协议。使用与配置入口见 [项目首页](../README.md)，部署顺序见 [Worker 指南](WORKER.md)。
 
-直连由 ICE 收集候选、检查连通性并完成提名；失败后按既有 Hole / TURN 顺序进入中继阶段。QUIC 和业务 mux 继续使用 ICE 选定的路径。
-
-允许直连且启用 `ice.port_mapping` 时，为所选网络默认路由接口的 ICE UDP 候选端口申请临时映射，先尝试 IGD，失败后自动尝试 NAT-PMP。映射外部地址和端口通过普通 `ice_candidate` 发布为 server-reflexive 候选，仍由 ICE 检查可达性。租约在路径存续期间续租，映射变化触发重连，路径结束时尝试删除；映射失败继续普通 ICE。固定入口与仅中继关系不申请映射。
-
-独立 NAT 探测通过 `nat_status` 更新展示快照，普通 ICE 成功及回退中继后仍可发送。消息携带 `nat.snapshot`；`nat.addresses` 保持空数组以兼容状态信令格式。消息不超过 4096 字节，计入信令限流，并检查 transport_id、generation、to_peer_id、运行实例、网络代次与租约。每端每代次至少间隔 30 秒，代次变化后可重新发布。Worker 持久化状态，休眠后回放。固定入口与仅中继关系不启动探测或交换 NAT 状态。
-
-快照包含 `mapping_behavior`、`filtering_behavior`、`filtering_server`、`port_preservation` 和 `no_pat`，未携带这些字段的旧快照仍可接受。`type` 支持 `endpoint_independent`（映射稳定、过滤未知）和 `firewall`（无地址转换、存在受限过滤）；`predictability` 的 `predictable_incremental` / `predictable_decremental` 表示原 socket 对至少三个不同目标的首次映射端口按探测顺序全部依次加 1 / 减 1，且已由新 socket 在同一公网 IP 上按同一步长延续验证的有限样本结论（包含新 socket 端口的总跨度不超过 1024）；新 socket 样本不补足三个目标。`incremental` / `decremental` 表示跨 socket 仍延续整体趋势、但未满足严格连续条件的可能可预测。缺少有效的新 socket 样本时，端口变化可预测性为 `unknown`，已确认的映射类型及端口稳定性仍保留；`reason` 说明跨 socket 验证结果。所有趋势结论均不能保证后续端口。
-
-分类与可预测性独立。缺少有效来源或服务器忽略 CHANGE-REQUEST 时保留信息不足，不把请求超时当作确定过滤结论。本机结果按网络代次失效，5 分钟过期并在运行期间刷新；对端未上报与信息不足分别展示。映射结果仅作为地址来源，不改写 NAT 分类，私网外部地址不证明公网可达。
-
-CLI、手机和 Wear 使用同一 Go 实现。配置与交互入口见 [README](../README.md)，
-本文件描述当前协议行为，不包含历史构建流水。
+| 查阅主题 | 入口 |
+| --- | --- |
+| 身份与传输模式 | [信令与认证](#信令与认证) · [传输选择](#传输选择) |
+| NAT 与直连 | [手动检测](#图形客户端手动-nat-检测) · [ICE、打洞与端口映射](#ice-直连nat-状态与端口映射) |
+| 固定入口与中继 | [固定入口](#固定入口直连) · [Hole 中继](#hole-设备中继) · [ICE / TURN](#ice-与-turn) |
+| 数据通道与恢复 | [共享 QUIC](#共享-quic-与通道) · [TCP / UDP 会话](#可恢复应用会话) · [协调与租约](#协调与租约) |
+| 平台接入 | [Android 网络边界](#android-网络边界) · [桥接 API](../mobile/README.md) |
 
 ## 信令与认证
 
 客户端通过 `wss://HOST/ws` 连接协调 Worker，使用信令密码以及房间号 / 房间密码。
 当前认证模式为 `shared-secret`；设备名标识房间成员，随机 `runtime_id` 标识本次运行实例。
 数据面使用 QUIC，连接时核对通过信令交换的证书指纹。
+
+设备连接在 TLS 成功后、业务 mux 开始前安装独立的 BBR 标准控制器；旧 IPv6 路径在拨号／接受成功后安装。各条连接分别维护带宽和 RTT 模型，保留 QUIC pacing；初始数据报大小不超过连接配置，ICE/TURN 的 1200 字节路径继续遵守既有 MTU 策略。BBR 不改变信令、证书校验、每对设备一条 QUIC 或会话恢复协议。依赖为 Hysteria 维护的 `apernet/quic-go` v0.63 固定提交，替换原上游 v0.65；版本差异和源码许可证见 [实现来源](../core/internal/congestion/README.md)。
 
 同一进程的证书和应用会话独立于短期网络路径。配置更换服务器、房间、凭据或设备名时，
 结束旧运行作用域；同名对端更换证书时，清理旧证书拥有的上游会话。
@@ -44,7 +41,107 @@ ICE 配置要求 WSS；本地 WS 测试需显式启用 `transport.allow_insecure
 默认 STUN 为 `stun:stun.cloudflare.com:3478`；显式空 `ice.stun_urls` 仅收集本地候选。
 `turn` 默认使用 Worker 签发的短期凭据，TTL 为 6 小时；也支持手动 TURN 或关闭本机中继申请。
 
+## ICE 直连、NAT 状态与端口映射
+
+### 协商与阶段切换
+
+双方 join 声明 `punch_version: nat-punch-v1` 和 `direct_order: ice-first-v1`；Worker 在允许直连的 ICE 设备对上协商，通过 `transport_ready` 回传顺序与 `direct_stage`。
+
+1. 初始 `ice` 阶段始终执行普通 ICE，不等待 NAT 分类，不交换打洞 offer；成功即使用连接。
+2. 失败通过 `transport_restart.reason: ice_failed` 切换到新 generation 的 `punch` 阶段，仍属于 direct / relay_round 0。
+3. Worker 合并双方旧代次失败请求、清除旧 ICE 信令，切换不消耗后续三轮打洞预算；进入 `punch` 后才按 NAT 证据选择方式。
+
+任一端未声明新顺序时，新 Worker 不为混合顺序设备对协商预测打洞；新核心连接旧 Worker 时发送无需分类的 disabled offer 以兼容旧端，再执行普通 ICE，失败后进入中继。固定入口和仅中继不启用此流程。后台 NAT 探测独立进行，证据不足最多重新探测 3 次，每次使用新 socket，每次探测预算 20 秒；结果按网络代次隔离。分类服务被显式关闭或 IPv4 不适用时，首次普通 ICE 仍执行，失败后跳过分类打洞。
+
+### NAT 证据与算法
+
+| 双端证据 | 直连方式 |
+| --- | --- |
+| 双端端点无关映射（锥形、开放网络或防火墙） | ICE 交换候选；initiator 先发 Binding 检查，再发 `ice_start` 让另一端开始检查；每个 socket/目标至少间隔 200ms |
+| 锥形 + 有递增／递减证据的对称型 | 锥形端保留 STUN socket 并扫描 20 个预测端口；对称端使用 10 个新 socket 发向锥形实际映射；锥形端收到认证 ACK 后拨 QUIC |
+| 双对称均有跨 socket 递增证据 | 分别预绑定 32 个 socket，再用独立 socket 校准 P；目标为 P + step × 16；重试使用 64 个 socket 和偏移 32 |
+| 双对称仅有同 socket 递增证据 | 在本轮校准 socket 上尝试对方 P + step |
+| 证据不足或不可预测对称型 | 跳过算法打洞，进入中继；不可预测型保留后续实现 |
+
+### 打洞预算
+
+| 项目 | 默认行为 |
+| --- | --- |
+| 锥形 ICE | Worker 合并同代次失败请求，最多尝试 3 次，再进入 Hole / TURN |
+| 预测轮次 | 同一 transport generation 最多 3 轮；双对称多 socket 数依次为 32、64、64 |
+| 每轮执行 | 10 秒，含校准、协调与 mux 协商；UDP / QUIC 最多 2.5 秒 |
+| 三轮执行合计 | 最多约 30 秒，不含设备级排队与模型更新；成功或取消提前结束 |
+| 校准与资源 | 每轮重新校准，失败端口保留至整次预测结束 |
+
+`direct_exhausted` 表示预测或分类预算已耗尽，不再额外重试三组预测。身份、网络代次或能力变化重置状态。
+
+### 设备级调度与模型更新
+
+双方 join 同时声明 `punch_schedule: ordered-v1` 且支持预测打洞时，Worker 在 `transport_ready` 回传该能力；能力变化重置 generation。预测开始前，设备名较小的 initiator 先取得本机时段并发 `reserve`，另一端收到后取得本机时段并发 `reserved`。所有设备对按相同顺序取得资源，避免三台以上设备互相等待。排队以本代次 context 和当前租约为限，不消耗打洞轮次预算；时段持有至预测成功或失败，后台 NAT 探测也使用本机时段，已连接 socket 不排队。
+
+预约完成后，每轮先交换 `model`（round、snapshot）。模型过期，或前轮校准发现公网 IP、方向、余数失配时，重新进行最长 20 秒的完整 NAT 探测，再交换模型；整个模型阶段最长 25 秒。双方根据新证据重新选择算法，证据仍不支持预测时结束。模型阶段完成后才启动本轮执行预算。旧端或旧 Worker 未协商调度时继续原预测流程；其他进程、同 NAT 下其他设备和普通 ICE 的分配不受此预约约束。
+
+### 打洞消息与认证
+
+`nat_punch` 消息携带 `punch` 对象：
+
+| 消息 | 内容 / 用途 |
+| --- | --- |
+| `offer` | NAT 快照、随机 nonce、资源参数 |
+| `ready` | 轮次、模式、校准与目标端口 |
+| `go`、`failed`、`abort`、`ice_start` | 执行、失败、取消与 ICE 检查协调 |
+| `reserve`、`reserved`、`model` | 协商设备调度后使用的预约与模型消息 |
+
+Worker 检查授权设备对、代次、运行实例、网络代次、租约、直连策略及大小 / 数量边界。预约消息限制发送角色，预约完成后才接受模型、READY 和 GO；双方 READY 后仅 initiator 可以发 GO。
+
+- **缓存**：每端每代次最多 12 条，协商调度后为 20 条；休眠可回放，旧代次不进入新尝试，同轮提前到达的预约与模型也保留。
+- **认证**：nonce 与 transport ID、generation 派生 HMAC 密钥；UDP 探测认证轮次、socket ID、序号和随机挑战，ACK 须回显挑战，源端点限于本轮约定范围。
+- **发包**：每次预测每端探测与 ACK 合计最多 200 包 / 秒，普通候选最多 4 次、验证中最多 8 次，重传间隔至少 200ms。
+
+只有 QUIC 双向证书指纹、DATAGRAM 能力与 mux hello 协商成功才发布 active。每对设备保留一个业务 mux 和一条 QUIC，成功路径沿用命中的原 socket。
+
+### 打洞配置
+
+以下字段位于 `ice.punch`；双方取较小的时间预算与扫描宽度。
+
+| 字段 | 默认值 | 范围 |
+| --- | --- | --- |
+| `sockets` | 10 | 1–64 |
+| `scan_width` | 20 | 1–256 |
+| `dual_sockets` | 32 | 1–64 |
+| `dual_retry_sockets` | 64 | 1–64 |
+| `timeout` | `10s` | 1–30 秒，单轮完整预算 |
+| `round_timeout` | `2.5s` | 至少 500ms，不超过完整预算；单轮 UDP / QUIC |
+
+### 自动端口映射
+
+允许直连且启用 `ice.port_mapping` 时，为所选网络默认路由接口的 ICE UDP 候选端口申请临时映射，先尝试 IGD，失败后自动尝试 NAT-PMP。映射外部地址和端口通过普通 `ice_candidate` 发布为 server-reflexive 候选，仍由 ICE 检查可达性。租约在路径存续期间续租，映射变化触发重连，路径结束时尝试删除；映射失败继续普通 ICE。固定入口与仅中继关系不申请映射。
+
+### NAT 状态上报
+
+独立探测通过 `nat_status` 更新展示快照，普通 ICE 成功及回退中继后仍可发送。固定入口与仅中继关系不启动探测或交换 NAT 状态。
+
+| 约束 | 行为 |
+| --- | --- |
+| 消息体 | `nat.snapshot`；`nat.addresses` 保持空数组以兼容状态信令 |
+| 大小与频率 | 最多 4096 字节、计入信令限流；每端每代次至少间隔 30 秒，代次变化可重新发布 |
+| 校验 | transport_id、generation、to_peer_id、运行实例、网络代次、租约 |
+| 持久化 | Worker 保存状态，休眠后回放 |
+
+### 分类与预测证据
+
+快照包含 `mapping_behavior`、`filtering_behavior`、`filtering_server`、`port_preservation` 和 `no_pat`，未携带这些字段的旧快照仍可接受。`type` 支持 `endpoint_independent`（映射稳定、过滤未知）和 `firewall`（无地址转换、存在受限过滤）；`predictability` 的 `predictable_incremental` / `predictable_decremental` 表示原 socket 对至少三个不同目标的首次映射端口按探测顺序全部依次加 1 / 减 1，且已由新 socket 在同一公网 IP 上按同一步长延续验证的有限样本结论（包含新 socket 端口的总跨度不超过 1024）；新 socket 样本不补足三个目标。`incremental` / `decremental` 表示跨 socket 仍延续整体趋势、但未满足严格连续条件的可能可预测。缺少有效的新 socket 样本时，端口变化可预测性为 `unknown`，已确认的映射类型及端口稳定性仍保留；`reason` 说明跨 socket 验证结果。所有趋势结论均不能保证后续端口。
+
+预测模型另含 `port_step`、`public_ip`、`last_mapping_port`、`allocation_scope`。步长取去重端口的最小非零差值；同 socket 至少三个不同映射、多个目标 IP、稳定重传及递增顺序才能建立模型。跨 socket 模型还需三个额外 socket 跨目标验证余数及重传复用。只有同 socket 证据时不启用固定目标多 socket；校准 IP、方向、余数或边界不满足时放弃本轮。
+
+分类与可预测性独立。缺少有效来源或服务器忽略 CHANGE-REQUEST 时保留信息不足，不把请求超时当作确定过滤结论。本机结果按网络代次失效，5 分钟过期并在运行期间刷新；对端未上报与信息不足分别展示。映射结果仅作为地址来源，不改写 NAT 分类，私网外部地址不证明公网可达。
+
+CLI、手机和 Wear 使用同一 Go 实现。配置与交互入口见 [README](../README.md)，
+本文件描述当前协议行为，不包含历史构建流水。
+
 ## 固定入口直连
+
+### 能力与协商
 
 共享核心在新版 join 的 `transport_profiles` 声明 `fixed-quic-mux-v1`；配置了
 `transport.fixed_endpoint` 的设备还发送 `fixed_endpoint: "host:port"`，只公布 `advertise`，
@@ -59,6 +156,8 @@ ICE 中继轮次或配对字段。仅一端有入口时另一端拨号；两端�
 `expected_generation` 合并同一失败的双方请求；每次推进代次，并等待 1、2、4、8、15 秒，
 之后维持最多 15 秒。成功后清零退避。重连、切网、入口和身份变化重置协商代次与方向。
 
+### 监听与身份校验
+
 每个运行实例持有一个固定 UDP 监听和 QUIC Transport，以独立 ALPN `hole-fixed-mux-v1`
 接受多个授权对端；连接关闭只释放该连接。拨号使用平台提供的网络绑定、UDP socket 与 DNS，
 每次尝试重新解析域名；本机已有同地址族的固定 socket 时复用其 Transport。
@@ -68,6 +167,8 @@ ICE 中继轮次或配对字段。仅一端有入口时另一端拨号；两端�
 profile、transport ID、两端 runtime、generation 和授权租约；认证前不创建业务通道。
 业务继续通过现有 OPEN_MAPPING / MAPPING_ACK 校验本机映射和对端角色，并复用同一 TCP / UDP
 会话协议与资源限额。无效身份、过时代次和未知映射不能进入业务数据面。
+
+### 重连与状态展示
 
 固定路径不启动 ICE 候选收集、不发送 ICE 描述，也不申请 TURN；Worker 拒绝固定关系的
 ICE 消息及没有其他 ICE 关系的 TURN 请求。开启或变更本机入口时立即停止旧路径，随后重建
@@ -85,6 +186,8 @@ Android / Wear、桌面和 PenMods 的固定监听配置界面后续接入。
 
 ## Hole 设备中继
 
+### 配置与路径计划
+
 `hole-relay-v1` 同时版本化客户端能力、路径计划和 UDP 封装。`relay.device` 指定单个
 同房间设备，只有根 CLI 通过 `Options.AllowRelayServe` 开启服务。监听复用
 `transport.fixed_endpoint.listen`，公布地址沿用 `advertise`；不新开公网端口、不建立中继链。
@@ -96,6 +199,8 @@ Android / Wear、桌面和 PenMods 的固定监听配置界面后续接入。
 正常首轮为直连，仅中继从首个可用中继轮开始。两端顺序沿用 `all-pairs-v1` 组合算法：
 包含 Hole 的组合只生成一次共享 Hole 尝试，不分配 TURN；涉及不同中继时按设备名排序，
 同一中继只保留第一次出现。不含 Hole 的组合保留 TURN 配对顺序。
+
+### 三方授权与 UDP 封装
 
 Worker 只为真实映射或语音关系签发三方授权，绑定两个设备身份、运行实例、网络代次、
 中继身份及入口、传输代次和租约。双方及中继收到同一随机路由 ID 和两个方向的 MAC 密钥。
@@ -109,6 +214,8 @@ Worker 只为真实映射或语音关系签发三方授权，绑定两个设备�
 Worker 休眠恢复和续租不得重发过期授权；过期后重新授权会推进代次、换路由及密钥。
 中继拒绝旧代次替换、已撤销授权恢复以及同代次更换路由、密钥或身份；续租只延长有效路由。
 容量满或暂时离线可按顺序回退，协议版本缺失明确提示升级。未使用 Hole 的连接保留旧流程。
+
+### 转发、限额与统计
 
 启用服务后由一个接收者分流固定 QUIC 和 Hole，收包缓冲区直接交给有界队列。
 每对最多排队 16 包，按设备对轮转出队，再计入共享令牌桶；每批立即发送，不等待凑批。
@@ -149,6 +256,8 @@ PCM 桥接仍接受最多 4 帧批次，Android 采集与播放使用单帧。�
 快照以 `local` 标识本机成员，以独立的 `media_state` 与发送、接收、解码、补帧计数描述媒体，
 传输 `active` 本身不会使媒体标为活跃；详细字段见 [桥接 API](../mobile/README.md)。
 
+### TURN 顺序与配对
+
 `turn.order` 可为每端设置独立白名单和尝试顺序，只使用 `udp`、`tcp`、`tls`，最多 3 项且不能
 重复；留空为 UDP → TCP → TLS。Cloudflare TURN 在每种类型内先尝试标准端口，再尝试备用端口：
 
@@ -165,6 +274,8 @@ PCM 桥接仍接受最多 4 帧批次，Android 采集与播放使用单帧。�
 认证；失败后推进，遍历完成后回到首轮并退避。普通连接的首轮为直连；任一端要求仅中继时，
 首轮为有效中继轮次。不会要求两端使用相同 TURN 接入协议。
 
+### 仅中继策略
+
 `ice.relay_only: true` 在 join 中声明 `relay_only: true`，可由 Hole 或 TURN 满足。
 Worker 在 `joined` / `transport_ready` 中以 `relay_only_policy: relay-only-v1` 声明支持，
 在 ready 中返回本端 `relay_only`、`peer_relay_only` 和两者逻辑或 `relay_required`。
@@ -178,11 +289,15 @@ Worker 在 `joined` / `transport_ready` 中以 `relay_only_policy: relay-only-v1
 当前核心在 join 中统一声明固定入口 profile，ICE 模式也需使用接受新 profile 的 Worker；
 旧 IPv6 profile 的协商不变。
 
+### 手动 TURN URL
+
 manual URL 必须显式给出端口。`turn:HOST:PORT` 未写 `transport` 时支持 UDP 和 TCP，
 按 `turn.order` 选择并推导本轮接入协议；`turns:HOST:PORT` 仅支持 TLS。
 显式 `?transport=udp` 或 `?transport=tcp` 限制普通 TURN 的接入类型；`turns` 不接受 UDP。
 核心保留原主机、端口和凭据，只尝试 URL 实际支持的类型；与白名单没有交集时报配置错误。
 旧配置的 `tcp_80` / `tls_443` 分别迁移为 TCP / TLS，并合并别名；新保存和导出的配置只使用三种类型。
+
+### 缺少服务器与旧端兼容
 
 本端在某轮没有对应服务器且未启用 `relay_only` 时，仍收集 host / srflx 并等待对端 relay；
 双方收集完毕都没有 relay，或本机 `relay_only` 却没有本轮服务器时，提前跳过该轮。
@@ -195,6 +310,8 @@ host / srflx 并等待对端 relay。双方都关闭时有效顺序均为空，�
 每个中继轮最长使用候选收集与连通检查预算（默认合计 16 秒）；
 只配置实际可用的类型可以缩短无效尝试。
 TURN/TCP / TLS 描述客户端连接 TURN 服务器的方式，数据面仍是 QUIC，不引入 DataChannel / SCTP。
+
+### 候选检查与提名
 
 两端都发出 `end_of_candidates` 仅说明常规候选收集结束。候选对的 Failed 状态不能证明迟到响应
 或 TURN permission 建立后仍不可达，因此不再据此提前结束。检查以阶段时间预算为准，
@@ -210,6 +327,8 @@ TURN/TCP / TLS 描述客户端连接 TURN 服务器的方式，数据面仍是 Q
 晚 1.5 秒，直连阶段没有 relay 候选，不受影响。快照 `candidate_pairs` 列出各候选对的
 类型、状态、中继跳数和 RTT；提名后 pion 只保活选中候选对，其余数据停留在检查阶段。
 
+### 凭据与手动重选
+
 TURN 凭据到进入中继阶段时才申请；在途请求复用，失败采用退避。本机凭据暂不可用且未启用
 `relay_only` 时，仍收集 host / srflx 并等待对端 relay，不因此重置共享轮次。健康直连不随本机
 TURN 缓存刷新而重建；实际选中本机 relay 的路径才随对应凭据刷新。
@@ -218,6 +337,8 @@ TURN 缓存刷新而重建；实际选中本机 relay 的路径才随对应凭�
 它会创建完整新 ICE 代次，但不断开信令、不重建平台网络绑定，也不做固定周期触发；
 旧路径保持到新路径通过 QUIC 身份检查后替换。没有 active 路径、已有 pending 或在途
 代次请求、信号离线时不发送请求。
+
+### 接入协议展示
 
 本机 relay 的接入协议来自真实选中 candidate 的 `RelayProtocol`，记录在
 `local_relay_protocol`；对端本机申请 TURN 时使用的接入协议通过已认证的 mux 握手
@@ -303,6 +424,8 @@ Worker 持久化传输 ID / generation，协调双端并发重启，并校验消
 回环应用监听与上游回环连接不绑定外部网络。Network 失效返回明确错误，恢复交给 supervisor。
 UI 快照刷新与协议保活分离，改变界面采样频率不改变传输保活或会话语义。
 
+### 映射与线路流量
+
 映射快照中的 `protocol` 表示该隧道实际使用的应用协议，同一映射只会产生 TCP 或 UDP
 其中一种会话计数；`tcp_sessions` / `udp_sessions` 仅保留兼容字段，展示端应按 `protocol`
 选择对应字段。`read_bytes` 与 `written_bytes` 是该映射应用数据的方向计数，适用于 TCP 和
@@ -313,3 +436,57 @@ UDP：`read_bytes` 是从本地端点读入并转发给对端的字节（本机�
 包含协议开销，用于展示线路流量，不与映射的 `read_bytes` / `written_bytes` 对账。
 
 平台适配约定见 [mobile API](../mobile/README.md)，Go 兼容层见 [anet README](../core/compat/anet/README.md)。
+
+## 图形客户端手动 NAT 检测
+
+### 调用与预算
+
+桥接 API 1 新增 `start_nat_probe` / `cancel_nat_probe`；gomobile 对应 `StartNATProbe` /
+`CancelNATProbe`。检测不需要信令服务器、房间或运行中的转发。开始参数为 `stun_urls`、
+`nat_stun_urls`、`interface_allowlist` 的对象，服务列表最多 8 条，仅接受 UDP STUN；空对象使用默认服务，
+显式空分类服务列表表示关闭并返回错误。重复开始在本次检测存续期间合并，不新建并行任务。
+
+检测与当前核心 NAT 分配共用互斥资源，排队和执行总限时 **60 秒**；取得资源后只做一轮最多 **20 秒**的共享探测。
+
+### 快照与展示
+
+`nat_diagnostic` 事件唤醒宿主，完整结果来自 `snapshot.nat_diagnostic`，原始分类与既有 NAT 快照字段一致。
+
+| 字段 | 内容 |
+| --- | --- |
+| `state`、`started_at`、`finished_at` | 状态与起止时间 |
+| `result`、`network`、`servers` | 原始分类、网络与服务信息 |
+| `mappings` | 原 socket 的去重观测映射 |
+| `targets` | 逐服务 `url`、解析后 `endpoint`、基础 `samples`、去重 `mappings`、失败或合并原因 `reason` |
+| `title`、`summary`、`sections` | 中文说明；分组含 title、fields，字段含 label、value、detail |
+| `tone`、`badge`、`highlights` | 展示色调、标签、摘要；摘要项含 icon、label、value |
+
+NAT 的开始、完成及本机／对端探测时间在界面、复制报告和 CLI 日志中统一按查看设备的系统时区显示为
+`yyyy-MM-dd HH:mm:ss`（24 小时制、精确到秒）。桥接与信令中的原始时间仍为带时区的 RFC 3339，
+由展示端转换；总耗时继续以时长显示。
+| 已完成的检测结果 | 色调 |
+| --- | --- |
+| 全锥型 / 开放网络 | `green` |
+| 受限锥型 / 端口受限锥型 / 防火墙 | `blue` |
+| 有递增或递减证据的对称型 | `yellow`，标签区分可能与已验证 |
+| 无规律的对称型 | `red` |
+| 未知、未完成、网络变化、过期 | `neutral` |
+
+颜色只表达本次证据，不保证直连结果。
+
+### 状态与失效
+
+状态包括 `idle`、`queued`、`probing`、`complete`、`insufficient`、`failed`、`cancelled`、
+`not_applicable`、`network_changed`、`expired`。Stop / Close 等待取消；收到 NetworkChanged 后
+旧结果失效，完成分类超过 5 分钟后标为过期。桌面与 PenMods 使用系统路由，Android 使用所选 Network。
+
+手动结果不覆盖自动打洞证据，也不改变传输策略。配置目标不等于响应目标，样本数不是百分比；
+过滤未知不解释成无限制，趋势和经过验证的预测保持区分。IPv6 地址仅作网络信息展示，不报告 IPv6 可达性结论。
+
+### 目标解析与采样
+
+NAT 探测显式选择 IPv4 STUN 目标；默认平台与 natprobe 一样查询 IPv4，Android 从所选 Network 的 DNS
+返回值中选取 IPv4，即使 IPv6 排在前面也不丢弃该服务。单个服务解析最多 4 秒且受总时限约束。
+逐服务明细保留解析失败、重复端点、未采样和采样中止原因。每个有效端点最多 3 个基础映射样本；
+响应目标数、样本数和不同映射数分别统计。新 socket 验证不计入基础样本和原 socket 映射列表。
+预测基准端口、步长和分配范围属于递增分配模型；类型判定完成不代表模型成立，详情会解释其证据条件。

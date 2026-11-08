@@ -17,6 +17,8 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
+import dev.hole.app.config.ThemeMode
+import dev.hole.app.config.ThemePalette
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -36,6 +38,7 @@ internal class FloatingBallWindow(
     private val manager = windowContext.getSystemService(WindowManager::class.java)
     private val touchSlop = ViewConfiguration.get(windowContext).scaledTouchSlop
     private val gapPx = (8 * windowContext.resources.displayMetrics.density).roundToInt().coerceAtLeast(1)
+    private val shadowInset = dp(12)
     private val onStartRequested = startRequested ?: { openMainActivity(requestStart = true) }
     private val onStopRequested = stopRequested ?: { EngineService.stopRun(context) }
     private val onDetailsRequested = detailsRequested ?: { openMainActivity(openDetails = true) }
@@ -62,6 +65,8 @@ internal class FloatingBallWindow(
         private set
 
     init {
+        root.clipChildren = false
+        root.clipToPadding = false
         root.isClickable = true
         root.setOnClickListener { togglePanel() }
         root.addView(panel)
@@ -88,6 +93,10 @@ internal class FloatingBallWindow(
         }
     }
 
+    fun updateAppearance(mode: ThemeMode, dynamic: Boolean, palette: ThemePalette) {
+        panel.updateAppearance(mode, dynamic, palette)
+    }
+
     fun show() {
         val oldPosition = if (view != null) currentBallPosition() else null
         ballSizePx = (preferences.sizeDp() * windowContext.resources.displayMetrics.density).roundToInt()
@@ -98,6 +107,7 @@ internal class FloatingBallWindow(
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
                     WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                 PixelFormat.TRANSLUCENT,
             ).apply {
@@ -167,6 +177,7 @@ internal class FloatingBallWindow(
 
     private fun openPanel() {
         if (view == null) return
+        panel.update(lastSnapshot)
         expanded = true
         FloatingBallStateStore.setPanelExpanded(true)
         layoutExpanded(currentBallPosition())
@@ -202,44 +213,44 @@ internal class FloatingBallWindow(
 
     private fun layoutExpanded(anchor: Point) {
         val area = safeArea()
-        val maxPanelWidth = (area.right - area.left - ballSizePx - gapPx).coerceAtLeast(dp(180))
+        val maxPanelWidth = (area.right - area.left - ballSizePx - gapPx - shadowInset * 2).coerceAtLeast(1)
         val panelWidth = min(panel.preferredWidth(), maxPanelWidth)
-        val maxPanelHeight = (area.bottom - area.top).coerceAtLeast(dp(280))
+        val maxPanelHeight = (area.bottom - area.top - shadowInset * 2).coerceAtLeast(1)
         panel.visibility = View.VISIBLE
         panel.measure(
             View.MeasureSpec.makeMeasureSpec(panelWidth, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(maxPanelHeight, View.MeasureSpec.AT_MOST),
         )
-        val panelHeight = panel.measuredHeight.coerceAtLeast(dp(180))
-        val rootWidth = panelWidth + gapPx + ballSizePx
-        val rootHeight = max(panelHeight, ballSizePx)
+        val panelHeight = panel.measuredHeight
+        val rootWidth = panelWidth + gapPx + ballSizePx + shadowInset * 2
+        val rootHeight = max(panelHeight, ballSizePx) + shadowInset * 2
         val roomLeft = anchor.x - area.left
         val roomRight = area.right - (anchor.x + ballSizePx)
-        val panelOnRight = if (roomRight >= panelWidth + gapPx) {
+        val panelOnRight = if (roomRight >= panelWidth + gapPx + shadowInset) {
             true
-        } else if (roomLeft >= panelWidth + gapPx) {
+        } else if (roomLeft >= panelWidth + gapPx + shadowInset) {
             false
         } else {
             roomRight >= roomLeft
         }
         val minX = area.left
         val maxX = (area.right - rootWidth).coerceAtLeast(minX)
-        val candidateX = if (panelOnRight) anchor.x else anchor.x - panelWidth - gapPx
+        val candidateX = (if (panelOnRight) anchor.x else anchor.x - panelWidth - gapPx) - shadowInset
         val rootX = candidateX.coerceIn(minX, maxX)
         val minY = area.top
         val maxY = (area.bottom - rootHeight).coerceAtLeast(minY)
-        val candidateY = anchor.y + (ballSizePx - panelHeight) / 2
+        val candidateY = anchor.y + (ballSizePx - panelHeight) / 2 - shadowInset
         val rootY = candidateY.coerceIn(minY, maxY)
-        val ballLeft = if (panelOnRight) 0 else panelWidth + gapPx
-        val ballTop = (anchor.y - rootY).coerceIn(0, rootHeight - ballSizePx)
+        val ballLeft = shadowInset + if (panelOnRight) 0 else panelWidth + gapPx
+        val ballTop = (anchor.y - rootY).coerceIn(shadowInset, rootHeight - ballSizePx - shadowInset)
         val params = requireNotNull(layout)
         params.width = rootWidth
         params.height = rootHeight
         params.x = rootX
         params.y = rootY
         panel.layoutParams = FrameLayout.LayoutParams(panelWidth, panelHeight).apply {
-            leftMargin = if (panelOnRight) ballSizePx + gapPx else 0
-            topMargin = 0
+            leftMargin = shadowInset + if (panelOnRight) ballSizePx + gapPx else 0
+            topMargin = shadowInset
         }
         icon.layoutParams = FrameLayout.LayoutParams(ballSizePx, ballSizePx).apply {
             leftMargin = ballLeft

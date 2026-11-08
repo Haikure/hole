@@ -10,8 +10,8 @@ import (
 func natFixtureSTUNURLs(t *testing.T) []string {
 	t.Helper()
 	urls := []string{}
-	for range 2 {
-		stunServer, e := net.ListenPacket("udp4", "127.0.0.1:0")
+	for _, address := range []string{"127.0.0.1:0", "127.0.0.2:0"} {
+		stunServer, e := net.ListenPacket("udp4", address)
 		if e != nil {
 			t.Fatal(e)
 		}

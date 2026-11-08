@@ -99,6 +99,7 @@ pub struct Network {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
+    pub nat_diagnostic: Value,
     pub native_ready: bool,
     pub api_version: i64,
     pub session_protocol: i64,
@@ -315,6 +316,7 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
     let n = &j["network"];
     let caps = &j["capabilities"];
     Ok(Snapshot {
+        nat_diagnostic: j["nat_diagnostic"].clone(),
         native_ready: true,
         voice: parse_voice(&j["voice"]),
         api_version: i(j, "api_version"),
@@ -585,11 +587,17 @@ pub fn fixed_peer_details(p: &Peer) -> Vec<(&'static str, String)> {
     details
 }
 
+pub fn nat_time(value: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|stamp| stamp.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|_| value.to_string())
+}
+
 pub fn nat_text(n: &Value, local: bool) -> String {
     let status = match n["status"].as_str().unwrap_or("") { "" => return if local {"信息不足"} else {"对端未上报"}.into(), "probing"=>"探测中 · ", "insufficient"=>"信息不足 · ", "expired"=>"已过期 · ", "not_applicable"=>"IPv4 不适用 · ", _=>"" };
     let kind = match n["type"].as_str().unwrap_or("") { "open"=>"公网直连", "firewall"=>"防火墙过滤", "full_cone"=>"完全锥型", "restricted_cone"=>"地址受限锥型", "port_restricted_cone"=>"端口受限锥型", "symmetric"=>"对称型", "endpoint_independent"=>"端点无关映射", _=>"未知" };
     let pattern = match n["predictability"].as_str().unwrap_or("") { "stable"=>"映射稳定", "predictable_incremental"=>"可预测（递增）", "predictable_decremental"=>"可预测（递减）", "incremental"=>"可能可预测（递增）", "decremental"=>"可能可预测（递减）", "irregular"=>"未观察到规律", _=>"可预测性未知" };
-    format!("{status}{kind} · {pattern} · {}",n["probed_at"].as_str().unwrap_or("暂无探测时间"))
+    format!("{status}{kind} · {pattern} · {}", nat_time(n["probed_at"].as_str().filter(|s| !s.is_empty()).unwrap_or("暂无探测时间")))
 }
 
 pub fn profile_label(profile: &str) -> &'static str {
@@ -750,6 +758,53 @@ mod tests {
     }
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn nat_times_keep_placeholders_and_normalize_source_offsets() {
+        for value in ["", "暂无", "未知 / 尚未确认", "2001:db8::1", "invalid timestamp"] {
+            assert_eq!(nat_time(value), value);
+        }
+        let value = nat_time("2026-11-07T23:59:59.123456789Z");
+        assert_eq!(value, nat_time("2026-11-08T05:44:59.123456789+05:45"));
+        assert_eq!(value.len(), 19);
+        assert_eq!(&value[10..11], " ");
+        assert!(nat_text(&json!({"status": "complete", "probed_at": ""}), true).ends_with("暂无探测时间"));
+    }
+
+    // The CI harness starts a fresh test process in each system time zone;
+    // changing TZ inside a parallel test would race with Chrono's local cache.
+    #[test]
+    #[ignore = "requires scripts/test_desktop_timezones.py to select the system time zone"]
+    fn nat_time_system_timezone_cases() {
+        let zone = std::env::var("HOLE_TEST_TIME_ZONE").expect("CI must select a system time zone");
+        let column = match zone.as_str() {
+            "UTC" => 0,
+            "Asia/Shanghai" => 1,
+            "America/New_York" => 2,
+            _ => panic!("unexpected test time zone: {zone}"),
+        };
+        let cases = [
+            ("2026-11-07T23:59:59.123456789Z", ["2026-11-07 23:59:59", "2026-11-08 07:59:59", "2026-11-07 18:59:59"]),
+            ("2026-11-08T05:44:59.123456789+05:45", ["2026-11-07 23:59:59", "2026-11-08 07:59:59", "2026-11-07 18:59:59"]),
+            ("2026-03-08T06:59:59Z", ["2026-03-08 06:59:59", "2026-03-08 14:59:59", "2026-03-08 01:59:59"]),
+            ("2026-03-08T07:00:00Z", ["2026-03-08 07:00:00", "2026-03-08 15:00:00", "2026-03-08 03:00:00"]),
+            ("2026-11-01T05:59:59Z", ["2026-11-01 05:59:59", "2026-11-01 13:59:59", "2026-11-01 01:59:59"]),
+            ("2026-11-01T06:00:00Z", ["2026-11-01 06:00:00", "2026-11-01 14:00:00", "2026-11-01 01:00:00"]),
+        ];
+        for (raw, expected) in cases {
+            let expected = expected[column];
+            assert_eq!(nat_time(raw), expected, "{zone}: {raw}");
+            let nat = json!({"status": "complete", "type": "full_cone", "probed_at": raw});
+            let snapshot = parse_snapshot(&json!({
+                "api_version": 1,
+                "network": {"nat": nat.clone()},
+                "peer_transports": [{"local_nat": nat.clone(), "peer_nat": nat}]
+            })).unwrap();
+            assert!(snapshot.network.nat.ends_with(expected));
+            assert!(snapshot.peers[0].local_nat.ends_with(expected));
+            assert!(snapshot.peers[0].peer_nat.ends_with(expected));
+        }
+    }
 
     #[test]
     fn parse_stopped_snapshot() {

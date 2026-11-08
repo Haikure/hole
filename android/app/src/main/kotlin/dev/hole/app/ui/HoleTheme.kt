@@ -1,6 +1,7 @@
 package dev.hole.app.ui
 
 import android.app.Activity
+import android.content.Context
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
@@ -168,6 +169,12 @@ internal fun materialPalette(palette: ThemePalette, dark: Boolean): ColorScheme 
     )
 }
 
+/** Shared by Compose and the service-owned floating window. */
+internal fun holeColorScheme(context: Context, dark: Boolean, dynamic: Boolean, palette: ThemePalette): ColorScheme =
+    if (dynamic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    } else materialPalette(palette, dark)
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun HoleTheme(
@@ -183,10 +190,7 @@ fun HoleTheme(
         ThemeMode.LIGHT -> false
         ThemeMode.DARK -> true
     }
-    val useDynamic = dynamic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    val colors = if (useDynamic) {
-        if (dark) dynamicDarkColorScheme(LocalContext.current) else dynamicLightColorScheme(LocalContext.current)
-    } else materialPalette(palette, dark)
+    val colors = holeColorScheme(LocalContext.current, dark, dynamic, palette)
     val view = LocalView.current
     val activity = view.context as? Activity
     SideEffect {

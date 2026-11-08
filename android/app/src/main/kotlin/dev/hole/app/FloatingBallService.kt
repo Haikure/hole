@@ -14,14 +14,22 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import dev.hole.app.config.ConfigRepository
+import dev.hole.app.config.ThemeMode
+import dev.hole.app.config.ThemePalette
+import dev.hole.app.config.usesDynamicColor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** A user-enabled visible overlay, independent of forwarding and microphone use. */
@@ -48,6 +56,20 @@ class FloatingBallService : Service() {
         serviceScope.launch {
             FloatingBallStateStore.snapshot.collect { snapshot ->
                 ball.updateSnapshot(snapshot)
+            }
+        }
+        serviceScope.launch {
+            val repository = ConfigRepository(this@FloatingBallService)
+            try {
+                repository.load()
+            } catch (failure: Exception) {
+                if (failure is CancellationException) throw failure
+                Log.w("FloatingBallService", "无法读取悬浮窗主题，暂用默认主题")
+            }
+            repository.changes.map {
+                Triple(ThemeMode.fromValue(it.themeMode), it.usesDynamicColor(), ThemePalette.fromValue(it.materialPalette))
+            }.distinctUntilChanged().collect { (mode, dynamic, palette) ->
+                ball.updateAppearance(mode, dynamic, palette)
             }
         }
     }

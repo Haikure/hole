@@ -32,6 +32,16 @@ QtObject {
     readonly property color accentInk: "#ffffff"
     readonly property color warning: "#e9900c"
     readonly property color error: "#f03043"
+    readonly property color natGreen: "#8ee0ae"
+    readonly property color natBlue: "#9ec8ff"
+    readonly property color natYellow: "#f5d477"
+    readonly property color natRed: "#ffb4ab"
+    function natInk(tone) {
+        return tone === "green" ? natGreen : tone === "blue" ? natBlue : tone === "yellow" ? natYellow : tone === "red" ? natRed : textSecondary
+    }
+    function natSurface(tone) {
+        return tone === "green" ? "#183b2a" : tone === "blue" ? "#1a3555" : tone === "yellow" ? "#40351a" : tone === "red" ? "#4a2526" : surface
+    }
 
     readonly property color trackOff: "#515259"
     readonly property color trackOffBorder: "#686a72"

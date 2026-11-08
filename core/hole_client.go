@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/quic-go/quic-go"
+	"github.com/apernet/quic-go"
 )
 
 // A device-pair datagram path is independent of ICE or a concrete forwarder.

@@ -3,7 +3,17 @@ name: Test desktop
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/nat-direct']
+    branches: ['main']
+    paths:
+      - '.github/workflows/test.yaml'
+      - 'desktop/**'
+      - 'core/**'
+      - 'mobile/**'
+      - 'scripts/**'
+      - 'build.sh'
+      - 'go.mod'
+      - 'go.sum'
+      - 'versions.json'
   pull_request:
     paths:
       - '.github/workflows/test.yaml'
@@ -14,6 +24,7 @@ on:
       - 'build.sh'
       - 'go.mod'
       - 'go.sum'
+      - 'versions.json'
 
 permissions:
   contents: read
@@ -112,6 +123,15 @@ jobs:
           export HOLE_EMBED_CORE="$core_binary"
           cd desktop/gui
           cargo test --locked --release --features embedded-core
+
+      - name: Test NAT timestamps in UTC, Shanghai and New York
+        run: |
+          set -euo pipefail
+          source scripts/build-env.sh
+          core_binary="$PWD/dist/core/hole-core-${{ matrix.os }}-amd64"
+          if [[ '${{ matrix.os }}' == windows ]]; then core_binary+=.exe; fi
+          export HOLE_EMBED_CORE="$core_binary"
+          python3 scripts/test_desktop_timezones.py
 
       - name: Upload tested executable
         if: success()

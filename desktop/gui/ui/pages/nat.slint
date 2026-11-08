@@ -1,0 +1,95 @@
+import { Theme } from "../theme.slint";
+import { App } from "../state.slint";
+import { Icon, Icons } from "../icons.slint";
+import { NATTile } from "../models.slint";
+import { Card, SectionTitle, Label, Hint, Btn, Badge, Notice, PageHeader, PageBody, Divider } from "../controls.slint";
+
+component NATCard inherits Card {
+    outlined: false;
+    border-width: 0px;
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-y: 4px;
+}
+
+export component NATPage inherits VerticalLayout {
+    spacing: 0px;
+    property <color> ink: App.nat-tone == "green" ? Theme.good : App.nat-tone == "yellow" ? Theme.warn : App.nat-tone == "red" ? Theme.bad : App.nat-tone == "blue" ? (Theme.dark ? #9EC8FF : #1B579A) : Theme.text-muted;
+    pure function tile-icon(name: string) -> string {
+        if name == "mapping" || name == "映射与过滤" { return Icons.mappings; }
+        if name == "shield" { return "M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6zM9 12l2 2 4-4"; }
+        if name == "trend" || name == "端口特征" { return Icons.diagnostics; }
+        if name == "steps" { return "M3 19h6v-5h6V9h6V4"; }
+        if name == "samples" || name == "检测记录" { return Icons.exchange; }
+        return Icons.transport;
+    }
+    callback open-page(string);
+    PageHeader {
+        title: "NAT 检测";
+        subtitle: "从映射、过滤到端口特征，查看当前网络的完整检测证据。";
+        Btn { text: "检测服务设置"; icon: Icons.settings; kind: "ghost"; clicked => { root.open-page("transport"); } }
+    }
+    PageBody {
+        NATCard {
+            HorizontalLayout {
+                spacing: Theme.space-4;
+                Icon { name: Icons.transport; size: 32px; tint: root.ink; }
+                VerticalLayout {
+                    spacing: Theme.space-3;
+                    Text { text: App.nat-badge; font-size: Theme.font-sm; font-weight: 600; color: root.ink; }
+                    Text { text: App.nat-title; font-size: Theme.font-display; font-weight: 600; color: root.ink; wrap: word-wrap; }
+                    Label { text: App.nat-summary; }
+                }
+            }
+            if App.nat-busy : Rectangle {
+                height: 4px; border-radius: 2px; background: Theme.accent-soft;
+                Rectangle { width: parent.width / 3; height: parent.height; border-radius: 2px; background: Theme.accent; x: Theme.reduce-motion ? 0px : (parent.width - self.width) * (0.5 - 0.5 * cos(mod(animation-tick(), 1800ms) / 1800ms * 360deg)); }
+            }
+            HorizontalLayout {
+                spacing: Theme.space-3; alignment: start;
+                Btn { text: App.nat-busy ? "取消检测" : App.nat-state == "idle" ? "开始检测" : "重新检测"; icon: App.nat-busy ? Icons.close : Icons.refresh; enabled: App.status.bridge-ready; clicked => { if App.nat-busy { App.cancel-nat-probe(); } else { App.start-nat-probe(); } } }
+                Btn { text: "复制完整结果"; icon: Icons.copy; kind: "ghost"; enabled: !App.nat-busy && App.nat-sections.length > 0; clicked => { App.copy-text(App.nat-report); } }
+            }
+            if App.status.command-error != "" : Notice { text: App.status.command-error; kind: "warn"; }
+        }
+        if App.nat-highlights.length > 0 : tiles := Rectangle {
+            background: transparent;
+            property <int> columns: self.width > 680px ? 3 : self.width > 420px ? 2 : 1;
+            height: ceil(App.nat-highlights.length / self.columns) * 126px - 12px;
+            for tile[index] in App.nat-highlights : NATCard {
+                x: mod(index, tiles.columns) * (self.width + 12px);
+                y: floor(index / tiles.columns) * 126px;
+                width: (tiles.width - (tiles.columns - 1) * 12px) / tiles.columns;
+                height: 114px; spacing: 8px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Icon { name: root.tile-icon(tile.icon); tint: root.ink; size: 20px; }
+                    Text { text: tile.label; color: Theme.text-muted; font-size: Theme.font-sm; vertical-alignment: center; }
+                }
+                Text { text: tile.value; color: Theme.text; font-size: Theme.font-lg; font-weight: 600; wrap: word-wrap; }
+            }
+        }
+        if App.nat-state == "idle" : NATCard {
+            SectionTitle { text: "这次会检测什么"; }
+            Label { text: "映射与过滤 · NAT 类型、公网 IPv4、映射端口及入站限制。"; }
+            Divider { }
+            Label { text: "端口特征 · 分配规律、步长、端口保持与 No-PAT 证据。"; }
+            Divider { }
+            Label { text: "网络与记录 · 本机 IPv4 / IPv6 地址、有效样本、时间与检测说明。"; }
+        }
+        for section in App.nat-sections : NATCard {
+            HorizontalLayout {
+                spacing: 10px;
+                Icon { name: root.tile-icon(section.title); tint: root.ink; size: 22px; }
+                SectionTitle { text: section.title; }
+            }
+            for field in section.fields : VerticalLayout {
+                spacing: Theme.space-2;
+                Text { text: field.label; font-size: Theme.font-sm; font-weight: 600; color: root.ink; }
+                Text { text: field.value; font-size: Theme.font-md; color: Theme.text; wrap: word-wrap; }
+                if field.detail != "" : Hint { text: field.detail; }
+                Divider { }
+            }
+        }
+        Hint { text: "未知表示证据不足；IPv6 地址和 NAT 类型都不能替代实际直连检查。复制结果包含网络地址，请按需要分享。"; }
+    }
+}

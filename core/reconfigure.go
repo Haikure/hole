@@ -138,6 +138,7 @@ func (e *Engine) serveCycle(ctx context.Context, run *engineRun, epoch uint64, r
 				e.mu.Unlock()
 			})
 		e.mu.Lock()
+		c.natAllocation = &e.natAllocation
 		run.ice = c
 		if e.request != nil && sameScope(request, *e.request) {
 			c.submit(*e.request)

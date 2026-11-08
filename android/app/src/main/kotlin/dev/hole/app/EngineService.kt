@@ -63,6 +63,7 @@ open class EngineService : Service() {
     private val epoch = AtomicLong()
     @Volatile private var client: CoreController? = null
     @Volatile private var requested = false
+    @Volatile private var diagnosticRequested = false
     @Volatile private var foregroundActive = false
     @Volatile private var currentRoom = ""
     @Volatile private var secrets: List<String> = emptyList()
@@ -76,6 +77,8 @@ open class EngineService : Service() {
         data class Network(val epoch: Long, val event: String) : Command
         data class Stop(val completion: CompletableDeferred<Unit>? = null) : Command
         data object Renominate : Command
+        data class NATProbe(val options: String) : Command
+        data object CancelNATProbe : Command
         data class SetVoiceMuted(val muted: Boolean) : Command
     }
     inner class LocalBinder : Binder() { val service: EngineService get() = this@EngineService }
@@ -90,6 +93,9 @@ open class EngineService : Service() {
     fun setVoiceMuted(muted: Boolean) {
         if (requested) commands.trySend(Command.SetVoiceMuted(muted))
     }
+
+    fun startNATProbe(options: String) { commands.trySend(Command.NATProbe(options)) }
+    fun cancelNATProbe() { commands.trySend(Command.CancelNATProbe) }
 
     override fun onCreate() {
         super.onCreate()
@@ -113,7 +119,7 @@ open class EngineService : Service() {
                 launch { telemetryActive.collect { loaded.setTelemetryActive(it) } }
                 launch {
                     loaded.networkEvents.debounce(250).collect {
-                        if (requested) commands.send(Command.Network(epoch.get(), it))
+                        if (requested || diagnosticRequested) commands.send(Command.Network(epoch.get(), it))
                     }
                 }
                 loaded.snapshots.collect { snapshot ->
@@ -145,8 +151,10 @@ open class EngineService : Service() {
                     when (command) {
                         is Command.Start -> cancellableCommand { applyLatest(command.epoch) }
                         is Command.Apply -> cancellableCommand { applyLatest(command.epoch) }
-                        is Command.Network -> cancellableCommand { if (isCurrent(command.epoch)) ready.await().networkChanged(command.event) }
+                        is Command.Network -> cancellableCommand { if (command.epoch == epoch.get() && (requested || diagnosticRequested)) ready.await().networkChanged(command.event) }
                         Command.Renominate -> if (requested) ready.await().renominateTransports()
+                        is Command.NATProbe -> { mutableCommandError.value = null; ready.await().startNATProbe(command.options); diagnosticRequested = true }
+                        Command.CancelNATProbe -> ready.await().cancelNATProbe()
                         is Command.SetVoiceMuted -> if (requested) ready.await().setVoiceMuted(command.muted)
                         is Command.Stop -> {
                             try { stopInternal(); command.completion?.complete(Unit) }
@@ -238,6 +246,7 @@ open class EngineService : Service() {
     }
 
     private suspend fun stopInternal() {
+        diagnosticRequested = false
         try {
             client?.stopVoiceAudio()
             client?.stop()

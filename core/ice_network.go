@@ -18,11 +18,12 @@ import (
 // Implements Pion's network boundary without creating stdnet (which enumerates
 // netlink on Android). Every socket/DNS operation stays on the pinned Platform.
 type iceNetwork struct {
-	ctx      context.Context
-	platform Platform
-	facts    ICEPlatform
-	mu       sync.Mutex
-	sockets  []net.PacketConn
+	ctx       context.Context
+	platform  Platform
+	facts     ICEPlatform
+	mu        sync.Mutex
+	sockets   []net.PacketConn
+	checkPace *iceCheckPacer
 }
 
 // rawSocket is the part of *net.UDPConn that quic-go tunes: the DF bit through
@@ -44,6 +45,7 @@ func (n *iceNetwork) ListenPacket(network, address string) (net.PacketConn, erro
 	pc, err := n.platform.ListenPacket(n.ctx, network, address)
 	if err == nil {
 		n.track(pc)
+		pc = n.paced(pc)
 	}
 	return pc, err
 }
@@ -251,6 +253,7 @@ func (l iceListenConfig) ListenPacket(ctx context.Context, network, address stri
 	pc, err := l.n.platform.ListenPacket(ctx, network, address)
 	if err == nil {
 		l.n.track(pc)
+		pc = l.n.paced(pc)
 	}
 	return pc, err
 }

@@ -512,6 +512,15 @@ func TestProbeVerifiesTrendAcrossSockets(t *testing.T) {
 				}
 			}
 			wantSockets := 2
+			// These sequences also enter the new held-out cross-socket
+			// validation. The fixture supplies no fourth allocation, so the
+			// first additional socket downgrades the model to same_socket.
+			if tc.name == "increasing" || tc.name == "first configured server unavailable" || tc.name == "same direction with gap" {
+				wantSockets = 3
+				if got.AllocationScope != "same_socket" {
+					t.Fatalf("unverified cross-socket model: %+v", got)
+				}
+			}
 			if tc.failFresh {
 				wantSockets = 1
 			}
@@ -519,6 +528,11 @@ func TestProbeVerifiesTrendAcrossSockets(t *testing.T) {
 				t.Fatalf("unexpected socket count or original socket was closed: %+v", f.connections)
 			}
 			if !tc.failFresh {
+				for _, extra := range f.connections[1:] {
+					if !extra.closed {
+						t.Fatal("held-out probe socket leaked")
+					}
+				}
 				fresh := f.connections[1]
 				if !fresh.closed || len(fresh.allowed) != 1 || !fresh.allowed[firstResponding] {
 					t.Fatalf("fresh socket did not verify a responding target and close: %+v", fresh)

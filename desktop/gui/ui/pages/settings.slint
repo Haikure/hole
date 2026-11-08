@@ -75,6 +75,10 @@ export component SettingsPage inherits VerticalLayout {
         subtitle: root.section == "appearance" ? "与 Android 一致的配色与动效。" : root.section == "behavior" ? "后台保持、自动恢复与本机信息。" : "服务器、房间与设备凭据。";
     }
     PageBody {
+        if root.section == "settings" : Card {
+            SectionTitle { text: "网络检测"; subtitle: "无需加入房间，查看映射、过滤及端口特征。"; }
+            Btn { text: "打开 NAT 检测"; kind: "ghost"; clicked => { root.open-page("nat"); } }
+        }
         VerticalLayout {
             spacing: Theme.space-4;
             // ---- 连接 ----

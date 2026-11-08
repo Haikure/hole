@@ -86,6 +86,10 @@ type Engine struct {
 	reconnects          uint64
 	startedAt           string
 	network             NetworkSnapshot
+	natAllocation       natAllocationGate
+	natDiagnostic       NATDiagnostic
+	natProbeCancel      context.CancelFunc
+	natProbeDone        chan struct{}
 }
 
 func NewEngine(options Options) *Engine {
@@ -199,6 +203,7 @@ func (e *Engine) Stop() error {
 }
 
 func (e *Engine) stop() {
+	e.cancelNATProbeAndWait()
 	e.mu.Lock()
 	run := e.run
 	e.requested = false
@@ -278,6 +283,7 @@ func (e *Engine) NetworkChanged() error {
 	if e.closed {
 		return ErrClosed
 	}
+	e.invalidateNATProbeLocked()
 	if !e.requested || e.run == nil || e.run.ctx.Err() != nil {
 		return nil
 	}
@@ -536,7 +542,8 @@ func (e *Engine) Snapshot() Snapshot {
 		EventsDropped:       e.dropped,
 		TransportGeneration: e.transportGeneration, NetworkChanges: e.networkChanges, Reconnects: e.reconnects,
 		StartedAt: e.startedAt, Network: e.network.clone(),
-		Mappings: []MappingSnapshot{}, PeerTransports: []PeerTransportSnapshot{}, Voice: VoiceSnapshot{State: "disabled", Members: []VoiceMemberSnapshot{}, Peers: []VoicePeerSnapshot{}}, Capabilities: Capabilities{Transport: "IPv6 / QUIC / hole-v2", RequiresIPv6: true, LiveConfiguration: true},
+		NATDiagnostic: e.natDiagnostic.view(),
+		Mappings:      []MappingSnapshot{}, PeerTransports: []PeerTransportSnapshot{}, Voice: VoiceSnapshot{State: "disabled", Members: []VoiceMemberSnapshot{}, Peers: []VoicePeerSnapshot{}}, Capabilities: Capabilities{Transport: "IPv6 / QUIC / hole-v2", RequiresIPv6: true, LiveConfiguration: true},
 	}
 	s.Network.NAT = natUnknown()
 	s.Capabilities.HoleRelay = true

@@ -3,6 +3,7 @@ package dev.hole.corebridge
 import org.json.JSONObject
 
 data class NATSnapshot(val status: String = "", val type: String = "unknown", val predictability: String = "unknown", val samples: Int = 0, val probedAt: String = "", val reason: String = "") {
+    val probedAtDisplay: String get() = formatNATTime(probedAt)
     fun description(local: Boolean = false): String {
         val state = mapOf("probing" to "探测中", "insufficient" to "信息不足", "expired" to "已过期", "not_applicable" to "IPv4 不适用")[status]
         if (status.isBlank()) return if (local) "信息不足" else "对端未上报"
@@ -40,12 +41,12 @@ data class PeerSnapshot(
     val relayRound: Int = 0, val relayOrderFallback: Boolean = false,
     val fixedEndpoint: String = "", val listenerId: String = "", val dialerId: String = "",
     val localNAT: NATSnapshot = NATSnapshot(), val peerNAT: NATSnapshot = NATSnapshot(),
-    val portMapping: String = "",
+    val portMapping: PortMappingSnapshot = PortMappingSnapshot(),
 ) {
     companion object {
         fun fromJson(j: JSONObject): PeerSnapshot = PeerSnapshot(
             localNAT = NATSnapshot.fromJson(j.optJSONObject("local_nat")), peerNAT = NATSnapshot.fromJson(j.optJSONObject("peer_nat")),
-            portMapping = j.optJSONObject("port_mapping")?.toString().orEmpty(),
+            portMapping = PortMappingSnapshot.fromJson(j.optJSONObject("port_mapping")),
             relayDevice = j.optString("relay_device"), relayEndpoint = j.optString("relay_endpoint"), relayAccessAddress = j.optString("relay_access_address"),
             peerId = j.optString("peer_id"), transportId = j.optString("transport_id"), generation = j.optString("generation", "0"),
             profile = j.optString("profile"), state = j.optString("state"), phase = j.optString("phase"), pendingPhase = j.optString("pending_phase"),
@@ -98,6 +99,7 @@ data class VoiceSnapshot(
 )
 
 data class CoreSnapshot(
+    val natDiagnostic: NATDiagnostic = NATDiagnostic(),
     val nativeReady: Boolean = false,
     val configured: Boolean = false,
     val runRequested: Boolean = false,
@@ -164,6 +166,7 @@ data class CoreSnapshot(
                 return (0 until array.length()).map { array.getString(it) }
             }
             return CoreSnapshot(
+                natDiagnostic = NATDiagnostic.fromJson(json.optJSONObject("nat_diagnostic")),
                 nativeReady = true,
                 configured = json.getBoolean("configured"),
                 runRequested = json.getBoolean("run_requested"),

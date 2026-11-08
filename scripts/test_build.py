@@ -154,12 +154,12 @@ class BuildTests(unittest.TestCase):
         version_flag = next(arg for arg in build["args"] if arg.startswith("-ldflags="))
         self.assertTrue(version_flag.startswith("-ldflags=-s -w -X hole/core.CoreVersion="))
         self.assertEqual("./cmd/hole-core", build["args"][-1])
-        for relative in ("Main.qml", "SettingsPage.qml", "ConfigPage.qml", "metadata.json", "icon.png",
+        for relative in ("Main.qml", "SettingsPage.qml", "ConfigPage.qml", "NATPage.qml", "metadata.json", "icon.png",
                          *[str(p.relative_to(ROOT / "penmods")) for p in (ROOT / "penmods/components").glob("*") if p.is_file()]):
             self.assertEqual((self.root / "penmods" / relative).read_bytes(), (output / relative).read_bytes())
         self.assertEqual("release-plugin-fixture", (output / "libhole_plugin.so").read_text())
         self.assertEqual({"libhole_plugin.so", "hole-core", "hole-core.sha256", "metadata.json", "icon.png",
-                          "Main.qml", "SettingsPage.qml", "ConfigPage.qml", "components"},
+                          "Main.qml", "SettingsPage.qml", "ConfigPage.qml", "NATPage.qml", "components"},
                          {p.name for p in output.iterdir()})
         self.assertTrue(os.access(output / "hole-core", os.X_OK))
         checksum = (output / "hole-core.sha256").read_text().split()

@@ -63,7 +63,25 @@ func (c *iceCoordinator) monitorNAT() {
 		if !cfg.ICE.RelayOnly && cfg.Transport.FixedEndpoint == nil && (epoch != lastEpoch || time.Now().After(next)) {
 			lastEpoch = epoch
 			next = time.Now().Add(nat.Lifetime)
-			ctx, cancel := context.WithTimeout(c.ctx, natprobe.DefaultTimeout)
+			ctx, cancel := context.WithCancel(c.ctx)
+			c.natMu.Lock()
+			c.natCancel = cancel
+			if epoch != c.networkEpoch.Load() {
+				cancel()
+			}
+			c.natMu.Unlock()
+			// Queue before starting the probe budget. Do not consume mappings
+			// while another device pair is using its calibrated prediction.
+			release, lockErr := c.natAllocation.acquire(ctx)
+			if lockErr != nil {
+				cancel()
+				if c.ctx.Err() != nil {
+					return
+				}
+				continue
+			}
+			probeCtx, stopProbe := context.WithTimeout(ctx, 3*natprobe.DefaultTimeout)
+			ctx = probeCtx
 			platform, err := c.pin(ctx)
 			if err == nil {
 				if v, ok := platform.(interface{ NATIPv4Available() bool }); ok && !v.NATIPv4Available() {
@@ -72,6 +90,8 @@ func (c *iceCoordinator) monitorNAT() {
 						c.natSnapshot = NATSnapshot{Status: "not_applicable", Type: "unknown", Predictability: "unknown", Epoch: epoch, ProbedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 					}
 					c.natMu.Unlock()
+					stopProbe()
+					release()
 					cancel()
 					select {
 					case <-c.ctx.Done():
@@ -82,25 +102,33 @@ func (c *iceCoordinator) monitorNAT() {
 				}
 			}
 			if err == nil {
-				pc, e := platform.ListenPacket(ctx, "udp4", "0.0.0.0:0")
-				if e == nil {
-					c.natMu.Lock()
+				c.natMu.Lock()
+				if epoch == c.networkEpoch.Load() {
 					c.natSnapshot = NATSnapshot{Status: "probing", Type: "unknown", Predictability: "unknown", Epoch: epoch}
-					c.natMu.Unlock()
-					s, _ := nat.Probe(ctx, platform, pc, natURLs(cfg.ICE))
-					_ = pc.Close()
-					s.Epoch = epoch
-					if source, ok := platform.(interface{ NATNetworkIdentity() string }); ok {
-						s.Network = source.NATNetworkIdentity()
-					}
-					c.natMu.Lock()
-					if epoch == c.networkEpoch.Load() {
-						c.natSnapshot = s
-					}
-					c.natMu.Unlock()
 				}
+				c.natMu.Unlock()
+				s := probeNATWithRetries(ctx, platform, natURLs(cfg.ICE))
+				s.Epoch = epoch
+				if source, ok := platform.(interface{ NATNetworkIdentity() string }); ok {
+					s.Network = source.NATNetworkIdentity()
+				}
+				c.natMu.Lock()
+				if epoch == c.networkEpoch.Load() {
+					c.natSnapshot = s
+				}
+				c.natMu.Unlock()
 			}
+			stopProbe()
+			release()
 			cancel()
+			// A failed socket/DNS/platform operation must also finish discovery;
+			// consumers may wait for this bounded classification pass.
+			c.natMu.Lock()
+			if epoch == c.networkEpoch.Load() && c.natSnapshot.ProbedAt == "" {
+				c.natSnapshot = nat.Unknown("NAT 探测未取得足够证据")
+				c.natSnapshot.Epoch = epoch
+			}
+			c.natMu.Unlock()
 		}
 		select {
 		case <-c.ctx.Done():
@@ -108,6 +136,28 @@ func (c *iceCoordinator) monitorNAT() {
 		case <-ticker.C:
 		}
 	}
+}
+
+// Repeat a full discovery, with fresh sockets, only while classification is
+// insufficient. A known irregular symmetric NAT is a conclusive classification.
+func probeNATWithRetries(ctx context.Context, network nat.Network, urls []string) NATSnapshot {
+	s := nat.Unknown("NAT 探测未取得足够证据")
+	if len(urls) == 0 {
+		return s
+	}
+	for attempt := 0; attempt < 3 && ctx.Err() == nil; attempt++ {
+		probeCtx, stop := context.WithTimeout(ctx, natprobe.DefaultTimeout)
+		pc, err := network.ListenPacket(probeCtx, "udp4", "0.0.0.0:0")
+		if err == nil {
+			s, _ = nat.Probe(probeCtx, network, pc, urls)
+			_ = pc.Close()
+		}
+		stop()
+		if s.Status == "complete" {
+			break
+		}
+	}
+	return s
 }
 
 // Explicitly disabling ordinary STUN also disables implicit external probes.

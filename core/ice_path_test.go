@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apernet/quic-go"
 	"github.com/pion/ice/v4"
-	"github.com/quic-go/quic-go"
 )
 
 func TestRelayLegsAndCandidateSocket(t *testing.T) {

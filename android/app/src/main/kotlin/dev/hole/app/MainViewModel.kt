@@ -272,6 +272,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun renominateTransports() = EngineService.renominate(getApplication())
 
+    fun startNATProbe() {
+        val service = serviceReference.get()
+        if (service == null) { mutableCommandError.value = "正在等待核心服务"; return }
+        val ice = mutableConfigState.value.config.connection.ice
+        val options = org.json.JSONObject().put("stun_urls", org.json.JSONArray(ice.stunUrls))
+            .put("nat_stun_urls", ice.natStunUrls?.let { org.json.JSONArray(it) } ?: org.json.JSONObject.NULL)
+            .put("interface_allowlist", org.json.JSONArray(ice.interfaceAllowlist))
+        service.startNATProbe(options.toString())
+    }
+
+    fun cancelNATProbe() { serviceReference.get()?.cancelNATProbe() }
+
     suspend fun importConfig(preview: ImportPreview) {
         val engineService = requireNotNull(serviceReference.get()) { "正在等待核心服务" }
         engineService.stopForImport()

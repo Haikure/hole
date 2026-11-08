@@ -17,6 +17,11 @@ type peerMappingRecord struct {
 	Expose   HostPort        `json:"expose"`
 }
 type iceSignalMessage struct {
+	DirectOrder    string            `json:"direct_order,omitempty"`
+	DirectStage    string            `json:"direct_stage,omitempty"`
+	PunchSchedule  string            `json:"punch_schedule,omitempty"`
+	PunchVersion   string            `json:"punch_version,omitempty"`
+	Punch          *natPunchSignal   `json:"punch,omitempty"`
 	NAT            *natPlan          `json:"nat,omitempty"`
 	HoleVersion    string            `json:"hole_version,omitempty"`
 	HoleDevice     string            `json:"hole_device,omitempty"`

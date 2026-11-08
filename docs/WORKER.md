@@ -3,13 +3,20 @@
 `worker/worker.js` 提供房间 WebSocket 协调，`worker/worker_ice.mjs` 提供 ICE / 固定入口关系管理和 TURN broker。
 Worker 不转发业务数据；客户端之间使用直连 QUIC、Hole 设备中继或 TURN。
 
+[准备](#准备) · [配置与发布](#配置与发布) · [升级兼容](#升级与兼容) · [Hole 授权](#hole-三方授权) · [TURN broker](#turn-broker) · [验证](#验证) · [项目首页](../README.md)
+
+| Worker 负责 | 客户端负责 |
+| --- | --- |
+| 房间、设备关系、信令与租约 | UDP 入口、DNS、QUIC 与业务转发 |
+| 按需签发 TURN 短期凭据 | 直连、Hole / TURN 数据通道 |
+
 ## 准备
 
 - 已登录目标 Cloudflare 账户的 Wrangler CLI。
 - 支持项目所需 Durable Objects 的账户配置。
 - 如需 Cloudflare TURN 中继，准备 TURN Key ID 与对应 API Token。
 
-从 `worker/wrangler.example.toml` 复制本地 `worker/wrangler.toml`，按环境设置 Worker 名称和 `[[routes]]`。
+从 [wrangler.example.toml](../worker/wrangler.example.toml) 复制本地 `worker/wrangler.toml`，按环境设置 Worker 名称和 `[[routes]]`。
 使用 `workers.dev` 域名时可移除自定义域名路由。保留以下绑定和迁移关系：
 
 | 绑定 | 类 | 迁移 |
@@ -22,7 +29,7 @@ Worker 不转发业务数据；客户端之间使用直连 QUIC、Hole 设备中
 ## 配置与发布
 
 ```bash
-# 在 worker/ 目录中运行
+# 从仓库根目录进入 worker/
 cd worker
 wrangler secret put PASSWORD
 
@@ -33,12 +40,22 @@ wrangler secret put TURN_KEY_API_TOKEN
 wrangler deploy
 ```
 
-客户端 `server_url` 填写 `wss://HOST/ws`，`password` 对应 `PASSWORD`。
-房间密码是客户端之间约定的 `token`，不是 TURN API Token。
-TURN 主凭据只配置在 Worker；客户端接收按需签发的短期凭据。
+| 设置 | 配置位置 / 对应关系 |
+| --- | --- |
+| `server_url` | 客户端填写 `wss://HOST/ws` |
+| `PASSWORD` | Worker secret；对应客户端 `password` |
+| 房间口令 | 客户端约定的 `token`，与 TURN API Token 无关 |
+| `TURN_KEY_ID` / `TURN_KEY_API_TOKEN` | 只配置在 Worker；客户端接收按需签发的短期凭据 |
 
 `build.sh` 只构建客户端，不执行上述部署命令。
-协议升级按 **Worker → CLI / Android / Wear** 顺序部署。
+
+## 升级与兼容
+
+协议升级按 **Worker → 客户端** 顺序部署。
+
+<details>
+<summary>固定入口：能力、路径约束与网络准备</summary>
+
 固定入口功能直接扩展当前协议，需要 Worker 和两端核心同步升级，不增加固定协议的旧版兼容分支。
 新版成员声明 `fixed-quic-mux-v1`，有固定监听的成员在 join 中公布 `fixed_endpoint`。
 Worker 持久化并在 `transport_ready` 中返回入口、监听方和拨号方；一端配置后，整对设备仅使用
@@ -46,6 +63,11 @@ Worker 持久化并在 `transport_ready` 中返回入口、监听方和拨号方
 `fixed_relay_conflict`。Worker 本身不监听隧道 UDP，也不需要新增绑定或迁移。
 入口设备需自行开放或映射 UDP 端口；业务 `consume.expose` 端口按服务协议开放。
 域名解析、QUIC 连接和业务转发在客户端进行。真实公网地址、端口映射和防火墙需另外验收。
+</details>
+
+<details>
+<summary>TURN 顺序、跨类型配对与仅中继策略</summary>
+
 Worker 与新客户端均支持 `relay_order` / `relay_round` 后才会启用每端独立 TURN 顺序；
 进一步由双方声明 `relay_pairing: all-pairs-v1` 启用完整跨类型组合，最多 25 个中继轮次，
 避免可用类型处于不同序位时无法相遇。新旧客户端混用时继续原轮次计划；能力变化会重置代次。
@@ -64,9 +86,16 @@ Worker 支持 `relay_only: true`，将任一端的仅中继要求通知双方，
 UDP 3478、TCP 3478、TCP 80、TLS 5349、TLS 443 排序；缓存键随端口优先级策略变化。
 行为细节见 [协议说明](PROTOCOL.md#ice-与-turn)。
 
+</details>
+
+<details>
+<summary>语音能力与房间容量</summary>
+
 启用语音的 join 使用可选 `voice: true` 字段。Worker 广播 `room_state` 完整成员快照，并为两个
 语音成员创建允许空 `mappings` 的 voice-only transport；语音参与者上限为 8，超过时返回
 `voice_capacity`，不影响普通 16 人房间和 mapping 配对。旧客户端仍收到原有 `room_members` 字符串数组。
+
+</details>
 
 ## Hole 三方授权
 
@@ -84,18 +113,25 @@ UDP 3478、TCP 3478、TCP 80、TLS 5349、TLS 443 排序；缓存键随端口优
 
 ## TURN broker
 
-broker 是全局 Durable Object，按房间、设备、密钥策略和 TTL 缓存凭据，合并在途请求，
-约在凭据生命周期的 80% 刷新。默认 TTL 6 小时，范围为 600–21600 秒。
-可通过 `TURN_POLICY_VERSION` 调整缓存策略版本。
+broker 是全局 Durable Object，按房间、设备、密钥策略和 TTL 缓存凭据，并合并在途请求。
 
-签发限额为全局最多 8 个并发、60 次/分钟，房间 30 次/分钟、设备 3 次/5 分钟。
+| 项目 | 值 |
+| --- | --- |
+| TTL | 默认 6 小时，范围 600–21600 秒 |
+| 刷新 | 约在生命周期的 80% |
+| 缓存策略版本 | `TURN_POLICY_VERSION` |
+| 全局签发限额 | 最多 8 并发、60 次 / 分钟 |
+| 房间限额 | 30 次 / 分钟 |
+| 设备限额 | 3 次 / 5 分钟 |
+
 签发请求具有超时、响应大小和迟到结果检查，alarm 根据真实过期时间安排清理。
 未配置 TURN 时直连仍会尝试，客户端显示中继服务当前状态。
 
 ## 验证
 
 ```bash
-node --test worker/worker_ice.test.mjs
+# 仓库根目录
+node --test worker/worker_ice.test.mjs worker/worker_fixture.test.mjs
 ```
 
 测试使用内存 Durable Object 模型，覆盖协商、关系恢复、候选路由、续租和 broker 行为。

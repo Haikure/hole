@@ -16,6 +16,7 @@ import (
 
 	"github.com/pion/stun/v4"
 	"hole/core/natprobe"
+	"hole/core/netresolve"
 )
 
 const (
@@ -130,7 +131,7 @@ func resolveServers(ctx context.Context, urls []string) ([]*net.UDPAddr, []strin
 		if port == 0 {
 			port = 3478
 		}
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", uri.Host)
+		ips, err := netresolve.LookupIP(ctx, "ip4", uri.Host)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s DNS: %v", uri.Host, err))
 			continue

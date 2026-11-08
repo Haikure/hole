@@ -283,6 +283,29 @@ func (p *boundPlatform) ResolveUDP(ctx context.Context, address string) (*net.UD
 	}
 	return &net.UDPAddr{IP: net.ParseIP(ips[0]), Port: port}, nil
 }
+
+// NAT probes must select an A record even when Android returns AAAA first.
+// Keep DNS on the pinned Network; never fall back to the default route.
+func (p *boundPlatform) ResolveUDP4(ctx context.Context, address string) (*net.UDPAddr, error) {
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return nil, errors.New("invalid UDP port")
+	}
+	ips, err := p.lookup(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	for _, raw := range ips {
+		if ip := net.ParseIP(raw).To4(); ip != nil {
+			return &net.UDPAddr{IP: ip, Port: port}, nil
+		}
+	}
+	return nil, &net.DNSError{Name: host, Err: "所选网络 DNS 未返回 IPv4 地址", IsNotFound: true}
+}
 func (p *boundPlatform) DialUDP(ctx context.Context, address *net.UDPAddr) (*net.UDPConn, error) {
 	if address.IP.IsLoopback() {
 		return (core.DefaultPlatform{}).DialUDP(ctx, address)
@@ -313,6 +336,16 @@ func (p *networkPlatform) ResolveUDP(ctx context.Context, address string) (*net.
 		return nil, err
 	}
 	return selected.ResolveUDP(ctx, address)
+}
+func (p *networkPlatform) ResolveUDP4(ctx context.Context, address string) (*net.UDPAddr, error) {
+	if !p.NetworkBinding() || loopbackAddress(address) {
+		return p.DefaultPlatform.ResolveUDP4(ctx, address)
+	}
+	selected, _, err := p.SnapshotNetwork(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return selected.(*boundPlatform).ResolveUDP4(ctx, address)
 }
 func (p *networkPlatform) DialUDP(ctx context.Context, address *net.UDPAddr) (*net.UDPConn, error) {
 	if !p.NetworkBinding() || address.IP.IsLoopback() {

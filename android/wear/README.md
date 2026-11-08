@@ -1,12 +1,15 @@
 # Wear OS 客户端
 
-NAT 快照、端口映射及相关配置界面复用手机源码。直连策略仅在共享 Go 核心实现；真机移动网络切换和运营商 NAT 需要另行验收。
-
-复用手机端的 Hole 设备名输入、统一中继顺序、配置交换及路径诊断；可使用同房间 CLI
-中继，但不能在手表开启中继服务。协议及限额均由共享 Go 核心实现。
-
 独立运行的 Wear OS 安装包，复用手机端 Kotlin 源码、资源、配置、前台服务及 Go 核心。
 Wear OS 与手机共用 [versions.json](../../versions.json) 中的 Android 前端版本和 `versionCode`。
+
+[与手机包的区别](#与手机包的区别) · [构建与安装](#构建与安装) · [手机端使用说明](../README.md#使用) · [项目首页](../../README.md)
+
+| 共用能力 | 说明 |
+| --- | --- |
+| NAT 与端口映射 | 复用手机配置与快照；直连策略只在共享 Go 核心实现 |
+| Hole 中继 | 支持设备名、统一顺序、配置交换和路径诊断；可使用 CLI 中继，不能在手表开启中继服务 |
+| 验收边界 | 真机移动切网、运营商 NAT 和后台运行需在目标设备检查 |
 
 ## 与手机包的区别
 
@@ -28,7 +31,14 @@ Wear OS 与手机共用 [versions.json](../../versions.json) 中的 Android 前�
 
 ```bash
 ./build.sh wear --signing-config signing.env
+```
 
+输出在 `dist/wear/`，不覆盖手机产物。包含已签名、R8 优化并 strip 的 Release APK、R8 mapping、构建清单和 SHA-256 校验和。
+
+<details>
+<summary>通过 ADB 检查并安装到目标手表</summary>
+
+```bash
 # 查看手表的系统版本与 ABI
 adb -s SERIAL shell getprop ro.build.version.sdk
 adb -s SERIAL shell getprop ro.product.cpu.abilist
@@ -36,13 +46,10 @@ android_version="$(python3 -c 'import json; print(json.load(open("versions.json"
 adb -s SERIAL install -r "dist/wear/hole-${android_version}-wear-release.apk"
 ```
 
-输出在 `dist/wear/`，不覆盖 `dist/android/` 中的手机产物：
-
-- 已签名、R8 优化并 strip 的 Release APK。
-- 对应 R8 mapping、构建清单和 SHA-256 校验和。
-
 同包名、同签名且版本号符合设备升级要求时可覆盖安装。
 安装问题先检查 ADB 的 `INSTALL_FAILED_*` 结果、系统 API、ABI、签名及版本号。
 安装后的圆屏可用性、网络切换和后台运行需要在目标手表上检查。
+
+</details>
 
 工具链与验证命令见 [构建指南](../../docs/BUILDING.md)，共享功能见 [Android README](../README.md)。

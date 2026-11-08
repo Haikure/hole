@@ -27,6 +27,10 @@ func testReporter(t *testing.T) (*cliReporter, *bytes.Buffer) {
 }
 
 func TestCLILogFormatAndCauseRules(t *testing.T) {
+	stamp := time.Date(2026, 11, 8, 7, 59, 59, 123456789, time.Local)
+	if got := localNATTime(stamp.UTC().Format(time.RFC3339Nano)); got != "2026-11-08 07:59:59" {
+		t.Fatalf("NAT timestamp did not use system time: %q", got)
+	}
 	if logDuration(999) != "999ms" || logDuration(1000) != "1.0s" || logDuration(5100) != "5.1s" {
 		t.Fatal("duration formatting changed")
 	}

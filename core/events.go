@@ -81,6 +81,7 @@ type Capabilities struct {
 }
 
 type Snapshot struct {
+	NATDiagnostic       NATDiagnostic           `json:"nat_diagnostic"`
 	Relay               *holeCounters           `json:"relay,omitempty"`
 	APIVersion          int                     `json:"api_version"`
 	SessionProtocol     int                     `json:"session_protocol"`
