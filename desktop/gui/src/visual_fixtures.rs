@@ -1,10 +1,24 @@
 //! 仅由显式截图模式调用的确定性巡检数据，不向核心发送命令或修改配置。
 use crate::{App, MainWindow, MappingRow, PeerRow, VoiceMemberRow, VoicePeerRow, KV};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 fn model<T: Clone + 'static>(values: Vec<T>) -> ModelRc<T> { ModelRc::new(VecModel::from(values)) }
 
 pub fn apply(window: &MainWindow, scenario: &str) {
+    if matches!(scenario, "toast-single" | "toast-multiline" | "busy") {
+        apply(window, "running");
+        if scenario == "busy" {
+            let app = window.global::<App>();
+            let mut status = app.get_status();
+            status.busy = true;
+            status.engine_label = "正在连接".into();
+            app.set_status(status);
+        } else {
+            crate::show_toast(window, if scenario == "toast-single" { "服务已删除" }
+                else { "连接设置已保存。\n当前网络暂不可用，连接将在网络恢复后重试；请检查设备的网络设置。" }, "info", true);
+        }
+        return;
+    }
     if scenario == "fixed" {
         apply(window, "running");
         let snapshot = fixed_snapshot();
@@ -23,11 +37,13 @@ pub fn apply(window: &MainWindow, scenario: &str) {
             ..Default::default()
         }).collect()));
         app.set_voice_peers(model(snapshot.voice.peers));
+        app.set_selected_peer(app.get_peers().row_data(0).map(|p| p.peer_id).unwrap_or_default());
         return;
     }
     if !["empty", "running", "reconnecting", "error", "long-list"].contains(&scenario) { return; }
     let app = window.global::<App>();
     let running = scenario != "empty";
+    app.set_connection_ready(running);
     let mut status = app.get_status();
     status.bridge_ready = true;
     status.busy = false;
@@ -75,7 +91,7 @@ pub fn apply(window: &MainWindow, scenario: &str) {
     }).collect();
     app.set_provides(model(provides.clone())); app.set_consumes(model(vec![])); app.set_runtime_mappings(model(provides));
     app.set_peers(model((0..if running { 2 } else { 0 }).map(|i| PeerRow {
-        peer_id: format!("巡检设备-{i}").into(), transport_id: format!("fixture-peer-{i}").into(),
+        peer_id: if scenario == "long-list" { format!("很长的设备名称-production-workstation-{i}") } else { format!("巡检设备-{i}") }.into(), transport_id: format!("fixture-peer-{i}").into(),
         state_label: if scenario == "reconnecting" { "正在重连" } else { "已连接" }.into(),
         path_label: if i == 0 { "IPv6 直连" } else { "TURN · TLS" }.into(),
         kind: if scenario == "reconnecting" { "warn" } else { "good" }.into(),
@@ -83,6 +99,8 @@ pub fn apply(window: &MainWindow, scenario: &str) {
         note: "截图巡检数据".into(), error: "".into(),
         details: model(vec![KV{key:"选中地址".into(),value:"[2001:db8::2]:3478".into()}]),
     }).collect()));
+    app.set_selected_peer(app.get_peers().row_data(0).map(|p| p.peer_id).unwrap_or_default());
+    window.invoke_reset_forms();
     let mut voice = app.get_voice();
     voice.enabled = running; voice.available = true; voice.running = running; voice.muted = false;
     voice.label = if running { "语音已连接" } else { "语音未开启" }.into();

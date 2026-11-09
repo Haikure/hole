@@ -35,6 +35,7 @@ export global App {
 
     // ---- 已保存配置（表单初值）----
     in-out property <bool> config-loaded: false;
+    in-out property <bool> connection-ready: false;
     in-out property <ConnectionForm> connection;
     in-out property <TransportForm> transport;
     in-out property <Prefs> prefs;
@@ -48,6 +49,11 @@ export global App {
 
     // ---- 全局提示 ----
     in-out property <string> toast;
+    in-out property <int> toast-sequence;
+    in-out property <string> selected-peer;
+    in-out property <int> expansion-revision;
+    pure callback is-expanded(string) -> bool;
+    callback set-expanded(string, bool);
     in-out property <string> toast-kind: "info";
     in-out property <bool> undo-available: false;
 

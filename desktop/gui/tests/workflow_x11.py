@@ -68,14 +68,14 @@ def main():
             driver.key("Escape")
             driver.click(818, 434)
             driver.navigate(5)
-            driver.click(450, 278)
+            driver.click(450, 316)
             driver.key("a", "Control_L")
             driver.type("wss://draft.invalid/ws")
-            driver.click(90, 292)  # Voice: navigation must be intercepted.
+            driver.navigate(4)  # Voice: navigation must be intercepted.
             driver.shot("workflow-dirty.png")
             driver.key("Escape")
             assert read()["connection"]["server_url"] == "wss://example.invalid/ws"
-            driver.click(90, 292)
+            driver.navigate(4)
             driver.click(714, 432)
             driver.navigate(5)
             driver.click(1058, 34)  # Configuration files category.

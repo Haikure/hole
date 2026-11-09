@@ -1,6 +1,6 @@
 import { Theme } from "../theme.slint";
 import { App } from "../state.slint";
-import { Icons } from "../icons.slint";
+import { Icon, Icons } from "../icons.slint";
 import { Card, SectionTitle, Hint, Btn, IconBtn, Toggle, Badge, Field, Choice, SwitchRow, EmptyState, Notice, PageHeader, PageBody, Dialog, Drawer, Divider, Label } from "../controls.slint";
 import { MappingRow, MappingForm } from "../models.slint";
 
@@ -19,6 +19,7 @@ component MappingItem inherits Rectangle {
     if !root.last : Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
     HorizontalLayout {
         padding-left: 8px; padding-right: 8px; spacing: 12px;
+        Icon { name: item.role == "provide" ? Icons.share : Icons.terminal; y: (parent.height - self.height) / 2; tint: Theme.accent; }
         VerticalLayout {
             alignment: center; spacing: 3px; horizontal-stretch: 1;
             Text { text: item.id == "" ? "（未命名）" : item.id; font-size: Theme.font-body; font-weight: 600; color: Theme.text; overflow: elide; }
@@ -83,7 +84,7 @@ export component MappingsPage inherits Rectangle {
             Card {
                 HorizontalLayout { alignment: space-between;
                     SectionTitle { text: "提供给其他设备"; subtitle: App.provides.length + " 项服务"; }
-                    add-provide := Btn { text: "提供服务"; icon: Icons.plus; clicked => { root.new-entry("provide"); } }
+                    add-provide := Btn { text: "提供服务"; icon: Icons.share; clicked => { root.new-entry("provide"); } }
                 }
                 if App.provides.length == 0 : EmptyState { title: "还没有共享服务"; description: "把本机的 SSH 或网页服务提供给另一台设备。"; }
                 for row[i] in App.provides : MappingItem {
@@ -95,7 +96,7 @@ export component MappingsPage inherits Rectangle {
             Card {
                 HorizontalLayout { alignment: space-between;
                     SectionTitle { text: "在本机使用"; subtitle: App.consumes.length + " 项服务"; }
-                    add-consume := Btn { text: "使用服务"; icon: Icons.plus; clicked => { root.new-entry("consume"); } }
+                    add-consume := Btn { text: "使用服务"; icon: Icons.terminal; clicked => { root.new-entry("consume"); } }
                 }
                 if App.consumes.length == 0 : EmptyState { title: "还没有接入服务"; description: "填写对方的服务 ID，通过本地端口访问。"; }
                 for row[i] in App.consumes : MappingItem {
@@ -129,7 +130,8 @@ export component MappingsPage inherits Rectangle {
             } }
         }
     }
-    if root.ask-discard : Dialog {
+    Dialog {
+        open: root.ask-discard;
         title: "放弃服务修改？"; dialog-width: 380px;
         dismissed => { root.ask-discard = false; mapping-id.focus-input(); }
         Label { text: "关闭后会丢失尚未保存的服务内容。"; }

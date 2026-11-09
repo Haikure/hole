@@ -3,22 +3,22 @@ import { TextEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Icon, Icons } from "icons.slint";
 import { KV } from "models.slint";
+import { App } from "state.slint";
 
 // ---------- 容器 ----------
 
 export component Card inherits Rectangle {
-    clip: true;
+    clip: false;
     in property <length> inset: Theme.space-4;
     in property <length> spacing: Theme.space-3;
-    in property <bool> outlined: true;
+    in property <bool> outlined: false;
     in property <bool> tinted: false;
     background: tinted ? Theme.accent-soft : Theme.surface;
-    Rectangle { x: 20px; y: 1px; width: parent.width - 40px; height: 1px; background: @linear-gradient(90deg, transparent, Theme.surface-hover, transparent); }
     border-radius: Theme.radius-lg;
-    border-width: 1px;
+    border-width: outlined ? 1px : 0px;
     border-color: tinted ? Theme.accent-soft : Theme.border;
-    drop-shadow-blur: outlined ? 0px : 6px;
-    drop-shadow-offset-y: outlined ? 0px : 1px;
+    drop-shadow-blur: outlined ? 0px : 8px;
+    drop-shadow-offset-y: outlined ? 0px : 2px;
     drop-shadow-color: outlined ? transparent : Theme.shadow;
     VerticalLayout {
         padding: root.inset;
@@ -132,7 +132,6 @@ export component IconBtn inherits Btn {
     accessible-label: label;
 }
 
-// ---------- 开关 ----------
 
 export component Toggle inherits Rectangle {
     in-out property <bool> checked;
@@ -503,9 +502,12 @@ export component KVList inherits VerticalLayout {
 }
 
 export component Disclosure inherits VerticalLayout {
+    in property <string> state-key;
+    property <bool> stored-expanded: App.expansion-revision >= 0 && App.is-expanded(state-key);
     in property <string> open-label: "展开详情";
     in property <string> close-label: "收起详情";
-    in-out property <bool> expanded: false;
+    in-out property <bool> expanded: state-key != "" && stored-expanded;
+    changed stored-expanded => { if state-key != "" { expanded = stored-expanded; } }
     spacing: Theme.space-2;
     HorizontalLayout {
         alignment: start;
@@ -513,8 +515,17 @@ export component Disclosure inherits VerticalLayout {
             kind: "ghost";
             compact: true;
             text: root.expanded ? root.close-label : root.open-label;
-            icon: root.expanded ? Icons.chevron-up : Icons.chevron-down;
-            clicked => { root.expanded = !root.expanded; }
+            clicked => {
+                root.expanded = !root.expanded;
+                if root.state-key != "" { App.set-expanded(root.state-key, root.expanded); }
+            }
+        }
+        Rectangle {
+            width: 20px; height: 20px; y: (parent.height - self.height) / 2;
+            property <angle> angle: root.expanded ? 180deg : 0deg;
+            transform-rotation: Theme.reduce-motion ? (root.expanded ? 180deg : 0deg) : angle;
+            animate angle { duration: Theme.motion; easing: ease-out; }
+            Icon { name: Icons.chevron-down; size: 20px; }
         }
     }
     Rectangle {
@@ -523,6 +534,7 @@ export component Disclosure inherits VerticalLayout {
         height: Theme.reduce-motion ? (root.expanded ? body.preferred-height : 0px) : animated-height;
         animate animated-height { duration: Theme.motion; easing: ease-out; }
         body := VerticalLayout {
+            width: parent.width; height: self.preferred-height;
             spacing: Theme.space-2;
             @children
         }
@@ -645,26 +657,33 @@ export component PageBody inherits ScrollView {
 // ---------- 对话框与提示 ----------
 
 export component Dialog inherits Rectangle {
-    init => { dialog-keys.focus(); }
+    in property <bool> open: false;
+    property <float> progress: open ? 1 : 0;
+    animate progress { duration: Theme.motion-slow; easing: ease-out; }
+    property <float> shown: Theme.reduce-motion ? (open ? 1 : 0) : progress;
+    visible: open || shown > 0;
+    opacity: shown;
+    changed open => { if open { dialog-keys.focus(); } }
     forward-focus: dialog-keys;
     in property <string> title;
     in property <length> dialog-width: 460px;
     callback dismissed();
     background: Theme.scrim;
-    TouchArea { clicked => { root.dismissed(); } }
+    TouchArea { enabled: root.open; clicked => { root.dismissed(); } }
     Rectangle {
         x: (root.width - self.width) / 2;
-        y: (root.height - self.height) / 2;
+        y: (root.height - self.height) / 2 + (1 - root.shown) * 16px;
         width: min(root.dialog-width, root.width - 48px);
         height: min(inner.preferred-height, root.height - 48px);
         border-radius: Theme.radius-lg;
         background: Theme.surface;
-        border-width: 1px;
+        border-width: 0px;
         border-color: Theme.border;
         drop-shadow-blur: 28px;
         drop-shadow-color: Theme.shadow;
         TouchArea { }
         dialog-keys := FocusScope {
+        enabled: root.open;
         key-pressed(event) => {
             if event.text == Key.Escape { root.dismissed(); return accept; }
             return reject;
@@ -684,6 +703,7 @@ export component Dialog inherits Rectangle {
 }
 
 export component Toast inherits Rectangle {
+    in property <length> available-width: 600px;
     in property <string> text;
     property <string> content;
     changed text => { if text != "" { content = text; } }
@@ -691,10 +711,10 @@ export component Toast inherits Rectangle {
     in property <bool> undo: false;
     callback undo-clicked();
     callback closed();
-    width: layout.preferred-width;
+    width: min(layout.preferred-width, available-width);
     height: layout.preferred-height;
     border-radius: Theme.radius-lg;
-    background: Theme.dark ? #2A2F39 : #1F242B;
+    background: Theme.surface;
     drop-shadow-blur: 16px;
     drop-shadow-color: Theme.shadow;
     layout := HorizontalLayout {
@@ -703,24 +723,50 @@ export component Toast inherits Rectangle {
         padding-top: Theme.space-2;
         padding-bottom: Theme.space-2;
         spacing: Theme.space-3;
-        Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.kind-color(root.kind).brighter(30%); y: (parent.height - self.height) / 2; }
-        Text { text: root.content; color: #F3F4F6; font-size: Theme.font-body; vertical-alignment: center; max-width: 420px; wrap: word-wrap; }
-        if root.undo : Rectangle {
-            width: t.preferred-width + 16px; height: 26px; border-radius: 6px;
-            background: ua.has-hover ? #FFFFFF22 : transparent;
-            y: (parent.height - self.height) / 2;
-            t := Text { text: "撤销"; color: #93C5FD; font-size: Theme.font-body; font-weight: 600; vertical-alignment: center; horizontal-alignment: center; }
-            ua := TouchArea { mouse-cursor: pointer; clicked => { root.undo-clicked(); } }
-        }
-        Rectangle {
-            width: 26px; height: 26px; border-radius: 6px;
-            background: ca.has-hover ? #FFFFFF22 : transparent;
-            y: (parent.height - self.height) / 2;
-            Icon { name: Icons.close; tint: #D1D5DB; size: 14px; }
-            ca := TouchArea { mouse-cursor: pointer; clicked => { root.closed(); } }
-        }
+        VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px; border-radius: 4px; background: Theme.kind-color(root.kind); } }
+        Text { text: root.content; color: Theme.text; font-size: Theme.font-body; vertical-alignment: center; max-width: 420px; horizontal-stretch: 1; wrap: word-wrap; }
+        if root.undo : VerticalLayout { alignment: center; Btn { text: "撤销"; kind: "ghost"; compact: true; clicked => { root.undo-clicked(); } } }
+        VerticalLayout { alignment: center; IconBtn { icon: Icons.close; label: "关闭提示"; clicked => { root.closed(); } } }
     }
 }
+
+// One persistent run entry. Transitions only present the core's actual state.
+export component RunControl inherits Card {
+    callback configure();
+    inset: 12px; spacing: 8px;
+    property <bool> running: App.status.run-requested;
+    changed running => { Theme.animate-run(running); }
+    property <float> progress: Theme.reduce-motion ? (running ? 1 : 0) : Theme.run-progress;
+    Badge { text: App.status.engine-label == "" ? "正在加载核心" : App.status.engine-label; kind: App.status.kind; }
+    Text { text: App.status.signal-label; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
+    Rectangle {
+        height: max(0, root.progress) * 22px; clip: true;
+        Text { text: App.status.uptime; color: Theme.text-muted; font-size: Theme.font-sm; opacity: min(1, max(0, root.progress)); }
+    }
+    Rectangle {
+        height: 44px;
+        run-button := Btn {
+            width: parent.width; height: 44px;
+            text: App.status.busy ? "处理中…" : !App.connection-ready && !root.running ? "设置连接" : root.running ? "停止连接" : "启动连接";
+            kind: root.running ? "secondary" : "primary";
+            enabled: App.config-loaded && App.status.bridge-ready && !App.status.busy;
+            clicked => { if !App.connection-ready && !root.running { root.configure(); } else { App.toggle-run(!root.running); } }
+        }
+        Rectangle {
+            x: 8px; y: 13px; width: 18px; height: 18px;
+            transform-rotation: (1 - root.progress) * -20deg;
+            Icon { name: Icons.play; size: 18px; tint: root.running ? Theme.text : Theme.on-accent; opacity: max(0, 1 - root.progress); }
+            Icon { name: Icons.pause; size: 18px; tint: Theme.text; opacity: min(1, max(0, root.progress)); }
+        }
+    }
+    if App.status.busy : Rectangle {
+        height: 3px; border-radius: 2px; background: Theme.surface-alt; clip: true;
+        property <float> phase: Theme.window-visible && !Theme.reduce-motion ? mod(animation-tick() / 1ms, 1200) / 1200 : 0.5;
+        Rectangle { x: parent.phase * parent.width * 0.65; width: parent.width * 0.35; height: 3px; background: Theme.accent; }
+    }
+}
+
+// ---------- 开关 ----------
 
  // 退场页面保持绘制但屏蔽指针及键盘；隐藏后组件不参与布局。
 export component PageLayer inherits Rectangle {
@@ -765,16 +811,17 @@ export component Drawer inherits Rectangle {
     callback dismissed();
     callback focus-requested();
     property <length> offset: open ? 0px : 400px;
-    animate offset { duration: Theme.reduce-motion ? 0ms : 240ms; easing: ease-out; }
-    visible: open || offset < 400px;
+    property <length> shown-offset: Theme.reduce-motion ? (open ? 0px : 400px) : offset;
+    animate offset { duration: Theme.motion-slow; easing: ease-out; }
+    visible: open || shown-offset < 400px;
     changed open => { if open { keys.focus(); root.focus-requested(); } }
     Rectangle {
         background: Theme.scrim;
-        opacity: 1 - root.offset / 400px;
+        opacity: 1 - root.shown-offset / 400px;
         TouchArea { enabled: root.open; clicked => { root.dismissed(); } }
     }
     Rectangle {
-        x: root.width - self.width + (Theme.reduce-motion ? (root.open ? 0px : 400px) : root.offset);
+        x: root.width - self.width + root.shown-offset;
         width: 400px; height: root.height;
         background: Theme.surface; border-radius: Theme.radius-lg;
         drop-shadow-blur: 24px; drop-shadow-color: Theme.shadow;

@@ -4,6 +4,7 @@
 
 mod config;
 mod motion;
+mod view_state;
 mod visual_fixtures;
 #[cfg(test)]
 mod ui_tests;
@@ -47,7 +48,8 @@ fn main() {
     let shared = Arc::new(Mutex::new(Shared { storage, config, secrets, run_state, config_error, undo: None, pending_import: None }));
 
     let window = MainWindow::new().expect("创建主窗口失败");
-    push_config_forms(&window.as_weak(), &shared);
+    sync_config_forms(&window, &shared);
+    window.invoke_reset_forms();
     {
         let cfg = &shared.lock().unwrap().config;
         window.invoke_apply_theme_mode(cfg.prefs.theme_mode.clone().into());
@@ -58,6 +60,7 @@ fn main() {
     let controller = Rc::new(Controller::start(&window, shared.clone()));
     bind_callbacks(&window, controller.clone(), shared.clone());
     motion::bind(&window);
+    view_state::bind(&window);
     {
         let weak = window.as_weak();
         window.window().on_close_requested(move || {
@@ -79,71 +82,79 @@ fn main() {
 
 /// 把已保存配置写回表单初值与偏好；导入替换后也调用。
 pub fn push_config_forms(window: &Weak<MainWindow>, shared: &Arc<Mutex<Shared>>) {
+    let shared = shared.clone();
+    let _ = window.upgrade_in_event_loop(move |w| {
+        sync_config_forms(&w, &shared);
+        w.invoke_reset_forms();
+    });
+}
+
+// UI 保存回调必须同步发布实际落盘值，返回后表单才能采用规范化基准。
+fn sync_config_forms(w: &MainWindow, shared: &Arc<Mutex<Shared>>) {
     let (cfg, secrets, error) = {
         let s = shared.lock().unwrap();
         (s.config.clone(), s.secrets.clone(), s.config_error.clone())
     };
-    let _ = window.upgrade_in_event_loop(move |w| {
-        let app = w.global::<App>();
-        let c = &cfg.connection;
-        let effective_relay_order = c.relay_order();
-        let turn_order_available = ["hole", "udp", "tcp", "tls"]
-            .into_iter()
-            .filter(|item| {
-                !effective_relay_order
-                    .iter().any(|configured| configured == *item)
-            })
-            .map(slint::SharedString::from)
-            .collect::<Vec<_>>();
-        let turn_order = effective_relay_order
-            .iter()
-            .map(|item| slint::SharedString::from(item.as_str()))
-            .collect::<Vec<_>>();
-        app.set_connection(ConnectionForm {
-            server_url: c.server_url.clone().into(),
-            password: secrets.password.clone().into(),
-            room: c.room.clone().into(),
-            token: secrets.token.clone().into(),
-            device_name: c.device_name.clone().into(),
-            session_timeout: c.session_timeout.clone().into(),
-            candidate_interfaces: config::join_list(&c.candidate_interfaces).into(),
-            candidate_addresses: config::join_list(&c.candidate_addresses).into(),
-        });
-        app.set_transport(TransportForm {
-            relay_order_edited: false,
-            relay_device: c.relay.device.clone().into(),
-            mode: c.connection_mode.clone().into(),
-            stun_urls: c.ice.stun_urls.join("\n").into(),
-            port_mapping: c.ice.port_mapping != "off",
-            nat_stun_urls: c.ice.nat_stun_urls.clone().unwrap_or_default().join("\n").into(),
-            relay_mode: c.turn.mode.clone().into(),
-            turn_urls: c.turn.urls.join("\n").into(),
-            turn_order: ModelRc::new(VecModel::from(turn_order)),
-            turn_order_available: ModelRc::new(VecModel::from(turn_order_available)),
-            turn_username: c.turn.username.clone().into(),
-            turn_credential: secrets.turn_credential.clone().into(),
-            direct_probe_timeout: c.ice.direct_probe_timeout.clone().into(),
-            gather_timeout: c.ice.gather_timeout.clone().into(),
-            connectivity_timeout: c.ice.connectivity_timeout.clone().into(),
-            retry_max_delay: c.ice.retry_max_delay.clone().into(),
-            turn_ttl: c.turn.ttl.clone().into(),
-            interface_allowlist: config::join_list(&c.ice.interface_allowlist).into(),
-            relay_only: c.ice.relay_only,
-            allow_insecure_signal: c.allow_insecure_signal,
-        });
-        app.set_prefs(Prefs {
-            theme_mode: cfg.prefs.theme_mode.clone().into(),
-            accent: cfg.prefs.accent.clone().into(),
-            close_to_tray: cfg.prefs.close_to_tray,
-            resume_at_login: cfg.prefs.resume_at_login,
-            start_hidden: cfg.prefs.start_hidden,
-            reduce_motion: cfg.prefs.reduce_motion,
-        });
-        app.set_config_loaded(error.is_none());
-        w.invoke_apply_theme_mode(cfg.prefs.theme_mode.clone().into());
-        w.invoke_apply_accent(cfg.prefs.accent.clone().into());
-        w.global::<Theme>().set_reduce_motion(cfg.prefs.reduce_motion);
+    let app = w.global::<App>();
+    let c = &cfg.connection;
+    let effective_relay_order = c.relay_order();
+    let turn_order_available = ["hole", "udp", "tcp", "tls"]
+        .into_iter()
+        .filter(|item| {
+            !effective_relay_order
+                .iter().any(|configured| configured == *item)
+        })
+        .map(slint::SharedString::from)
+        .collect::<Vec<_>>();
+    let turn_order = effective_relay_order
+        .iter()
+        .map(|item| slint::SharedString::from(item.as_str()))
+        .collect::<Vec<_>>();
+    app.set_connection(ConnectionForm {
+        server_url: c.server_url.clone().into(),
+        password: secrets.password.clone().into(),
+        room: c.room.clone().into(),
+        token: secrets.token.clone().into(),
+        device_name: c.device_name.clone().into(),
+        session_timeout: c.session_timeout.clone().into(),
+        candidate_interfaces: config::join_list(&c.candidate_interfaces).into(),
+        candidate_addresses: config::join_list(&c.candidate_addresses).into(),
     });
+    app.set_transport(TransportForm {
+        relay_order_edited: false,
+        relay_device: c.relay.device.clone().into(),
+        mode: c.connection_mode.clone().into(),
+        stun_urls: c.ice.stun_urls.join("\n").into(),
+        port_mapping: c.ice.port_mapping != "off",
+        nat_stun_urls: c.ice.nat_stun_urls.clone().unwrap_or_default().join("\n").into(),
+        relay_mode: c.turn.mode.clone().into(),
+        turn_urls: c.turn.urls.join("\n").into(),
+        turn_order: ModelRc::new(VecModel::from(turn_order)),
+        turn_order_available: ModelRc::new(VecModel::from(turn_order_available)),
+        turn_username: c.turn.username.clone().into(),
+        turn_credential: secrets.turn_credential.clone().into(),
+        direct_probe_timeout: c.ice.direct_probe_timeout.clone().into(),
+        gather_timeout: c.ice.gather_timeout.clone().into(),
+        connectivity_timeout: c.ice.connectivity_timeout.clone().into(),
+        retry_max_delay: c.ice.retry_max_delay.clone().into(),
+        turn_ttl: c.turn.ttl.clone().into(),
+        interface_allowlist: config::join_list(&c.ice.interface_allowlist).into(),
+        relay_only: c.ice.relay_only,
+        allow_insecure_signal: c.allow_insecure_signal,
+    });
+    app.set_prefs(Prefs {
+        theme_mode: cfg.prefs.theme_mode.clone().into(),
+        accent: cfg.prefs.accent.clone().into(),
+        close_to_tray: cfg.prefs.close_to_tray,
+        resume_at_login: cfg.prefs.resume_at_login,
+        start_hidden: cfg.prefs.start_hidden,
+        reduce_motion: cfg.prefs.reduce_motion,
+    });
+    app.set_config_loaded(error.is_none());
+    app.set_connection_ready(error.is_none() && config::to_run_request(&cfg, &secrets).is_ok());
+    w.invoke_apply_theme_mode(cfg.prefs.theme_mode.clone().into());
+    w.invoke_apply_accent(cfg.prefs.accent.clone().into());
+    w.global::<Theme>().set_reduce_motion(cfg.prefs.reduce_motion);
 }
 
 fn show_toast(window: &MainWindow, text: &str, kind: &str, undo: bool) {
@@ -152,11 +163,12 @@ fn show_toast(window: &MainWindow, text: &str, kind: &str, undo: bool) {
     app.set_toast_kind(kind.into());
     app.set_undo_available(undo);
     let weak = window.as_weak();
-    let current = text.to_string();
+    let current = app.get_toast_sequence().wrapping_add(1);
+    app.set_toast_sequence(current);
     Timer::single_shot(Duration::from_secs(if undo { 8 } else { 4 }), move || {
         if let Some(w) = weak.upgrade() {
             let app = w.global::<App>();
-            if app.get_toast().as_str() == current {
+            if app.get_toast_sequence() == current {
                 app.set_toast("".into());
                 app.set_undo_available(false);
             }
@@ -297,8 +309,8 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
             });
             match result {
                 Ok(()) => {
-                    push_config_forms(&weak, &shared);
                     if let Some(w) = weak.upgrade() {
+                        sync_config_forms(&w, &shared);
                         show_toast(&w, "连接设置已保存", "good", false);
                     }
                     "".into()
@@ -373,8 +385,8 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
             });
             match result {
                 Ok(()) => {
-                    push_config_forms(&weak, &shared);
                     if let Some(w) = weak.upgrade() {
+                        sync_config_forms(&w, &shared);
                         show_toast(&w, "连接方式已保存", "good", false);
                     }
                     "".into()
@@ -401,7 +413,7 @@ fn bind_callbacks(window: &MainWindow, controller: Rc<Controller>, shared: Arc<M
                 };
                 Ok(())
             });
-            push_config_forms(&weak, &shared);
+            if let Some(w) = weak.upgrade() { sync_config_forms(&w, &shared); }
             if let (Err(e), Some(w)) = (result, weak.upgrade()) {
                 show_toast(&w, &format!("偏好保存失败：{e}"), "bad", false);
             }
@@ -681,6 +693,8 @@ thread_local! {
 
 /// 开发验证：按页面切换并用渲染器快照写出 PPM；`HOLE_DESKTOP_SCREENSHOT_DIR` 指定输出目录。
 fn screenshot_mode(window: &MainWindow) {
+    // Capture settled layouts regardless of machine load or timer cadence.
+    window.global::<Theme>().set_reduce_motion(true);
     if let Ok(size) = std::env::var("HOLE_DESKTOP_SCREENSHOT_SIZE") {
         if let Some((width, height)) = screenshot_size(&size) {
             window.window().set_size(slint::LogicalSize::new(width as f32, height as f32));
@@ -705,9 +719,20 @@ fn screenshot_mode(window: &MainWindow) {
         let path = format!("{dir}/{}.ppm", pages[i]);
         let final_page = i + 1 == pages.len();
         let timer = timer_weak.clone();
+        let scenario = scenario.clone();
         // 给 changed 回调、字体布局、数字和页面入场留出完整一帧及 320ms。
         Timer::single_shot(Duration::from_millis(480), move || {
             let Some(w) = weak.upgrade() else { return };
+            let app = w.global::<App>();
+            let evidence = serde_json::json!({
+                "page": w.get_page().as_str(), "scenario": scenario,
+                "run_requested": app.get_status().run_requested,
+                "peers": app.get_peers().row_count(),
+                "services": app.get_provides().row_count() + app.get_consumes().row_count(),
+            });
+            if let Err(error) = std::fs::write(format!("{path}.json"), evidence.to_string()) {
+                eprintln!("截图状态写入失败：{error}");
+            }
             match w.window().take_snapshot() {
                 Ok(buffer) => {
                     let (width, height) = (buffer.width(), buffer.height());

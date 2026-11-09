@@ -12,7 +12,7 @@ export global Theme {
     out property <color> accent-dark: palette == "teal" ? #9BD5A9 : palette == "violet" ? #D0B9FF : palette == "rose" ? #FFB1C7 : palette == "amber" ? #F2BF6B : #ADC6FF;
     out property <color> accent: dark ? accent-dark : accent-light;
     out property <color> accent-soft: dark
-        ? (palette == "teal" ? #31583D : palette == "violet" ? #503B78 : palette == "rose" ? #79334A : palette == "amber" ? #634400 : #294677)
+        ? (palette == "teal" ? #293E32 : palette == "violet" ? #383044 : palette == "rose" ? #46303A : palette == "amber" ? #42392A : #2D3749)
         : (palette == "teal" ? #D0EAD4 : palette == "violet" ? #E9DDFF : palette == "rose" ? #FFD9E2 : palette == "amber" ? #FFDDA8 : #D8E2FF);
     out property <color> on-accent: !dark ? #FFFFFF : palette == "teal" ? #173622 : palette == "violet" ? #35205C : palette == "rose" ? #5A1930 : palette == "amber" ? #442C00 : #102F60;
     out property <color> on-container: dark
@@ -36,12 +36,12 @@ export global Theme {
     out property <color> text-faint: dark ? #778391 : #84909D;
 
     // 状态色：只用于状态，不作为序列色；总是配合文字或图标。
-    out property <color> good: dark ? #4ADE80 : #15803D;
-    out property <color> good-soft: dark ? #14532D80 : #DCF3E1;
-    out property <color> warn: dark ? #FBBF24 : #9A5B0B;
-    out property <color> warn-soft: dark ? #78350F80 : #FCEFCB;
-    out property <color> bad: dark ? #F87171 : #B42318;
-    out property <color> bad-soft: dark ? #7F1D1D80 : #FDE7E4;
+    out property <color> good: dark ? #A2CBAF : #15803D;
+    out property <color> good-soft: dark ? #2B3C32 : #DCF3E1;
+    out property <color> warn: dark ? #D6BF92 : #9A5B0B;
+    out property <color> warn-soft: dark ? #40392C : #FCEFCB;
+    out property <color> bad: dark ? #E1ACAB : #B42318;
+    out property <color> bad-soft: dark ? #442F33 : #FDE7E4;
     // 实底危险按钮用固定深红，两种模式下都保证白字对比度。
     out property <color> bad-solid: #B42318;
     out property <color> info: accent;
@@ -81,6 +81,8 @@ export global Theme {
     in-out property <bool> window-visible: true;
     in-out property <string> active-page: "overview";
     callback finish-motion();
+    in-out property <float> run-progress;
+    callback animate-run(bool);
     changed reduce-motion => { if reduce-motion { finish-motion(); } }
     out property <duration> motion-fast: reduce-motion ? 0ms : 140ms;
     out property <duration> motion: reduce-motion ? 0ms : 220ms;

@@ -11,20 +11,21 @@ component PeerCard inherits Card {
         alignment: space-between;
         VerticalLayout {
             spacing: 2px;
-            Text { text: peer.peer-id; font-size: Theme.font-xl; font-weight: 600; color: Theme.text; }
+            Text { text: peer.peer-id; font-size: Theme.font-xl; font-weight: 600; color: Theme.text; wrap: word-wrap; }
             Text { text: peer.path-label; font-size: Theme.font-body; color: Theme.text-muted; }
         }
         Badge { text: peer.state-label; kind: peer.kind; y: 4px; }
     }
     HorizontalLayout {
         spacing: Theme.space-5;
-        VerticalLayout { spacing: 2px; Text { text: "共享服务"; font-size: Theme.font-xs; color: Theme.text-faint; } Text { text: peer.channels; font-size: Theme.font-md; font-weight: 600; color: Theme.text; } }
+        VerticalLayout { spacing: 2px; Text { text: "可用通道"; font-size: Theme.font-xs; color: Theme.text-faint; } Text { text: peer.channels; font-size: Theme.font-md; font-weight: 600; color: Theme.text; } }
         VerticalLayout { spacing: 2px; Text { text: "往返延迟"; font-size: Theme.font-xs; color: Theme.text-faint; } Text { text: peer.rtt; font-size: Theme.font-md; font-weight: 600; color: Theme.text; } }
         VerticalLayout { spacing: 2px; Text { text: "线路流量 ↑ / ↓"; font-size: Theme.font-xs; color: Theme.text-faint; } Text { text: peer.traffic; font-size: Theme.font-md; font-weight: 600; color: Theme.text; } }
     }
     if peer.note != "" : Hint { text: peer.note; }
     if peer.error != "" : Notice { text: peer.error; kind: "bad"; }
     Disclosure {
+        state-key: "peer:" + peer.peer-id;
         open-label: "查看线路细节";
         close-label: "收起线路细节";
         KVList { items: peer.details; }
@@ -47,6 +48,7 @@ component RuntimeMappingCard inherits Card {
     KVRow { key: "业务连接"; value: mapping.sessions; }
     KVRow { key: "对端设备"; value: mapping.peer == "" ? "尚未匹配" : mapping.peer; }
     Disclosure {
+        state-key: "runtime:" + mapping.role + ":" + mapping.id;
         open-label: "服务地址与数据详情";
         close-label: "收起服务详情";
         KVList { items: mapping.details; }
@@ -59,7 +61,12 @@ component PeerListRow inherits Rectangle {
     in property <bool> selected;
     callback activated();
     height: 64px; border-radius: Theme.radius;
-    background: selected ? Theme.accent-soft : area.has-hover ? Theme.surface-hover : transparent;
+    Rectangle {
+        y: area.has-hover ? -2px : 0px; border-radius: Theme.radius;
+        background: root.selected ? Theme.accent-soft : area.has-hover ? Theme.surface-hover : transparent;
+        drop-shadow-blur: area.has-hover ? 8px : 0px; drop-shadow-color: Theme.shadow;
+        animate y, background { duration: Theme.motion-fast; easing: ease-out; }
+    }
     accessible-role: button; accessible-label: peer.peer-id; accessible-action-default => { root.activated(); }
     forward-focus: focus;
     focus := FocusScope { key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.activated(); return accept; } return reject; } }
@@ -75,7 +82,6 @@ export component DevicesPage inherits VerticalLayout {
     spacing: 0px;
     in property <bool> runtime: false;
     in property <bool> wide: false;
-    property <int> selected: 0;
     PageHeader {
         title: root.runtime ? "运行详情" : "设备";
         subtitle: "查看对端设备、连接质量和可用服务。";
@@ -90,17 +96,17 @@ export component DevicesPage inherits VerticalLayout {
         if !root.runtime && App.peers.length > 0 : AdaptivePair {
             wide: root.wide; first-height: list.preferred-height; second-height: details.preferred-height;
             list := Card {
-                x: 0px; y: 0px; width: root.wide ? (parent.width - 16px) / 2 : parent.width; height: self.preferred-height;
+                x: 0px; y: 0px; width: root.wide ? 280px : parent.width; height: self.preferred-height;
                 SectionTitle { text: "房间设备 · " + App.peers.length; }
                 for peer[i] in App.peers : PeerListRow {
-                    peer: peer; selected: min(root.selected, App.peers.length - 1) == i;
-                    activated => { root.selected = i; }
+                    peer: peer; selected: App.selected-peer == peer.peer-id;
+                    activated => { App.selected-peer = peer.peer-id; }
                 }
             }
             details := VerticalLayout {
-                x: root.wide ? (parent.width + 16px) / 2 : 0px; y: root.wide ? 0px : list.height + 16px;
-                width: list.width; height: self.preferred-height; spacing: 0px;
-                for peer[i] in App.peers : PeerCard { peer: peer; visible: i == min(root.selected, App.peers.length - 1); height: self.visible ? self.preferred-height : 0px; }
+                x: root.wide ? 296px : 0px; y: root.wide ? 0px : list.height + 16px;
+                width: root.wide ? parent.width - 296px : parent.width; height: self.preferred-height; spacing: 0px;
+                for peer[i] in App.peers : PeerCard { peer: peer; visible: peer.peer-id == App.selected-peer; height: self.visible ? self.preferred-height : 0px; }
             }
         }
         if root.runtime : Card {

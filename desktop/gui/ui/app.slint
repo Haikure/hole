@@ -1,9 +1,9 @@
 // 五项导航、兼容路由、同源运行状态与仅展示用途的路由动画。
-import { Palette } from "std-widgets.slint";
+import { Palette, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { App } from "state.slint";
 import { Icon, Icons } from "icons.slint";
-import { Btn, Badge, Dialog, Toast, Label, Hint, Choice, PageLayer } from "controls.slint";
+import { Btn, Badge, Dialog, Toast, Label, Hint, Choice, PageLayer, RunControl } from "controls.slint";
 import { OverviewPage } from "pages/overview.slint";
 import { MappingsPage } from "pages/mappings.slint";
 import { DevicesPage } from "pages/devices.slint";
@@ -74,12 +74,19 @@ export component MainWindow inherits Window {
     callback animate-navigation(int, bool, bool);
     callback hide-to-tray();
     out property <bool> wide: self.width >= 1120px;
+    property <bool> compact-sidebar;
+    changed height => { compact-sidebar = self.height < 650px; }
 
     public function apply-theme-mode(mode: string) {
         Palette.color-scheme = mode == "dark" ? ColorScheme.dark : mode == "light" ? ColorScheme.light : ColorScheme.unknown;
     }
     public function apply-accent(name: string) { Theme.palette = name; }
     public function request-quit() { ask-quit = true; }
+    public function reset-forms() { settings.reset(); transport.reset(); }
+    in-out property <ConnectionForm> connection-draft <=> settings.form;
+    in-out property <TransportForm> transport-draft <=> transport.form;
+    public function save-connection-draft() { settings.save(); }
+    public function save-transport-draft() { transport.save(); }
     public function handle-close() {
         if App.status.run-requested || page-dirty() { ask-quit = true; } else { App.quit-and-stop(); }
     }
@@ -162,9 +169,9 @@ export component MainWindow inherits Window {
         Rectangle {
             width: Theme.sidebar-width; background: Theme.sidebar;
             VerticalLayout {
-                padding: 12px; spacing: 12px;
+                padding: 12px; spacing: root.compact-sidebar ? 4px : 12px;
                 HorizontalLayout {
-                    padding: 8px; padding-top: 12px; padding-bottom: 16px; spacing: 12px;
+                    padding: 8px; padding-top: root.compact-sidebar ? 0px : 12px; padding-bottom: root.compact-sidebar ? 4px : 16px; spacing: 12px;
                     Image { source: @image-url("assets/app-icon.png"); width: 36px; height: 36px; }
                     VerticalLayout {
                         alignment: center; spacing: 2px;
@@ -172,8 +179,10 @@ export component MainWindow inherits Window {
                         Text { text: App.connection.device-name == "" ? "本机" : App.connection.device-name; font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
                     }
                 }
-                Rectangle {
-                    height: 272px;
+                ScrollView {
+                    min-height: 120px; preferred-height: 272px; vertical-stretch: 1;
+                  Rectangle {
+                    y: 0px; height: 272px; width: parent.width;
                     property <float> stretch: min(abs(root.nav-velocity) / 8, 1) * 0.25;
                     Rectangle {
                         x: parent.stretch * 8px;
@@ -193,25 +202,9 @@ export component MainWindow inherits Window {
                         clicked => { root.nav-keyboard = true; root.navigate(root.primary-routes[i]); }
                         step(delta) => { root.step-navigation(delta); }
                     }
+                  }
                 }
-                Rectangle { vertical-stretch: 1; }
-                Rectangle {
-                    height: 154px; border-radius: Theme.radius-lg; clip: true;
-                    background: Theme.surface;
-                    border-width: 1px; border-color: Theme.border;
-                    VerticalLayout {
-                        padding: 14px; spacing: 8px;
-                        Badge { text: App.status.engine-label == "" ? "正在加载核心" : App.status.engine-label; kind: App.status.kind; }
-                        Text { text: App.status.signal-label + (App.status.run-requested ? " · " + App.status.peers-active + " 台设备" : ""); font-size: Theme.font-xs; color: Theme.text-muted; overflow: elide; }
-                        Text { text: App.status.busy ? "正在处理…" : App.status.run-requested ? App.status.uptime : "准备好后开启连接"; font-size: Theme.font-xs; color: Theme.text-faint; overflow: elide; }
-                        Btn {
-                            text: App.status.busy ? "处理中…" : App.status.run-requested ? "停止连接" : "启动连接";
-                            icon: Icons.power; kind: App.status.run-requested ? "secondary" : "primary";
-                            enabled: App.config-loaded && App.status.bridge-ready && !App.status.busy;
-                            clicked => { App.toggle-run(!App.status.run-requested); }
-                        }
-                    }
-                }
+                RunControl { configure => { root.open-page("settings"); } }
                 Btn { kind: "ghost"; text: "退出并停止"; icon: Icons.power; clicked => { root.request-quit(); } }
             }
         }
@@ -238,21 +231,21 @@ export component MainWindow inherits Window {
                     }
                     Rectangle {
                         vertical-stretch: 1; clip: true;
-                        PageLayer { shown: root.page == "overview"; retiring: root.previous-page == "overview"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : OverviewPage { wide: root.wide; open-page(p) => { root.open-page(p); } } }
-                        PageLayer { shown: root.page == "devices"; retiring: root.previous-page == "devices"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : DevicesPage { wide: root.wide; } }
-                        PageLayer { shown: root.page == "runtime"; retiring: root.previous-page == "runtime"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : DevicesPage { runtime: true; wide: root.wide; } }
-                        PageLayer { shown: root.page == "diagnostics"; retiring: root.previous-page == "diagnostics"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : DiagnosticsPage { wide: root.wide; } }
-                        PageLayer { shown: root.page == "nat"; retiring: root.previous-page == "nat"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : NATPage { open-page(p) => { root.open-page(p); } } }
-                        PageLayer { shown: root.page == "voice"; retiring: root.previous-page == "voice"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : VoicePage { } }
+                        PageLayer { shown: root.page == "overview"; retiring: root.previous-page == "overview"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; OverviewPage { wide: root.wide; open-page(p) => { root.open-page(p); } } }
+                        PageLayer { shown: root.page == "devices"; retiring: root.previous-page == "devices"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; DevicesPage { wide: root.wide; } }
+                        PageLayer { shown: root.page == "runtime"; retiring: root.previous-page == "runtime"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; DevicesPage { runtime: true; wide: root.wide; } }
+                        PageLayer { shown: root.page == "diagnostics"; retiring: root.previous-page == "diagnostics"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; DiagnosticsPage { wide: root.wide; } }
+                        PageLayer { shown: root.page == "nat"; retiring: root.previous-page == "nat"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; NATPage { open-page(p) => { root.open-page(p); } } }
+                        PageLayer { shown: root.page == "voice"; retiring: root.previous-page == "voice"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; VoicePage { } }
                         PageLayer { shown: root.page == "settings"; retiring: root.previous-page == "settings"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard;
                             settings := SettingsPage { open-page(p) => { root.open-page(p); } }
                         }
-                        PageLayer { shown: root.page == "appearance"; retiring: root.previous-page == "appearance"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : SettingsPage { section: "appearance"; open-page(p) => { root.open-page(p); } } }
-                        PageLayer { shown: root.page == "behavior"; retiring: root.previous-page == "behavior"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : SettingsPage { section: "behavior"; open-page(p) => { root.open-page(p); } } }
+                        PageLayer { shown: root.page == "appearance"; retiring: root.previous-page == "appearance"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; SettingsPage { section: "appearance"; open-page(p) => { root.open-page(p); } } }
+                        PageLayer { shown: root.page == "behavior"; retiring: root.previous-page == "behavior"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; SettingsPage { section: "behavior"; open-page(p) => { root.open-page(p); } } }
                         PageLayer { shown: root.page == "transport"; retiring: root.previous-page == "transport"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard;
                             transport := TransportPage { wide: root.wide; open-page(p) => { root.open-page(p); } }
                         }
-                        PageLayer { shown: root.page == "exchange"; retiring: root.previous-page == "exchange"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; if self.shown || self.retiring : ExchangePage { wide: root.wide; open-page(p) => { root.open-page(p); } } }
+                        PageLayer { shown: root.page == "exchange"; retiring: root.previous-page == "exchange"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.modal; focus-on-show: !root.nav-keyboard; ExchangePage { wide: root.wide; open-page(p) => { root.open-page(p); } } }
                         // 服务页保持实例，草稿与编辑面板不会因路由动画重新初始化。
                         PageLayer { shown: root.page == "mappings"; retiring: root.previous-page == "mappings"; progress: root.transition-in; exit-progress: root.transition-out; secondary: root.transition-secondary; direction: root.transition-direction; interactive: !root.ask-discard && !root.ask-quit; focus-on-show: !root.nav-keyboard;
                             mappings := MappingsPage { }
@@ -263,16 +256,18 @@ export component MainWindow inherits Window {
         }
     }
     Toast {
+        available-width: root.width - 48px;
         x: parent.width - self.width - 24px;
-        y: parent.height - self.height - 24px + (1 - self.opacity) * 8px;
+        y: parent.height - self.height - (root.page == "settings" || root.page == "transport" ? 96px : 24px) + (1 - self.opacity) * 8px;
         text: App.toast; kind: App.toast-kind; undo: App.undo-available;
         opacity: App.toast == "" ? 0 : 1;
         visible: self.opacity > 0;
         animate opacity { duration: Theme.reduce-motion ? 0ms : (App.toast == "" ? 140ms : 180ms); }
         undo-clicked => { App.undo-delete(); } closed => { App.dismiss-toast(); }
     }
-    if App.import-preview.visible : ImportDialog { }
-    if root.ask-discard : Dialog {
+    ImportDialog { open: App.import-preview.visible; }
+    Dialog {
+        open: root.ask-discard;
         title: "放弃未保存的修改？"; dialog-width: 380px;
         dismissed => { root.cancel-discard(); }
         Label { text: "当前页面有尚未保存的更改。离开后这些修改会丢失。"; muted: true; }
@@ -281,7 +276,8 @@ export component MainWindow inherits Window {
             Btn { text: "放弃"; kind: "danger"; clicked => { root.discard-and-go(); } }
         }
     }
-    if root.ask-quit : Dialog {
+    Dialog {
+        open: root.ask-quit;
         title: "退出 hole？"; dialog-width: 420px;
         dismissed => { root.ask-quit = false; }
         Label { text: root.page-dirty() ? "退出会放弃未保存的修改并停止连接。" : App.status.run-requested ? "退出会停止全部服务并关闭核心，已建立的连接将中断。" : "转发已停止，退出将关闭核心宿主。"; muted: true; }

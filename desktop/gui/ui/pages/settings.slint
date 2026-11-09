@@ -54,7 +54,8 @@ export component SettingsPage inherits VerticalLayout {
     public function focus-editor() { focus-request = !focus-request; }
 
     // 草稿与已保存值分离；dirty 时离开页面由 MainWindow 询问。
-    in-out property <ConnectionForm> form: App.connection;
+    in-out property <ConnectionForm> form;
+    init => { root.reset(); }
     property <string> save-error;
     out property <bool> dirty:
         form.server-url != App.connection.server-url || form.password != App.connection.password ||
@@ -66,7 +67,7 @@ export component SettingsPage inherits VerticalLayout {
     public function save() {
         if !App.config-loaded || !dirty || App.status.busy { return; }
         save-error = App.save-connection(form);
-        if save-error == "" { App.connection = form; }
+        if save-error == "" { form = App.connection; }
     }
 
 
@@ -75,10 +76,6 @@ export component SettingsPage inherits VerticalLayout {
         subtitle: root.section == "appearance" ? "与 Android 一致的配色与动效。" : root.section == "behavior" ? "后台保持、自动恢复与本机信息。" : "服务器、房间与设备凭据。";
     }
     PageBody {
-        if root.section == "settings" : Card {
-            SectionTitle { text: "网络检测"; subtitle: "无需加入房间，查看映射、过滤及端口特征。"; }
-            Btn { text: "打开 NAT 检测"; kind: "ghost"; clicked => { root.open-page("nat"); } }
-        }
         VerticalLayout {
             spacing: Theme.space-4;
             // ---- 连接 ----
@@ -102,16 +99,7 @@ export component SettingsPage inherits VerticalLayout {
                     Field { label: "候选网卡"; text <=> root.form.candidate-interfaces; hint: "逗号分隔的网卡名，留空表示不限制"; edited(t) => { root.form.candidate-interfaces = t; } }
                     Field { label: "候选地址"; text <=> root.form.candidate-addresses; hint: "逗号分隔的公网 IPv6 字面地址，留空表示不使用；与 ICE 模式互斥"; edited(t) => { root.form.candidate-addresses = t; } }
                 }
-                if root.save-error != "" : Notice { text: root.save-error; kind: "bad"; }
-                HorizontalLayout {
-                    spacing: Theme.space-2;
-                    alignment: end;
-                    Btn { text: "还原"; enabled: root.dirty; clicked => { root.reset(); } }
-                    Btn { text: "保存连接设置"; kind: "primary"; enabled: App.config-loaded && root.dirty; clicked => {
-                        root.save();
-                    } }
-                }
-                Hint { text: "运行中保存会立即应用连接设置。"; }
+                Btn { text: "NAT 检测 ›"; kind: "ghost"; compact: true; clicked => { root.open-page("nat"); } }
             }
 
             VerticalLayout {
@@ -164,6 +152,20 @@ export component SettingsPage inherits VerticalLayout {
                         KVRow { key: "配置目录"; value: App.host.config-path; }
                     }
                 }
+            }
+        }
+    }
+    if root.section == "settings" : Rectangle {
+        height: actions.preferred-height;
+        background: Theme.surface;
+        actions := VerticalLayout {
+            padding: 16px; spacing: 8px;
+            if root.save-error != "" : Notice { text: root.save-error; kind: "bad"; }
+            HorizontalLayout {
+                spacing: 12px;
+                Text { text: root.dirty ? "有未保存的修改" : "已保存"; color: root.dirty ? Theme.warn : Theme.text-muted; vertical-alignment: center; horizontal-stretch: 1; }
+                Btn { text: "还原"; enabled: root.dirty; clicked => { root.reset(); } }
+                Btn { text: "保存连接设置"; kind: "primary"; enabled: App.config-loaded && root.dirty && !App.status.busy; clicked => { root.save(); } }
             }
         }
     }

@@ -101,10 +101,19 @@ Linux 单文件运行验收可用 `xvfb-run -a python3 desktop/gui/tests/embedde
 设备详情与诊断报告显示共享核心提供的“QUIC 上行丢包率”：本机→对端最近约 1 分钟的判丢包数 / 已 ACK 或判丢包数，并列出丢失数和样本数。无样本显示“暂无样本”，旧核心未提供时显示“未上报”；连接重试、本地丢弃独立展示。
 直连、中继和固定入口使用相同统计。这是 QUIC 路径估计，乱序可能触发判丢，TURN TCP / TLS 外层恢复的链路丢包可能被掩盖；不推算反向丢包率。
 
+首页按连接摘要、服务与设备、流量与网络、最近活动排列；TCP / UDP 会话和上下行速率归入流量区域，
+服务数和可用通道数分别展示。侧栏底部是各页面共用的唯一运行入口，未配置时进入房间设置；
+低高度窗口压缩间距并允许导航独立滚动，运行和退出控件保持可访问。
+设备页宽屏使用 280px 列表与剩余宽度详情，窄屏上下排列。
+
 首页和侧栏运行面板显示同一份核心快照：启动意图、引擎阶段、信令加入和设备连通分别呈现；
 忙碌时禁止重复提交。服务按提供／使用分组，64px 行直接显示协议、端点和状态；
 编辑从右侧 400px 面板打开，更多菜单支持上移、下移、删除，删除后可跨页面撤销。
 离开未保存表单或关闭编辑面板会确认放弃；保存、取消后返回触发控件。
+房间与连接方式的保存、还原及状态固定在底部。保存成功后草稿和比较基准同步采用实际落盘值，
+普通字段去除首尾空格、列表规范化，凭据保留原文；保存失败保留输入。普通刷新和偏好保存不重置草稿，
+初始化及确认导入重置表单。设备选择、线路详情展开和页面滚动位置在本次应用会话内保留，
+快照重排按设备标识、服务条目 ID 或运行服务的角色与 ID 更新；对象删除后清理对应展开状态。
 
 | 按键 / 操作 | 行为 |
 | --- | --- |
@@ -116,6 +125,11 @@ Linux 单文件运行验收可用 `xvfb-run -a python3 desktop/gui/tests/embedde
 
 外观使用 Android 同源五组调色板和明暗层级。旧 teal 标识对应绿色，violet 对应紫色；
 主按钮、容器、前景及导航选中同步切换。减少动画会立即完成页面、导航和数字过渡。
+普通卡片采用无描边、20px 圆角和柔和阴影，深色状态底色降低饱和度；焦点轮廓仍保留。
+提供／使用服务分别使用分享／终端图标。运行控件、展开箭头、抽屉、对话框与提示条采用
+140 / 220 / 320ms 的分级过渡，隐藏窗口暂停持续进度反馈。提示条随主题变化，可通过 Tab、Enter / Space
+撤销或关闭；重复同文案提示重新计时。表面层级与过渡参考
+[Fluent 2 Elevation](https://fluent2.microsoft.design/elevation) 和 [Motion](https://fluent2.microsoft.design/motion/)。
 动画只影响展示，不重发启动、保存或语音命令。验证入口与平台验收边界见 [回归验证](#回归验证)。
 
 ## NAT 检测
@@ -380,10 +394,18 @@ cargo test --offline
 
 界面截图模式通过 `HOLE_DESKTOP_SCREENSHOT_DIR` 指定输出目录，按必需页面名称保存 PPM 图片后退出。
 `HOLE_DESKTOP_SCREENSHOT_PAGES` 可指定逗号分隔的路由子集，默认覆盖五项导航及全部二级分类。
-`HOLE_DESKTOP_SCREENSHOT_SCENARIO` 可选 `empty`、`running`、`reconnecting`、`error`、`long-list`、`fixed`；
+`HOLE_DESKTOP_SCREENSHOT_SCENARIO` 可选 `empty`、`running`、`reconnecting`、`error`、`long-list`、`fixed`、
+`busy`、`toast-single`、`toast-multiline`；
 `fixed` 使用固定快照，覆盖建连、成功、重试、失败、角色互换及 IPv4 / IPv6，复用实际快照解析和线路详情生成逻辑。
 这些是只用于截图的确定性测试数据，不发送核心命令或改变已保存配置。
 完整 Linux 截图矩阵可运行 `xvfb-run -a -s "-screen 0 3400x2200x24" python3 desktop/gui/tests/visual_matrix.py dist/desktop/linux-amd64/hole-desktop`。
+截图夹具在整个截图会话内接管展示状态，矩阵同时校验页面、运行状态和设备数量；覆盖三种窗口尺寸、
+深浅主题、五组配色、高 DPI、长名称、空数据、异常和单行／多行提示。
+`xvfb-run -a python3 desktop/gui/tests/session_x11.py dist/desktop/linux-amd64/hole-desktop`
+检查跨页面滚动保留与规范化保存；Rust UI 回归另覆盖连续保存、校验／写盘失败、凭据原文、
+偏好保存保留草稿、设备重排／删除及同文案提示的计时器隔离。
+`run_control_x11.py` 使用关闭的本机回环端口，验证有效配置首次启动、跨页面停止和动画不改变运行意图；
+运行方式与上述 `session_x11.py` 相同，不依赖外部信令服务。
 输出位于 `.cache/desktop-ui/`；截图只证明界面渲染，不代表真实连接或设备验收。
 可用 `HOLE_DESKTOP_SCREENSHOT_SIZE=860x560` 检查最小窗口；尺寸有效范围为 860–3840 × 560–2160，格式错误时保留默认窗口尺寸。
 截图时应将 `HOLE_DESKTOP_CONFIG_DIR` 指向单独的演示配置目录并保持连接关闭；深浅色由该目录中配置的 `prefs.theme_mode` 决定。

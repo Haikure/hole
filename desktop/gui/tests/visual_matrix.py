@@ -29,6 +29,8 @@ def main():
         cases.append((mode, accent, "1180x780", "1", "running", "overview,mappings,appearance"))
     for scenario in ("empty", "reconnecting", "error", "long-list"):
         cases.append(("light", "blue", "860x560", "1", scenario, "overview,mappings,devices,voice"))
+    for mode, scenario in itertools.product(("light", "dark"), ("toast-single", "toast-multiline", "busy")):
+        cases.append((mode, "blue", "860x560", "1", scenario, "overview,settings,transport"))
     tiles = []
     for mode, accent, size, scale, scenario, pages in cases:
         name = f"{mode}-{accent}-{size}-{scale}-{scenario}"
@@ -49,6 +51,10 @@ def main():
         assert expected <= actual, f"{name}: missing {expected - actual}"
         for page in sorted(expected):
             path = shots / f"{page}.ppm"
+            evidence = json.loads(Path(str(path) + ".json").read_text())
+            assert evidence["page"] == page, (name, page, evidence)
+            assert evidence["run_requested"] == (scenario != "empty"), (name, page, evidence)
+            assert evidence["peers"] == (0 if scenario == "empty" else 2), (name, page, evidence)
             image = Image.open(path)
             width, height = (int(value) for value in size.split("x"))
             expected_size = (round(width * float(scale)), round(height * float(scale)))

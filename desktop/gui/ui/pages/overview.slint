@@ -21,8 +21,14 @@ component MiniMapping inherits Rectangle {
     border-color: Theme.accent;
     height: 44px;
     border-radius: Theme.radius;
-    background: ta.has-hover ? Theme.surface-hover : transparent;
-    animate background { duration: Theme.motion-fast; }
+    Rectangle {
+        y: ta.has-hover ? -2px : 0px;
+        background: ta.has-hover ? Theme.surface-hover : transparent;
+        border-radius: Theme.radius;
+        drop-shadow-blur: ta.has-hover ? 8px : 0px;
+        drop-shadow-color: Theme.shadow;
+        animate y, background { duration: Theme.motion-fast; easing: ease-out; }
+    }
     HorizontalLayout {
         padding-left: Theme.space-2;
         padding-right: Theme.space-2;
@@ -31,13 +37,7 @@ component MiniMapping inherits Rectangle {
             width: 30px; height: 30px; border-radius: 8px;
             y: (parent.height - self.height) / 2;
             background: item.role == "provide" ? Theme.accent-soft : Theme.surface-alt;
-            Text {
-                text: item.role == "provide" ? "供" : "用";
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                font-size: Theme.font-sm; font-weight: 700;
-                color: item.role == "provide" ? Theme.accent : Theme.text-muted;
-            }
+            Icon { name: item.role == "provide" ? Icons.share : Icons.terminal; x: 6px; y: 6px; tint: Theme.accent; }
         }
         VerticalLayout {
             alignment: center;
@@ -93,38 +93,22 @@ export component OverviewPage inherits VerticalLayout {
     PageHeader {
         title: "首页";
         Btn { text: "连接设置"; clicked => { root.open-page("settings"); } }
-        Btn {
-            text: App.status.busy ? "处理中…" : App.status.run-requested ? "停止连接" : "启动连接";
-            kind: App.status.run-requested ? "secondary" : "primary"; icon: Icons.power;
-            enabled: App.config-loaded && App.status.bridge-ready && !App.status.busy;
-            clicked => { App.toggle-run(!App.status.run-requested); }
-        }
     }
     PageBody {
         Card {
-            tinted: App.status.signal-state == "joined";
-            inset: 24px;
+            inset: 16px;
             HorizontalLayout {
                 spacing: 12px;
-                Text { text: App.status.title; font-size: 28px; font-weight: 600; color: Theme.text; horizontal-stretch: 1; wrap: word-wrap; }
+                Text { text: App.status.title; font-size: 20px; font-weight: 600; color: Theme.text; horizontal-stretch: 1; wrap: word-wrap; }
                 Btn { text: "刷新"; kind: "ghost"; icon: Icons.refresh; enabled: !App.status.busy; clicked => { App.refresh(); } }
             }
             Label { text: App.connection.room == "" ? "填写房间信息，让两台设备连接到一起。" : "房间 " + App.connection.room + " · " + App.status.signal-label; muted: true; }
-            Hint { text: "已连接 " + App.status.peers-active + " 台设备 · " + App.status.active-channels + " 个可用服务 · " + App.status.uptime; }
+            Hint { text: App.status.engine-label + " · " + App.status.peers-active + " 台设备 · " + App.status.active-channels + " 个可用通道"; }
             if App.status.error != "" : Notice { text: App.status.error; kind: "bad"; }
             if App.status.command-error != "" : Notice { text: App.status.command-error; kind: "warn"; }
             if App.status.config-error != "" : Notice { text: App.status.config-error; kind: "warn"; }
             if App.status.bridge-error != "" : Notice { text: App.status.bridge-error; kind: "bad"; }
             if App.connection.room == "" : Btn { text: "设置连接"; kind: "primary"; clicked => { root.open-page("settings"); } }
-        }
-        Card {
-            HorizontalLayout {
-                spacing: 16px;
-                VerticalLayout { Hint { text: "TCP 会话"; } AnimatedNumber { value: App.status.tcp-sessions; } }
-                VerticalLayout { Hint { text: "UDP 会话"; } AnimatedNumber { value: App.status.udp-sessions; } }
-                VerticalLayout { Hint { text: "上行"; } AnimatedNumber { value: App.status.traffic-rate-up; font-size: 18px; } }
-                VerticalLayout { Hint { text: "下行"; } AnimatedNumber { value: App.status.traffic-rate-down; font-size: 18px; } }
-            }
         }
         pair := AdaptivePair {
             wide: root.wide;
@@ -150,15 +134,20 @@ export component OverviewPage inherits VerticalLayout {
                     Btn { kind: "ghost"; compact: true; text: "全部 ›"; clicked => { root.open-page("devices"); } }
                 }
                 if App.peers.length == 0 : EmptyState { title: App.status.run-requested ? "等待对端设备" : "连接尚未开启"; description: App.status.run-requested ? "让另一台设备加入同一个房间。" : "启动连接后显示同房间的设备。"; }
-                if !App.status.run-requested : Btn { text: "启动连接"; kind: "primary"; enabled: App.config-loaded && App.status.bridge-ready && !App.status.busy; clicked => { App.toggle-run(true); } }
                 for peer[i] in App.peers : MiniPeer { item: peer; visible: i < 3; height: i < 3 ? 52px : 0px; }
             }
         }
-        if App.status.run-requested : AdaptivePair {
+        AdaptivePair {
             wide: root.wide; first-height: traffic.preferred-height; second-height: network.preferred-height;
             traffic := Card {
                 x: 0px; y: 0px; width: root.wide ? (parent.width - 16px) / 2 : parent.width; height: self.preferred-height;
                 SectionTitle { text: "线路流量"; subtitle: "所有对端合计，包含协议开销"; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout { Hint { text: "上行"; } AnimatedNumber { value: App.status.traffic-rate-up; font-size: 18px; } }
+                    VerticalLayout { Hint { text: "下行"; } AnimatedNumber { value: App.status.traffic-rate-down; font-size: 18px; } }
+                }
+                Hint { text: "TCP " + App.status.tcp-sessions + " · UDP " + App.status.udp-sessions + " 会话"; }
                 Sparkline { up: App.status.sparkline-up; down: App.status.sparkline-down; }
                 VerticalLayout { spacing: 4px;
                     LegendDot { color: Theme.series-up; text: "发送 累计 " + App.status.traffic-up; }

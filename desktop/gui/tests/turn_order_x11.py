@@ -33,8 +33,12 @@ def main():
             save_and_check(["tcp", "tls", "udp"])
             driver.drag((1010, 634), (720, 634))
             save_and_check(["udp", "tcp", "tls"])
-            driver.click(773, 709)  # Add Hole through the actual board.
+            # The save bar stays fixed; scroll the available relay chips above it.
+            driver.scroll(steps=2)
+            driver.shot("turn-scrolled.png")
+            driver.click(773, 469)  # Add Hole through the actual board.
             save_and_check(["udp", "tcp", "tls", "hole"])
+            driver.scroll(down=False, steps=2)
             driver.click(850, 438)
             driver.type("relay-node")
             save_and_check(["udp", "tcp", "tls", "hole"])

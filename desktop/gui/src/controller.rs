@@ -811,6 +811,9 @@ impl Worker {
     }
 
     fn push_ui(&mut self) {
+        // Deterministic fixtures own the view throughout the screenshot session.
+        if std::env::var_os("HOLE_DESKTOP_SCREENSHOT_DIR").is_some()
+            && std::env::var_os("HOLE_DESKTOP_SCREENSHOT_SCENARIO").is_some() { return; }
         let nat = self.snapshot.nat_diagnostic.clone();
         let status = self.build_status();
         let (provides, consumes, runtime) = self.build_mappings();
@@ -854,10 +857,11 @@ impl Worker {
             app.set_voice(voice);
             app.set_voice_members(ModelRc::new(VecModel::from(members)));
             app.set_voice_peers(ModelRc::new(VecModel::from(voice_peers)));
-            app.set_provides(ModelRc::new(VecModel::from(provides.into_iter().map(MappingData::into_row).collect::<Vec<_>>())));
-            app.set_consumes(ModelRc::new(VecModel::from(consumes.into_iter().map(MappingData::into_row).collect::<Vec<_>>())));
-            app.set_runtime_mappings(ModelRc::new(VecModel::from(runtime.into_iter().map(MappingData::into_row).collect::<Vec<_>>())));
-            app.set_peers(ModelRc::new(VecModel::from(peers.into_iter().map(PeerData::into_row).collect::<Vec<_>>())));
+            crate::view_state::update(&w,
+                provides.into_iter().map(MappingData::into_row).collect(),
+                consumes.into_iter().map(MappingData::into_row).collect(),
+                runtime.into_iter().map(MappingData::into_row).collect(),
+                peers.into_iter().map(PeerData::into_row).collect());
             app.set_events(ModelRc::new(VecModel::from(events)));
             app.set_network_info(ModelRc::new(VecModel::from(network)));
             app.set_version_info(ModelRc::new(VecModel::from(versions)));

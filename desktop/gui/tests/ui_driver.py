@@ -6,7 +6,7 @@ import subprocess
 import time
 
 
-PAGES = {"overview", "mappings", "devices", "runtime", "voice", "diagnostics",
+PAGES = {"overview", "mappings", "devices", "runtime", "voice", "nat", "diagnostics",
          "settings", "transport", "appearance", "behavior", "exchange"}
 
 

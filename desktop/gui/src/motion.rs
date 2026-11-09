@@ -14,7 +14,7 @@ impl Spring {
     pub fn active(&self) -> bool { self.value != self.target || self.velocity != 0.0 }
     pub fn snap(&mut self) { self.value = self.target; self.velocity = 0.0; }
     pub fn step(&mut self, dt: f32) {
-        let dt = dt.clamp(0.0, 0.064);
+        let dt = dt.max(0.0);
         let omega = 2.0 * PI / 0.5;
         let damping = 0.68;
         let offset = self.value - self.target;
@@ -62,7 +62,7 @@ impl NavigationMotion {
     }
     pub fn active(&self) -> bool { self.spring.active() || self.incoming < 1.0 || self.outgoing > 0.0 }
     pub fn step(&mut self, dt: f32) {
-        let dt = dt.clamp(0.0, 0.064);
+        let dt = dt.max(0.0);
         self.spring.step(dt);
         self.elapsed += dt;
         let enter = if self.secondary { 0.320 } else { 0.220 };
@@ -74,6 +74,7 @@ impl NavigationMotion {
 
 /// 只在接受导航后启动；重定向沿用弹簧速度及上一帧时间。
 pub fn bind(window: &crate::MainWindow) {
+    bind_run(window);
     use slint::{ComponentHandle, Timer, TimerMode};
     use std::{cell::RefCell, rc::Rc, time::{Duration, Instant}};
     let state = Rc::new(RefCell::new((NavigationMotion::default(), Instant::now())));
@@ -135,9 +136,53 @@ pub fn bind(window: &crate::MainWindow) {
     window.global::<crate::Theme>().on_finish_motion(finish);
 }
 
+fn bind_run(window: &crate::MainWindow) {
+    use slint::{ComponentHandle, Timer, TimerMode};
+    use std::{cell::RefCell, rc::Rc, time::{Duration, Instant}};
+    let state = Rc::new(RefCell::new((Spring::new(0.0), Instant::now())));
+    let timer = Rc::new(Timer::default());
+    let weak = window.as_weak();
+    window.global::<crate::Theme>().on_animate_run(move |running| {
+        let Some(w) = weak.upgrade() else { return };
+        {
+            let mut state = state.borrow_mut();
+            state.0.to(if running { 1.0 } else { 0.0 });
+            state.1 = Instant::now();
+            if w.global::<crate::Theme>().get_reduce_motion() || !w.window().is_visible() {
+                state.0.snap();
+                w.global::<crate::Theme>().set_run_progress(state.0.value);
+                timer.stop();
+                return;
+            }
+        }
+        let weak = weak.clone();
+        let state = state.clone();
+        let timer_weak = Rc::downgrade(&timer);
+        timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
+            let Some(w) = weak.upgrade() else { if let Some(t) = timer_weak.upgrade() { t.stop(); } return };
+            let mut state = state.borrow_mut();
+            let now = Instant::now();
+            let dt = (now - state.1).as_secs_f32();
+            state.1 = now;
+            if w.global::<crate::Theme>().get_reduce_motion() || !w.window().is_visible() { state.0.snap(); }
+            else { state.0.step(dt); }
+            w.global::<crate::Theme>().set_run_progress(state.0.value);
+            if !state.0.active() { if let Some(t) = timer_weak.upgrade() { t.stop(); } }
+        });
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delayed_frame_finishes_navigation_in_wall_time() {
+        let mut motion = NavigationMotion::default();
+        motion.begin(2.0, true, false);
+        motion.step(0.5);
+        assert_eq!(motion.incoming, 1.0);
+        assert_eq!(motion.outgoing, 0.0);
+    }
     #[test]
     fn spring_converges_and_stops() {
         let mut spring = Spring::new(0.0);
@@ -158,11 +203,16 @@ mod tests {
         assert_eq!(spring.value, 3.0);
     }
     #[test]
-    fn frame_gap_is_capped_at_64ms() {
+    fn analytical_spring_handles_frame_gaps_without_slowing_time() {
         let mut a = Spring::new(0.0); a.to(4.0);
         let mut b = a.clone();
-        a.step(10.0); b.step(0.064);
-        assert_eq!(a.value, b.value); assert_eq!(a.velocity, b.velocity);
+        a.step(0.5);
+        for _ in 0..50 { b.step(0.01); }
+        assert!((a.value - b.value).abs() < 0.001);
+        assert!((a.velocity - b.velocity).abs() < 0.001);
+        a.step(10.0);
+        assert_eq!(a.value, 4.0);
+        assert!(!a.active());
     }
     #[test]
     fn reduced_motion_finishes_every_transition_immediately() {

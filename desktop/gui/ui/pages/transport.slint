@@ -10,7 +10,8 @@ export component TransportPage inherits VerticalLayout {
     in property <bool> wide: false;
     callback open-page(string);
     public function focus-editor() { connection-mode.focus-choice(); }
-    in-out property <TransportForm> form: App.transport;
+    in-out property <TransportForm> form;
+    init => { root.reset(); }
     property <string> save-error;
     property <bool> advanced: false;
     out property <bool> dirty:
@@ -27,7 +28,7 @@ export component TransportPage inherits VerticalLayout {
     public function save() {
         if !App.config-loaded || !dirty || App.status.busy { return; }
         save-error = App.save-transport(form);
-        if save-error == "" { form.relay-order-edited = false; App.transport = form; }
+        if save-error == "" { form = App.transport; }
     }
 
 
@@ -116,14 +117,19 @@ export component TransportPage inherits VerticalLayout {
                 SwitchRow { title: "允许本地 ws 测试"; summary: "默认使用 wss://，此项只为显式配置的本地测试入口启用。"; checked <=> root.form.allow-insecure-signal; toggled(v) => { root.form.allow-insecure-signal = v; } }
             }
         }
-        if root.save-error != "" : Notice { text: root.save-error; kind: "bad"; }
-        HorizontalLayout {
-            spacing: Theme.space-2;
-            alignment: end;
-            Btn { text: "还原"; enabled: root.dirty; clicked => { root.reset(); } }
-            Btn { text: "保存连接方式"; kind: "primary"; enabled: App.config-loaded && root.dirty; clicked => {
-                root.save();
-            } }
+    }
+    Rectangle {
+        height: actions.preferred-height;
+        background: Theme.surface;
+        actions := VerticalLayout {
+            padding: 16px; spacing: 8px;
+            if root.save-error != "" : Notice { text: root.save-error; kind: "bad"; }
+            HorizontalLayout {
+                spacing: 12px;
+                Text { text: root.dirty ? "有未保存的修改" : "已保存"; color: root.dirty ? Theme.warn : Theme.text-muted; vertical-alignment: center; horizontal-stretch: 1; }
+                Btn { text: "还原"; enabled: root.dirty; clicked => { root.reset(); } }
+                Btn { text: "保存连接方式"; kind: "primary"; enabled: App.config-loaded && root.dirty && !App.status.busy; clicked => { root.save(); } }
+            }
         }
     }
 }
