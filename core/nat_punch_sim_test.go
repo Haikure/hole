@@ -268,6 +268,12 @@ func TestNATPunchConeSymmetricScansFromRetainedSocket(t *testing.T) {
 			if a.selected != 0 {
 				t.Fatal("cone replaced socket")
 			}
+			if !a.diagnostic.QUICDialStarted || !a.diagnostic.QUICEstablished || a.diagnostic.ACKsVerified != 1 || a.diagnostic.PacketsReceived == 0 || !b.diagnostic.QUICEstablished {
+				t.Fatalf("successful path missing probe/QUIC evidence: %+v / %+v", a.diagnostic, b.diagnostic)
+			}
+			if a.diagnostic.UDPReadErrors != 0 || b.diagnostic.UDPReadErrors != 0 || a.diagnostic.ReadErrors != 0 || b.diagnostic.ReadErrors != 0 {
+				t.Fatalf("closing unused sockets reported a receive failure: %+v / %+v", a.diagnostic, b.diagnostic)
+			}
 			n.mu.Lock()
 			defer n.mu.Unlock()
 			for _, m := range cone.mappings {

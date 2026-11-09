@@ -10,6 +10,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26])
 class PeerSnapshotTest {
+    @Test fun failedPunchRoundsSurviveRelaySnapshots() {
+        val peer = PeerSnapshot.fromJson(JSONObject("""{"phase":"relay_tcp","punch_diagnostics":[{"generation":"9007199254740993","round":1,"probes_sent":80,"packets_received":0,"quic_dial_started":false}]}"""))
+        assertEquals(1, peer.punchDiagnostics.size)
+        val round = JSONObject(peer.punchDiagnostics.single())
+        assertEquals("9007199254740993", round.getString("generation"))
+        assertEquals(80, round.getInt("probes_sent"))
+        assertEquals(0, round.getInt("packets_received"))
+        assertEquals(emptyList(), PeerSnapshot.fromJson(JSONObject("{}")).punchDiagnostics)
+    }
     @Test fun fixedEndpointsAndRolesSurviveTheBridgeAndDefaultToEmpty() {
         val peer = PeerSnapshot.fromJson(JSONObject("""{"profile":"fixed-quic-mux-v1","state":"connecting","phase":"fixed","fixed_endpoint":"gateway.example:40000","listener_id":"server","dialer_id":"phone"}"""))
         assertEquals("gateway.example:40000", peer.fixedEndpoint)

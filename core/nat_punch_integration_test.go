@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -108,26 +109,85 @@ func (p *punchSimPlatform) ResolveUDP(ctx context.Context, address string) (*net
 	return net.ResolveUDPAddr("udp4", address)
 }
 
+// Model Android's selected-Network resolver: DNS can return AAAA first even
+// though this simulator exposes only IPv4 interfaces and IPv4 NAT mappings.
+type punchIPv6FirstPlatform struct{ *punchSimPlatform }
+
+func (p *punchIPv6FirstPlatform) InterfaceSnapshots(ctx context.Context) ([]InterfaceSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return []InterfaceSnapshot{{Name: "wlan0", Up: true, Addresses: []string{"10.0.0.1"}}}, nil
+}
+
+func (p *punchIPv6FirstPlatform) LookupIP(ctx context.Context, host string) ([]net.IP, error) {
+	if ip := net.ParseIP(strings.TrimSuffix(host, ".stun.test")); ip != nil {
+		return []net.IP{net.ParseIP("2001:db8::53"), ip}, nil
+	}
+	return p.DefaultPlatform.LookupIP(ctx, host)
+}
+
+func (p *punchIPv6FirstPlatform) ResolveUDP(ctx context.Context, address string) (*net.UDPAddr, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := p.LookupIP(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	return net.ResolveUDPAddr("udp", net.JoinHostPort(ips[0].String(), port))
+}
+
+func (p *punchIPv6FirstPlatform) ResolveUDP4(ctx context.Context, address string) (*net.UDPAddr, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := p.LookupIP(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			return net.ResolveUDPAddr("udp4", net.JoinHostPort(ip.String(), port))
+		}
+	}
+	return nil, &net.DNSError{Name: host, Err: "no IPv4 address", IsNotFound: true}
+}
+
 func TestNATPunchActualWorkerAndSharedMux(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		cone, pool bool
 		step       int
+		dnsSide    string
 	}{
-		{"cone-symmetric", true, false, 1}, {"dual-symmetric", false, false, 1},
-		{"cone-pool-increasing", true, true, 1}, {"cone-pool-decreasing", true, true, -1},
+		{"cone-symmetric", true, false, 1, ""}, {"dual-symmetric", false, false, 1, ""},
+		{"cone-pool-increasing", true, true, 1, ""}, {"cone-pool-decreasing", true, true, -1, ""},
+		{"cone-symmetric-ipv6-first-symmetric", true, false, 1, "alpha"},
+		{"cone-symmetric-ipv6-first-cone", true, false, 1, "beta"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := actualWorkerFixture(t)
 			n, _, _ := simulatedNATs([2]int{tc.step, 1}, [2]int{}, 0)
 			n.sides[1].cone = tc.cone // The cone can be the non-initiator in mux signaling.
 			n.sides[0].pool = tc.pool
-			a, b := NewEngine(Options{Platform: &punchSimPlatform{nat: n.sides[0]}}), NewEngine(Options{Platform: &punchSimPlatform{nat: n.sides[1]}})
+			platforms := [2]Platform{&punchSimPlatform{nat: n.sides[0]}, &punchSimPlatform{nat: n.sides[1]}}
+			for side, name := range []string{"alpha", "beta"} {
+				if tc.dnsSide == name {
+					platforms[side] = &punchIPv6FirstPlatform{platforms[side].(*punchSimPlatform)}
+				}
+			}
+			a, b := NewEngine(Options{Platform: platforms[0]}), NewEngine(Options{Platform: platforms[1]})
 			defer a.Close()
 			defer b.Close()
 			ra, rb := iceFixtureRequest(server, "alpha"), iceFixtureRequest(server, "beta")
 			for _, r := range []*Request{&ra, &rb} {
 				r.Config.ICE.NATSTUNURLs = []string{"stun:192.0.2.1:3478", "stun:192.0.2.2:3478", "stun:192.0.2.3:3478"}
+				if r.Config.DeviceName == tc.dnsSide {
+					r.Config.ICE.NATSTUNURLs = []string{"stun:192.0.2.1.stun.test:3478", "stun:192.0.2.2.stun.test:3478", "stun:192.0.2.3.stun.test:3478"}
+				}
 				if tc.pool {
 					r.Config.ICE.NATSTUNURLs = append(r.Config.ICE.NATSTUNURLs, "stun:192.0.2.4:3478")
 				}

@@ -325,17 +325,36 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			}
 		}
 		model := s.local
-		live, roundErr := func() (*liveICETransport, error) {
+		live, roundErr := func() (_ *liveICETransport, roundError error) {
+			diagnostic := NATPunchDiagnostic{Generation: a.ready.TransportGeneration, Round: round, Mode: s.mode,
+				StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Stage: "calibration"}
+			defer func() {
+				if roundError != nil {
+					diagnostic.Error = redact(roundError.Error(), cfg)
+				}
+				diagnostic.ReadError = redact(diagnostic.ReadError, cfg)
+				diagnostic.UDPReadError = redact(diagnostic.UDPReadError, cfg)
+				p.recordPunchDiagnostic(a, diagnostic)
+			}()
 			ctx, stopAttempt := context.WithTimeout(ctx, s.config.Timeout.Duration())
 			defer stopAttempt()
+			// Calibration is IPv4-only, just like NAT classification. Android's
+			// generic resolver can return AAAA first despite a usable A record;
+			// keep resolution on the pinned platform and select IPv4 explicitly.
+			resolve := platform.ResolveUDP
+			if ipv4, ok := platform.(interface {
+				ResolveUDP4(context.Context, string) (*net.UDPAddr, error)
+			}); ok {
+				resolve = ipv4.ResolveUDP4
+			}
 			var server *net.UDPAddr
 			for _, raw := range natURLs(cfg.ICE) {
 				u, e := stun.ParseURI(raw)
 				if e != nil || u.Proto != stun.ProtoTypeUDP {
 					continue
 				}
-				server, e = platform.ResolveUDP(ctx, net.JoinHostPort(u.Host, strconv.Itoa(u.Port)))
-				if e == nil && server.IP.To4() != nil {
+				server, e = resolve(ctx, net.JoinHostPort(u.Host, strconv.Itoa(u.Port)))
+				if e == nil && server != nil && server.IP.To4() != nil {
 					break
 				}
 				server = nil
@@ -389,6 +408,10 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			if e != nil {
 				return nil, e
 			}
+			diagnostic.LocalAddress = sockets[0].LocalAddr().String()
+			diagnostic.MappedAddress = sample.Mapped.String()
+			diagnostic.Sockets = len(sockets)
+			diagnostic.Stage = "coordination"
 			plan, e := makeNATPunchPlan(sample.Mapped, model, s.mode, count, s.config.ScanWidth)
 			if e != nil {
 				return nil, e
@@ -441,10 +464,18 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				dialer = natGroup(model) == "cone"
 			}
 			attempt := newNATPunchAttempt(sockets)
+			diagnostic.Stage, diagnostic.Dialer = "udp", dialer
+			diagnostic.TargetFirst, diagnostic.TargetLast = targets[0].String(), targets[len(targets)-1].String()
+			attempt.diagnostic = diagnostic
 			roundCtx, stopRound := context.WithTimeout(ctx, s.config.RoundTimeout.Duration())
 			connection, e := attempt.run(roundCtx, dialer, round, s.key, targets, p.punchTLS(a))
 			stopRound()
+			diagnostic = attempt.diagnostic
+			if diagnostic.QUICDialStarted {
+				diagnostic.Stage = "quic"
+			}
 			if e == nil {
+				diagnostic.Stage = "mux"
 				deadline, _ := ctx.Deadline()
 				mux, muxErr := newMuxPeerPrepared(a.ctx, p, connection, a.ready, nil, deadline)
 				if muxErr != nil {
@@ -459,6 +490,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				p.mu.Unlock()
 				live := &liveICETransport{ready: a.ready, mux: mux, quic: attempt.transports[attempt.selected], session: connection, cancel: a.cancel}
 				live.fixedCleanup = func() { attempt.close(); _ = selected.Close() }
+				diagnostic.Stage = "connected"
 				return live, nil
 			}
 			attempt.close()

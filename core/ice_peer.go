@@ -132,6 +132,9 @@ func (p *icePeer) update(m iceSignalMessage) {
 	wasOnline := p.online
 	p.online = true
 	identityChanged := old.PeerFingerprint != "" && (old.PeerFingerprint != m.PeerFingerprint || old.PeerRuntimeID != m.PeerRuntimeID)
+	if identityChanged {
+		p.stats.PunchDiagnostics = nil
+	}
 	p.ready = m
 	p.stats.Profile = m.Profile
 	p.stats.FixedEndpoint, p.stats.ListenerID, p.stats.DialerID = m.FixedEndpoint, m.ListenerID, m.DialerID
@@ -1201,6 +1204,7 @@ func (p *icePeer) maintain() {
 func (p *icePeer) snapshot() PeerTransportSnapshot {
 	p.mu.Lock()
 	s := p.stats
+	s.PunchDiagnostics = append([]NATPunchDiagnostic(nil), s.PunchDiagnostics...)
 	active := p.active
 	pending := p.pending
 	online := p.online

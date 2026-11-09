@@ -15,6 +15,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26])
 class DiagnosticsTest {
+    @Test fun failedPunchEvidenceIsExportedAfterRelayFallbackAndRedacted() {
+        val round = """{"generation":"3","round":1,"probes_sent":80,"packets_received":0,"error":"fixture-secret"}"""
+        val peer = PeerSnapshot(phase = "relay_tcp", pathType = "relay", punchDiagnostics = listOf(round))
+        val report = diagnosticReport(CoreSnapshot(peers = listOf(peer)), ConfigUiState(password = "fixture-secret"), BackgroundInfo())
+        assertTrue(report.contains("IPv4 打洞轮次"))
+        assertTrue(report.contains("\"probes_sent\":80"))
+        assertTrue(report.contains("\"packets_received\":0"))
+        assertFalse(report.contains("fixture-secret"))
+    }
     @Test fun quicLossIsReportedForEveryPathWithoutUsingLocalDrops() {
         for (path in listOf("direct", "relay", "hole", "fixed")) {
             val peer = PeerSnapshot(pathType = path, retryCount = "99", droppedDatagrams = "999", sendLoss = SendLossSnapshot(60, "80", "1", 1.25))

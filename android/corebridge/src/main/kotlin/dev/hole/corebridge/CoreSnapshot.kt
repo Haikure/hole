@@ -44,9 +44,14 @@ data class PeerSnapshot(
     val localNAT: NATSnapshot = NATSnapshot(), val peerNAT: NATSnapshot = NATSnapshot(),
     val portMapping: PortMappingSnapshot = PortMappingSnapshot(),
     val sendLoss: SendLossSnapshot? = null,
+    // Bounded structured round summaries, retained across relay fallback.
+    val punchDiagnostics: List<String> = emptyList(),
 ) {
     companion object {
         fun fromJson(j: JSONObject): PeerSnapshot = PeerSnapshot(
+            punchDiagnostics = j.optJSONArray("punch_diagnostics")?.let { array ->
+                (0 until minOf(array.length(), 6)).mapNotNull { array.optJSONObject(it)?.toString() }
+            }.orEmpty(),
             localNAT = NATSnapshot.fromJson(j.optJSONObject("local_nat")), peerNAT = NATSnapshot.fromJson(j.optJSONObject("peer_nat")),
             portMapping = PortMappingSnapshot.fromJson(j.optJSONObject("port_mapping")),
             sendLoss = SendLossSnapshot.fromJson(j.optJSONObject("send_loss")),

@@ -63,12 +63,16 @@ type natPunchAttempt struct {
 	transports []*quic.Transport
 	listeners  []*quic.Listener
 	selected   int
+	diagnostic NATPunchDiagnostic // populated after run has joined its readers
+	observed   []*punchSocketObservation
 }
 
 func newNATPunchAttempt(sockets []net.PacketConn) *natPunchAttempt {
 	a := &natPunchAttempt{sockets: sockets, selected: -1}
 	for _, pc := range sockets {
-		a.transports = append(a.transports, &quic.Transport{Conn: pc})
+		conn, observed := observePunchSocket(pc)
+		a.transports = append(a.transports, &quic.Transport{Conn: conn})
+		a.observed = append(a.observed, observed)
 	}
 	return a
 }
@@ -95,9 +99,34 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 		err   error
 	}
 	completed := make(chan result, len(a.sockets)+1)
+	// Each reader owns one element; inspect them only after wg.Wait below.
+	reads := make([]NATPunchDiagnostic, len(a.sockets))
 	defer func() {
 		cancel()
 		wg.Wait()
+		a.diagnostic.SocketObserved = true
+		for _, o := range a.observed {
+			if o == nil {
+				a.diagnostic.SocketObserved = false
+				continue
+			}
+			a.diagnostic.UDPPackets += int(o.packets.Load())
+			a.diagnostic.UDPReadErrors += int(o.errors.Load())
+			if first := o.first.Load(); first != nil && a.diagnostic.UDPReadError == "" {
+				a.diagnostic.UDPReadError = *first
+			}
+		}
+		for _, r := range reads {
+			a.diagnostic.PacketsReceived += r.PacketsReceived
+			a.diagnostic.SourceRejected += r.SourceRejected
+			a.diagnostic.PacketRejected += r.PacketRejected
+			a.diagnostic.ProbesReceived += r.ProbesReceived
+			a.diagnostic.ACKsReceived += r.ACKsReceived
+			a.diagnostic.ReadErrors += r.ReadErrors
+			if a.diagnostic.ReadError == "" {
+				a.diagnostic.ReadError = r.ReadError
+			}
+		}
 		for {
 			select {
 			case r := <-completed:
@@ -124,12 +153,18 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 			wg.Go(func() { c, e := l.Accept(ctx); completed <- result{c, i, e} })
 		}
 		wg.Go(func() {
+			stats := &reads[i]
 			buf := make([]byte, 2048)
 			for {
 				n, from, e := t.ReadNonQUICPacket(ctx, buf)
 				if e != nil {
+					if ctx.Err() == nil {
+						stats.ReadErrors++
+						stats.ReadError = e.Error()
+					}
 					return
 				}
+				stats.PacketsReceived++
 				target := -1
 				for j, addr := range targets {
 					if samePacketAddr(from, addr) {
@@ -138,11 +173,18 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 					}
 				}
 				if target < 0 {
+					stats.SourceRejected++
 					continue
 				}
 				packet, ok := decodeNATPunch(buf[:n], key, round)
 				if !ok {
+					stats.PacketRejected++
 					continue
+				}
+				if packet.kind == 1 {
+					stats.ProbesReceived++
+				} else {
+					stats.ACKsReceived++
 				}
 				select {
 				case incoming <- event{i, target, packet}:
@@ -189,8 +231,13 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 				return nil, errors.New("DATAGRAM required")
 			}
 			a.selected = r.index
+			a.diagnostic.QUICEstablished = true
+			cancel()
 			for i, t := range a.transports {
 				if i != r.index {
+					if a.observed[i] != nil {
+						a.observed[i].stopping.Store(true)
+					}
 					_ = t.Close()
 				}
 			}
@@ -209,6 +256,8 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 				s.ack = &ack
 			} else if dialer && selected < 0 && s.sent > 0 && packet.echo == s.nonce && packet.sequence <= s.sent {
 				selected = i
+				a.diagnostic.ACKsVerified++
+				a.diagnostic.QUICDialStarted = true
 				wg.Go(func() {
 					c, e := a.transports[ev.index].Dial(ctx, targets[ev.target], tlsConfig, iceQUICConfig("direct"))
 					completed <- result{c, ev.index, e}
@@ -249,6 +298,11 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 				s := slots[i]
 				if _, e := a.sockets[s.index].WriteTo(payload, targets[s.target]); e != nil {
 					return nil, e
+				}
+				if payload[14] == 1 {
+					a.diagnostic.ProbesSent++
+				} else {
+					a.diagnostic.ACKsSent++
 				}
 			}
 		}

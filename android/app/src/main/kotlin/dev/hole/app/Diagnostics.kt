@@ -72,6 +72,7 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
             appendLine("  线路发送 ${peer.bytesSent} / 接收 ${peer.bytesReceived} 字节 · 本地丢弃 ${peer.droppedDatagrams}")
             appendLine("  QUIC 上行丢包率 ${peer.sendLoss?.description() ?: "未上报"}")
             appendLine("  ${peer.transportId} / generation ${peer.generation} / phase ${peer.phase}（${peerPhaseLabel(peer)}） / retries ${peer.retryCount}")
+            peer.punchDiagnostics.forEach { appendLine("  IPv4 打洞轮次 $it") }
             if (!isFixedPeer(peer)) appendLine("  中继状态 ${peer.relayState} · 凭据到期 ${peer.turnExpiresAt}")
             appendLine("  授权到期 ${peer.leaseUntil}")
             peer.errorCode?.let { appendLine("  当前问题 $it: ${peer.errorMessage.orEmpty()}") }

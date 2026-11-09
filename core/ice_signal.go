@@ -88,7 +88,8 @@ type transportLease struct {
 }
 
 type PeerTransportSnapshot struct {
-	SendLoss *SendLossSnapshot `json:"send_loss,omitempty"`
+	SendLoss         *SendLossSnapshot    `json:"send_loss,omitempty"`
+	PunchDiagnostics []NATPunchDiagnostic `json:"punch_diagnostics,omitempty"`
 
 	PortMapping        nat.MappingSnapshot `json:"port_mapping"`
 	LocalNAT           NATSnapshot         `json:"local_nat"`
