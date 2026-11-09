@@ -144,6 +144,114 @@ test('ordered punch reservations require negotiated capability and preserve mode
  assert.equal(punches(b).length,26);
  assert.deepEqual(punches(b).slice(13).map(m=>m.punch),punches(b).slice(0,13).map(m=>m.punch));
 });
+test('calibration capability requires ordered ICE first peers and resets generation',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket();let b=f.socket();
+ const caps={punch_version:'nat-punch-v1',punch_schedule:'ordered-v1',direct_order:'ice-first-v1',punch_calibration:'barrier-v1'};
+ for(const invalid of [{punch_calibration:'unknown'},{punch_schedule:undefined},{direct_order:undefined},{punch_version:undefined}]) {
+  assert.equal(iceJoinFields({...join('alpha',['one']),...caps,...invalid}),null);
+ }
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps,punch_calibration:undefined}));
+ let record=[...r.ice.records.values()][0];
+ assert.equal(record.punch_calibration,'');
+ assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).punch_calibration,undefined);
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'relay_udp',reason:'ice_failed'}));
+ assert.equal(record.direct_stage,'punch');
+ const send=punch=>r.webSocketMessage(a,JSON.stringify({type:'nat_punch',transport_id:record.id,transport_generation:record.generation,to_peer_id:'beta',punch}));
+ await send({kind:'reserve'});
+ const before=b.messages.filter(m=>m.type==='nat_punch').length;
+ await send({kind:'calibrate',round:1,trial:1});
+ assert.equal(b.messages.filter(m=>m.type==='nat_punch').length,before);
+ const generation=record.generation;
+ b=f.socket();
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+ record=[...r.ice.records.values()][0];
+ assert.notEqual(record.generation,generation);
+ assert.equal(record.direct_stage,'ice');
+ assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).punch_calibration,'barrier-v1');
+});
+
+test('calibration barriers gate bilateral retries and GO and survive complete replay',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const caps={punch_version:'nat-punch-v1',punch_schedule:'ordered-v1',direct_order:'ice-first-v1',punch_calibration:'barrier-v1'};
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+ const record=[...r.ice.records.values()][0];
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'relay_udp',reason:'ice_failed'}));
+ assert.equal(record.direct_stage,'punch');
+ const send=(ws,to,punch)=>r.webSocketMessage(ws,JSON.stringify({type:'nat_punch',transport_id:record.id,transport_generation:record.generation,to_peer_id:to,punch}));
+ const punches=ws=>ws.messages.filter(m=>m.type==='nat_punch').map(m=>m.punch);
+ const rejected=async(ws,to,punch)=>{
+  const receiver=ws===a?b:a,before=punches(receiver).length;
+  await send(ws,to,punch);
+  assert.equal(punches(receiver).length,before,JSON.stringify(punch));
+ };
+ const snapshot={status:'complete',type:'symmetric',mapping_behavior:'endpoint_dependent',predictability:'incremental',samples:9,port_step:1,public_ip:'198.51.100.1',last_mapping_port:40000,allocation_scope:'cross_socket'};
+ const plan={ip:'198.51.100.1',port:40001,target:40017,width:1,sockets:32};
+ const offer={kind:'offer',nonce:'a'.repeat(64),snapshot,config:{sockets:10,scan_width:20,dual_sockets:32,dual_retry_sockets:64,timeout:'10s',round_timeout:'2.5s'}};
+ await send(a,'beta',offer);await send(b,'alpha',offer);
+ await rejected(a,'beta',{kind:'calibrate',round:1,trial:1});
+ await send(a,'beta',{kind:'reserve'});await send(b,'alpha',{kind:'reserved'});
+ for(let round=1;round<=3;round++) {
+  await send(a,'beta',{kind:'model',round,snapshot});
+  await rejected(a,'beta',{kind:'calibrate',round,trial:1});
+  await send(b,'alpha',{kind:'model',round,snapshot});
+  await rejected(a,'beta',{kind:'ready',round,mode:'fixed',plan});
+  for(let trial=1;trial<=3;trial++) {
+   const start={kind:'calibrate',round,trial},ok={kind:'calibrated',round,trial,result:'ok',mode:'fixed',plan};
+   await rejected(a,'beta',{...start,trial:trial+1});
+   await send(a,'beta',start);
+   await rejected(a,'beta',ok);
+   await send(b,'alpha',start);
+   await send(a,'beta',trial===3?ok:{...ok,result:'retry',plan:undefined});
+   await rejected(a,'beta',{kind:'go',round,trial});
+   await send(b,'alpha',ok);
+   if(trial<3) await rejected(a,'beta',{kind:'go',round,trial});
+  }
+  await rejected(a,'beta',{kind:'go',round,trial:1});
+  await rejected(b,'alpha',{kind:'go',round,trial:3});
+  await send(a,'beta',{kind:'go',round,trial:3});
+  await send(a,'beta',{kind:'failed',round});await send(b,'alpha',{kind:'failed',round});
+ }
+ await send(a,'beta',{kind:'abort'});await send(b,'alpha',{kind:'abort'});
+ const sent=punches(b);
+ assert.equal(sent.length,30,'all three rounds and trials fit in bounded cache');
+ const resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));
+ assert.deepEqual(punches(b).slice(sent.length),sent);
+ assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).punch_calibration,'barrier-v1');
+});
+
+test('calibration results validate plans and stop retries after terminal outcomes',async()=>{
+ const plan={ip:'198.51.100.1',port:40001,target:40002,width:1,sockets:1};
+ const result={kind:'calibrated',round:1,trial:1,mode:'next',result:'ok',plan};
+ for(const invalid of [{trial:0},{trial:4},{trial:undefined},{result:'unknown'},{plan:undefined},{result:'retry'},{plan:{...plan,target:65536}}]) {
+  assert.equal(validPunch({...result,...invalid}),false);
+ }
+ assert.equal(validPunch(result),true);
+ for(const outcome of ['refresh','exhausted','ok','abort']) {
+  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+  const caps={punch_version:'nat-punch-v1',punch_schedule:'ordered-v1',direct_order:'ice-first-v1',punch_calibration:'barrier-v1'};
+  await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+  await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+  const record=[...r.ice.records.values()][0];
+  await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'relay_udp',reason:'ice_failed'}));
+  assert.equal(record.direct_stage,'punch');
+  const send=(ws,to,punch)=>r.webSocketMessage(ws,JSON.stringify({type:'nat_punch',transport_id:record.id,transport_generation:record.generation,to_peer_id:to,punch}));
+  await send(a,'beta',{kind:'reserve'});await send(b,'alpha',{kind:'reserved'});
+  for(const [ws,to] of [[a,'beta'],[b,'alpha']]) await send(ws,to,{kind:'model',round:1,snapshot:{status:'complete',type:'symmetric',predictability:'incremental',samples:3}});
+  for(const [ws,to] of [[a,'beta'],[b,'alpha']]) await send(ws,to,{kind:'calibrate',round:1,trial:1});
+  const successful=outcome==='ok' || outcome==='abort';
+  await send(a,'beta',{...result,result:successful?'ok':outcome,plan:successful?plan:undefined});
+  await send(b,'alpha',result);
+  if(outcome==='abort') await send(b,'alpha',{kind:'abort'});
+  const before=b.messages.filter(m=>m.type==='nat_punch').length;
+  await send(a,'beta',{kind:'calibrate',round:1,trial:2});
+  if(outcome!=='ok') await send(a,'beta',{kind:'go',round:1,trial:1});
+  assert.equal(b.messages.filter(m=>m.type==='nat_punch').length,before);
+ }
+});
+
 test('NAT punching negotiates capabilities, gates GO and rejects stale rounds and policies',async()=>{
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
  const caps={punch_version:'nat-punch-v1',relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};

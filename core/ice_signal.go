@@ -17,18 +17,19 @@ type peerMappingRecord struct {
 	Expose   HostPort        `json:"expose"`
 }
 type iceSignalMessage struct {
-	DirectOrder    string            `json:"direct_order,omitempty"`
-	DirectStage    string            `json:"direct_stage,omitempty"`
-	PunchSchedule  string            `json:"punch_schedule,omitempty"`
-	PunchVersion   string            `json:"punch_version,omitempty"`
-	Punch          *natPunchSignal   `json:"punch,omitempty"`
-	NAT            *natPlan          `json:"nat,omitempty"`
-	HoleVersion    string            `json:"hole_version,omitempty"`
-	HoleDevice     string            `json:"hole_device,omitempty"`
-	PeerHoleDevice string            `json:"peer_hole_device,omitempty"`
-	HoleServe      *RelayServeConfig `json:"hole_serve,omitempty"`
-	RelayPlan      []relayPathStep   `json:"relay_plan,omitempty"`
-	Hole           *holeGrant        `json:"hole,omitempty"`
+	DirectOrder      string            `json:"direct_order,omitempty"`
+	DirectStage      string            `json:"direct_stage,omitempty"`
+	PunchSchedule    string            `json:"punch_schedule,omitempty"`
+	PunchCalibration string            `json:"punch_calibration,omitempty"`
+	PunchVersion     string            `json:"punch_version,omitempty"`
+	Punch            *natPunchSignal   `json:"punch,omitempty"`
+	NAT              *natPlan          `json:"nat,omitempty"`
+	HoleVersion      string            `json:"hole_version,omitempty"`
+	HoleDevice       string            `json:"hole_device,omitempty"`
+	PeerHoleDevice   string            `json:"peer_hole_device,omitempty"`
+	HoleServe        *RelayServeConfig `json:"hole_serve,omitempty"`
+	RelayPlan        []relayPathStep   `json:"relay_plan,omitempty"`
+	Hole             *holeGrant        `json:"hole,omitempty"`
 	SignalMessage
 	SignalVersion       int                 `json:"signal_version,omitempty"`
 	LeaseRenewal        bool                `json:"lease_renewal,omitempty"`

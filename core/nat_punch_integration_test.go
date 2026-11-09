@@ -227,9 +227,13 @@ func TestNATPunchActualWorkerAndSharedMux(t *testing.T) {
 				for _, peer := range coordinator.peerList() {
 					peer.mu.Lock()
 					schedule := peer.ready.PunchSchedule
+					calibration := peer.ready.PunchCalibration
 					peer.mu.Unlock()
 					if schedule != natPunchSchedule {
 						t.Fatalf("Worker did not negotiate scheduling: %q", schedule)
+					}
+					if calibration != natPunchCalibration {
+						t.Fatalf("Worker did not negotiate calibration barrier: %q", calibration)
 					}
 				}
 			}

@@ -336,6 +336,7 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 	join.PunchVersion = natPunchVersion
 	join.DirectOrder = directOrderICEFirst
 	join.PunchSchedule = natPunchSchedule
+	join.PunchCalibration = natPunchCalibration
 	join.HoleVersion = HoleRelayVersion
 	join.HoleDevice = r.Config.Relay.Device
 	// Keep the legacy relay-disabled wire contract unless Hole is requested.
@@ -504,6 +505,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			}
 			if m.DirectOrder != "" && (m.DirectOrder != directOrderICEFirst || m.PunchVersion != natPunchVersion || (m.DirectStage != "ice" && m.DirectStage != "punch") || m.RelayRequired) {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了无效的直连尝试顺序"}
+			}
+			if m.PunchCalibration != "" && (m.PunchCalibration != natPunchCalibration || m.PunchSchedule != natPunchSchedule || m.DirectOrder != directOrderICEFirst) {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了无效的打洞校准能力"}
 			}
 			if m.RelayPolicy != "" && m.RelayPolicy != RelayPolicyUDPTCPTLS {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不受支持的中继策略"}

@@ -3,11 +3,13 @@ export const ICE_PROFILE = "ice-quic-mux-v1";
 export const FIXED_PROFILE = "fixed-quic-mux-v1";
 export const PUNCH_VERSION = "nat-punch-v1";
 export const PUNCH_SCHEDULE = "ordered-v1";
+export const PUNCH_CALIBRATION = "barrier-v1";
 export const DIRECT_ORDER = "ice-first-v1";
 const ipv4 = value => typeof value==='string' && /^(?:\d{1,3}\.){3}\d{1,3}$/.test(value) && value.split('.').every(v=>Number(v)<=255) && value!=='0.0.0.0' && Number(value.split('.')[0])<224;
 const integer = (v,lo,hi) => Number.isSafeInteger(v) && v>=lo && v<=hi;
 export function validPunch(p) {
   if (!p || JSON.stringify(p).length>4096) return false;
+  if (p.trial!==undefined && (!['calibrate','calibrated','ready','go'].includes(p.kind) || !integer(p.trial,1,3))) return false;
   if (p.kind==='offer') {
     const c=p.config;
     const duration=v=>typeof v==='string' && /^(?:\d+(?:\.\d+)?)(?:ms|s)$/.test(v) ? parseFloat(v)*(v.endsWith('ms')?1:1000) : NaN;
@@ -15,10 +17,12 @@ export function validPunch(p) {
   }
   if (['abort','ice_start','reserve','reserved'].includes(p.kind)) return p.round===undefined;
   if (!integer(p.round,1,3)) return false;
+  if (p.kind==='calibrate') return integer(p.trial,1,3) && p.result===undefined;
+  if (p.kind==='calibrated') return integer(p.trial,1,3) && ['ok','retry','refresh','exhausted'].includes(p.result) && ['single','fixed','next','pool'].includes(p.mode) && (p.result==='ok' ? validPunch({...p,kind:'ready'}) : p.plan===undefined);
   if (p.kind==='model') return validNATPlan({snapshot:p.snapshot,addresses:[]});
   if (p.kind==='go' || p.kind==='failed') return true;
   const v=p.plan;
-  return p.kind==='ready' && ['single','fixed','next','pool'].includes(p.mode) && v && ipv4(v.ip) && integer(v.port,1,65535) && integer(v.target,1,65535) && integer(v.width,1,256) && v.target+v.width-1<=65535 && integer(v.sockets,1,64);
+  return p.kind==='ready' && ['single','fixed','next','pool'].includes(p.mode) && !!v && ipv4(v.ip) && integer(v.port,1,65535) && integer(v.target,1,65535) && integer(v.width,1,256) && v.target+v.width-1<=65535 && integer(v.sockets,1,64);
 }
 function validIPEvidence(entries) {
   if (!Array.isArray(entries) || entries.length<2 || entries.length>24) return false;
@@ -164,6 +168,7 @@ export function iceJoinFields(message) {
   if (message.punch_version!==undefined && message.punch_version!==PUNCH_VERSION) return null;
   if (message.direct_order!==undefined && (message.punch_version!==PUNCH_VERSION || message.direct_order!==DIRECT_ORDER)) return null;
   if (message.punch_schedule!==undefined && (message.punch_version!==PUNCH_VERSION || message.punch_schedule!==PUNCH_SCHEDULE)) return null;
+  if (message.punch_calibration!==undefined && (message.punch_calibration!==PUNCH_CALIBRATION || message.punch_schedule!==PUNCH_SCHEDULE || message.direct_order!==DIRECT_ORDER)) return null;
   if (message.hole_version!==undefined && !hole) return null;
   if (message.hole_device!==undefined && (!hole || !/^[a-zA-Z0-9._-]{1,128}$/.test(message.hole_device) || message.hole_device===message.device_name)) return null;
   if (message.hole_serve!==undefined && (!hole || !message.fixed_endpoint || message.hole_serve.enabled!==true || !Number.isSafeInteger(message.hole_serve.max_pairs) || message.hole_serve.max_pairs<1 || message.hole_serve.max_pairs>128 || !Number.isSafeInteger(message.hole_serve.bandwidth_mbps) || message.hole_serve.bandwidth_mbps<0)) return null;
@@ -173,7 +178,7 @@ export function iceJoinFields(message) {
   if (message.relay_pairing !== undefined && (message.relay_pairing !== ALL_PAIRS || message.relay_order === undefined)) return null;
   const relayEnabled = message.relay_enabled ?? true;
   if (message.voice !== undefined && typeof message.voice !== "boolean") return null;
-  return { ...(message.direct_order?{direct_order:DIRECT_ORDER}:{}), ...(message.punch_schedule?{punch_schedule:PUNCH_SCHEDULE}:{}), ...(message.punch_version?{punch_version:PUNCH_VERSION}:{}), ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
+  return { ...(message.punch_calibration?{punch_calibration:PUNCH_CALIBRATION}:{}), ...(message.direct_order?{direct_order:DIRECT_ORDER}:{}), ...(message.punch_schedule?{punch_schedule:PUNCH_SCHEDULE}:{}), ...(message.punch_version?{punch_version:PUNCH_VERSION}:{}), ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
 }
 export function negotiateProfile(left, right) {
   const a = left.transport_profiles ?? [LEGACY_PROFILE];
@@ -262,6 +267,7 @@ export class RoomICE {
     const punchVersion=profile===ICE_PROFILE && !relayRequired && sameDirectOrder && a.member.punch_version===PUNCH_VERSION && b.member.punch_version===PUNCH_VERSION ? PUNCH_VERSION : "";
     const directOrder=punchVersion && a.member.direct_order===DIRECT_ORDER ? DIRECT_ORDER : "";
     const punchSchedule=punchVersion && a.member.punch_schedule===PUNCH_SCHEDULE && b.member.punch_schedule===PUNCH_SCHEDULE ? PUNCH_SCHEDULE : "";
+    const punchCalibration=directOrder && punchSchedule && a.member.punch_calibration===PUNCH_CALIBRATION && b.member.punch_calibration===PUNCH_CALIBRATION ? PUNCH_CALIBRATION : "";
     const wantsHole=profile!==FIXED_PROFILE && !!(a.member.hole_device || b.member.hole_device);
     if (wantsHole && (a.member.hole_version!==HOLE_VERSION || b.member.hole_version!==HOLE_VERSION || !roundMode || pairing!==ALL_PAIRS)) {
       for (const entry of [a,b]) fault(entry.ws,'peer_upgrade_required','Hole 中继需要双方更新客户端');
@@ -284,7 +290,7 @@ export class RoomICE {
       record = { id: crypto.randomUUID(), pair_key: key, a: a.member.device_name, b: b.member.device_name, generation: "1", phase: "direct", round: 0, round_mode: roundMode, relay_orders: relayOrders, runtime, fingerprints, epochs, mappings, voice, ice: {}, retry: 0 };
       changed = true;
       resetPath = true;
-    } else if ((record.direct_order??"")!==directOrder || (record.punch_schedule??"")!==punchSchedule || (record.punch_version??"")!==punchVersion || (record.hole && record.lease_until<=Date.now()) || !same(record.hole_devices??null,holeDevices) || !same(record.hole_identities??null,identities) || (record.profile ?? ICE_PROFILE) !== profile || !same(record.fixed_endpoints ?? ["", ""], fixedEndpoints) || record.voice !== voice || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
+    } else if ((record.punch_calibration??"")!==punchCalibration || (record.direct_order??"")!==directOrder || (record.punch_schedule??"")!==punchSchedule || (record.punch_version??"")!==punchVersion || (record.hole && record.lease_until<=Date.now()) || !same(record.hole_devices??null,holeDevices) || !same(record.hole_identities??null,identities) || (record.profile ?? ICE_PROFILE) !== profile || !same(record.fixed_endpoints ?? ["", ""], fixedEndpoints) || record.voice !== voice || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
       record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
       record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; record.voice = voice; changed = true;
       resetPath = true;
@@ -314,6 +320,7 @@ export class RoomICE {
     record.punch_version = punchVersion;
     record.direct_order = directOrder;
     record.punch_schedule = punchSchedule;
+    record.punch_calibration = punchCalibration;
     record.fixed_endpoints = fixedEndpoints;
     if (resetPath) {
       record.direct_stage = 'ice';
@@ -367,6 +374,7 @@ export class RoomICE {
     if (record.punch_version) ready.punch_version = record.punch_version;
     if (record.direct_order) Object.assign(ready,{direct_order:record.direct_order,direct_stage:record.direct_stage??'ice'});
     if (record.punch_schedule) ready.punch_schedule = record.punch_schedule;
+    if (record.punch_calibration) ready.punch_calibration = record.punch_calibration;
     if (record.hole_version) Object.assign(ready,{hole_version:HOLE_VERSION,hole_device:record.hole_devices[index],peer_hole_device:record.hole_devices[1-index],relay_plan:record.relay_plan,hole:record.hole});
     if (!fixed && record.round_mode) Object.assign(ready, {relay_round:record.round ?? 0,relay_order:record.relay_orders[index],peer_relay_order:record.relay_orders[1-index]});
     if (!fixed && record.relay_pairing) ready.relay_pairing = record.relay_pairing;
@@ -533,19 +541,41 @@ export class RoomICE {
       if(!record.punch_version || !direct || record.relay_required || record.lease_until<=Date.now() || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch || !validPunch(p)) return true;
       if(record.direct_order===DIRECT_ORDER && record.direct_stage!=='punch') return true;
       cached.punch??=[];
-      const previous=cached.punch.find(v=>v.kind===p.kind && v.round===p.round);
+      const previous=cached.punch.find(v=>v.kind===p.kind && v.round===p.round && (!['calibrate','calibrated'].includes(p.kind) || v.trial===p.trial));
       if(previous) return true;
-      if(cached.punch.length>=(record.punch_schedule?20:12)) return true;
+      if(cached.punch.length>=(record.punch_calibration?40:record.punch_schedule?20:12)) return true;
       const other=record.ice[peerName]?.punch??[];
-      if(p.kind==='ready' && p.mode==='pool' && (!cached.punch.some(v=>v.kind==='offer' && v.pool_prediction===true) || !other.some(v=>v.kind==='offer' && v.pool_prediction===true))) return true;
+      if(['ready','calibrated'].includes(p.kind) && p.mode==='pool' && (!cached.punch.some(v=>v.kind==='offer' && v.pool_prediction===true) || !other.some(v=>v.kind==='offer' && v.pool_prediction===true))) return true;
       if(['reserve','reserved','model'].includes(p.kind) && record.punch_schedule!==PUNCH_SCHEDULE) return true;
       if(p.kind==='reserve' && name!==record.a) return true;
       if(p.kind==='reserved' && (name!==record.b || !other.some(v=>v.kind==='reserve'))) return true;
-      if(record.punch_schedule && ['model','ready','go'].includes(p.kind)) {
+      if(record.punch_schedule && ['model','calibrate','calibrated','ready','go'].includes(p.kind)) {
         const first=name===record.a?cached.punch:other, second=name===record.b?cached.punch:other;
         if(!first.some(v=>v.kind==='reserve') || !second.some(v=>v.kind==='reserved')) return true;
       }
-      if(p.kind==='go' && (name!==record.a || !cached.punch.some(v=>v.kind==='ready' && v.round===p.round) || !other.some(v=>v.kind==='ready' && v.round===p.round))) return true;
+      if (['calibrate','calibrated'].includes(p.kind) || p.trial!==undefined) {
+        if (record.punch_calibration!==PUNCH_CALIBRATION) return true;
+      }
+      if (record.punch_calibration && ['calibrate','calibrated','ready','go'].includes(p.kind)) {
+        if (p.kind==='ready') return true; // Successful calibrated messages carry the plans.
+        if (!integer(p.trial,1,3)) return true;
+        const both=[cached.punch,other];
+        const at=(list,kind,trial=p.trial)=>list.find(v=>v.kind===kind && v.round===p.round && (kind==='model' || v.trial===trial));
+        if (both.some(list=>list.some(v=>v.kind==='abort' || v.kind==='failed' && v.round===p.round))) return true;
+        if (p.kind==='calibrate') {
+          if (!both.every(list=>at(list,'model')) || both.some(list=>list.some(v=>v.kind==='go' && v.round===p.round))) return true;
+          if (p.trial>1) {
+            const results=both.map(list=>at(list,'calibrated',p.trial-1)?.result);
+            if (!results.every(v=>v==='ok' || v==='retry') || !results.includes('retry')) return true;
+          }
+        } else if (p.kind==='calibrated') {
+          if (!both.every(list=>at(list,'calibrate'))) return true;
+        } else {
+          if (!both.every(list=>at(list,'calibrated')?.result==='ok')) return true;
+          if (both.some(list=>list.some(v=>v.round===p.round && v.trial>p.trial))) return true;
+        }
+      }
+      if(p.kind==='go' && (name!==record.a || !record.punch_calibration && (!cached.punch.some(v=>v.kind==='ready' && v.round===p.round) || !other.some(v=>v.kind==='ready' && v.round===p.round)))) return true;
       if(p.kind==='ice_start' && name!==record.a) return true;
       cached.punch.push(p); outgoing={type:'nat_punch',punch:p};
     } else if(message.type==='nat_status') {

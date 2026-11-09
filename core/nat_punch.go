@@ -10,17 +10,17 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/pion/stun/v4"
 	"hole/core/natprobe"
 )
 
 type natPunchSignal struct {
 	Kind           string          `json:"kind"`
 	Round          int             `json:"round,omitempty"`
+	Trial          int             `json:"trial,omitempty"`
+	Result         string          `json:"result,omitempty"`
 	Mode           string          `json:"mode,omitempty"`
 	Nonce          string          `json:"nonce,omitempty"`
 	Snapshot       *NATSnapshot    `json:"snapshot,omitempty"`
@@ -147,12 +147,16 @@ func (p *icePeer) sendNATPunch(a *iceAttempt, value natPunchSignal) error {
 // One attempt reader owns negotiation. Keep readiness from a faster peer for
 // the next round, so a delayed failure cannot discard its new calibration.
 func (p *icePeer) waitNATPunch(ctx context.Context, a *iceAttempt, kind string, round int) (*natPunchSignal, error) {
+	return p.waitNATPunchTrial(ctx, a, kind, round, 0)
+}
+
+func (p *icePeer) waitNATPunchTrial(ctx context.Context, a *iceAttempt, kind string, round, trial int) (*natPunchSignal, error) {
 	for i, m := range a.punchBuffered {
 		if m.Kind == "failed" && m.Round == round {
 			a.punchBuffered = append(a.punchBuffered[:i], a.punchBuffered[i+1:]...)
 			return nil, errors.New("peer round failed")
 		}
-		if m.Kind == kind && m.Round == round {
+		if m.Kind == kind && m.Round == round && m.Trial == trial {
 			a.punchBuffered = append(a.punchBuffered[:i], a.punchBuffered[i+1:]...)
 			return &m, nil
 		}
@@ -176,10 +180,10 @@ func (p *icePeer) waitNATPunch(ctx context.Context, a *iceAttempt, kind string, 
 			if m.Punch.Kind == "failed" && m.Punch.Round == round {
 				return nil, errors.New("peer round failed")
 			}
-			if m.Punch.Kind == kind && m.Punch.Round == round {
+			if m.Punch.Kind == kind && m.Punch.Round == round && m.Punch.Trial == trial {
 				return m.Punch, nil
 			}
-			if m.Punch.Round >= round && len(a.punchBuffered) < 32 {
+			if m.Punch.Round >= round && (m.Punch.Round != round || m.Punch.Trial == 0 || m.Punch.Trial >= trial) && len(a.punchBuffered) < 64 {
 				a.punchBuffered = append(a.punchBuffered, *m.Punch)
 			}
 		}
@@ -318,6 +322,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 		}
 	}()
 	refresh := false
+	lastServer := ""
 	for round := 1; round <= 3; round++ {
 		if scheduled {
 			if e := p.refreshNATPunchModel(a, platform, cfg, s, round, refresh); e != nil {
@@ -338,29 +343,9 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			}()
 			ctx, stopAttempt := context.WithTimeout(ctx, s.config.Timeout.Duration())
 			defer stopAttempt()
-			// Calibration is IPv4-only, just like NAT classification. Android's
-			// generic resolver can return AAAA first despite a usable A record;
-			// keep resolution on the pinned platform and select IPv4 explicitly.
-			resolve := platform.ResolveUDP
-			if ipv4, ok := platform.(interface {
-				ResolveUDP4(context.Context, string) (*net.UDPAddr, error)
-			}); ok {
-				resolve = ipv4.ResolveUDP4
-			}
-			var server *net.UDPAddr
-			for _, raw := range natURLs(cfg.ICE) {
-				u, e := stun.ParseURI(raw)
-				if e != nil || u.Proto != stun.ProtoTypeUDP {
-					continue
-				}
-				server, e = resolve(ctx, net.JoinHostPort(u.Host, strconv.Itoa(u.Port)))
-				if e == nil && server != nil && server.IP.To4() != nil {
-					break
-				}
-				server = nil
-			}
-			if server == nil {
-				return nil, errors.New("no IPv4 STUN for calibration")
+			servers, err := punchSTUNServers(ctx, platform, natURLs(cfg.ICE), lastServer)
+			if err != nil {
+				return nil, err
 			}
 			bindAddress, err := natPunchBind(ctx, platform, cfg.ICE)
 			if err != nil {
@@ -396,52 +381,46 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				}
 				sockets = append(sockets, pc)
 			}
-			calibrator := sockets[0]
-			if s.mode == "fixed" || s.mode == "single" && natGroup(model) == "symmetric" || s.mode == "pool" && natGroup(model) != "cone" {
-				var e error
-				calibrator, e = open()
-				if e != nil {
-					return nil, e
-				}
-			}
-			sample, e := natprobe.Binding(ctx, calibrator, server, 0, 3*time.Second)
+			plans, e := p.calibrateNATPunch(ctx, a, s, round, servers, sockets, open, &lastServer, &diagnostic)
 			if e != nil {
 				return nil, e
 			}
 			diagnostic.LocalAddress = sockets[0].LocalAddr().String()
-			diagnostic.MappedAddress = sample.Mapped.String()
 			diagnostic.Sockets = len(sockets)
 			diagnostic.Stage = "coordination"
-			plan, e := makeNATPunchPlan(sample.Mapped, model, s.mode, count, s.config.ScanWidth)
-			if e != nil {
-				return nil, e
+			plan, peerPlan := plans.local, plans.remote
+			trial := 0
+			if a.ready.PunchCalibration == natPunchCalibration {
+				trial = diagnostic.CalibrationAttempts
+			} else {
+				if e = p.sendNATPunch(a, natPunchSignal{Kind: "ready", Round: round, Mode: s.mode, Plan: plan}); e != nil {
+					return nil, e
+				}
+				peer, e := p.waitNATPunch(ctx, a, "ready", round)
+				if e != nil {
+					return nil, e
+				}
+				if peer.Mode != s.mode || peer.Plan == nil {
+					return nil, errors.New("punch plan missing")
+				}
+				peerPlan = peer.Plan
 			}
-			if e = p.sendNATPunch(a, natPunchSignal{Kind: "ready", Round: round, Mode: s.mode, Plan: plan}); e != nil {
-				return nil, e
-			}
-			peer, e := p.waitNATPunch(ctx, a, "ready", round)
-			if e != nil {
-				return nil, e
-			}
-			if peer.Mode != s.mode || peer.Plan == nil {
-				return nil, errors.New("punch plan missing")
-			}
-			remoteIP, e := netip.ParseAddr(peer.Plan.IP)
-			if e != nil || peer.Plan.Port < 1 || peer.Plan.Port > 65535 {
+			remoteIP, e := netip.ParseAddr(peerPlan.IP)
+			if e != nil || peerPlan.Port < 1 || peerPlan.Port > 65535 {
 				return nil, errors.New("invalid peer calibration")
 			}
-			want, e := makeNATPunchPlan(netip.AddrPortFrom(remoteIP, uint16(peer.Plan.Port)), s.remote, s.mode, peer.Plan.Sockets, s.config.ScanWidth)
+			want, e := makeNATPunchPlan(netip.AddrPortFrom(remoteIP, uint16(peerPlan.Port)), s.remote, s.mode, peerPlan.Sockets, s.config.ScanWidth)
 			if e != nil {
 				return nil, e
 			}
-			if *want != *peer.Plan {
+			if *want != *peerPlan {
 				return nil, errors.New("peer punch plan differs from model")
 			}
 			controlling := a.ready.InitiatorID == p.coordinator.deviceID()
 			if controlling {
-				e = p.sendNATPunch(a, natPunchSignal{Kind: "go", Round: round})
+				e = p.sendNATPunch(a, natPunchSignal{Kind: "go", Round: round, Trial: trial})
 			} else {
-				_, e = p.waitNATPunch(ctx, a, "go", round)
+				_, e = p.waitNATPunchTrial(ctx, a, "go", round, trial)
 			}
 			if e != nil {
 				return nil, e
@@ -494,7 +473,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				return live, nil
 			}
 			attempt.close()
-			s.local.LastMappingPort, s.remote.LastMappingPort = plan.Port, peer.Plan.Port
+			s.local.LastMappingPort, s.remote.LastMappingPort = plan.Port, peerPlan.Port
 			return nil, e
 		}()
 		if roundErr == nil {
