@@ -44,6 +44,9 @@ data class PeerSnapshot(
     val localNAT: NATSnapshot = NATSnapshot(), val peerNAT: NATSnapshot = NATSnapshot(),
     val portMapping: PortMappingSnapshot = PortMappingSnapshot(),
     val sendLoss: SendLossSnapshot? = null,
+    val receiveLoss: SendLossSnapshot? = null,
+    val quicLoss: SendLossSnapshot? = null,
+    val bandwidth: BandwidthSnapshot? = null,
     // Bounded structured round summaries, retained across relay fallback.
     val punchDiagnostics: List<String> = emptyList(),
 ) {
@@ -55,6 +58,9 @@ data class PeerSnapshot(
             localNAT = NATSnapshot.fromJson(j.optJSONObject("local_nat")), peerNAT = NATSnapshot.fromJson(j.optJSONObject("peer_nat")),
             portMapping = PortMappingSnapshot.fromJson(j.optJSONObject("port_mapping")),
             sendLoss = SendLossSnapshot.fromJson(j.optJSONObject("send_loss")),
+            receiveLoss = SendLossSnapshot.fromJson(j.optJSONObject("receive_loss")),
+            quicLoss = SendLossSnapshot.fromJson(j.optJSONObject("quic_loss")),
+            bandwidth = BandwidthSnapshot.fromJson(j.optJSONObject("bandwidth")),
             relayDevice = j.optString("relay_device"), relayEndpoint = j.optString("relay_endpoint"), relayAccessAddress = j.optString("relay_access_address"),
             peerId = j.optString("peer_id"), transportId = j.optString("transport_id"), generation = j.optString("generation", "0"),
             profile = j.optString("profile"), state = j.optString("state"), phase = j.optString("phase"), pendingPhase = j.optString("pending_phase"),

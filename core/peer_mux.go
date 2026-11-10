@@ -34,41 +34,48 @@ type muxHello struct {
 	RelayProtocol string `json:"relay_protocol,omitempty"`
 	Voice         bool   `json:"voice,omitempty"`
 	VoiceVersion  int    `json:"voice_version,omitempty"`
+	QUICStats     bool   `json:"quic_stats,omitempty"`
+	// Telemetry only: the endpoint observed on this authenticated connection.
+	ObservedAddress string `json:"observed_address,omitempty"`
 }
 type mappingControl struct {
-	Type      string `json:"type"`
-	Channel   uint32 `json:"channel_id"`
-	Key       string `json:"map_key"`
-	MappingID string `json:"mapping_id"`
-	Protocol  string `json:"protocol"`
-	Status    string `json:"status,omitempty"`
+	Type      string            `json:"type"`
+	Channel   uint32            `json:"channel_id"`
+	Key       string            `json:"map_key"`
+	MappingID string            `json:"mapping_id"`
+	Protocol  string            `json:"protocol"`
+	Status    string            `json:"status,omitempty"`
+	SendLoss  *SendLossSnapshot `json:"send_loss,omitempty"`
 }
 type receivedPacket struct {
 	id   sessionID
 	data []byte
 }
 type muxPeer struct {
-	owner          *icePeer
-	conn           *quic.Conn
-	ctx            context.Context
-	cancel         context.CancelFunc
-	control        *quic.Stream
-	controlMu      sync.Mutex
-	mu             sync.Mutex
-	channels       map[uint32]*muxChannel
-	byMapping      map[string]*muxChannel
-	nextChannel    uint32
-	lastRemote     uint32
-	closing        bool
-	workers        sync.WaitGroup
-	streamSlots    chan struct{}
-	queuedBytes    atomic.Int64
-	dropped        atomic.Uint64
-	sendLoss       *quicPacketLoss
-	ready          iceSignalMessage
-	voiceEnabled   bool
-	voiceDatagrams chan []byte
-	voiceFeedback  chan []byte
+	owner                *icePeer
+	conn                 *quic.Conn
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	control              *quic.Stream
+	controlMu            sync.Mutex
+	mu                   sync.Mutex
+	channels             map[uint32]*muxChannel
+	byMapping            map[string]*muxChannel
+	nextChannel          uint32
+	lastRemote           uint32
+	closing              bool
+	workers              sync.WaitGroup
+	streamSlots          chan struct{}
+	queuedBytes          atomic.Int64
+	dropped              atomic.Uint64
+	sendLoss             *quicPacketLoss
+	metrics              quicChannelMetrics
+	statsEnabled         bool
+	observedLocalAddress string
+	ready                iceSignalMessage
+	voiceEnabled         bool
+	voiceDatagrams       chan []byte
+	voiceFeedback        chan []byte
 }
 type muxChannel struct {
 	peer      *muxPeer
@@ -152,6 +159,8 @@ func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, re
 	stopIO := context.AfterFunc(hsCtx, func() { stream.CancelRead(0); stream.CancelWrite(0) })
 	defer stopIO()
 	hello := muxHello{Profile: ready.Profile, TransportID: ready.TransportID, Generation: ready.TransportGeneration, LocalRuntime: owner.coordinator.runtimeID, RemoteRuntime: ready.PeerRuntimeID, Version: sessionProtocol, LocalRelayProtocol: localRelayProtocol, RelayProtocol: localRelayProtocol, Voice: ready.Voice, VoiceVersion: voiceProtocolVersion}
+	hello.QUICStats = true
+	hello.ObservedAddress = conn.RemoteAddr().String()
 	var remote muxHello
 	if initiator {
 		err = writeMuxPrefix(stream, muxControl, 0)
@@ -204,9 +213,18 @@ func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, re
 		return nil, err
 	}
 	_ = stream.SetDeadline(time.Time{})
+	// Publish only after transport identity and the complete hello exchange
+	// succeed. NAT punching validates the optional address before using it.
+	p.observedLocalAddress = remote.ObservedAddress
+	p.statsEnabled = remote.QUICStats
+	p.metrics.startBandwidth(time.Now(), conn.ConnectionStats())
 	p.spawn(p.readControl)
 	p.spawn(p.readStreams)
 	p.spawn(p.readDatagrams)
+	p.spawn(p.sampleBandwidth)
+	if p.statsEnabled {
+		p.spawn(p.reportQUICStats)
+	}
 	return p, nil
 }
 func (p *muxPeer) spawn(fn func()) {
@@ -262,6 +280,10 @@ func (p *muxPeer) readControl() {
 			return
 		}
 		switch m.Type {
+		case "QUIC_STATS":
+			if p.statsEnabled {
+				p.metrics.receiveLoss(time.Now(), m.SendLoss)
+			}
 		case "OPEN_MAPPING":
 			record, ok := p.mapping(m.MappingID)
 			valid := ok && record.Key == m.Key && record.Service.Protocol == m.Protocol && record.Provider == p.owner.coordinator.deviceID() && record.Consumer == p.ready.PeerDevice && p.owner.allowNew()

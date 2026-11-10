@@ -9,6 +9,7 @@ ColumnLayout {
 
     property string title: ""
     property string subtitle: ""
+    property string iconName: ""
     property bool collapsible: false
     property bool expanded: true
 
@@ -34,6 +35,12 @@ ColumnLayout {
             anchors.fill: parent
             spacing: 4
 
+            NATIcon {
+                visible: section.iconName.length > 0
+                name: section.iconName
+                Layout.preferredWidth: 17; Layout.preferredHeight: 17
+            }
+
             Text {
                 Layout.alignment: Qt.AlignVCenter
                 text: section.title
@@ -55,13 +62,13 @@ ColumnLayout {
                 horizontalAlignment: Text.AlignRight
             }
 
-            Text {
+            NATIcon {
                 Layout.alignment: Qt.AlignVCenter
                 visible: section.collapsible
-                text: section.open ? "收起" : "展开"
-                color: Theme.accent
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontCaption
+                name: "chevron"
+                Layout.preferredWidth: 16; Layout.preferredHeight: 16
+                rotation: section.open ? 90 : 0
+                Behavior on rotation { NumberAnimation { duration: 120 } }
             }
         }
 
@@ -78,18 +85,22 @@ ColumnLayout {
     Rectangle {
         id: card
 
+        property real expansion: section.open ? 1 : 0
         Layout.fillWidth: true
-        Layout.preferredHeight: card.visible ? card.implicitHeight : 0
-        visible: section.open
-        implicitHeight: body.implicitHeight + 2 * Theme.cardPadding
+        Layout.preferredHeight: implicitHeight
+        implicitHeight: (body.height + 2 * Theme.cardPadding) * expansion
+        visible: expansion > 0
+        opacity: expansion
+        clip: true
+        Behavior on expansion { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
         radius: Theme.radiusCard
         color: Theme.surface
 
         ColumnLayout {
             id: body
 
-            anchors.fill: parent
-            anchors.margins: Theme.cardPadding
+            x: Theme.cardPadding; y: Theme.cardPadding
+            width: parent.width - 2 * Theme.cardPadding
             spacing: Theme.cardSpacing
         }
     }

@@ -14,7 +14,8 @@ Section {
     property bool withProtocol: true
 
     title: mappingKind === "provide" ? "提供服务" : "使用服务"
-    subtitle: mappingKind === "provide" ? "provide" : "consume"
+    subtitle: mappingModel ? mappingModel.count + " 项" : "0 项"
+    iconName: mappingKind === "provide" ? "upload" : "download"
 
     Repeater {
         model: mappings.mappingModel
@@ -64,8 +65,8 @@ Section {
         Layout.preferredHeight: visible ? implicitHeight : 0
         visible: !mappings.mappingModel || mappings.mappingModel.count === 0
         text: mappings.mappingKind === "provide"
-              ? "还没有提供映射。添加后，本机服务会通过房间提供给其他设备。"
-              : "还没有使用映射。添加后，远端提供的服务会映射到本机地址。"
+              ? "把本机服务共享给房间内的设备。"
+              : "把远端服务接入本机端口。"
         color: Theme.textMuted
         font.family: Theme.fontFamily
         font.pixelSize: Theme.fontCaption
@@ -76,6 +77,7 @@ Section {
         Layout.fillWidth: true
         text: mappings.mappingKind === "provide" ? "新增提供映射" : "新增使用映射"
         variant: "secondary"
+        iconName: "plus"
         onClicked: {
             if (mappings.mappingKind === "provide") mappings.form.addProvide()
             else mappings.form.addConsume()

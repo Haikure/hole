@@ -14,3 +14,11 @@ SwitchRow 1.0 SwitchRow.qml
 TurnOrderBoard 1.0 TurnOrderBoard.qml
 TurnOrderChip 1.0 TurnOrderChip.qml
 VirtualKeyboard 1.0 VirtualKeyboard.qml
+PageHeading 1.0 PageHeading.qml
+HomePanel 1.0 HomePanel.qml
+MetricTile 1.0 MetricTile.qml
+DetailList 1.0 DetailList.qml
+PeerCard 1.0 PeerCard.qml
+RuntimePanel 1.0 RuntimePanel.qml
+Reveal 1.0 Reveal.qml
+PageEntrance 1.0 PageEntrance.qml

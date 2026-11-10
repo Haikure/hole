@@ -70,7 +70,11 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
             }
             appendLine("  通道 ${peer.activeChannels}/${peer.mappingCount} · RTT ${peer.rttMs} ms · 建连 ${peer.connectMs} ms")
             appendLine("  线路发送 ${peer.bytesSent} / 接收 ${peer.bytesReceived} 字节 · 本地丢弃 ${peer.droppedDatagrams}")
+            appendLine("  QUIC 整体丢包率 ${peer.quicLoss?.description("双向合计") ?: "无有效对端反馈"}")
             appendLine("  QUIC 上行丢包率 ${peer.sendLoss?.description() ?: "未上报"}")
+            appendLine("  QUIC 下行丢包率 ${peer.receiveLoss?.description("对端 → 本机") ?: "无有效对端反馈"}")
+            appendLine("  QUIC 峰值带宽 ${peer.bandwidth?.description(peak = true) ?: "未上报或采样中"}")
+            appendLine("  QUIC 平均带宽 ${peer.bandwidth?.description(peak = false) ?: "未上报或采样中"}")
             appendLine("  ${peer.transportId} / generation ${peer.generation} / phase ${peer.phase}（${peerPhaseLabel(peer)}） / retries ${peer.retryCount}")
             peer.punchDiagnostics.forEach { appendLine("  IPv4 打洞轮次 $it") }
             if (!isFixedPeer(peer)) appendLine("  中继状态 ${peer.relayState} · 凭据到期 ${peer.turnExpiresAt}")

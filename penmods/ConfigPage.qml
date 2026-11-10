@@ -3,8 +3,7 @@ import QtQuick.Layouts 1.12
 import "qrc:/qml/commons"
 import "components"
 
-// A real child page opened from Main.qml. Runtime status intentionally remains
-// on the home page so this page is dedicated to mapping configuration.
+// Service editing uses the existing host page and shared configuration model.
 YBackButtonPage {
     id: configPage
 
@@ -12,8 +11,10 @@ YBackButtonPage {
     property var hostKeyboard: null
     property var provideModel: null
     property var consumeModel: null
+    property string selectedKind: "provide"
 
     objectName: "HoleConfigPage"
+    PageEntrance { target: scroll }
 
     Rectangle {
         anchors.fill: parent
@@ -34,7 +35,7 @@ YBackButtonPage {
         anchors.bottomMargin: 8
         clip: true
         contentWidth: width
-        contentHeight: configColumn.implicitHeight + Theme.spacing
+        contentHeight: configColumn.height + Theme.spacing
         interactive: true
         pressDelay: 0
         boundsBehavior: Flickable.StopAtBounds
@@ -45,22 +46,16 @@ YBackButtonPage {
             width: scroll.width
             spacing: Theme.spacing
 
-            Text {
+            PageHeading {
                 Layout.fillWidth: true
-                text: "配置"
-                color: Theme.textPrimary
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontHeader
-                font.bold: true
+                title: "服务"; iconName: "mapping"
+                subtitle: configPage.form ? configPage.form.saveState : ""
             }
-
-            Text {
+            ChoiceRow {
                 Layout.fillWidth: true
-                text: "管理提供和使用的 TCP / UDP 映射"
-                color: Theme.textMuted
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontCaption
-                wrapMode: Text.WordWrap
+                options: [{value: "provide", label: "提供服务"}, {value: "consume", label: "使用服务"}]
+                selected: configPage.selectedKind
+                onChosen: { configPage.selectedKind = nextValue; scroll.contentY = 0 }
             }
 
             MappingSection {
@@ -68,6 +63,7 @@ YBackButtonPage {
                 form: configPage.form
                 mappingModel: configPage.provideModel
                 mappingKind: "provide"
+                visible: configPage.selectedKind === "provide"
                 withProtocol: true
                 hostKeyboard: configPage.hostKeyboard
             }
@@ -77,6 +73,7 @@ YBackButtonPage {
                 form: configPage.form
                 mappingModel: configPage.consumeModel
                 mappingKind: "consume"
+                visible: configPage.selectedKind === "consume"
                 withProtocol: false
                 hostKeyboard: configPage.hostKeyboard
             }

@@ -12,13 +12,14 @@ QtObject {
     // Palette
     // Keep the plugin visually aligned with YInputPage/YColors instead of
     // introducing a second blue-black palette for the same host application.
-    readonly property color background: "#101114"
-    readonly property color surface: "#1a1b1f"
-    readonly property color surfaceRaised: "#2d2e33"
+    readonly property color background: "#101317"
+    readonly property color surface: "#1b2026"
+    readonly property color surfaceRaised: "#272f38"
+    readonly property color accentSoft: "#20374b"
     readonly property color surfaceError: "#30171b"
-    readonly property color field: "#24252a"
-    readonly property color fieldActive: "#36373d"
-    readonly property color border: "#41434a"
+    readonly property color field: "#222930"
+    readonly property color fieldActive: "#304356"
+    readonly property color border: "#35414d"
     readonly property color borderHeader: "#515259"
     readonly property color borderActive: "#509deb"
 
@@ -28,8 +29,8 @@ QtObject {
     readonly property color textPlaceholder: "#74767d"
     readonly property color textFooter: "#70727a"
 
-    readonly property color accent: "#509deb"
-    readonly property color accentInk: "#ffffff"
+    readonly property color accent: "#79baff"
+    readonly property color accentInk: "#10263d"
     readonly property color warning: "#e9900c"
     readonly property color error: "#f03043"
     readonly property color natGreen: "#8ee0ae"
@@ -59,11 +60,12 @@ QtObject {
     readonly property int controlHeight: 38
     readonly property int rowHeight: 36
     readonly property int tapMin: 40
+    readonly property int actionHeight: 32
 
     // Type scale
-    readonly property int fontHeader: 14
+    readonly property int fontHeader: 16
     readonly property int fontTitle: 13
-    readonly property int fontValue: 11
-    readonly property int fontLabel: 10
-    readonly property int fontCaption: 9
+    readonly property int fontValue: 12
+    readonly property int fontLabel: 11
+    readonly property int fontCaption: 10
 }

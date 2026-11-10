@@ -462,10 +462,11 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 					return nil, muxErr
 				}
 				selected = sockets[attempt.selected]
+				localAddress, localType := natPunchPathAddress(ctx, platform, connection.LocalAddr(), connection.RemoteAddr(), mux.observedLocalAddress)
 				p.mu.Lock()
-				p.stats.PathType, p.stats.LocalType, p.stats.RemoteType = "direct", "srflx", "srflx"
+				p.stats.PathType, p.stats.LocalType, p.stats.RemoteType = "direct", localType, "prflx"
 				p.stats.AddressFamily = "IPv4"
-				p.stats.LocalAddress, p.stats.RemoteAddress = selected.LocalAddr().String(), connection.RemoteAddr().String()
+				p.stats.LocalAddress, p.stats.RemoteAddress = localAddress, connection.RemoteAddr().String()
 				p.mu.Unlock()
 				live := &liveICETransport{ready: a.ready, mux: mux, quic: attempt.transports[attempt.selected], session: connection, cancel: a.cancel}
 				live.fixedCleanup = func() { attempt.close(); _ = selected.Close() }
@@ -488,6 +489,54 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 		}
 	}
 	return nil, errors.New("prediction rounds exhausted")
+}
+
+// The peer sees the mapping for this exact QUIC path, unlike a STUN server
+// which may receive another endpoint-dependent NAT mapping. The observation
+// is optional for older peers and must never affect dialing or authentication.
+func natPunchPathAddress(ctx context.Context, platform Platform, local, remote net.Addr, observed string) (string, string) {
+	if endpoint, err := netip.ParseAddrPort(observed); err == nil {
+		ip := endpoint.Addr().Unmap()
+		if ip.Is4() && endpoint.Port() != 0 && !ip.IsUnspecified() && !ip.IsMulticast() && ip != netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+			return netip.AddrPortFrom(ip, endpoint.Port()).String(), "prflx"
+		}
+	}
+	return natPunchLocalAddress(ctx, platform, local, remote), "host"
+}
+
+// A wildcard listener's LocalAddr is a bind address, not a path endpoint. QUIC
+// may know the concrete destination from packet info; otherwise query the route
+// on the same pinned Platform. UDP connect sends no packet and the temporary
+// socket's port must never replace the punched socket's port in telemetry.
+func natPunchLocalAddress(ctx context.Context, platform Platform, local, remote net.Addr) string {
+	if local == nil {
+		return ""
+	}
+	bound, err := netip.ParseAddrPort(local.String())
+	if err != nil || !bound.Addr().Unmap().Is4() || bound.Port() == 0 {
+		return ""
+	}
+	if !bound.Addr().IsUnspecified() {
+		return bound.String()
+	}
+	if remote == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	route, err := platform.DialSignal(ctx, "udp4", remote.String())
+	if err != nil {
+		return ""
+	}
+	defer route.Close()
+	if route.LocalAddr() == nil {
+		return ""
+	}
+	address, err := netip.ParseAddrPort(route.LocalAddr().String())
+	if err != nil || !address.Addr().Unmap().Is4() || address.Addr().IsUnspecified() || address.Addr().IsMulticast() {
+		return ""
+	}
+	return netip.AddrPortFrom(address.Addr().Unmap(), bound.Port()).String()
 }
 
 func natPunchBind(ctx context.Context, platform Platform, cfg ICEConfig) (string, error) {

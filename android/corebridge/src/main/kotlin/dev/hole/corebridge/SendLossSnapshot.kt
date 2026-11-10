@@ -10,9 +10,11 @@ data class SendLossSnapshot(
     val lostPackets: String,
     val ratePercent: Double?,
 ) {
-    fun description(): String {
+    fun rateLabel(): String = ratePercent?.let { String.format(Locale.ROOT, "%.2f%%", it) } ?: "暂无样本"
+
+    fun description(direction: String = "本机 → 对端"): String {
         val window = if (windowSeconds == 60) "近 1 分钟" else "近 $windowSeconds 秒"
-        val scope = "本机 → 对端 · $window"
+        val scope = "$direction · $window"
         val rate = ratePercent ?: return "暂无样本 · $scope"
         return "${String.format(Locale.ROOT, "%.2f%%", rate)} · $scope · 丢失 $lostPackets / 已判定 $samples 包"
     }

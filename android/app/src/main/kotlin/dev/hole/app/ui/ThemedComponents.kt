@@ -111,7 +111,7 @@ fun HoleButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     if (secondary) OutlinedButton(onClick, animated, enabled, interactionSource = interaction) { Text(text) }
     else Button(onClick, animated, enabled, interactionSource = interaction) { Text(text) }
 }
-@Composable fun HoleTextButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) = TextButton(onClick, modifier) { Text(text) }
+@Composable fun HoleTextButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) = TextButton(onClick, modifier, enabled = enabled) { Text(text) }
 @Composable fun HoleIconButton(onClick: () -> Unit, modifier: Modifier = Modifier, tonal: Boolean = false, content: @Composable () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val scale = pressScale(interaction)

@@ -255,6 +255,16 @@ func TestFixedActualWorkerBidirectionalMappingsRecoveryAndSharedListener(t *test
 	first, second := fixedTCP(t, ta), fixedTCP(t, tb)
 	fixedUDP(t, ua)
 	fixedUDP(t, ub)
+	for _, engine := range []*Engine{a, b} {
+		waitSnapshotWithin(t, engine, 5*time.Second, func(s Snapshot) bool {
+			if len(s.PeerTransports) != 1 {
+				return false
+			}
+			p := s.PeerTransports[0]
+			return p.QUICLoss != nil && p.QUICLoss.Samples > 0 && p.ReceiveLoss != nil &&
+				p.Bandwidth != nil && p.Bandwidth.Send.PeakBPS > 0 && p.Bandwidth.Receive.PeakBPS > 0
+		})
+	}
 	if err := c.Start(rc); err != nil {
 		t.Fatal(err)
 	}

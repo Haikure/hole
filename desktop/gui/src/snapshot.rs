@@ -40,6 +40,9 @@ pub struct Mapping {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Peer {
     pub send_loss: Option<SendLoss>,
+    pub receive_loss: Option<SendLoss>,
+    pub quic_loss: Option<SendLoss>,
+    pub bandwidth: Option<Bandwidth>,
     pub local_nat: String,
     pub peer_nat: String,
     pub relay_device: String,
@@ -111,12 +114,72 @@ impl SendLoss {
 
 pub fn send_loss_label(loss: Option<&SendLoss>) -> String {
     let Some(loss) = loss else { return "未上报".into() };
+    loss_label(loss, "本机 → 对端")
+}
+
+pub fn remote_loss_label(loss: Option<&SendLoss>, direction: &str) -> String {
+    loss.map(|s| loss_label(s, direction)).unwrap_or_else(|| "无有效对端反馈".into())
+}
+
+fn loss_label(loss: &SendLoss, direction: &str) -> String {
     let window = if loss.window_seconds == 60 { "近 1 分钟".into() } else { format!("近 {} 秒", loss.window_seconds) };
-    let scope = format!("本机 → 对端 · {window}");
+    let scope = format!("{direction} · {window}");
     match loss.rate_percent {
         Some(rate) => format!("{rate:.2}% · {scope} · 丢失 {} / 已判定 {} 包", loss.lost_packets, loss.samples),
         None => format!("暂无样本 · {scope}"),
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BandwidthRates {
+    pub peak_bps: f64,
+    pub average_bps: f64,
+}
+
+impl BandwidthRates {
+    fn from_json(v: &Value) -> Option<Self> {
+        let rate = |key: &str| v[key].as_f64().filter(|n| n.is_finite() && *n >= 0.0);
+        Some(Self { peak_bps: rate("peak_bps")?, average_bps: rate("average_bps")? })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bandwidth {
+    pub send: BandwidthRates,
+    pub receive: BandwidthRates,
+    pub total: BandwidthRates,
+}
+
+impl Bandwidth {
+    fn from_json(v: &Value) -> Option<Self> {
+        Some(Self { send: BandwidthRates::from_json(&v["send"])?,
+            receive: BandwidthRates::from_json(&v["receive"])?, total: BandwidthRates::from_json(&v["total"])? })
+    }
+}
+
+pub fn bandwidth_label(bandwidth: Option<&Bandwidth>, peak: bool) -> String {
+    let Some(b) = bandwidth else { return "未上报或采样中".into() };
+    let rate = |v: &BandwidthRates| format!("{:.2} Mbps", (if peak { v.peak_bps } else { v.average_bps }) / 1_000_000.0);
+    let scope = if peak { "本连接 · 约 1 秒采样" } else { "本连接 · 含空闲时间" };
+    format!("合计 {} · 上行 {} · 下行 {} · {scope}", rate(&b.total), rate(&b.send), rate(&b.receive))
+}
+
+pub fn quic_loss_summary(peer: &Peer) -> String {
+    let rate = |loss: Option<&SendLoss>, missing: &str| match loss {
+        None => missing.to_string(),
+        Some(loss) => loss.rate_percent.map(|v| format!("{v:.2}%")).unwrap_or_else(|| "暂无样本".into()),
+    };
+    format!("合计 {} · 上行 {} · 下行 {}", rate(peer.quic_loss.as_ref(), "暂无反馈"),
+        rate(peer.send_loss.as_ref(), "—"), rate(peer.receive_loss.as_ref(), "暂无反馈"))
+}
+
+pub fn bandwidth_summary(bandwidth: Option<&Bandwidth>, peak: bool) -> String {
+    let Some(b) = bandwidth else { return "—".into() };
+    let rate = |v: &BandwidthRates| {
+        let number = format!("{:.2}", (if peak { v.peak_bps } else { v.average_bps }) / 1_000_000.0);
+        format!("{} Mbps", number.trim_end_matches('0').trim_end_matches('.'))
+    };
+    format!("合计 {} · 上行 {} · 下行 {}", rate(&b.total), rate(&b.send), rate(&b.receive))
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -341,6 +404,9 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
                     dropped_datagrams: s_or(p, "dropped_datagrams", "0"),
                     retry_count: s_or(p, "retry_count", "0"),
                     send_loss: p.get("send_loss").and_then(SendLoss::from_json),
+                    receive_loss: p.get("receive_loss").and_then(SendLoss::from_json),
+                    quic_loss: p.get("quic_loss").and_then(SendLoss::from_json),
+                    bandwidth: p.get("bandwidth").and_then(Bandwidth::from_json),
                     relay_state: s(p, "relay_state"),
                     lease_until: i(p, "lease_until"),
                     turn_expires_at: i(p, "turn_expires_at"),
@@ -794,6 +860,25 @@ mod tests {
     }
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn bilateral_metrics_preserve_core_weighting_and_simultaneous_peak() {
+        let s = parse_snapshot(&json!({"api_version":1,"peer_transports":[{
+            "quic_loss":{"window_seconds":60,"samples":"1000","lost_packets":"19","rate_percent":1.9},
+            "receive_loss":{"window_seconds":60,"samples":"900","lost_packets":"9","rate_percent":1},
+            "bandwidth":{"send":{"peak_bps":8000000,"average_bps":4000000},
+                "receive":{"peak_bps":16000000,"average_bps":8000000},
+                "total":{"peak_bps":16000000,"average_bps":12000000}}
+        },{}]})).unwrap();
+        let p = &s.peers[0];
+        assert_eq!(remote_loss_label(p.quic_loss.as_ref(), "双向合计"), "1.90% · 双向合计 · 近 1 分钟 · 丢失 19 / 已判定 1000 包");
+        assert!(remote_loss_label(p.receive_loss.as_ref(), "对端 → 本机").starts_with("1.00% · 对端 → 本机"));
+        assert_eq!(bandwidth_label(p.bandwidth.as_ref(), true), "合计 16.00 Mbps · 上行 8.00 Mbps · 下行 16.00 Mbps · 本连接 · 约 1 秒采样");
+        assert_eq!(bandwidth_label(p.bandwidth.as_ref(), false), "合计 12.00 Mbps · 上行 4.00 Mbps · 下行 8.00 Mbps · 本连接 · 含空闲时间");
+        assert_eq!(remote_loss_label(s.peers[1].quic_loss.as_ref(), "双向合计"), "无有效对端反馈");
+        assert_eq!(bandwidth_label(s.peers[1].bandwidth.as_ref(), true), "未上报或采样中");
+        assert!(Bandwidth::from_json(&json!({"send":{"peak_bps":-1,"average_bps":0}})).is_none());
+    }
 
     #[test]
     fn send_loss_keeps_core_rate_precision_and_distinct_availability() {

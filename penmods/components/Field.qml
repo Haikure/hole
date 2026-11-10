@@ -22,7 +22,7 @@ Rectangle {
     property bool lit: false
 
     implicitWidth: Theme.contentWidth
-    implicitHeight: Theme.controlHeight
+    implicitHeight: 44
     radius: Theme.radius
     color: field.highlighted ? Theme.fieldActive : Theme.field
     border.width: field.invalid || field.highlighted ? 1 : 0
@@ -54,7 +54,7 @@ Rectangle {
         id: labelText
         anchors {
             left: parent.left; right: parent.right; top: parent.top
-            leftMargin: 8; rightMargin: 8; topMargin: 4
+            leftMargin: 8; rightMargin: 8; topMargin: 5
         }
         text: field.label
         visible: text.length > 0
@@ -69,7 +69,7 @@ Rectangle {
             left: parent.left; right: parent.right
             top: labelText.visible ? labelText.bottom : parent.top
             bottom: parent.bottom
-            leftMargin: 8; rightMargin: 8; topMargin: 1; bottomMargin: 4
+            leftMargin: 8; rightMargin: 20; topMargin: 2; bottomMargin: 5
         }
         text: field.value.length === 0 && field.placeholder.length > 0
               ? field.placeholder
@@ -79,6 +79,11 @@ Rectangle {
         font.pixelSize: Theme.fontValue
         elide: Text.ElideRight
         verticalAlignment: Text.AlignVCenter
+    }
+
+    NATIcon {
+        anchors.right: parent.right; anchors.rightMargin: 5; anchors.verticalCenter: parent.verticalCenter
+        width: 11; height: 11; name: "chevron"; tint: Theme.textMuted
     }
 
     // MouseArea leaves preventStealing disabled so the parent Flickable can

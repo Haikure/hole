@@ -90,7 +90,15 @@ internal fun PeerDetailsContent(peer: PeerSnapshot) {
             PeerMetric("连接重试", "${peer.retryCount} 次", Icons.Default.Refresh),
             PeerMetric("本地丢弃", "${peer.droppedDatagrams} 个报文", Icons.Default.DeleteOutline),
         ))
-        DetailRow("QUIC 上行丢包率", peer.sendLoss?.description() ?: "未上报")
+    }
+    PeerDetailSection("QUIC 统计", Icons.AutoMirrored.Filled.ShowChart,
+        info = "丢包率统计最近约 1 分钟的数据，合计按双向包数加权。下行与合计需要有效的对端反馈。\n\n" +
+            "速率统计本次连接：峰值取约 1 秒采样的最大值，平均包含空闲时间。数值包含重传和控制开销，不代表线路容量；切换连接后重新统计。") {
+        PeerQuicMetric("丢包率", "合计 ${peer.quicLoss?.rateLabel() ?: "暂无反馈"} · 上行 ${peer.sendLoss?.rateLabel() ?: "—"} · 下行 ${peer.receiveLoss?.rateLabel() ?: "暂无反馈"}")
+        PeerQuicMetric("峰值速率", peer.bandwidth?.description(peak = true, concise = true) ?: "—")
+        PeerQuicMetric("平均速率", peer.bandwidth?.description(peak = false, concise = true) ?: "—")
+        Text("丢包率近 1 分钟\n速率本次连接", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     if (!isFixedPeer(peer) && (peer.pathType in setOf("relay", "hole") || peer.relayDevice.isNotBlank())) {
         PeerDetailSection("中继信息", Icons.Default.Dns) {
@@ -116,19 +124,34 @@ internal fun PeerDetailsContent(peer: PeerSnapshot) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PeerSectionHeading(title: String, icon: ImageVector) {
-    Row(Modifier.padding(horizontal = 4.dp).semantics { heading() }, verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Icon(icon, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-        Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+private fun PeerQuicMetric(label: String, summary: String) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SelectionContainer {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                summary.split(" · ").forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            }
+        }
     }
 }
 
 @Composable
-private fun PeerDetailSection(title: String, icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
+private fun PeerSectionHeading(title: String, icon: ImageVector, info: String? = null) {
+    Row(Modifier.padding(horizontal = 4.dp).semantics { heading() }, verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Icon(icon, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+        Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.weight(1f))
+        if (info != null) HoleInfoButton(title) { Text(info) }
+    }
+}
+
+@Composable
+private fun PeerDetailSection(title: String, icon: ImageVector, info: String? = null, content: @Composable ColumnScope.() -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        PeerSectionHeading(title, icon)
+        PeerSectionHeading(title, icon, info)
         HoleCard(Modifier.fillMaxWidth()) {
             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp), content = content)
         }

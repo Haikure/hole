@@ -1257,6 +1257,8 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 		}
 		s.DroppedDatagrams = active.mux.dropped.Load()
 		s.SendLoss = active.mux.sendLoss.snapshot(monotime.Now())
+		s.ReceiveLoss, s.QUICLoss = active.mux.metrics.lossSnapshot(time.Now(), s.SendLoss)
+		s.Bandwidth = active.mux.metrics.bandwidthSnapshot()
 		active.mux.mu.Lock()
 		s.ActiveChannels = 0
 		for _, channel := range active.mux.channels {

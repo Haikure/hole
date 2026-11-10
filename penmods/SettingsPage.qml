@@ -12,6 +12,7 @@ YBackButtonPage {
     property var hostKeyboard: null
 
     objectName: "HoleSettingsPage"
+    PageEntrance { target: scroll }
 
     Rectangle {
         anchors.fill: parent
@@ -32,7 +33,7 @@ YBackButtonPage {
         anchors.bottomMargin: 8
         clip: true
         contentWidth: width
-        contentHeight: settingsColumn.implicitHeight + Theme.spacing
+        contentHeight: settingsColumn.height + Theme.spacing
         interactive: !advancedSettings.turnOrderDragging
         pressDelay: 0
         boundsBehavior: Flickable.StopAtBounds
@@ -43,34 +44,17 @@ YBackButtonPage {
             width: scroll.width
             spacing: Theme.spacing
 
-            ActionButton {
+            PageHeading {
                 Layout.fillWidth: true
-                text: "NAT 检测与详细结果"
-                onClicked: settingsPage.form.openSeparatePage("NATPage.qml", {form: settingsPage.form})
-            }
-
-            Text {
-                Layout.fillWidth: true
-                text: "设置"
-                color: Theme.textPrimary
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontHeader
-                font.bold: true
-            }
-
-            Text {
-                Layout.fillWidth: true
-                text: "房间、信令与连接策略"
-                color: Theme.textMuted
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontCaption
-                wrapMode: Text.WordWrap
+                title: "设置"; iconName: "settings"
+                subtitle: settingsPage.form ? settingsPage.form.saveState : ""
             }
 
             Section {
                 Layout.fillWidth: true
                 title: "连接设置"
                 subtitle: "房间与信令"
+                iconName: "network"
 
                 Field {
                     Layout.fillWidth: true
@@ -98,51 +82,60 @@ YBackButtonPage {
                     }
                 }
 
-                Field {
+                GridLayout {
                     Layout.fillWidth: true
-                    hostKeyboard: settingsPage.hostKeyboard
-                    label: "房间号"
-                    value: settingsPage.form ? settingsPage.form.room : ""
-                    onEdited: function(nextValue) {
-                        settingsPage.form.room = nextValue
-                        settingsPage.form.syncConfig()
+                    columns: width >= 210 ? 2 : 1
+                    columnSpacing: 5; rowSpacing: 5
+                    Field {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        hostKeyboard: settingsPage.hostKeyboard
+                        label: "房间号"
+                        value: settingsPage.form ? settingsPage.form.room : ""
+                        onEdited: function(nextValue) {
+                            settingsPage.form.room = nextValue
+                            settingsPage.form.syncConfig()
+                        }
                     }
-                }
 
-                Field {
-                    Layout.fillWidth: true
-                    hostKeyboard: settingsPage.hostKeyboard
-                    label: "房间密码"
-                    value: settingsPage.form ? settingsPage.form.token : ""
-                    secret: true
-                    onEdited: function(nextValue) {
-                        settingsPage.form.token = nextValue
-                        settingsPage.form.syncConfig()
+                    Field {
+                        Layout.fillWidth: true
+                        hostKeyboard: settingsPage.hostKeyboard
+                        label: "房间密码"
+                        Layout.preferredWidth: 1
+                        value: settingsPage.form ? settingsPage.form.token : ""
+                        secret: true
+                        onEdited: function(nextValue) {
+                            settingsPage.form.token = nextValue
+                            settingsPage.form.syncConfig()
+                        }
                     }
-                }
 
-                Field {
-                    Layout.fillWidth: true
-                    hostKeyboard: settingsPage.hostKeyboard
-                    label: "设备名"
-                    value: settingsPage.form ? settingsPage.form.deviceName : ""
-                    placeholder: "pen"
-                    onEdited: function(nextValue) {
-                        settingsPage.form.deviceName = nextValue
-                        settingsPage.form.syncConfig()
+                    Field {
+                        Layout.fillWidth: true
+                        hostKeyboard: settingsPage.hostKeyboard
+                        label: "设备名"
+                        Layout.preferredWidth: 1
+                        value: settingsPage.form ? settingsPage.form.deviceName : ""
+                        placeholder: "pen"
+                        onEdited: function(nextValue) {
+                            settingsPage.form.deviceName = nextValue
+                            settingsPage.form.syncConfig()
+                        }
                     }
-                }
 
-                Field {
-                    Layout.fillWidth: true
-                    hostKeyboard: settingsPage.hostKeyboard
-                    label: "会话保留期限"
-                    value: settingsPage.form ? settingsPage.form.sessionTimeout : ""
-                    placeholder: "10m"
-                    invalid: settingsPage.form && !settingsPage.form.isDuration(settingsPage.form.sessionTimeout)
-                    onEdited: function(nextValue) {
-                        settingsPage.form.sessionTimeout = nextValue
-                        settingsPage.form.syncConfig()
+                    Field {
+                        Layout.fillWidth: true
+                        hostKeyboard: settingsPage.hostKeyboard
+                        label: "会话保留期限"
+                        Layout.preferredWidth: 1
+                        value: settingsPage.form ? settingsPage.form.sessionTimeout : ""
+                        placeholder: "10m"
+                        invalid: settingsPage.form && !settingsPage.form.isDuration(settingsPage.form.sessionTimeout)
+                        onEdited: function(nextValue) {
+                            settingsPage.form.sessionTimeout = nextValue
+                            settingsPage.form.syncConfig()
+                        }
                     }
                 }
             }
@@ -151,6 +144,7 @@ YBackButtonPage {
                 Layout.fillWidth: true
                 title: "连接策略"
                 subtitle: "优先路径"
+                iconName: "mapping"
 
                 ConnectionModeRow {
                     Layout.fillWidth: true
@@ -167,6 +161,12 @@ YBackButtonPage {
                         settingsPage.form.syncConfig()
                     }
                 }
+            }
+
+            ActionButton {
+                Layout.fillWidth: true
+                text: "检测网络"; iconName: "network"
+                onClicked: settingsPage.form.openSeparatePage("NATPage.qml", {form: settingsPage.form})
             }
 
             AdvancedSettings {

@@ -148,7 +148,11 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
         }
         line(&mut out, format!("  通道 {}/{} · RTT {} ms · 建连 {} ms", p.active_channels, p.mapping_count, p.rtt_ms, p.connect_ms));
         line(&mut out, format!("  线路发送 {} / 接收 {} 字节 · 本地丢弃 {}", p.bytes_sent, p.bytes_received, p.dropped_datagrams));
+        line(&mut out, format!("  QUIC 整体丢包率 {}", super::snapshot::remote_loss_label(p.quic_loss.as_ref(), "双向合计")));
         line(&mut out, format!("  QUIC 上行丢包率 {}", super::snapshot::send_loss_label(p.send_loss.as_ref())));
+        line(&mut out, format!("  QUIC 下行丢包率 {}", super::snapshot::remote_loss_label(p.receive_loss.as_ref(), "对端 → 本机")));
+        line(&mut out, format!("  QUIC 峰值带宽 {}", super::snapshot::bandwidth_label(p.bandwidth.as_ref(), true)));
+        line(&mut out, format!("  QUIC 平均带宽 {}", super::snapshot::bandwidth_label(p.bandwidth.as_ref(), false)));
         line(&mut out, format!("  {} / generation {} / phase {}（{}） / retries {}", p.transport_id, p.generation, p.phase, peer_phase_label(p), p.retry_count));
         if !is_fixed_peer(p) && p.phase != "hole" { line(&mut out, format!("  中继状态 {} · 凭据到期 {}", p.relay_state, p.turn_expires_at)); }
         line(&mut out, format!("  授权到期 {}", p.lease_until));
@@ -170,7 +174,12 @@ mod tests {
     fn quic_loss_report_includes_scope_samples_and_unavailable_states() {
         for path in ["direct", "relay", "hole", "fixed"] {
             let snapshot = crate::snapshot::parse_snapshot(&serde_json::json!({"api_version":1,"peer_transports":[
-                {"path_type":path,"dropped_datagrams":"999","send_loss":{"window_seconds":60,"samples":"80","lost_packets":"1","rate_percent":1.25}},
+                {"path_type":path,"dropped_datagrams":"999","send_loss":{"window_seconds":60,"samples":"80","lost_packets":"1","rate_percent":1.25},
+                    "quic_loss":{"window_seconds":60,"samples":"1000","lost_packets":"19","rate_percent":1.9},
+                    "receive_loss":{"window_seconds":60,"samples":"900","lost_packets":"9","rate_percent":1},
+                    "bandwidth":{"send":{"peak_bps":8000000,"average_bps":4000000},
+                        "receive":{"peak_bps":16000000,"average_bps":8000000},
+                        "total":{"peak_bps":16000000,"average_bps":12000000}}},
                 {"path_type":path,"send_loss":{"window_seconds":60,"samples":"0","lost_packets":"0","rate_percent":null}},
                 {"path_type":path}
             ]})).unwrap();
@@ -180,7 +189,9 @@ mod tests {
                 last_resume_error: "", now_rfc3339: "fixture",
             });
             for text in ["QUIC 上行丢包率 1.25% · 本机 → 对端 · 近 1 分钟 · 丢失 1 / 已判定 80 包",
-                "QUIC 上行丢包率 暂无样本", "QUIC 上行丢包率 未上报", "本地丢弃 999"] {
+                "QUIC 上行丢包率 暂无样本", "QUIC 上行丢包率 未上报", "本地丢弃 999",
+                "QUIC 整体丢包率 1.90% · 双向合计", "QUIC 下行丢包率 1.00% · 对端 → 本机",
+                "QUIC 整体丢包率 无有效对端反馈", "QUIC 峰值带宽 合计 16.00 Mbps", "QUIC 平均带宽 合计 12.00 Mbps"] {
                 assert!(report.contains(text), "missing {text} for {path}");
             }
         }

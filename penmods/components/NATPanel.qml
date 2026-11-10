@@ -24,12 +24,22 @@ ColumnLayout {
             x: 10; y: 10
             width: parent.width - 20
             spacing: 8
-            Row {
-                spacing: 6
-                NATIcon { width: 16; height: 16; tint: panel.ink }
-                Text { text: panel.report.badge || "NAT 检测"; color: panel.ink; font.pixelSize: Theme.fontLabel; font.family: Theme.fontFamily; anchors.verticalCenter: parent.verticalCenter }
+            RowLayout {
+                width: parent.width; spacing: 8
+                NATIcon { Layout.preferredWidth: 26; Layout.preferredHeight: 26; tint: panel.ink }
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: 3
+                    Text { Layout.fillWidth: true; text: panel.report.badge || "NAT 检测"; color: panel.ink; font.pixelSize: 10; font.family: Theme.fontFamily; wrapMode: Text.Wrap }
+                    Text { Layout.fillWidth: true; text: panel.report.title || "检测当前网络"; color: Theme.textPrimary; font.pixelSize: 15; font.bold: true; font.family: Theme.fontFamily; wrapMode: Text.Wrap }
+                }
+                ActionButton {
+                    objectName: "natAction"
+                    Layout.preferredWidth: 34; Layout.preferredHeight: 34
+                    iconName: panel.busy ? "close" : "refresh"; variant: "primary"
+                    Accessible.name: panel.busy ? "取消检测" : "开始检测"
+                    onClicked: { if (panel.busy) panel.cancelRequested(); else panel.startRequested() }
+                }
             }
-            Text { width: parent.width; text: panel.report.title || "检测当前网络"; color: panel.ink; font.pixelSize: 17; font.bold: true; font.family: Theme.fontFamily; wrapMode: Text.Wrap }
             Text { width: parent.width; text: panel.report.summary || "检查当前 IPv4 网络的映射与过滤方式。"; color: Theme.textSecondary; font.pixelSize: Theme.fontLabel; font.family: Theme.fontFamily; wrapMode: Text.Wrap }
             Rectangle {
                 width: parent.width; height: 3
@@ -42,13 +52,6 @@ ColumnLayout {
                         NumberAnimation { to: 0; duration: 900; easing.type: Easing.InOutSine }
                     }
                 }
-            }
-            ActionButton {
-                objectName: "natAction"
-                width: parent.width
-                text: panel.busy ? "取消检测" : panel.report.state === "idle" ? "开始检测" : "重新检测"
-                variant: "primary"
-                onClicked: { if (panel.busy) panel.cancelRequested(); else panel.startRequested() }
             }
         }
     }
@@ -70,17 +73,20 @@ ColumnLayout {
                 Column {
                     id: tileContent
                     x: 8; y: 8; width: parent.width - 16; spacing: 5
-                    NATIcon { name: modelData.icon; tint: panel.ink; width: 18; height: 18 }
-                    Text { width: parent.width; text: modelData.label; color: Theme.textMuted; font.pixelSize: Theme.fontLabel; font.family: Theme.fontFamily; wrapMode: Text.Wrap }
+                    RowLayout {
+                        width: parent.width; spacing: 5
+                        NATIcon { name: modelData.icon; tint: panel.ink; Layout.preferredWidth: 16; Layout.preferredHeight: 16 }
+                        Text { Layout.fillWidth: true; text: modelData.label; color: Theme.textMuted; font.pixelSize: 10; font.family: Theme.fontFamily; wrapMode: Text.Wrap }
+                    }
                     Text { width: parent.width; text: modelData.value; color: Theme.textPrimary; font.pixelSize: 12; font.bold: true; font.family: Theme.fontFamily; wrapMode: Text.Wrap }
                 }
             }
         }
     }
-    Text {
-        Layout.fillWidth: true; visible: panel.report.state === "idle"
-        text: "完整结果包含 NAT 类型、映射与过滤行为、公网地址、端口规律、IPv4 / IPv6 地址和检测记录。"
-        color: Theme.textSecondary; font.pixelSize: Theme.fontLabel; font.family: Theme.fontFamily; wrapMode: Text.Wrap
+    RowLayout {
+        Layout.fillWidth: true; visible: panel.report.state === "idle"; spacing: 6
+        MetricTile { Layout.fillWidth: true; Layout.preferredWidth: 1; label: "映射与过滤"; value: "了解网络类型"; iconName: "shield" }
+        MetricTile { Layout.fillWidth: true; Layout.preferredWidth: 1; label: "端口特征"; value: "查看打洞条件"; iconName: "trend" }
     }
     Repeater {
         model: panel.report.sections || []
@@ -110,5 +116,5 @@ ColumnLayout {
             }
         }
     }
-    Text { Layout.fillWidth: true; text: "点按分组标题查看完整字段。未知表示证据不足，IPv6 地址和 NAT 类型不能替代实际直连检查。"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption; font.family: Theme.fontFamily; wrapMode: Text.Wrap }
+    Text { Layout.fillWidth: true; visible: (panel.report.sections || []).length > 0; text: "点按分组查看详情"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption; font.family: Theme.fontFamily }
 }

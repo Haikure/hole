@@ -7,8 +7,8 @@ YBackButtonPage {
     id: natPage
     property var form: null
     objectName: "HoleNATPage"
+    PageEntrance { target: scroll }
     Rectangle { anchors.fill: parent; z: -1; color: Theme.background }
-    YVerticalTitleBar { z: 100; onCallBack: natPage.backButtonClicked() }
     Flickable {
         id: scroll
         anchors.fill: parent

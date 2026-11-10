@@ -50,13 +50,21 @@ Item {
     // Page state
     property bool initialized: false
     property bool advancedOpen: false
-    property bool statusOpen: false
     property var openedPage: null
     property int pageRequestToken: 0
     property string localError: ""
     property string saveState: ""
-    property var statusLines: []
-    property string statusRaw: ""
+    property string snapshotError: ""
+    readonly property string statusRaw: holePlugin.snapshotJson.length > 0 ? snapshotError
+        : holePlugin.reloading ? "正在重载核心，请稍候"
+        : holePlugin.running ? "核心尚未返回快照，可点击刷新重试" : "核心未运行"
+    property string lastSnapshotRaw: ""
+    property int snapshotRevision: 0
+    property int dispatchedRevision: 0
+    property bool snapshotDecoding: false
+    property string natReportKey: ""
+    property string currentView: "home"
+    property var runtimeSnapshot: ({})
     property var natReport: ({state: "idle", title: "检测当前网络", summary: "检查映射、过滤与端口特征，无需加入房间。", sections: []})
 
     readonly property string defaultStun: "stun:stun.cloudflare.com:3478"
@@ -665,21 +673,6 @@ Item {
         return "尚未连接"
     }
 
-    function stateDetail() {
-        if (holePlugin.reloading) return "正在更换核心进程，请稍候"
-        if (page.connectionEstablished) {
-            return "连接成功，正在运行 " + provides.count + " 项提供与 " + consumes.count + " 项使用映射"
-        }
-        if (holePlugin.state === "starting") return "正在建立连接，请稍候"
-        if (holePlugin.state === "reconfiguring") return "正在应用配置，核心会保留仍匹配的映射会话"
-        if (holePlugin.state === "recovering") return "连接已断开，核心正在重试"
-        if (holePlugin.state === "stopping") return "正在停止现有连接"
-        if (holePlugin.running) return "正在建立连接，请稍候"
-        if (holePlugin.lastError.length > 0) return holePlugin.lastError
-        if (holePlugin.state === "error") return "核心返回错误，展开运行状态查看详情"
-        return "填写连接设置后开始连接设备"
-    }
-
     function beginConnection() {
         if (holePlugin.reloading) return
         if (holePlugin.state === "starting" || holePlugin.state === "stopping") return
@@ -711,13 +704,6 @@ Item {
     function clearMessages() {
         localError = ""
         holePlugin.clearError()
-    }
-
-    function toggleStatus() {
-        statusOpen = !statusOpen
-        if (!statusOpen) return
-        localError = ""
-        page.refreshSnapshot()
     }
 
     function refreshSnapshot() {
@@ -783,13 +769,32 @@ Item {
     }
 
     function sendLossText(loss) {
-        if (!loss || typeof loss !== "object") return "未上报"
-        var window = loss.window_seconds === 60 ? "近 1 分钟" : "近 " + asString(loss.window_seconds) + " 秒"
-        if (loss.rate_percent === null) return "暂无样本 · " + window
+        if (!loss || typeof loss !== "object") return "—"
+        if (loss.rate_percent === null) return "暂无样本"
         var rate = loss.rate_percent
-        if (typeof rate !== "number" || !isFinite(rate) || rate < 0 || rate > 100) return "未上报"
-        return rate.toFixed(2) + "% · " + window
-                + " · 丢失 " + asString(loss.lost_packets) + " / 已判定 " + asString(loss.samples) + " 包"
+        if (typeof rate !== "number" || !isFinite(rate) || rate < 0 || rate > 100) return "—"
+        return rate.toFixed(2) + "%"
+    }
+
+    function quicLossText(peer) {
+        return "合计 " + (peer.quic_loss ? sendLossText(peer.quic_loss) : "暂无反馈")
+                + " · 上行 " + sendLossText(peer.send_loss)
+                + " · 下行 " + (peer.receive_loss ? sendLossText(peer.receive_loss) : "暂无反馈")
+    }
+
+    function bandwidthText(bandwidth, peak) {
+        if (!bandwidth || typeof bandwidth !== "object") return "—"
+        var key = peak ? "peak_bps" : "average_bps"
+        var parts = []
+        var keys = ["total", "send", "receive"]
+        var labels = ["合计", "上行", "下行"]
+        for (var i = 0; i < keys.length; ++i) {
+            var rates = bandwidth[keys[i]]
+            var value = rates && rates[key]
+            if (typeof value !== "number" || !isFinite(value) || value < 0) return "—"
+            parts.push(labels[i] + " " + (value / 1000000).toFixed(2).replace(/\.?0+$/, "") + " Mbps")
+        }
+        return parts.join(" · ")
     }
 
     function mappingText(mapping) {
@@ -953,7 +958,10 @@ Item {
         }
         if (Number(peer.rtt_ms) > 0) appendSnapshotLine(lines, "  延迟", asString(peer.rtt_ms) + " ms")
         appendSnapshotLine(lines, "  线路流量", "收 " + bytesText(peer.bytes_received) + " / 发 " + bytesText(peer.bytes_sent))
-        appendSnapshotLine(lines, "  上行丢包率", page.sendLossText(peer.send_loss))
+        appendSnapshotLine(lines, "  QUIC 统计", "丢包率近 1 分钟 · 速率本次连接")
+        appendSnapshotLine(lines, "  丢包率", page.quicLossText(peer))
+        appendSnapshotLine(lines, "  峰值速率", page.bandwidthText(peer.bandwidth, true))
+        appendSnapshotLine(lines, "  平均速率", page.bandwidthText(peer.bandwidth, false))
         appendSnapshotLine(lines, "  连接重试", page.counterText(peer.retry_count, " 次"))
         appendSnapshotLine(lines, "  丢弃报文", page.counterText(peer.dropped_datagrams, " 个"))
         if (Number(peer.active_channels) > 0)
@@ -1040,334 +1048,128 @@ Item {
         return lines
     }
 
+    function peerDetailLines(peer) {
+        var lines = []
+        page.appendPeerSnapshotLines(lines, peer)
+        var summaryLabels = ["路径", "延迟", "线路流量", "QUIC 统计", "丢包率", "峰值速率", "平均速率"]
+        return lines.filter(function(line) { return line.label.indexOf("通道 · ") !== 0 && summaryLabels.indexOf(line.label.trim()) < 0 })
+    }
+
     function refreshStatus() {
         var raw = holePlugin.snapshotJson
-        if (!raw || raw.length === 0) {
+        if (raw === lastSnapshotRaw) return
+        lastSnapshotRaw = raw
+        snapshotRevision++
+        snapshotError = ""
+        if (raw.length === 0) {
+            runtimeSnapshot = ({})
+            natReportKey = ""
             natReport = {state: "idle", title: "检测当前网络", summary: "检查映射、过滤与端口特征，无需加入房间。", sections: []}
-            statusLines = []
-            statusRaw = holePlugin.reloading ? "正在重载核心，请稍候"
-                      : holePlugin.running ? "核心尚未返回快照，可点击刷新重试" : "核心未运行"
             return
         }
-        var data = null
-        try {
-            data = JSON.parse(raw)
-        } catch (error) {
-            statusLines = []
-            statusRaw = raw
-            return
+        decodeSnapshot()
+    }
+
+    function decodeSnapshot() {
+        // Coalesce bursts while the worker is busy; never queue an unbounded
+        // backlog or publish a reply from a core that has since been reloaded.
+        if (snapshotDecoding || lastSnapshotRaw.length === 0) return
+        snapshotDecoding = true
+        dispatchedRevision = snapshotRevision
+        snapshotWorker.sendMessage({revision: snapshotRevision, json: lastSnapshotRaw})
+    }
+
+    WorkerScript {
+        id: snapshotWorker
+        source: "components/SnapshotWorker.js"
+        onMessage: {
+            page.snapshotDecoding = false
+            if (messageObject.revision === page.snapshotRevision) {
+                page.runtimeSnapshot = messageObject.snapshot
+                page.snapshotError = messageObject.error
+                if (page.natReportKey !== messageObject.natKey) {
+                    page.natReportKey = messageObject.natKey
+                    page.natReport = messageObject.snapshot.nat_diagnostic || {state: "idle", title: "检测当前网络", summary: "检查映射、过滤与端口特征，无需加入房间。", sections: []}
+                }
+            }
+            if (page.dispatchedRevision !== page.snapshotRevision) page.decodeSnapshot()
         }
-        if (data && data.nat_diagnostic) natReport = data.nat_diagnostic
-        statusLines = data && typeof data === "object" && !Array.isArray(data)
-                      ? page.humanSnapshot(data)
-                      : [{label: "快照", text: "数据格式不是对象"}]
-        statusRaw = ""
     }
 
     // ------------------------------------------------------------------- view
 
-    // Keep the page background local to the plugin. The host input page is
-    // created above this layer by VirtualKeyboard.
-    Item {
-        anchors.fill: parent
-        clip: true
-
-        Rectangle {
-            anchors.fill: parent
-            color: Theme.background
-        }
-    }
-
+    Rectangle { anchors.fill: parent; color: Theme.background }
     VirtualKeyboard { id: keyboard }
+    PageEntrance { id: pageEntrance; target: scroll }
+    onCurrentViewChanged: pageEntrance.restart()
 
     YVerticalTitleBar {
         z: 100
-        onCallBack: page.backButtonClicked()
+        onCallBack: {
+            if (page.currentView !== "home") { page.currentView = "home"; scroll.contentY = 0 }
+            else page.backButtonClicked()
+        }
     }
 
     Flickable {
         id: scroll
-
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.leftMargin: 54
-        anchors.rightMargin: Theme.pageMargin
-        anchors.topMargin: Theme.pageMargin
-        anchors.bottomMargin: Theme.pageMargin
+        anchors.fill: parent
+        anchors.leftMargin: 54; anchors.rightMargin: 8; anchors.topMargin: 8; anchors.bottomMargin: 8
         clip: true
         contentWidth: width
-        contentHeight: content.implicitHeight + Theme.spacing
-        interactive: true
-        pressDelay: 0
+        contentHeight: content.height
         boundsBehavior: Flickable.StopAtBounds
 
         ColumnLayout {
             id: content
-
             width: scroll.width
-            spacing: Theme.spacing
-
-            RowLayout {
+            spacing: 8
+            HomePanel {
                 Layout.fillWidth: true
-                spacing: 8
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 0
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: "HOLE"
-                        color: Theme.textPrimary
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontHeader
-                        font.bold: true
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: "设备连接与端口映射"
-                        color: Theme.textSecondary
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontCaption
-                    }
-                }
-
-                Text {
-                    Layout.alignment: Qt.AlignVCenter
-                    text: page.stateTitle()
-                    color: page.connectionEstablished ? Theme.accent
-                                                        : holePlugin.running ? Theme.warning : Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontCaption
-                }
-            }
-
-            Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: statusCard.implicitHeight + 2 * Theme.cardPadding
-                radius: Theme.radiusCard
-                color: Theme.surface
-                border.width: 1
-                border.color: page.connectionEstablished ? Theme.borderActive : Theme.border
-
-                Behavior on border.color { ColorAnimation { duration: 350 } }
-
-                ColumnLayout {
-                    id: statusCard
-
-                    x: Theme.cardPadding
-                    y: Theme.cardPadding
-                    width: parent.width - 2 * Theme.cardPadding
-                    spacing: 6
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 6
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 1
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: page.stateTitle()
-                                color: Theme.textPrimary
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontTitle
-                                font.bold: true
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: page.stateDetail()
-                                color: Theme.textSecondary
-                                font.family: Theme.fontFamily
-                                font.pixelSize: Theme.fontCaption
-                                wrapMode: Text.WordWrap
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.preferredWidth: 10
-                            Layout.preferredHeight: 10
-                            Layout.alignment: Qt.AlignVCenter
-                            radius: 5
-                            color: page.connectionEstablished ? Theme.accent
-                                                                : holePlugin.running ? Theme.warning : Theme.statusIdle
-                        }
-                    }
-
-                    SwitchRow {
-                        Layout.fillWidth: true
-                        title: "启动 Hole"
-                        summary: page.connectionEstablished ? "已连接并加入房间"
-                                : page.runRequested ? "核心正在探测网络并建立连接"
-                                : "关闭后停止核心和所有映射"
-                        checked: page.runRequested
-                        enabled: !holePlugin.reloading && holePlugin.state !== "stopping"
-                        onToggled: function(nextValue) {
-                            if (nextValue) page.beginConnection()
-                            else page.stopConnection()
-                        }
+                visible: page.currentView === "home"
+                stateTitle: page.stateTitle()
+                identity: page.room.length > 0 ? page.deviceName + " · " + page.room : "先设置房间与设备"
+                connected: page.connectionEstablished
+                requested: page.runRequested
+                busy: holePlugin.reloading || holePlugin.state === "stopping"
+                snapshot: page.runtimeSnapshot
+                errorText: page.errorText
+                onToggleRequested: { if (page.runRequested) page.stopConnection(); else page.beginConnection() }
+                onReloadRequested: page.reloadCore()
+                onNavigate: {
+                    if (destination === "devices") {
+                        page.currentView = "devices"
+                        scroll.contentY = 0
+                        page.refreshSnapshot()
+                    } else if (destination === "settings") {
+                        page.openSeparatePage("SettingsPage.qml", {form: page, hostKeyboard: keyboard})
+                    } else if (destination === "services") {
+                        page.openSeparatePage("ConfigPage.qml", {form: page, hostKeyboard: keyboard, provideModel: provides, consumeModel: consumes})
+                    } else if (destination === "network") {
+                        page.openSeparatePage("NATPage.qml", {form: page})
                     }
                 }
             }
-
-            RowLayout {
+            Loader {
                 Layout.fillWidth: true
-                spacing: 5
-
-                ActionButton {
-                    Layout.fillWidth: true
-                    text: "设置"
-                    onClicked: page.openSeparatePage("SettingsPage.qml", {
-                        form: page,
-                        hostKeyboard: keyboard
-                    })
-                }
-
-                ActionButton {
-                    Layout.fillWidth: true
-                    text: "配置"
-                    onClicked: page.openSeparatePage("ConfigPage.qml", {
-                        form: page,
-                        hostKeyboard: keyboard,
-                        provideModel: provides,
-                        consumeModel: consumes
-                    })
+                Layout.preferredHeight: item ? item.implicitHeight : 0
+                active: page.currentView === "devices"
+                visible: active
+                sourceComponent: RuntimePanel {
+                    width: scroll.width
+                    form: page
+                    snapshot: page.runtimeSnapshot
+                    connected: page.connectionEstablished
+                    busy: holePlugin.reloading || holePlugin.state === "stopping"
+                    onRefreshRequested: page.refreshSnapshot()
+                    onReconnectRequested: page.renominateTransports()
                 }
             }
-
             ActionButton {
                 Layout.fillWidth: true
-                text: "NAT 检测 · " + (page.natReport.state === "idle" ? "查看网络条件" : page.natReport.title)
-                enabled: !holePlugin.reloading
-                onClicked: page.openSeparatePage("NATPage.qml", {form: page})
-            }
-
-            ActionButton {
-                Layout.fillWidth: true
-                text: holePlugin.reloading ? "正在重载核心…" : "重载核心"
-                enabled: !holePlugin.reloading && holePlugin.state !== "stopping"
-                onClicked: page.reloadCore()
-            }
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: visible ? errorColumn.implicitHeight + 2 * Theme.cardPadding : 0
                 visible: page.errorText.length > 0
-                radius: Theme.radiusCard
-                color: Theme.surfaceError
-
-                ColumnLayout {
-                    id: errorColumn
-
-                    x: Theme.cardPadding
-                    y: Theme.cardPadding
-                    width: parent.width - 2 * Theme.cardPadding
-                    spacing: 5
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.errorText
-                        color: Theme.error
-                        font.family: Theme.fontFamily
-                        font.pixelSize: Theme.fontCaption
-                        wrapMode: Text.WordWrap
-                    }
-
-                    ActionButton {
-                        Layout.preferredWidth: 88
-                        Layout.preferredHeight: 32
-                        text: "清除提示"
-                        variant: "danger"
-                        onClicked: page.clearMessages()
-                    }
-                }
-            }
-
-            Section {
-                Layout.fillWidth: true
-                title: "运行状态"
-                subtitle: page.stateTitle()
-                collapsible: true
-                expanded: page.statusOpen
-                onHeaderTapped: page.toggleStatus()
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 5
-
-                    ActionButton {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 36
-                        text: "刷新快照"
-                        enabled: !holePlugin.reloading
-                        onClicked: page.refreshSnapshot()
-                    }
-
-                    ActionButton {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 36
-                        text: "重提名路径"
-                        variant: "primary"
-                        enabled: page.connectionEstablished && holePlugin.state !== "stopping"
-                        onClicked: page.renominateTransports()
-                    }
-                }
-
-                Repeater {
-                    model: page.statusLines
-
-                    delegate: RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 6
-
-                        Text {
-                            Layout.preferredWidth: 82
-                            text: modelData.label
-                            color: Theme.textMuted
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontCaption
-                            elide: Text.ElideRight
-                        }
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: modelData.text
-                            color: Theme.textSecondary
-                            font.family: Theme.fontFamily
-                            font.pixelSize: Theme.fontCaption
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: visible ? implicitHeight : 0
-                    visible: text.length > 0
-                    text: page.statusRaw
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: Theme.fontCaption
-                    wrapMode: Text.WrapAnywhere
-                }
-            }
-
-            Text {
-                Layout.fillWidth: true
-                text: page.saveState.length > 0
-                      ? page.saveState
-                      : "设置会自动保存在插件目录，下次打开自动恢复。"
-                color: page.saveState.length > 0 && page.saveState !== "已保存" ? Theme.warning : Theme.textFooter
-                font.family: Theme.fontFamily
-                font.pixelSize: Theme.fontCaption
-                wrapMode: Text.WordWrap
+                text: "清除提示"; iconName: "close"; variant: "link"
+                onClicked: page.clearMessages()
             }
         }
     }
@@ -1389,7 +1191,6 @@ Item {
     Connections {
         target: holePlugin
         function onSnapshotChanged() { page.refreshStatus() }
-        function onStateChanged() { page.refreshStatus() }
         function onRunningChanged() { if (holePlugin.running) page.refreshSnapshot() }
     }
 

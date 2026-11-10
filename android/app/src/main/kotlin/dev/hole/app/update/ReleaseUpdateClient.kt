@@ -16,7 +16,42 @@ data class ReleaseDownloadSnapshot(
     val downloadedBytes: Long,
     val totalBytes: Long,
     val reason: Int,
-)
+) {
+    val active: Boolean get() = status == DownloadManager.STATUS_PENDING ||
+        status == DownloadManager.STATUS_RUNNING || status == DownloadManager.STATUS_PAUSED
+    val progress: Float? get() = if (totalBytes > 0)
+        (downloadedBytes.toDouble() / totalBytes).coerceIn(0.0, 1.0).toFloat() else null
+}
+
+/** A two-second rolling window, using monotonic timestamps from the caller. */
+internal class ReleaseDownloadSpeed {
+    private data class Sample(val time: Long, val bytes: Long)
+    private val samples = ArrayDeque<Sample>()
+
+    fun sample(snapshot: ReleaseDownloadSnapshot, nowMs: Long): Long? {
+        if (snapshot.status != DownloadManager.STATUS_RUNNING || snapshot.downloadedBytes < 0) {
+            samples.clear()
+            return null
+        }
+        val previous = samples.lastOrNull()
+        if (previous != null && (nowMs <= previous.time || nowMs - previous.time > WINDOW_MS ||
+                snapshot.downloadedBytes < previous.bytes)) samples.clear()
+        samples.addLast(Sample(nowMs, snapshot.downloadedBytes))
+        val cutoff = nowMs - WINDOW_MS
+        while (samples.size > 1 && samples.elementAt(1).time <= cutoff) samples.removeFirst()
+        if (samples.size < 2) return null
+        val first = samples.first()
+        val start = maxOf(cutoff, first.time)
+        // Interpolate only the boundary interval; do not include an older burst
+        // in the window just because polling isn't aligned to exactly 2 seconds.
+        val next = samples.elementAt(1)
+        val startBytes = first.bytes.toDouble() + (next.bytes - first.bytes).toDouble() *
+            (start - first.time) / (next.time - first.time)
+        return ((snapshot.downloadedBytes - startBytes).coerceAtLeast(0.0) * 1000 / (nowMs - start)).toLong()
+    }
+
+    private companion object { const val WINDOW_MS = 2_000L }
+}
 
 class ReleaseUpdateClient(context: Context) {
     private val appContext = context.applicationContext
@@ -62,7 +97,7 @@ class ReleaseUpdateClient(context: Context) {
         }
     }
 
-    fun enqueueApkDownload(release: GitHubRelease, acceleratorId: String, customPrefix: String): ReleaseDownloadRecord {
+    fun enqueueApkDownload(release: GitHubRelease, acceleratorId: String, customPrefix: String): ReleaseDownloadRecord = synchronized(downloadLock) {
         val asset = release.appApk ?: throw IllegalStateException("最新发行版没有找到手机版 APK")
         val accelerator = ReleaseAccelerators.resolve(acceleratorId, customPrefix)
         val url = githubRequestUrl(asset.downloadUrl, accelerator.prefix)
@@ -73,7 +108,7 @@ class ReleaseUpdateClient(context: Context) {
         val previous = savedDownload()
         if (previous?.tag == release.tag && queryDownload(previous.id)?.status in setOf(
                 DownloadManager.STATUS_PENDING, DownloadManager.STATUS_RUNNING, DownloadManager.STATUS_PAUSED)) {
-            return previous
+            return@synchronized previous
         }
         // DownloadManager never overwrites an existing destination, including
         // a completed APK left behind after reinstalling the same version.
@@ -88,13 +123,24 @@ class ReleaseUpdateClient(context: Context) {
         val record = ReleaseDownloadRecord(manager.enqueue(request), release.tag)
         preferences.edit().putLong(KEY_DOWNLOAD_ID, record.id).putString(KEY_DOWNLOAD_TAG, record.tag).apply()
         previous?.let { manager.remove(it.id) }
-        return record
+        record
     }
 
-    fun savedDownload(): ReleaseDownloadRecord? {
+    fun savedDownload(): ReleaseDownloadRecord? = synchronized(downloadLock) {
         val id = preferences.getLong(KEY_DOWNLOAD_ID, INVALID_DOWNLOAD_ID)
         val tag = preferences.getString(KEY_DOWNLOAD_TAG, null)
-        return if (id == INVALID_DOWNLOAD_ID || tag.isNullOrBlank()) null else ReleaseDownloadRecord(id, tag)
+        if (id == INVALID_DOWNLOAD_ID || tag.isNullOrBlank()) null else ReleaseDownloadRecord(id, tag)
+    }
+
+    fun cancelDownload(record: ReleaseDownloadRecord) = synchronized(downloadLock) {
+        val manager = appContext.getSystemService(DownloadManager::class.java)
+            ?: throw IllegalStateException("Android 下载服务不可用")
+        // remove also deletes the partial APK. A late cancellation must never
+        // clear the persisted identity of a replacement download.
+        manager.remove(record.id)
+        if (savedDownload()?.id == record.id) {
+            preferences.edit().remove(KEY_DOWNLOAD_ID).remove(KEY_DOWNLOAD_TAG).apply()
+        }
     }
 
     fun queryDownload(id: Long): ReleaseDownloadSnapshot? {
@@ -115,6 +161,7 @@ class ReleaseUpdateClient(context: Context) {
         ?.getUriForDownloadedFile(id)
 
     private companion object {
+        val downloadLock = Any()
         const val PREFERENCES = "release_updates"
         const val KEY_ACCELERATOR = "accelerator"
         const val KEY_CUSTOM_PREFIX = "custom_prefix"

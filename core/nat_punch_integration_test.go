@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -177,6 +178,8 @@ func TestNATPunchActualWorkerAndSharedMux(t *testing.T) {
 			for side, name := range []string{"alpha", "beta"} {
 				if tc.dnsSide == name {
 					platforms[side] = &punchIPv6FirstPlatform{platforms[side].(*punchSimPlatform)}
+				} else {
+					platforms[side] = punchWildcardPlatform{platforms[side].(*punchSimPlatform)}
 				}
 			}
 			a, b := NewEngine(Options{Platform: platforms[0]}), NewEngine(Options{Platform: platforms[1]})
@@ -216,10 +219,18 @@ func TestNATPunchActualWorkerAndSharedMux(t *testing.T) {
 			if tc.pool && (len(left.PeerTransports[0].LocalNAT.IPEvidence) != 2 || len(right.PeerTransports[0].PeerNAT.IPEvidence) != 2) {
 				t.Fatal("pool evidence lost between probe, Worker and peer")
 			}
-			for _, engine := range []*Engine{a, b} {
+			for side, engine := range []*Engine{a, b} {
 				s := engine.Snapshot().PeerTransports[0]
-				if s.LocalType != "srflx" || s.LocalCandidates != 0 || s.Generation != 2 {
+				if s.LocalType != "prflx" || s.RemoteType != "prflx" || s.LocalCandidates != 0 || s.Generation != 2 {
 					t.Fatalf("prediction unexpectedly fell back: %+v", s)
+				}
+				local, err := netip.ParseAddrPort(s.LocalAddress)
+				if err != nil || local.Addr().IsUnspecified() || local.Addr().IsPrivate() {
+					t.Fatalf("wrong local path address: %q (%v)", s.LocalAddress, err)
+				}
+				other := []*Engine{a, b}[1-side].Snapshot().PeerTransports[0]
+				if s.LocalAddress != other.RemoteAddress || s.RemoteAddress != other.LocalAddress {
+					t.Fatalf("reflected endpoints differ from actual peer observations: %+v / %+v", s, other)
 				}
 				engine.mu.Lock()
 				coordinator := engine.run.ice
@@ -228,7 +239,11 @@ func TestNATPunchActualWorkerAndSharedMux(t *testing.T) {
 					peer.mu.Lock()
 					schedule := peer.ready.PunchSchedule
 					calibration := peer.ready.PunchCalibration
+					connection := peer.active.session
 					peer.mu.Unlock()
+					if s.RemoteAddress != connection.RemoteAddr().String() {
+						t.Fatal("remote path address changed")
+					}
 					if schedule != natPunchSchedule {
 						t.Fatalf("Worker did not negotiate scheduling: %q", schedule)
 					}
