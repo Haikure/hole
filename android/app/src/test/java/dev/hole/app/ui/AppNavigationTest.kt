@@ -36,7 +36,8 @@ class AppNavigationTest {
     @Test fun settingsHubOpensTheReleaseUpdatePage() {
         var route = ""
         compose.setContent { HoleTheme(ThemeMode.LIGHT, false) { SettingsHub { route = it } } }
-        compose.onNodeWithText("检查更新").performScrollTo().performClick()
+        compose.onNodeWithTag("settings-hub").performScrollToNode(hasText("检查更新"))
+        compose.onNodeWithText("检查更新").performClick()
         compose.runOnIdle { assertEquals("release-update", route) }
     }
 

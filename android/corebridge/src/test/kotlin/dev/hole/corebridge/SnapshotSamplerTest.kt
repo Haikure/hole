@@ -63,6 +63,64 @@ class SnapshotSamplerTest {
         assertEquals("100", seen)
         sampler.close()
     }
+    @Test fun finishedDiagnosticsOnlyPollUntilEvidenceExpires() = runTest {
+        val sampler = SnapshotSampler { testScheduler.currentTime }
+        sampler.setUiVisible(true)
+        var reads = 0
+        var state = CoreSnapshot(natDiagnostic = NATDiagnostic(state = "probing"))
+        var seen = ""
+        backgroundScope.launch {
+            sampler.snapshots { reads++; state }.collect { seen = it.natDiagnostic.state }
+        }
+        runCurrent()
+        advanceTimeBy(1_500)
+        runCurrent()
+        assertEquals(2, reads, "active probes still refresh promptly while stopped")
+        state = state.copy(natDiagnostic = NATDiagnostic(state = "complete"))
+        sampler.wake()
+        advanceTimeBy(100)
+        runCurrent()
+        assertEquals("complete", seen)
+        val completedReads = reads
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertEquals(completedReads + 4, reads, "finished evidence uses the slow expiry check")
+        state = state.copy(natDiagnostic = NATDiagnostic(state = "expired"))
+        advanceTimeBy(15_000)
+        runCurrent()
+        assertEquals("expired", seen)
+        val expiredReads = reads
+        advanceTimeBy(3_600_000)
+        runCurrent()
+        assertEquals(expiredReads, reads, "expired results do not keep telemetry alive")
+        sampler.close()
+    }
+    @Test fun terminalDiagnosticsSleepButCanBeRestarted() = runTest {
+        for (terminal in listOf("cancelled", "failed", "network_changed", "not_applicable", "expired")) {
+            val sampler = SnapshotSampler { testScheduler.currentTime }
+            sampler.setUiVisible(true)
+            var reads = 0
+            var state = CoreSnapshot(natDiagnostic = NATDiagnostic(state = terminal))
+            var seen = ""
+            val job = backgroundScope.launch {
+                sampler.snapshots { reads++; state }.collect { seen = it.natDiagnostic.state }
+            }
+            runCurrent()
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertEquals(1, reads, "$terminal must not keep polling")
+            state = state.copy(natDiagnostic = NATDiagnostic(state = "queued"))
+            sampler.wake()
+            runCurrent()
+            assertEquals("queued", seen, "commands must wake a stopped sampler")
+            advanceTimeBy(1_500)
+            runCurrent()
+            assertEquals(3, reads)
+            sampler.close()
+            runCurrent()
+            assertTrue(job.isCompleted)
+        }
+    }
     @Test fun aForegroundTransitionDoesNotWaitForTheBackgroundDeadline() = runTest {
         val sampler = SnapshotSampler { testScheduler.currentTime }
         var reads = 0

@@ -33,6 +33,7 @@ class RuntimeInteractionTest {
     @Test fun dashboardStartsServiceWithoutOpeningDetails() {
         var toggles = 0
         var opened = 0
+        var destination = ""
         compose.setContent {
             HoleTheme(mode = ThemeMode.LIGHT, dynamic = false) {
               FloatingAppFrame("home", {}, CoreSnapshot(runRequested = true), true, { toggles++ }) {
@@ -42,6 +43,7 @@ class RuntimeInteractionTest {
                     onOpenSettings = {}, onAddProvide = {}, onEditProvide = {}, onAddConsume = {}, onEditConsume = {},
                     onToggleProvide = { _, _ -> }, onToggleConsume = { _, _ -> }, onDeleteProvide = {}, onDeleteConsume = {},
                     onToggleRun = { toggles++ }, onOpenDetails = { opened++ },
+                    onNavigate = { destination = it },
                 )
               }
             }
@@ -52,6 +54,8 @@ class RuntimeInteractionTest {
         compose.runOnIdle { assertEquals(1, toggles); assertEquals(0, opened) }
         compose.onNodeWithText("查看运行详情 ›").assertDoesNotExist()
         compose.onNodeWithText("TCP 会话").assertExists()
+        compose.onNodeWithText("NAT 检测").performClick()
+        compose.runOnIdle { assertEquals("nat-detection", destination) }
     }
     @Test fun firstSaveValidatesRatherThanSavingAnInvalidDraft() {
         var saved = 0
@@ -86,5 +90,18 @@ class RuntimeInteractionTest {
         compose.mainClock.advanceTimeBy(400)
         compose.onNodeWithTag("provide/").assertDoesNotExist()
         assertEquals(0f, compose.onNodeWithTag("home").getUnclippedBoundsInRoot().left.value)
+    }
+    @Test fun rapidPrimaryPageSwitchesSettleOnTheLatestDestination() {
+        var route by mutableStateOf("home")
+        compose.setContent { PageMotion(route, false) { page -> Box(Modifier.fillMaxSize().testTag(page)) { Text(page) } } }
+        compose.mainClock.autoAdvance = false
+        for (destination in listOf("details", "settings", "config", "voice", "home")) {
+            compose.runOnIdle { route = destination }
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeBy(48)
+        }
+        compose.mainClock.advanceTimeBy(400)
+        compose.onNodeWithTag("home").assertIsDisplayed()
+        for (destination in primaryRoutes - "home") compose.onNodeWithTag(destination).assertDoesNotExist()
     }
 }

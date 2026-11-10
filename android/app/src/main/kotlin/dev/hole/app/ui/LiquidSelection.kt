@@ -18,17 +18,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
@@ -47,6 +50,12 @@ fun LiquidSelection(
     val height = if (icons == null) 48.dp else 60.dp
     val colors = MaterialTheme.colorScheme
     val dark = colors.background.luminance() < .4f
+    val lensShape = RoundedCornerShape(8.dp)
+    // Precompose the translucent glass over its track so the shadow cannot show through it.
+    val lensFill = Brush.verticalGradient(listOf(
+        (if (dark) Color.White.copy(alpha = .24f) else Color.White.copy(alpha = .98f)).compositeOver(colors.surfaceContainerHigh),
+        (if (dark) colors.primary.copy(alpha = .24f) else colors.primaryContainer.copy(alpha = .50f)).compositeOver(colors.surfaceContainerHigh),
+    ))
     val select by rememberUpdatedState(onSelect)
     var dragging by remember { mutableStateOf(false) }
     var finger by remember { mutableFloatStateOf(0f) }
@@ -71,11 +80,10 @@ fun LiquidSelection(
                 val lensModifier = Modifier.offset { IntOffset((position * extent).roundToInt(), 0) }.width(width / labels.size).fillMaxHeight()
                     .padding(2.dp).graphicsLayer { scaleX = lift; scaleY = lift }.testTag("selection-lens")
                 Box(lensModifier
-                    .shadow(2.dp, RoundedCornerShape(8.dp), clip = false)
-                    .clip(RoundedCornerShape(8.dp)).background(Brush.verticalGradient(listOf(
-                        if (dark) Color.White.copy(alpha = .24f) else Color.White.copy(alpha = .98f),
-                        if (dark) colors.primary.copy(alpha = .24f) else colors.primaryContainer.copy(alpha = .50f),
-                    ))).border(.5.dp, Color.White.copy(alpha = if (dark) .12f else .8f), RoundedCornerShape(8.dp))
+                    // Avoid platform elevation shadows under the translucent, animated lens.
+                    .dropShadow(lensShape, Shadow(radius = 2.dp, color = Color.Black.copy(alpha = .12f), offset = DpOffset(0.dp, 1.dp)))
+                    .clip(lensShape).background(lensFill)
+                    .border(.5.dp, Color.White.copy(alpha = if (dark) .12f else .8f), lensShape)
                 )
                 Row(Modifier.fillMaxSize()) {
                     labels.forEachIndexed { index, label ->

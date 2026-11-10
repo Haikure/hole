@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 
@@ -42,7 +43,7 @@ fun AppNavigation(route: String, onNavigate: (String) -> Unit) {
 fun SettingsHub(onNavigate: (String) -> Unit) {
     val floatingInset = LocalFloatingInset.current
     HoleScaffold(title = "设置") { insets ->
-        androidx.compose.foundation.lazy.LazyColumn(Modifier.padding(insets), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = floatingInset + 16.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+        androidx.compose.foundation.lazy.LazyColumn(Modifier.padding(insets).testTag("settings-hub"), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = floatingInset + 16.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
             item { HoleSettingsGroup("连接") {
                 SettingsLink("房间与身份", "服务器、房间、设备名", Icons.Default.Home) { onNavigate("connection-settings") }
                 SettingsLink("连接方式", "直连与中继", Icons.Default.Settings) { onNavigate("transport") }

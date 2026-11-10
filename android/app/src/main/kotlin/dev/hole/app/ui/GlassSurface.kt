@@ -77,8 +77,12 @@ fun FloatingSurface(modifier: Modifier = Modifier, content: @Composable BoxScope
 fun RaisedPanel(modifier: Modifier = Modifier, color: Color = MaterialTheme.colorScheme.surfaceContainerLow, content: @Composable ColumnScope.() -> Unit) {
     val shape = MaterialTheme.shapes.extraLarge
     val dark = MaterialTheme.colorScheme.background.luminance() < .4f
-    Column(modifier.dropShadow(shape, Shadow(radius = 10.dp, color = Color(0xFF071B3C).copy(alpha = if (dark) .28f else .08f), offset = DpOffset(0.dp, 4.dp)))
-        .clip(shape).background(Brush.linearGradient(listOf(
-            if (dark) lerp(color, Color.White, .045f) else lerp(color, Color.White, .70f), color,
-        ))), content = content)
+    val background = remember(color, dark) {
+        Brush.linearGradient(listOf(if (dark) lerp(color, Color.White, .045f) else lerp(color, Color.White, .70f), color))
+    }
+    // Isolate the shadow as well as the fill: ancestor redraws can replay this display list.
+    // Keep Auto compositing and clip=false so the existing outer shadow is not cut off.
+    Column(modifier.graphicsLayer()
+        .dropShadow(shape, Shadow(radius = 10.dp, color = Color(0xFF071B3C).copy(alpha = if (dark) .28f else .08f), offset = DpOffset(0.dp, 4.dp)))
+        .clip(shape).background(background), content = content)
 }

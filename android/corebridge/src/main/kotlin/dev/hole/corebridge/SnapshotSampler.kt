@@ -34,12 +34,18 @@ internal class SnapshotSampler(
         var lastReadAt = nowMillis()
         emit(previous)
         while (currentCoroutineContext().isActive) {
-            val result = if (previous.runRequested || previous.natDiagnostic.state != "idle") {
-                withTimeoutOrNull(if (uiVisible) FOREGROUND_INTERVAL_MS else BACKGROUND_INTERVAL_MS) { changed.receiveCatching() }
-            } else {
+            val interval = when {
+                previous.runRequested || previous.natDiagnostic.busy -> if (uiVisible) FOREGROUND_INTERVAL_MS else BACKGROUND_INTERVAL_MS
+                // Completed evidence can expire, but does not need live telemetry frequency.
+                previous.natDiagnostic.state in setOf("complete", "insufficient") -> BACKGROUND_INTERVAL_MS
+                else -> null
+            }
+            val result = if (interval == null) {
                 // Lifecycle commands explicitly wake us even when the mobile
                 // facade suppresses callbacks while stopped.
                 changed.receiveCatching()
+            } else {
+                withTimeoutOrNull(interval) { changed.receiveCatching() }
             }
             if (result?.isClosed == true) break
             // Bound bursts of native events without a debounce that could
