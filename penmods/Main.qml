@@ -71,7 +71,7 @@ Item {
     readonly property string errorText: localError.length > 0 ? localError : holePlugin.lastError
     // The core only publishes engine=running after the signal join has been
     // acknowledged. Do not infer success from an old snapshot or the start
-    // RPC response: ICE probing can still be in progress at that point.
+    // RPC response: ICE probing or online reconfiguration can still be in progress.
     readonly property bool connectionEstablished: holePlugin.state === "running"
     readonly property bool runRequested: holePlugin.running
                                         || holePlugin.state === "starting"
@@ -560,6 +560,20 @@ Item {
         }
 
         saveState = holePlugin.applyConfig() ? "已保存，正在应用" : "保存失败"
+    }
+
+    function finishConfigSave(state, message) {
+        if (saveState !== "已保存，正在应用") return
+        if (state === "applied" || state === "unchanged") saveState = "已保存，已应用"
+        else if (state === "staged") saveState = "已保存，待启动后应用"
+        else if (state === "failed") saveState = "已保存，应用失败：" + message
+    }
+
+    function handleCoreEvent(eventJson) {
+        try {
+            var event = JSON.parse(eventJson).params || {}
+            if (event.kind === "config") page.finishConfigSave(event.state, "")
+        } catch (error) { /* Ignore malformed optional notifications. */ }
     }
 
     // --------------------------------------------------------- mapping edits
@@ -1190,8 +1204,13 @@ Item {
 
     Connections {
         target: holePlugin
-        function onSnapshotChanged() { page.refreshStatus() }
+        function onSnapshotChanged() {
+            page.refreshStatus()
+            if (holePlugin.state === "running" && holePlugin.running) page.finishConfigSave("applied", "")
+        }
         function onRunningChanged() { if (holePlugin.running) page.refreshSnapshot() }
+        function onEventReceived(eventJson) { page.handleCoreEvent(eventJson) }
+        function onConfigApplyFailed(message) { page.finishConfigSave("failed", message) }
     }
 
     Component.onCompleted: page.readConfig()

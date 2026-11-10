@@ -235,9 +235,8 @@ func (e *Engine) Close() error {
 	return nil
 }
 
-// ApplyConfig accepts an immutable desired snapshot. The run supervisor drains
-// the previous transport before a full authenticated rejoin, retaining only
-// application sessions whose configuration and connection scope still match.
+// ApplyConfig accepts an immutable desired snapshot. ICE applies changes in
+// place where possible; a changed authentication scope requires a fresh run.
 func (e *Engine) ApplyConfig(request Request) error {
 	if request.Config.Relay.Serve.Enabled && !e.allowRelayServe {
 		return &Fault{Code: "cli_only", Message: "中继服务仅 CLI 支持"}
@@ -263,11 +262,28 @@ func (e *Engine) ApplyConfig(request Request) error {
 	previous := e.request
 	e.setRequestLocked(request, true)
 	e.lastError = nil
+	if previous != nil && request.Config.Transport.Preferred != PreferredICE && e.run != nil && e.run.sessions != nil {
+		old, next := *previous, request
+		old.Config.SessionTimeout, next.Config.SessionTimeout = 0, 0
+		if sameEffective(old, next) {
+			manager := e.run.sessions
+			// Session teardown can publish Engine events while holding its lock.
+			// Keep the existing manager -> Engine lock order.
+			e.mu.Unlock()
+			manager.mu.Lock()
+			manager.timeout = request.Config.SessionTimeout
+			manager.mu.Unlock()
+			e.mu.Lock()
+			e.publishLocked(Event{Kind: "config", State: "applied"})
+			return nil
+		}
+	}
 	if e.requested && e.run != nil {
-		e.state, e.signal = "reconfiguring", "reconnecting"
+		e.state = "reconfiguring"
 		if previous != nil && e.run.ice != nil && sameScope(*previous, request) {
 			e.run.ice.submit(request)
 		} else {
+			e.signal = "reconnecting"
 			e.requestCycleLocked()
 		}
 		e.publishLocked(Event{Kind: "config", State: "applying"})
@@ -458,6 +474,18 @@ func (e *Engine) agentEventEpoch(run *engineRun, epoch *uint64, event Event) {
 		event.Error = &copy
 	}
 	switch event.Kind {
+	case "config":
+		if event.appliedConfig != nil && (e.request == nil || !sameEffective(*event.appliedConfig, *e.request)) {
+			return
+		}
+		event.appliedConfig = nil
+		if event.State == "applied" && e.signal == "joined" {
+			previousState := e.state
+			e.state, e.lastError = "running", nil
+			if previousState != e.state {
+				e.publishLocked(Event{Kind: "engine", State: e.state})
+			}
+		}
 	case "network":
 		if event.State == "changed" {
 			e.networkChanges++

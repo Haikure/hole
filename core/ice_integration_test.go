@@ -257,6 +257,9 @@ func TestICEMuxActualWorkerMultipleMappingsAndRecovery(t *testing.T) {
 	if accepted.Load() != 2 {
 		t.Fatalf("manual renomination replaced application sockets: %d", accepted.Load())
 	}
+	beforeRemoval := a.Snapshot().PeerTransports[0].Generation
+	pathBeforeRemoval, signalBeforeRemoval := liveTestPath(t, a)
+	peerPathBeforeRemoval, peerSignalBeforeRemoval := liveTestPath(t, b)
 	rb.Config.Consume = rb.Config.Consume[1:]
 	if e = b.ApplyConfig(rb); e != nil {
 		t.Fatal(e)
@@ -264,8 +267,10 @@ func TestICEMuxActualWorkerMultipleMappingsAndRecovery(t *testing.T) {
 	waitSnapshot(t, b, func(s Snapshot) bool {
 		return s.SignalState == "joined" && len(s.PeerTransports) == 1 && s.PeerTransports[0].ActiveChannels == 3
 	})
-	if a.Snapshot().PeerTransports[0].Generation != before+1 {
-		t.Fatal("removing one mapping rebuilt the shared transport")
+	pathAfterRemoval, signalAfterRemoval := liveTestPath(t, a)
+	peerPathAfterRemoval, peerSignalAfterRemoval := liveTestPath(t, b)
+	if after := a.Snapshot().PeerTransports[0].Generation; after != beforeRemoval || pathAfterRemoval != pathBeforeRemoval || signalAfterRemoval != signalBeforeRemoval || peerPathAfterRemoval != peerPathBeforeRemoval || peerSignalAfterRemoval != peerSignalBeforeRemoval {
+		t.Fatalf("removing one mapping rebuilt QUIC or signaling: generation %d -> %d", beforeRemoval, after)
 	}
 	transfer(second, "kept")
 	hibernate()

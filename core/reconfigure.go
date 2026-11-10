@@ -56,6 +56,7 @@ func (e *Engine) execute(run *engineRun, initial Request) {
 					e.agentEvent(run, Event{Kind: "log", Message: fmt.Sprintf(format, args...)})
 				},
 			})
+			manager.reconfigure(request.Config, request.Config)
 			var err error
 			identity, err = makeTLSConfig()
 			if err != nil {
@@ -187,14 +188,15 @@ func (e *Engine) serveCycle(ctx context.Context, run *engineRun, epoch uint64, r
 	return agent.run(ctx, request.ServerURL)
 }
 
-// Called only after every old Agent worker has exited. Closing changed mappings
-// is distinct from disconnecting transports: deleted sockets never reappear on
-// undo, and unchanged listeners retain their accept queues and replay buffers.
+// Legacy Agent workers exit before reconfiguration; ICE keeps the mux alive.
+// Install the new tables under the session lock so a late handshake cannot
+// recreate a removed listener or dial an old target after revocation.
 func (m *sessionManager) reconfigure(old, next Config) {
 	before, after := provideTable(old.Provide), provideTable(next.Provide)
 	consumers := consumeTable(next.Consume)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.provides, m.consumes = after, consumers
 	m.timeout = next.SessionTimeout
 	for id, client := range m.clients {
 		item, ok := consumers[id]
@@ -232,6 +234,14 @@ func (m *sessionManager) reconfigure(old, next Config) {
 			delete(m.owners, key)
 		}
 	}
+}
+
+func (m *sessionManager) providerAllowedLocked(id string, endpoint ServiceEndpoint) bool {
+	if m.provides == nil {
+		return true
+	}
+	item, ok := m.provides[id]
+	return ok && item.Service == endpoint
 }
 
 func (m *sessionManager) terminate(mapping, fingerprint string) {

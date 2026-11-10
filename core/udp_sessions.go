@@ -208,6 +208,10 @@ func (m *sessionManager) providerUDP(key providerSessionKey, endpoint ServiceEnd
 
 func (m *sessionManager) providerUDPContext(ctx context.Context, key providerSessionKey, endpoint ServiceEndpoint) (*providerUDPGroup, error) {
 	m.mu.Lock()
+	if m.closed || ctx.Err() != nil || !m.providerAllowedLocked(key.mapping, endpoint) || !m.peerAllowedLocked(key.mapping, key.fingerprint) {
+		m.mu.Unlock()
+		return nil, context.Canceled
+	}
 	group := m.udp[key]
 	m.mu.Unlock()
 	if group != nil {
@@ -223,7 +227,7 @@ func (m *sessionManager) providerUDPContext(ctx context.Context, key providerSes
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed || !m.peerAllowedLocked(key.mapping, key.fingerprint) {
+	if m.closed || ctx.Err() != nil || !m.providerAllowedLocked(key.mapping, endpoint) || !m.peerAllowedLocked(key.mapping, key.fingerprint) {
 		return nil, context.Canceled
 	}
 	if group = m.udp[key]; group != nil {

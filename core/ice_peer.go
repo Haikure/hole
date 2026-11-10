@@ -158,6 +158,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 	active := p.active
 	retireHole := active != nil && active.ready.Phase == "hole" && (m.Hole == nil || m.Hole.Error != "" || active.ready.Hole == nil || active.ready.Hole.Route != m.Hole.Route)
 	retireActive := retireHole || identityChanged || (active != nil && (active.ready.Profile != m.Profile || (m.Profile == ProfileFixed && (active.ready.FixedEndpoint != m.FixedEndpoint || active.ready.ListenerID != m.ListenerID)))) || (m.RelayRequired && active != nil && !relayReadyConforms(active.ready, m.RelayOnly))
+	retireActive = retireActive || (active != nil && !active.mux.liveConfig && active.ready.Voice != m.Voice)
 	if retireActive {
 		p.active = nil
 		p.stats.RTTMS = 0
@@ -1105,6 +1106,9 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	}
 	live := &liveICETransport{ready: a.ready, mux: mux, agent: agent, connection: conn, packet: packet, quic: quicTransport, session: connection, cancel: a.cancel, expires: usedExpires}
 	p.mu.Lock()
+	if p.pending == a {
+		applyICEPeerObservation(&p.stats, mux.observedLocalAddress)
+	}
 	p.stats.RelayState = relayState
 	p.stats.TURNExpiresAt = expires
 	p.mu.Unlock()
@@ -1128,11 +1132,6 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	p.stats.Error = nil
 	p.stats.ConnectMS = time.Since(started).Milliseconds()
 	p.mu.Unlock()
-	if a.ready.Voice {
-		if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
-			voice.bindPeer(a.ready.PeerDevice, a.ready.TransportID, a.ready.TransportGeneration, mux)
-		}
-	}
 	mux.syncMappings()
 	if old != nil {
 		old.close()
@@ -1237,6 +1236,9 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 				remoteRelayProtocol := s.RemoteRelayProtocol
 				selectedICEPair(&s, pair.Local, pair.Remote)
 				s.RemoteRelayProtocol = remoteRelayProtocol
+				// Pair refresh may report the private host/base candidate again.
+				// Reapply the observation from this active transport, not a pending one.
+				applyICEPeerObservation(&s, active.mux.observedLocalAddress)
 			}
 			if pair, ok := active.agent.GetSelectedCandidatePairStats(); ok {
 				s.RTTMS = int64(pair.CurrentRoundTripTime * 1000)

@@ -36,8 +36,10 @@ type iceCoordinator struct {
 	networkObserved          func(NetworkSnapshot)
 	configMu                 sync.RWMutex
 	desired                  Request
+	initial                  Request
 	networkEpoch             atomic.Uint64
 	reset                    chan struct{}
+	updates                  chan struct{}
 	mu                       sync.Mutex
 	peers                    map[string]*icePeer
 	sink                     *iceSignalSink
@@ -69,11 +71,12 @@ func (c *iceCoordinator) voiceRuntimePtr() *voiceRuntime {
 
 func newICECoordinator(ctx context.Context, r Request, platform Platform, sessions *sessionManager, identity *tls.Config, runtimeID string, epoch uint64, emit func(Event), networkObserved func(NetworkSnapshot)) *iceCoordinator {
 	ctx, cancel := context.WithCancel(ctx)
-	c := &iceCoordinator{ctx: ctx, cancel: cancel, platform: platform, sessions: sessions, identity: identity, runtimeID: runtimeID, fingerprint: certFingerprint(identity.Certificates[0]), emit: emit, networkObserved: networkObserved, desired: r, reset: make(chan struct{}, 1), peers: map[string]*icePeer{}, turnState: "pending", turnChanged: make(chan struct{}), voiceMembers: map[string]voiceRoomMember{}}
+	c := &iceCoordinator{ctx: ctx, cancel: cancel, platform: platform, sessions: sessions, identity: identity, runtimeID: runtimeID, fingerprint: certFingerprint(identity.Certificates[0]), emit: emit, networkObserved: networkObserved, desired: r, reset: make(chan struct{}, 1), updates: make(chan struct{}, 1), peers: map[string]*icePeer{}, turnState: "pending", turnChanged: make(chan struct{}), voiceMembers: map[string]voiceRoomMember{}}
 	if r.Config.Voice.Enabled {
 		c.voice = newConfiguredVoiceRuntime(ctx)
 	}
 	c.networkEpoch.Store(epoch)
+	c.initial = r
 	c.natSnapshot = natUnknown()
 	c.natAllocation = &natAllocationGate{}
 	return c
@@ -88,6 +91,10 @@ func (c *iceCoordinator) signalOnline() bool { c.mu.Lock(); defer c.mu.Unlock();
 func (c *iceCoordinator) submit(r Request) {
 	c.configMu.Lock()
 	old := c.desired
+	pathChanged := pathConfigChanged(old.Config, r.Config)
+	if pathChanged {
+		c.networkEpoch.Add(1)
+	}
 	c.desired = r
 	c.configMu.Unlock()
 	if !reflect.DeepEqual(old.Config.Transport.FixedEndpoint, r.Config.Transport.FixedEndpoint) {
@@ -123,8 +130,7 @@ func (c *iceCoordinator) submit(r Request) {
 			p.requireRelay(true)
 		}
 	}
-	if !reflect.DeepEqual(old.Config.ICE, r.Config.ICE) || !reflect.DeepEqual(old.Config.TURN, r.Config.TURN) || !reflect.DeepEqual(old.Config.Transport, r.Config.Transport) || !reflect.DeepEqual(old.Config.Relay, r.Config.Relay) {
-		c.networkEpoch.Add(1)
+	if pathChanged {
 		c.natMu.Lock()
 		if c.natCancel != nil {
 			c.natCancel()
@@ -144,7 +150,7 @@ func (c *iceCoordinator) submit(r Request) {
 		c.turnMu.Unlock()
 	}
 	select {
-	case c.reset <- struct{}{}:
+	case c.updates <- struct{}{}:
 	default:
 	}
 }
@@ -200,21 +206,13 @@ func (c *iceCoordinator) run() error {
 		go func() { defer close(monitorDone); c.watchNetwork() }()
 	}
 	defer func() { c.cancel(); <-monitorDone; c.close() }()
-	var last Request
-	lastSet := false
+	last := c.initial
 	backoff := time.Second
 	for c.ctx.Err() == nil {
-		current := c.request()
-		if lastSet && !sameEffective(last, current) {
-			c.closeLegacy()
-			c.sessions.reconfigure(last.Config, current.Config)
-			for _, p := range c.peerList() {
-				p.refreshPolicy()
-			}
-		}
-		last = current
-		lastSet = true
-		if err := c.configureFixed(current); err != nil {
+		c.configMu.RLock()
+		current, epoch := c.desired, c.networkEpoch.Load()
+		c.configMu.RUnlock()
+		if err := c.applyLocal(&last, current); err != nil {
 			return err
 		}
 		select {
@@ -226,7 +224,7 @@ func (c *iceCoordinator) run() error {
 		default:
 		}
 		started := time.Now()
-		err, changed := c.connect(current)
+		err, changed := c.connect(current, &last, epoch)
 		if c.ctx.Err() != nil {
 			return c.ctx.Err()
 		}
@@ -272,13 +270,15 @@ func (c *iceCoordinator) run() error {
 			return c.ctx.Err()
 		case <-c.reset:
 			timer.Stop()
+		case <-c.updates:
+			timer.Stop()
 		case <-timer.C:
 		}
 		backoff = min(current.Config.ICE.RetryMaxDelay.Duration(), backoff*2)
 	}
 	return c.ctx.Err()
 }
-func (c *iceCoordinator) connect(r Request) (error, bool) {
+func (c *iceCoordinator) connect(r Request, applied *Request, epoch uint64) (error, bool) {
 	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
 	platform, err := c.pin(ctx)
@@ -317,6 +317,16 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(signalPongWait)) })
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
+	join := c.memberDeclaration(ctx, platform, r)
+	join.TransportEpoch = epoch
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err = conn.WriteJSON(join); err != nil {
+		return err, false
+	}
+	return c.serveSignal(ctx, cancel, conn, platform, r, applied)
+}
+
+func (c *iceCoordinator) memberDeclaration(ctx context.Context, platform Platform, r Request) iceSignalMessage {
 	profiles := []string{ProfileICE, ProfileFixed}
 	var candidates []Candidate
 	if r.Config.Transport.AllowLegacy && !r.Config.ICE.RelayOnly && r.Config.Transport.FixedEndpoint == nil {
@@ -333,6 +343,7 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS,
 		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll, RelayOnly: r.Config.ICE.RelayOnly}
 	join.Voice = r.Config.Voice.Enabled
+	join.LiveConfig = true
 	join.PunchVersion = natPunchVersion
 	join.DirectOrder = directOrderICEFirst
 	join.PunchSchedule = natPunchSchedule
@@ -351,16 +362,17 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 	if endpoint := r.Config.Transport.FixedEndpoint; endpoint != nil {
 		join.FixedEndpoint = endpoint.Advertise
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	if err = conn.WriteJSON(join); err != nil {
-		return err, false
-	}
+	return join
+}
+
+func (c *iceCoordinator) serveSignal(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, platform Platform, r Request, applied *Request) (error, bool) {
 	sink := &iceSignalSink{ctx: ctx, messages: make(chan iceSignalMessage, 256)}
 	c.mu.Lock()
 	c.sink = sink
 	c.mu.Unlock()
 	c.emit(Event{Kind: "signal", State: "joining"})
 	results := make(chan error, 2)
+	incoming := make(chan iceSignalMessage, 64)
 	var workers sync.WaitGroup
 	workers.Add(2)
 	go func() {
@@ -375,8 +387,9 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 			if ctx.Err() != nil {
 				return
 			}
-			if err = c.handle(message, r, platform); err != nil {
-				results <- err
+			select {
+			case incoming <- message:
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -417,14 +430,7 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 			}
 		}
 	}()
-	changed := false
-	select {
-	case <-c.ctx.Done():
-		err = c.ctx.Err()
-	case <-c.reset:
-		changed = true
-	case err = <-results:
-	}
+	err, changed := c.signalUpdates(ctx, incoming, results, platform, r, applied)
 	cancel()
 	conn.Close()
 	workers.Wait()
@@ -433,9 +439,6 @@ func (c *iceCoordinator) connect(r Request) (error, bool) {
 func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, platform Platform) error {
 	switch m.Type {
 	case "joined":
-		if !sameEffective(sessionRequest, c.request()) {
-			return nil
-		}
 		if sessionRequest.Config.holeConfigured() && m.HoleVersion != HoleRelayVersion {
 			return &Fault{Code: "worker_upgrade_required", Message: "Hole 中继需要先更新 Worker"}
 		}
@@ -456,9 +459,6 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			_ = c.send(signalMessage("transport_sync"))
 		}
 	case "room_state":
-		if !sameEffective(sessionRequest, c.request()) {
-			return nil
-		}
 		if err := c.updateVoiceMembers(m.RoomState); err != nil {
 			return &Fault{Code: "protocol_mismatch", Message: err.Error()}
 		}
@@ -474,7 +474,7 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			}
 		}
 	case "transport_ready":
-		if !sameEffective(sessionRequest, c.request()) {
+		if !sameSignalingConfig(sessionRequest, c.request()) {
 			return nil
 		}
 		cfg := c.request().Config
@@ -550,6 +550,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if m.Voice && !cfg.Voice.Enabled {
 			return &Fault{Code: "protocol_mismatch", Message: "未启用语音的配置收到语音传输"}
 		}
+		if m.LiveConfig && m.VoiceRevision == 0 {
+			return &Fault{Code: "protocol_mismatch", Message: "在线语音授权缺少修订号"}
+		}
 		expected := c.deviceID()
 		if m.PeerDevice < expected {
 			expected = m.PeerDevice
@@ -603,6 +606,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			p.receive(m)
 		}
 	case "mapping_ready":
+		if !sameSignalingConfig(sessionRequest, c.request()) {
+			return nil
+		}
 		if m.Profile != "" && m.Profile != ProfileLegacy {
 			return nil
 		}

@@ -435,6 +435,40 @@ TURN 缓存刷新而重建；实际选中本机 relay 的路径才随对应凭�
 - UDP DATAGRAM 外层携带 `channel_id:u32`，内层仍为 HUD/2。
 - 每对端只有一个 UDP 接收 / 重组分发器；关闭某条映射不关闭其他通道。
 
+### 在线配置与兼容
+
+Worker 在 `joined.live_config: true` 中声明在线更新能力。客户端在原 WebSocket 发送
+`member_update`，携带完整 join 声明、随机 128 位十六进制 `request_id` 和递增的十进制字符串
+`member_revision`（从 1 开始，每次 WebSocket 加入后重新计数）。Worker 复用 join 校验，禁止
+更换设备名、令牌、runtime 或证书指纹，禁止回退 `transport_epoch`。校验失败不改变成员记录。
+成员声明和最后一次修订持久化后，先回复 `member_updated`（回显请求 ID 和修订号），再重新
+广播房间状态、配对和授权。同一请求重放幂等，旧修订拒绝；Worker 休眠恢复保留这些信息。
+
+客户端同时最多一条更新等待确认，后续编辑合并；本地删除和目标变更仍及时撤销旧会话。
+仅匹配当前请求与修订的确认有效，确认超时后重新加入并提交最新完整配置。映射变化不推进
+设备传输代次；传输约束或身份变化仍按原规则处理。新增设备关系要建连，最后一条映射和语音
+关系都消失时关闭该设备连接。旧 Worker 不声明能力时回退到重新加入；旧 IPv6 映射沿用重配流程。
+
+客户端在 join 和 HMX hello 声明 `live_config: true`。Worker 在双方都支持时将该能力和
+非零 `voice_revision` 下发给设备对；HMX 再核对对端能力。此时 `OPEN_MAPPING` 和 `MAPPING_ACK`
+携带 `mapping_token`：对完整 `peerMappingRecord` 按 Go JSON 字段顺序
+（`map_key`、`mapping_id`、`provider_id`、`consumer_id`、`service`、`expose`）编码后的 SHA-256
+小写十六进制摘要。目标、协议或监听地址变化后旧通道不能凭相同映射 ID 重新授权。
+已关闭通道的迟到 ACK 被忽略；其他映射继续传输。对端还未收到新授权时打开通道可能被拒绝，
+后续映射同步会重试，不需要重建 QUIC。
+
+语音授权变化递增设备对的 `voice_revision`。双方经控制流交换 `VOICE_STATE`（`voice`、
+`voice_revision`），只有本地配置、Worker 授权和对端修订一致且允许语音时启动媒体。
+协商该能力后的语音 DATAGRAM 在原语音包外增加 `HVE/1` 四字节标识（`48 56 45 01`）及
+大端 `voice_revision:u64`；过期修订、未加外层或未授权的语音包丢弃。语音收发队列有界，
+关闭语音会停止编解码并清空接收队列，不关闭共享 QUIC。旧端继续使用原语音格式，语音授权变化
+推进该设备对的传输代次，不向旧端发送新控制消息。
+
+`session_timeout` 只更新本地回收策略；`ice.stun_urls`、`ice.nat_stun_urls`、`ice.punch`、
+`direct_probe_timeout`、`gather_timeout`、`connectivity_timeout` 和 `retry_max_delay` 由后续尝试
+读取，不因这些参数修改主动重建已连通路径。网卡限制、固定入口和中继配置改变仍更新传输代次；
+启用仅中继立即撤销不合规直连，不能等配置确认后才执行。
+
 ## 可恢复应用会话
 
 `session_id` 是随机 128 位标识。提供端按映射 ID、客户端证书指纹和 session ID 查找会话，
@@ -502,6 +536,12 @@ Worker 持久化传输 ID / generation，协调双端并发重启，并校验消
 外部 ICE / STUN / TURN、信令和 DNS 使用同一选定 Network。候选地址来自系统 LinkProperties，
 回环应用监听与上游回环连接不绑定外部网络。Network 失效返回明确错误，恢复交给 supervisor。
 UI 快照刷新与协议保活分离，改变界面采样频率不改变传输保活或会话语义。
+
+普通 ICE 的线路快照在 mux 认证成功后，使用对端通过 `observed_address` 返回的实际端点展示
+`local_address`；与选中候选不同的有效地址标记为 `local_type=prflx`。每次刷新快照都保留这条
+活动连接的观察值，候选对诊断仍显示原始 ICE 候选。IPv4 / IPv6 必须与选中路径一致；缺失、
+无效或地址族不匹配时保留原候选地址。本机选中 TURN 中继时保留分配地址及中继类型，
+`remote_address` 始终来自选中的对端候选。这些展示字段不改变 ICE 选路或 QUIC 连接。
 
 ### 映射与线路流量
 

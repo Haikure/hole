@@ -428,6 +428,70 @@ function fixture(){
 const endpoint={protocol:'tcp',addr:'127.0.0.1',port:22};
 function join(name,provide=[],consume=[]){return{type:'join',signal_version:2,auth_mode:'shared-secret',runtime_id:(name==='alpha'?'a':'b').repeat(32),transport_epoch:'1',transport_profiles:[ICE_PROFILE,LEGACY_PROFILE],session_versions:[2],cert_fingerprint:(name==='alpha'?'a':'b').repeat(64),room:'fixture',token:'room-secret',device_name:name,provide:provide.map(id=>({id,service:endpoint})),consume:consume.map(id=>({id,expose:{addr:'127.0.0.1',port:18080}}))}}
 async function pair(){const f=fixture();const r=new Room(f.state,{});const a=f.socket(),b=f.socket();await r.webSocketMessage(a,JSON.stringify(join('alpha',['one','two'])));await r.webSocketMessage(b,JSON.stringify(join('beta',[],['one','two'])));return{...f,r,a,b,record:[...r.ice.records.values()][0]}}
+
+function memberUpdate(declaration, revision) {
+ return {...declaration,type:'member_update',member_revision:String(revision),request_id:revision.toString(16).padStart(32,'0')};
+}
+test('online declarations preserve transport, enforce identity and survive hibernation',async()=>{
+ const {r,a,b,record,state}=await pair(),generation=record.generation;
+ const send=message=>r.webSocketMessage(b,JSON.stringify(message));
+ const update=memberUpdate(join('beta',[],['two']),1);
+ await send(update);
+ assert.equal(b.closed,false);
+ assert.equal(record.generation,generation);
+ assert.deepEqual(record.mappings.map(m=>m.mapping_id),['two']);
+ const ack=b.messages.findIndex(m=>m.type==='member_updated');
+ assert.ok(ack>=0 && b.messages.slice(ack+1).some(m=>m.type==='transport_ready'));
+ for(const override of [{token:'wrong'},{device_name:'alpha'},{runtime_id:'f'.repeat(32)},{cert_fingerprint:'f'.repeat(64)},{transport_epoch:'0'},{provide:[{id:'broken'}]},{member_revision:'0'},{member_revision:'1e3'}]) {
+  await send({...memberUpdate(join('beta'),2),...override});
+  assert.equal(b.messages.at(-1).type,'error');
+  assert.deepEqual(record.mappings.map(m=>m.mapping_id),['two']);
+ }
+ const resumed=new Room(state,{});
+ await resumed.webSocketMessage(b,JSON.stringify(update));
+ assert.equal(b.messages.at(-1).type,'member_updated');
+ await resumed.webSocketMessage(b,JSON.stringify({...update,request_id:'f'.repeat(32)}));
+ assert.equal(b.messages.at(-1).code,'stale_member_revision');
+ await resumed.webSocketMessage(b,JSON.stringify(memberUpdate(join('beta'),2)));
+ assert.equal(a.messages.at(-1).reason,'mapping_removed');
+ assert.equal(b.closed,false);
+});
+
+test('voice updates reuse negotiated live transport and restart old peers',async()=>{
+ for(const live of [false,true]) {
+  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+  const left={...join('alpha',['one']),live_config:true,voice:true};
+  const right={...join('beta',[],['one']),live_config:live};
+  await r.webSocketMessage(a,JSON.stringify(left));await r.webSocketMessage(b,JSON.stringify(right));
+  const record=[...r.ice.records.values()][0],generation=record.generation;
+  for(const [revision,voice] of [[1,true],[2,false],[3,true]]) {
+   await r.webSocketMessage(b,JSON.stringify(memberUpdate({...right,voice},revision)));
+   assert.equal(record.voice,voice);
+   assert.equal(record.voice_revision,String(revision+1));
+   assert.equal(record.generation,live?generation:String(BigInt(generation)+BigInt(revision)));
+   assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).live_config,live);
+  }
+ }
+});
+
+test('online endpoint changes advance only the affected device transports',async()=>{
+ const {r,b,record}=await pair(),generation=record.generation;
+ await r.webSocketMessage(b,JSON.stringify(memberUpdate({...join('beta',[],['one','two']),transport_epoch:'2'},1)));
+ assert.equal(record.generation,String(BigInt(generation)+1n));
+});
+
+test('online updates explicitly revoke changed legacy mappings',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const left={...join('alpha',['one','two']),transport_profiles:[LEGACY_PROFILE]};
+ const right={...join('beta',[],['one','two']),transport_profiles:[LEGACY_PROFILE]};
+ await r.webSocketMessage(a,JSON.stringify(left));await r.webSocketMessage(b,JSON.stringify(right));
+ a.messages=[];b.messages=[];
+ await r.webSocketMessage(b,JSON.stringify(memberUpdate({...right,consume:right.consume.slice(1)},1)));
+ for(const ws of [a,b]) {
+  assert.deepEqual(ws.messages.filter(m=>m.type==='mapping_closed').map(m=>m.mapping_id),['one']);
+  assert.equal(ws.messages.some(m=>m.type==='mapping_ready' && m.mapping_id==='two'),false);
+ }
+});
 const payload={iceServers:[{urls:['stun:stun.cloudflare.com:3478']},{urls:['turn:turn.cloudflare.com:3478?transport=udp','turn:turn.cloudflare.com:3478?transport=tcp','turn:turn.cloudflare.com:80?transport=tcp','turns:turn.cloudflare.com:5349?transport=tcp','turns:turn.cloudflare.com:443?transport=tcp'],username:'temporary-user',credential:'temporary-secret'}]};
 
 test('fixed endpoints validate addresses and enforce exclusive negotiation',()=>{

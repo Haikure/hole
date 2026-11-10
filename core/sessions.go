@@ -36,6 +36,8 @@ type sessionManager struct {
 	timeout         time.Duration
 	mu              sync.Mutex
 	closed          bool
+	provides        map[string]Provide
+	consumes        map[string]Consume
 	clients         map[string]*clientTunnel
 	tcp             map[providerSessionKey]*providerTCPEntry
 	tcpBytes        map[string]*tcpTraffic
@@ -119,9 +121,14 @@ func (m *sessionManager) close() {
 }
 
 func (m *sessionManager) consumer(t tunnel, fingerprint string) (*clientTunnel, error) {
+	return m.consumerAuthorized(t, fingerprint, nil)
+}
+
+func (m *sessionManager) consumerAuthorized(t tunnel, fingerprint string, allowed func() bool) (*clientTunnel, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed {
+	item, configured := m.consumes[t.id]
+	if m.closed || (m.consumes != nil && (!configured || item.Expose != t.expose)) || (allowed != nil && !allowed()) {
 		return nil, context.Canceled
 	}
 	if existing := m.clients[t.id]; existing != nil {
@@ -153,7 +160,7 @@ func (m *sessionManager) consumerForConnection(t tunnel, fingerprint string) (*c
 
 func (m *sessionManager) providerTCP(ctx context.Context, key providerSessionKey, resume bool, endpoint ServiceEndpoint) (*tcpSession, error) {
 	m.mu.Lock()
-	if m.closed || !m.peerAllowedLocked(key.mapping, key.fingerprint) {
+	if m.closed || ctx.Err() != nil || !m.providerAllowedLocked(key.mapping, endpoint) || !m.peerAllowedLocked(key.mapping, key.fingerprint) {
 		m.mu.Unlock()
 		return nil, context.Canceled
 	}
@@ -194,7 +201,7 @@ func (m *sessionManager) providerTCP(ctx context.Context, key providerSessionKey
 		stopCancel()
 		entry.cancel()
 		m.mu.Lock()
-		if m.closed || m.tcp[key] != entry || !m.peerAllowedLocked(key.mapping, key.fingerprint) {
+		if m.closed || ctx.Err() != nil || m.tcp[key] != entry || !m.providerAllowedLocked(key.mapping, endpoint) || !m.peerAllowedLocked(key.mapping, key.fingerprint) {
 			if conn != nil {
 				conn.Close()
 			}

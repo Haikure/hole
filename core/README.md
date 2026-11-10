@@ -41,14 +41,23 @@ func run(ctx context.Context, data []byte) error {
 | `ParseConfig` / `Config.Validate` / `Request.Validate` | 严格解析与同步校验，无网络副作用 |
 | `NewEngine` | 创建独立实例，不联网 |
 | `Start` | 校验并复制请求，异步开始连接；请求已接受与网络已就绪分开 |
-| `ApplyConfig` | 停止态暂存，运行态由 supervisor 串行重配 |
+| `ApplyConfig` | 停止态暂存；运行态按配置差异本地应用、在线更新声明或重建传输 |
 | `NetworkChanged` | 更换外部网络路径，保留符合恢复条件的应用会话 |
 | `RenominateTransports` | 对已有 ICE active 路径发起新代次；无可用路径时是幂等 no-op |
 | `StartNATProbe` / `CancelNATProbe` | 开始或取消无需房间的手动 NAT 检测，结果在独立诊断快照中 |
 | `Stop` | 取消网络活动并等待资源清理，实例可再次启动 |
 | `Close` | 最终关闭实例和事件通道 |
 
-配置应用按完整配置内容比较；相同配置幂等，变更配置由 supervisor 串行重配。
+配置应用按完整配置内容比较；相同配置幂等。ICE coordinator 串行应用本地变更，并在现有
+WebSocket 上提交带修订号的 `member_update`；确认前的连续编辑合并为最新声明。
+映射通道使用原 QUIC 控制流增删；修改目标、协议或监听地址只终止对应会话。
+会话期限在本地更新，探测服务和预算用于后续尝试。双方协商在线配置能力后，语音开关
+通过带修订号的控制消息应用，不关闭共享 QUIC。身份变化仍由 supervisor 重建运行范围；
+旧 Worker／旧 IPv6 映射回退到重新加入，旧对端的语音变化重建对应传输。
+运行态 `config:applying` 表示已接受期望配置，`config:applied` 表示本地配置与服务声明已同步，
+具体映射和语音是否就绪仍以各自快照为准。在线更新期间信令状态保持 `joined`。
+在线应用使引擎从 `reconfiguring` 恢复为 `running` 时，同步发布 `engine:running`，无需等待信令重新加入；
+断线恢复期间的配置完成不表示连接已恢复。
 快照复制内部对象且不包含配置凭据；事件通道有界，宿主通过快照核对最新状态。
 
 <details>

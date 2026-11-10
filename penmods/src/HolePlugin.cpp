@@ -6,14 +6,10 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QSaveFile>
-#include <QQmlContext>
-#include <QQmlEngine>
 
 #include <dlfcn.h>
 
 namespace {
-HolePlugin* g_plugin = nullptr;
-
 QString pluginDirectoryFromAddress(void* address) {
     Dl_info info{};
     if (dladdr(address, &info) == 0 || info.dli_fname == nullptr) return {};
@@ -228,6 +224,9 @@ void HolePlugin::sendRequest(const QString& method, const QJsonObject& params) {
     QJsonObject request;
     const QString id = QStringLiteral("p%1").arg(++m_requestId);
     if (method == QStringLiteral("start") || method == QStringLiteral("apply_config")) m_pendingRequestId = id;
+    if (method == QStringLiteral("start") || method == QStringLiteral("apply_config") || method == QStringLiteral("stop")) {
+        m_stateRequestId = m_requestId;
+    }
     request.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
     request.insert(QStringLiteral("id"), id);
     request.insert(QStringLiteral("method"), method);
@@ -358,8 +357,10 @@ void HolePlugin::handleLine(const QByteArray& line) {
         const QString kind = event.value(QStringLiteral("kind")).toString();
         const QString state = event.value(QStringLiteral("state")).toString();
         if (kind == QStringLiteral("engine") && !state.isEmpty()) {
+            m_stateRequestId = m_requestId;
             setState(state);
-            const bool active = state == QStringLiteral("starting") || state == QStringLiteral("running") || state == QStringLiteral("recovering");
+            const bool active = state == QStringLiteral("starting") || state == QStringLiteral("running")
+                || state == QStringLiteral("recovering") || state == QStringLiteral("reconfiguring");
             if (m_running != active) {
                 m_running = active;
                 emit runningChanged();
@@ -374,14 +375,14 @@ void HolePlugin::handleLine(const QByteArray& line) {
             }
         }
         if (kind == QStringLiteral("config") && state == QStringLiteral("applying")) {
-            // A live reconfiguration drains and rebuilds the transport. Keep
-            // the UI out of the connected state until the core publishes its
-            // next engine=running event after the new signal join.
+            // Completion may reuse the current signal/QUIC connection. A
+            // subsequent snapshot determines readiness even if events drop.
+            m_stateRequestId = m_requestId;
             setState(QStringLiteral("reconfiguring"));
         }
         if (kind == QStringLiteral("session") && event.contains(QStringLiteral("error"))) setError(QStringLiteral("映射会话失败"));
         emit eventReceived(QString::fromUtf8(line));
-        if (kind == QStringLiteral("nat_diagnostic")) refresh();
+        if (kind == QStringLiteral("nat_diagnostic") || kind == QStringLiteral("engine") || kind == QStringLiteral("config")) refresh();
         return;
     }
 
@@ -395,9 +396,11 @@ void HolePlugin::handleLine(const QByteArray& line) {
         }
         setError(data.value(QStringLiteral("message")).toString(QStringLiteral("核心请求失败")));
         if (object.value(QStringLiteral("id")).toString() == m_pendingRequestId) {
+            emit configApplyFailed(m_lastError);
             m_pendingMethod.clear();
             m_pendingRequestId.clear();
             if (!m_running) setState(QStringLiteral("error"));
+            refresh();
         }
         return;
     }
@@ -425,15 +428,33 @@ void HolePlugin::handleLine(const QByteArray& line) {
 
     const QString method = m_pendingMethod;
     if ((method == QStringLiteral("start") || method == QStringLiteral("apply_config")) && object.value(QStringLiteral("id")).toString() == m_pendingRequestId) {
-        if (m_running != true) {
+        if (method == QStringLiteral("start") && !m_running) {
             m_running = true;
             emit runningChanged();
         }
         m_pendingMethod.clear();
         m_pendingRequestId.clear();
+        refresh();
     }
     if (result.contains(QStringLiteral("snapshot"))) {
-        m_snapshotJson = QString::fromUtf8(QJsonDocument(result.value(QStringLiteral("snapshot")).toObject()).toJson(QJsonDocument::Compact));
+        // Ignore snapshots requested before a command or newer state event;
+        // their replies can still be queued in the bridge output.
+        const quint64 requestId = object.value(QStringLiteral("id")).toString().mid(1).toULongLong();
+        if (requestId <= m_stateRequestId) return;
+        m_stateRequestId = requestId;
+        const QJsonObject snapshot = result.value(QStringLiteral("snapshot")).toObject();
+        const QString state = snapshot.value(QStringLiteral("engine_state")).toString();
+        if (!state.isEmpty()) setState(state);
+        if (snapshot.contains(QStringLiteral("run_requested"))) {
+            const bool active = snapshot.value(QStringLiteral("run_requested")).toBool();
+            if (m_running != active) {
+                m_running = active;
+                emit runningChanged();
+            }
+        }
+        const QJsonObject fault = snapshot.value(QStringLiteral("error")).toObject();
+        if (!fault.isEmpty()) setError(fault.value(QStringLiteral("message")).toString());
+        m_snapshotJson = QString::fromUtf8(QJsonDocument(snapshot).toJson(QJsonDocument::Compact));
         emit snapshotChanged();
     }
 }
@@ -443,6 +464,7 @@ void HolePlugin::clearProcessState() {
     m_outputBuffer.clear();
     m_pendingMethod.clear();
     m_pendingRequestId.clear();
+    m_stateRequestId = m_requestId;
     m_probePending = false;
     m_probeOptions = {};
     m_snapshotJson.clear();
@@ -507,19 +529,4 @@ void HolePlugin::onProcessFinished(int, QProcess::ExitStatus) {
         emit runningChanged();
     }
     if (m_state != QStringLiteral("error")) setState(QStringLiteral("stopped"));
-}
-
-extern "C" void init_plugin() {
-    if (!g_plugin) g_plugin = new HolePlugin();
-}
-
-extern "C" void attach_engine(QQmlEngine* engine) {
-    if (!engine) return;
-    if (!g_plugin) g_plugin = new HolePlugin();
-    engine->rootContext()->setContextProperty(QStringLiteral("holePlugin"), g_plugin);
-}
-
-extern "C" void destroy_plugin() {
-    delete g_plugin;
-    g_plugin = nullptr;
 }

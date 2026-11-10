@@ -27,6 +27,7 @@ var (
 // authoritative Snapshot. Hosts should refresh snapshots after events and on a
 // low-frequency timer. 64-bit values are decimal strings in every JSON API.
 type Event struct {
+	appliedConfig       *Request
 	Kind                string `json:"kind"`
 	Sequence            uint64 `json:"sequence,string"`
 	Generation          uint64 `json:"generation,string"`

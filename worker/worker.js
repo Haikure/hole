@@ -143,6 +143,11 @@ export class Room {
         return;
       }
 
+      if (message.type === "member_update") {
+        await this.handleMemberUpdate(ws, entry, message);
+        return;
+      }
+
       if (await this.ice.handle(ws, entry.member, message)) return;
 
       if (message.type === "candidate") {
@@ -233,10 +238,58 @@ export class Room {
       signal_version: 2,
       auth_mode: "shared-secret",
       lease_renewal: true,
+      live_config: true,
       hole_version: HOLE_VERSION,
       relay_only_policy: RELAY_ONLY_POLICY,
       room_members: [...this.members.keys()],
     });
+    await this.broadcastRoomState();
+    await this.reconcile();
+  }
+
+  async handleMemberUpdate(ws, entry, message) {
+    const reject = (code, text) => send(ws, {type:"error", code, message:text, request_id:message.request_id});
+    if (!this.ice.takeRate(ws)) { reject("rate_limited", "配置更新过于频繁"); return; }
+    const previous = entry.member;
+    const member = validateJoin(message);
+    if (!member || member.signal_version !== 2 || typeof message.request_id !== "string" ||
+        !/^[a-f0-9]{32}$/.test(message.request_id) || typeof message.member_revision !== "string" ||
+        !/^[1-9][0-9]{0,18}$/.test(message.member_revision)) {
+      reject("invalid_member_update", "在线配置声明无效"); return;
+    }
+    if (["device_name", "token", "runtime_id", "cert_fingerprint"].some(key => member[key] !== previous[key]) ||
+        BigInt(member.transport_epoch) < BigInt(previous.transport_epoch)) {
+      reject("member_identity_changed", "在线更新不能替换身份或回退网络代次"); return;
+    }
+    const revision = BigInt(message.member_revision), current = BigInt(previous.member_revision ?? "0");
+    if (revision <= current) {
+      if (revision === current && message.request_id === previous.update_request_id) {
+        send(ws, {type:"member_updated", request_id:message.request_id, member_revision:message.member_revision});
+      } else reject("stale_member_revision", "配置修订已失效");
+      return;
+    }
+    member.member_revision = message.member_revision;
+    member.update_request_id = message.request_id;
+    await this.state.storage.put(memberKey(member.device_name), member);
+    entry.member = member;
+    // ACK precedes all topology notifications for this accepted declaration.
+    send(ws, {type:"member_updated", request_id:message.request_id, member_revision:message.member_revision});
+    // Legacy mappings have no record snapshot. Retire only changed keys and
+    // explicitly notify both ends, including when the mapping was removed.
+    let legacyChanged = false;
+    for (const key of [...this.activeMappings]) {
+      const [left, right, id] = key.split("\0");
+      if (left !== member.device_name && right !== member.device_name) continue;
+      const definition = value => [value.provide.find(p=>p.id===id), value.consume.find(p=>p.id===id), value.candidates, value.transport_profiles, value.fixed_endpoint];
+      if (JSON.stringify(definition(previous)) === JSON.stringify(definition(member))) continue;
+      legacyChanged = true;
+      this.activeMappings.delete(key);
+      for (const [own, peer] of [[left,right],[right,left]]) {
+        const receiver = this.members.get(own);
+        if (receiver) send(receiver.ws, {type:"mapping_closed", mapping_id:id, peer_device:peer, reason:"configuration_changed"});
+      }
+    }
+    if (legacyChanged) await this.state.storage.put("activeMappings", [...this.activeMappings]);
     await this.broadcastRoomState();
     await this.reconcile();
   }

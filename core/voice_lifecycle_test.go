@@ -38,7 +38,13 @@ func TestVoiceFiveParticipantsRealOpusAndMute(t *testing.T) {
 					return false
 				}
 			}
-			return true
+			// QUIC becoming active precedes the online voice authorization
+			// exchange. Start the measured capture once all codecs are bound.
+			engine.mu.Lock()
+			coordinator := engine.run.ice
+			engine.mu.Unlock()
+			voice := coordinator.voiceRuntimePtr()
+			return voice != nil && len(voice.snapshot()) == len(names)-1
 		})
 	}
 	tones := make([][]byte, len(names))
@@ -115,7 +121,7 @@ func TestVoiceFiveParticipantsRealOpusAndMute(t *testing.T) {
 			for _, peer := range snapshot.Peers {
 				old := result.before[i][peer.PeerID]
 				sent, decoded := peer.SentFrames-old.SentFrames, peer.DecodedFrames-old.DecodedFrames
-				t.Logf("%s %s->%s: sent=%d decoded=%d error=%v", result.label, names[i], peer.PeerID, sent, decoded, peer.Error)
+				t.Logf("%s %s->%s: sent=%d received=%d decoded=%d concealed=%d queue_drops=%d datagram_drops=%d error=%v", result.label, names[i], peer.PeerID, sent, peer.ReceivedFrames-old.ReceivedFrames, decoded, peer.ConcealedFrames-old.ConcealedFrames, peer.QueueDrops-old.QueueDrops, peer.DatagramDrops-old.DatagramDrops, peer.Error)
 				if peer.Error != nil {
 					t.Error(peer.Error)
 				}
@@ -249,7 +255,15 @@ func TestVoicePreservesMappedSessionsAcrossReconnect(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				waitSnapshot(t, b, func(s Snapshot) bool { return ready(s) && s.PeerTransports[0].Generation > before })
+				waitSnapshot(t, b, func(s Snapshot) bool {
+					if !ready(s) || s.EngineState != "running" {
+						return false
+					}
+					if transition == "config" {
+						return s.PeerTransports[0].Generation == before
+					}
+					return s.PeerTransports[0].Generation > before
+				})
 				waitSnapshot(t, a, ready)
 				if err := exchange("after"); err != nil {
 					t.Fatalf("existing TCP socket was terminated after %s with voice=%v: %v", transition, voice, err)
@@ -304,7 +318,7 @@ func (c *congestedVoiceDatagrams) CloseWithError(quic.ApplicationErrorCode, stri
 
 type congestedVoiceLink struct {
 	ctx      context.Context
-	conn     *congestedVoiceDatagrams
+	mux      *muxPeer
 	feedback bool
 }
 
@@ -313,13 +327,13 @@ func (l *congestedVoiceLink) SendVoiceDatagram(ctx context.Context, data []byte)
 	if l.feedback {
 		return nil
 	}
-	return sendVoiceDatagram(ctx, l.conn, data)
+	return l.mux.enqueueVoice(ctx, data)
 }
 func (l *congestedVoiceLink) SendVoiceFeedback(ctx context.Context, data []byte) error {
 	if !l.feedback {
 		return nil
 	}
-	return sendVoiceDatagram(ctx, l.conn, data)
+	return l.mux.enqueueVoice(ctx, data)
 }
 func (l *congestedVoiceLink) ReceiveVoiceDatagram(ctx context.Context) ([]byte, error) {
 	<-ctx.Done()
@@ -338,8 +352,12 @@ func TestVoiceDisableCancelsCongestedSenders(t *testing.T) {
 			r := newVoiceRuntime(c.ctx, nil, nil, fakeVoiceCodec{})
 			c.voice = r
 			conn := &congestedVoiceDatagrams{entered: make(chan struct{}), closed: make(chan struct{})}
-			defer func() { _ = conn.CloseWithError(0, "test cleanup"); r.close() }()
-			link := &congestedVoiceLink{ctx: c.ctx, conn: conn, feedback: feedback}
+			mux := &muxPeer{ctx: c.ctx, voiceSend: make(chan voiceSendRequest, 8)}
+			mux.voiceEnabled.Store(true)
+			writer := make(chan struct{})
+			go func() { mux.writeVoiceTo(conn); close(writer) }()
+			defer func() { c.cancel(); _ = conn.CloseWithError(0, "test cleanup"); r.close(); <-writer }()
+			link := &congestedVoiceLink{ctx: c.ctx, mux: mux, feedback: feedback}
 			r.bindPeer("peer", "pair", 1, link)
 			peer := r.peers["peer"]
 			if feedback {
@@ -368,6 +386,11 @@ func TestVoiceDisableCancelsCongestedSenders(t *testing.T) {
 			if c.voiceRuntimePtr() != nil {
 				t.Fatal("disabled runtime remains bound")
 			}
+			select {
+			case <-conn.closed:
+				t.Fatal("voice disable closed shared transport")
+			default:
+			}
 		})
 	}
 }
@@ -375,15 +398,13 @@ func TestVoiceDisableCancelsCongestedSenders(t *testing.T) {
 func TestVoiceCancelledSendLeavesUnusedTransportOpen(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	conn := &congestedVoiceDatagrams{entered: make(chan struct{}), closed: make(chan struct{})}
-	if err := sendVoiceDatagram(ctx, conn, []byte{1}); !errors.Is(err, context.Canceled) {
+	p := &muxPeer{ctx: context.Background(), voiceSend: make(chan voiceSendRequest, 1)}
+	if err := p.enqueueVoice(ctx, []byte{1}); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	select {
-	case <-conn.entered:
-		t.Fatal("cancelled send reached the transport")
-	case <-conn.closed:
-		t.Fatal("unused transport was closed")
+	case <-p.voiceSend:
+		t.Fatal("cancelled send reached the queue")
 	default:
 	}
 }

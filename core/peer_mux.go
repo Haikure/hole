@@ -34,18 +34,22 @@ type muxHello struct {
 	RelayProtocol string `json:"relay_protocol,omitempty"`
 	Voice         bool   `json:"voice,omitempty"`
 	VoiceVersion  int    `json:"voice_version,omitempty"`
+	LiveConfig    bool   `json:"live_config,omitempty"`
 	QUICStats     bool   `json:"quic_stats,omitempty"`
 	// Telemetry only: the endpoint observed on this authenticated connection.
 	ObservedAddress string `json:"observed_address,omitempty"`
 }
 type mappingControl struct {
-	Type      string            `json:"type"`
-	Channel   uint32            `json:"channel_id"`
-	Key       string            `json:"map_key"`
-	MappingID string            `json:"mapping_id"`
-	Protocol  string            `json:"protocol"`
-	Status    string            `json:"status,omitempty"`
-	SendLoss  *SendLossSnapshot `json:"send_loss,omitempty"`
+	Type          string            `json:"type"`
+	Channel       uint32            `json:"channel_id"`
+	Key           string            `json:"map_key"`
+	MappingID     string            `json:"mapping_id"`
+	Protocol      string            `json:"protocol"`
+	Status        string            `json:"status,omitempty"`
+	SendLoss      *SendLossSnapshot `json:"send_loss,omitempty"`
+	MappingToken  string            `json:"mapping_token,omitempty"`
+	Voice         bool              `json:"voice,omitempty"`
+	VoiceRevision uint64            `json:"voice_revision,string,omitempty"`
 }
 type receivedPacket struct {
 	id   sessionID
@@ -73,7 +77,15 @@ type muxPeer struct {
 	statsEnabled         bool
 	observedLocalAddress string
 	ready                iceSignalMessage
-	voiceEnabled         bool
+	voiceEnabled         atomic.Bool
+	liveConfig           bool
+	voiceRevision        atomic.Uint64
+	voiceSyncMu          sync.Mutex
+	voiceSentRevision    uint64
+	voiceSentEnabled     bool
+	voiceRemoteRevision  uint64
+	voiceRemoteEnabled   bool
+	voiceSend            chan voiceSendRequest
 	voiceDatagrams       chan []byte
 	voiceFeedback        chan []byte
 }
@@ -119,7 +131,7 @@ func newMuxPeer(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceS
 func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, ready iceSignalMessage, incoming *fixedIncoming, deadline time.Time) (*muxPeer, error) {
 	loss := useBBR(conn)
 	ctx, cancel := context.WithCancel(ctx)
-	p := &muxPeer{owner: owner, conn: conn, ctx: ctx, cancel: cancel, channels: map[uint32]*muxChannel{}, byMapping: map[string]*muxChannel{}, streamSlots: make(chan struct{}, maxSessionHandshakes), ready: ready, voiceEnabled: ready.Voice, voiceDatagrams: make(chan []byte, voiceJitterLimit), voiceFeedback: make(chan []byte, 2)}
+	p := &muxPeer{owner: owner, conn: conn, ctx: ctx, cancel: cancel, channels: map[uint32]*muxChannel{}, byMapping: map[string]*muxChannel{}, streamSlots: make(chan struct{}, maxSessionHandshakes), ready: ready, voiceDatagrams: make(chan []byte, voiceJitterLimit), voiceFeedback: make(chan []byte, 2), voiceSend: make(chan voiceSendRequest, 8)}
 	p.sendLoss = loss
 	owner.mu.Lock()
 	localRelayProtocol := owner.stats.LocalRelayProtocol
@@ -160,6 +172,7 @@ func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, re
 	defer stopIO()
 	hello := muxHello{Profile: ready.Profile, TransportID: ready.TransportID, Generation: ready.TransportGeneration, LocalRuntime: owner.coordinator.runtimeID, RemoteRuntime: ready.PeerRuntimeID, Version: sessionProtocol, LocalRelayProtocol: localRelayProtocol, RelayProtocol: localRelayProtocol, Voice: ready.Voice, VoiceVersion: voiceProtocolVersion}
 	hello.QUICStats = true
+	hello.LiveConfig = true
 	hello.ObservedAddress = conn.RemoteAddr().String()
 	var remote muxHello
 	if initiator {
@@ -192,10 +205,14 @@ func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, re
 	if err == nil && (remote.Profile != ready.Profile || remote.TransportID != ready.TransportID || remote.Generation != ready.TransportGeneration || remote.LocalRuntime != ready.PeerRuntimeID || remote.RemoteRuntime != owner.coordinator.runtimeID || remote.Version != sessionProtocol || !validRelayProtocol(remoteRelayProtocol)) {
 		err = &Fault{Code: "protocol_mismatch", Message: "对端传输身份或协议与信令不一致"}
 	}
-	if err == nil && ready.Voice && (!remote.Voice || remote.VoiceVersion != voiceProtocolVersion) {
+	p.liveConfig = ready.LiveConfig && remote.LiveConfig
+	if err == nil && ready.LiveConfig && (!remote.LiveConfig || remote.VoiceVersion != voiceProtocolVersion) {
+		err = &Fault{Code: "protocol_mismatch", Message: "对端不支持已协商的在线配置协议"}
+	}
+	if err == nil && !p.liveConfig && ready.Voice && (!remote.Voice || remote.VoiceVersion != voiceProtocolVersion) {
 		err = &Fault{Code: "protocol_mismatch", Message: "对端语音协议版本不兼容"}
 	}
-	if err == nil && !ready.Voice && remote.Voice {
+	if err == nil && !p.liveConfig && !ready.Voice && remote.Voice {
 		err = &Fault{Code: "protocol_mismatch", Message: "未授权的语音数据面"}
 	}
 	if err == nil {
@@ -217,11 +234,13 @@ func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, re
 	// succeed. NAT punching validates the optional address before using it.
 	p.observedLocalAddress = remote.ObservedAddress
 	p.statsEnabled = remote.QUICStats
+	p.voiceEnabled.Store(ready.Voice && !p.liveConfig)
 	p.metrics.startBandwidth(time.Now(), conn.ConnectionStats())
 	p.spawn(p.readControl)
 	p.spawn(p.readStreams)
 	p.spawn(p.readDatagrams)
 	p.spawn(p.sampleBandwidth)
+	p.spawn(p.writeVoice)
 	if p.statsEnabled {
 		p.spawn(p.reportQUICStats)
 	}
@@ -257,7 +276,13 @@ func (p *muxPeer) stop() {
 		c.close(false)
 	}
 }
-func (p *muxPeer) close() { p.stop(); p.workers.Wait() }
+func (p *muxPeer) close() {
+	p.stop()
+	p.workers.Wait()
+	if voice := p.owner.coordinator.voiceRuntimePtr(); voice != nil {
+		voice.unbindPeer(p.ready.PeerDevice, p)
+	}
+}
 func (p *muxPeer) writeControl(m mappingControl) error {
 	p.controlMu.Lock()
 	defer p.controlMu.Unlock()
@@ -280,6 +305,16 @@ func (p *muxPeer) readControl() {
 			return
 		}
 		switch m.Type {
+		case "VOICE_STATE":
+			if !p.liveConfig || m.VoiceRevision == 0 {
+				return
+			}
+			p.voiceSyncMu.Lock()
+			if m.VoiceRevision >= p.voiceRemoteRevision {
+				p.voiceRemoteRevision, p.voiceRemoteEnabled = m.VoiceRevision, m.Voice
+			}
+			p.voiceSyncMu.Unlock()
+			p.syncVoice()
 		case "QUIC_STATS":
 			if p.statsEnabled {
 				p.metrics.receiveLoss(time.Now(), m.SendLoss)
@@ -287,6 +322,9 @@ func (p *muxPeer) readControl() {
 		case "OPEN_MAPPING":
 			record, ok := p.mapping(m.MappingID)
 			valid := ok && record.Key == m.Key && record.Service.Protocol == m.Protocol && record.Provider == p.owner.coordinator.deviceID() && record.Consumer == p.ready.PeerDevice && p.owner.allowNew()
+			if p.liveConfig && m.MappingToken != mappingToken(record) {
+				valid = false
+			}
 			p.mu.Lock()
 			parity := (p.nextChannel + 1) % 2
 			if m.Channel == 0 || m.Channel%2 != parity || m.Channel <= p.lastRemote || len(p.channels) >= maxPeerChannels {
@@ -316,14 +354,17 @@ func (p *muxPeer) readControl() {
 			if valid {
 				p.owner.emitMapping(m.MappingID, "active", m.Protocol)
 			}
-			if p.writeControl(mappingControl{Type: "MAPPING_ACK", Channel: m.Channel, Key: m.Key, MappingID: m.MappingID, Protocol: m.Protocol, Status: status}) != nil {
+			if p.writeControl(mappingControl{Type: "MAPPING_ACK", Channel: m.Channel, Key: m.Key, MappingID: m.MappingID, Protocol: m.Protocol, MappingToken: m.MappingToken, Status: status}) != nil {
 				return
 			}
 		case "MAPPING_ACK":
 			p.mu.Lock()
 			c := p.channels[m.Channel]
 			p.mu.Unlock()
-			if c == nil || c.mapping.Key != m.Key || c.mapping.ID != m.MappingID || c.mapping.Service.Protocol != m.Protocol {
+			if c == nil {
+				continue // a live edit can retire a channel before its ACK arrives
+			}
+			if c.mapping.Key != m.Key || c.mapping.ID != m.MappingID || c.mapping.Service.Protocol != m.Protocol || (p.liveConfig && m.MappingToken != mappingToken(c.mapping)) {
 				return
 			}
 			var err error
@@ -348,6 +389,7 @@ func (p *muxPeer) readControl() {
 }
 
 func (p *muxPeer) syncMappings() {
+	p.syncVoice()
 	p.mu.Lock()
 	list := make([]*muxChannel, 0, len(p.channels))
 	for _, c := range p.channels {
@@ -361,7 +403,7 @@ func (p *muxPeer) syncMappings() {
 		}
 	}
 	for _, record := range p.owner.records() {
-		if record.Consumer != p.owner.coordinator.deviceID() || !p.owner.allowNew() {
+		if record.Consumer != p.owner.coordinator.deviceID() || !p.owner.coordinator.allowed(record) || !p.owner.allowNew() {
 			continue
 		}
 		p.mu.Lock()
@@ -380,7 +422,11 @@ func (p *muxPeer) syncMappings() {
 func (p *muxPeer) openMapping(c *muxChannel) {
 	record := c.mapping
 	defer c.close(true)
-	if e := p.writeControl(mappingControl{Type: "OPEN_MAPPING", Channel: c.id, Key: record.Key, MappingID: record.ID, Protocol: record.Service.Protocol}); e != nil {
+	message := mappingControl{Type: "OPEN_MAPPING", Channel: c.id, Key: record.Key, MappingID: record.ID, Protocol: record.Service.Protocol}
+	if p.liveConfig {
+		message.MappingToken = mappingToken(record)
+	}
+	if e := p.writeControl(message); e != nil {
 		return
 	}
 	timer := time.NewTimer(sessionHandshakeTimeout)
@@ -395,13 +441,17 @@ func (p *muxPeer) openMapping(c *muxChannel) {
 			return
 		}
 	}
-	if !p.owner.allowNew() {
+	if !p.owner.allowNew() || !p.owner.authorized(record) {
 		return
 	}
 	t := tunnel{id: record.ID, protocol: record.Service.Protocol, expose: record.Expose, peer: p.ready.PeerDevice}
-	client, err := p.owner.coordinator.sessions.consumer(t, p.ready.PeerFingerprint)
+	client, err := p.owner.coordinator.sessions.consumerAuthorized(t, p.ready.PeerFingerprint, func() bool {
+		return c.ctx.Err() == nil && p.owner.authorized(record)
+	})
 	if err != nil {
-		p.owner.mappingError(record.ID, err)
+		if c.ctx.Err() == nil && p.owner.authorized(record) {
+			p.owner.mappingError(record.ID, err)
+		}
 		return
 	}
 	transport, err := client.bind(c.ctx, c)
@@ -468,22 +518,7 @@ func (p *muxPeer) readDatagrams() {
 		if err != nil {
 			return
 		}
-		if len(data) >= voiceWireHeaderSize && string(data[:4]) == string(voiceMagic[:]) {
-			packet, parseErr := parseVoicePacket(data)
-			if parseErr != nil || !p.voiceEnabled {
-				p.dropped.Add(1)
-				continue
-			}
-			queue := p.voiceDatagrams
-			if packet.Kind == voiceKindFeedback {
-				queue = p.voiceFeedback
-			}
-			copyData := append([]byte(nil), data...)
-			select {
-			case queue <- copyData:
-			default:
-				p.dropped.Add(1)
-			}
+		if p.receiveVoice(data) {
 			continue
 		}
 		if len(data) < 4 {
@@ -534,29 +569,15 @@ func (p *muxPeer) readDatagrams() {
 }
 
 // quic-go's DATAGRAM send blocks when its queue fills and has no context API.
-// Retire a cancelled voice sender's transport to unblock that call. Application
-// sessions survive the path replacement; never leave voice shutdown waiting for
-// congestion to clear while its caller holds the Engine lock.
+// Voice activation uses the bounded queue in peer_live_config.go; closing the
+// transport unblocks its single writer without tying it to a voice activation.
 type voiceDatagramSender interface {
 	SendDatagram([]byte) error
 	CloseWithError(quic.ApplicationErrorCode, string) error
 }
 
-func sendVoiceDatagram(ctx context.Context, conn voiceDatagramSender, data []byte) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	stop := context.AfterFunc(ctx, func() { _ = conn.CloseWithError(0, "voice sender cancelled") })
-	defer stop()
-	err := conn.SendDatagram(data)
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return err
-}
-
 func (p *muxPeer) SendVoiceDatagram(ctx context.Context, data []byte) error {
-	if !p.voiceEnabled {
+	if !p.voiceEnabled.Load() {
 		return errors.New("voice channel is not authorized")
 	}
 	packet, err := parseVoicePacket(data)
@@ -569,11 +590,11 @@ func (p *muxPeer) SendVoiceDatagram(ctx context.Context, data []byte) error {
 	if p.ctx.Err() != nil {
 		return p.ctx.Err()
 	}
-	return sendVoiceDatagram(ctx, p.conn, data)
+	return p.enqueueVoice(ctx, data)
 }
 
 func (p *muxPeer) ReceiveVoiceDatagram(ctx context.Context) ([]byte, error) {
-	if !p.voiceEnabled {
+	if !p.voiceEnabled.Load() {
 		return nil, errors.New("voice channel is not authorized")
 	}
 	select {
@@ -587,7 +608,7 @@ func (p *muxPeer) ReceiveVoiceDatagram(ctx context.Context) ([]byte, error) {
 }
 
 func (p *muxPeer) SendVoiceFeedback(ctx context.Context, data []byte) error {
-	if !p.voiceEnabled {
+	if !p.voiceEnabled.Load() {
 		return errors.New("voice channel is not authorized")
 	}
 	packet, err := parseVoicePacket(data)
@@ -600,11 +621,11 @@ func (p *muxPeer) SendVoiceFeedback(ctx context.Context, data []byte) error {
 	if p.ctx.Err() != nil {
 		return p.ctx.Err()
 	}
-	return sendVoiceDatagram(ctx, p.conn, data)
+	return p.enqueueVoice(ctx, data)
 }
 
 func (p *muxPeer) ReceiveVoiceFeedback(ctx context.Context) ([]byte, error) {
-	if !p.voiceEnabled {
+	if !p.voiceEnabled.Load() {
 		return nil, errors.New("voice channel is not authorized")
 	}
 	select {

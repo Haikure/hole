@@ -101,7 +101,7 @@ mv -f hole-core.new hole-core
 | 交互 | 行为 |
 | --- | --- |
 | 页面布局 | 深色面板与蓝色操作点缀；首页入口一屏可见，详情按需展开；设置、服务和网络使用独立 `YBackButtonPage` |
-| 连接状态 | 探测、加入房间或重建时显示进行中；收到 `joined` 且核心发布 `engine=running` 后显示连接成功 |
+| 连接状态 | 探测、加入房间或应用配置时显示进行中；通过核心事件与快照同步状态，在线应用完成无需等待重新加入房间 |
 | 重选路径 | 对 active 路径请求新 ICE 代次；进行中的重复请求由核心忽略 |
 | 输入反馈 | 点击后至少高亮 150ms；不抢占拖动，可直接在输入区域滑动页面 |
 | 服务编辑 | 地址与端口横排，新增空服务自动展开；停用保留配置 |
@@ -117,6 +117,10 @@ mv -f hole-core.new hole-core
 </details>
 
 配置在最后一次编辑 600ms 后自动保存。启动开关保持开启时，完整且通过表单校验的配置会自动提交给共享核心 `apply_config`；尚未填完整的编辑只保存，补齐后会自动提交。核心按 Android 相同的重配逻辑处理新配置，并保留仍符合新旧配置和连接作用域的应用会话。
+
+映射在线修改完成或配置无变化时，保存提示更新为“已保存，已应用”。插件收到配置事件后立即刷新快照，
+并在运行期间每 2 秒核对状态；即使完成事件丢失，也会退出“正在应用配置”。修改前请求的旧快照不会覆盖新状态。
+断线期间完成配置应用仍显示连接恢复中；请求被拒绝时保留具体错误提示。
 
 ### 运行状态与流量
 
@@ -266,12 +270,14 @@ python3 -m unittest discover -s scripts -p 'test_build.py'
 go test -race -count=1 ./desktop ./cmd/hole-core
 go vet ./desktop ./cmd/hole-core
 node --test penmods/tests/*.test.mjs
+bash penmods/tests/run-bridge-tests.sh
 QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input penmods/tests
 ./penmods/build.sh
 ```
 
 脚本测试覆盖核心构建参数、源码版本更新、完整打包和构建失败时保留已有产物。
-Node 测试执行 `Main.qml` 的 QUIC 格式化函数，检查统计口径与缺失值。
+Node 测试执行 `Main.qml` 的 QUIC 格式化与配置反馈函数，检查统计口径、缺失值和保存状态。
+桥接回归测试需要本机 C++ 编译器、Qt 5 Core / Test 开发包和 moc，覆盖无重连应用、事件丢失、旧快照、断线及请求拒绝。
 QML 交互测试需要 Qt 5 的 QtQuick、QtQuick.Layouts 和 QtTest 模块，覆盖首页一屏尺寸、启停、重载和导航、
 服务编辑与折叠、设备卡片和 QUIC 单元格复用、详情按需创建与释放，以及 NAT 检测操作和时间格式。
 测试不依赖宿主页面或截图脚本，本地检查不代表 PenMods 真机验收。

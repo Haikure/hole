@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/netip"
 	"time"
 
 	"github.com/apernet/quic-go"
@@ -46,6 +47,34 @@ type CandidatePairSnapshot struct {
 
 func candidateAddress(c ice.Candidate) string {
 	return net.JoinHostPort(c.Address(), fmt.Sprint(c.Port()))
+}
+
+// Only display the authenticated peer's observation. It must never influence
+// routing, candidate selection, or identity checks.
+func observedPathAddress(observed, family string) string {
+	endpoint, err := netip.ParseAddrPort(observed)
+	if err != nil || endpoint.Port() == 0 {
+		return ""
+	}
+	ip := endpoint.Addr().Unmap()
+	if ip.IsUnspecified() || ip.IsMulticast() || ip.Zone() != "" || ip == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		return ""
+	}
+	if family != "IPv4" && family != "IPv6" || (family == "IPv4") != ip.Is4() {
+		return ""
+	}
+	return netip.AddrPortFrom(ip, endpoint.Port()).String()
+}
+
+func applyICEPeerObservation(s *PeerTransportSnapshot, observed string) {
+	// TURN's local endpoint is the selected relay allocation, not our NAT
+	// mapping. Preserve its address and the corresponding relay access labels.
+	if s.LocalType != "host" && s.LocalType != "srflx" && s.LocalType != "prflx" {
+		return
+	}
+	if address := observedPathAddress(observed, s.AddressFamily); address != "" && address != s.LocalAddress {
+		s.LocalAddress, s.LocalType = address, "prflx"
+	}
 }
 
 // candidateSocket names the local socket a candidate sends from: its own

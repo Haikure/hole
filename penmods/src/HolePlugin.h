@@ -61,6 +61,7 @@ signals:
     void lastErrorChanged();
     void snapshotChanged();
     void eventReceived(const QString& eventJson);
+    void configApplyFailed(const QString& message);
 
 private slots:
     void onProcessStarted();
@@ -69,6 +70,7 @@ private slots:
     void readStandardError();
 
 private:
+    friend class HolePluginTest;
     void ensureProcess();
     void clearProcessState();
     void failReload(const QString& message);
@@ -96,6 +98,7 @@ private:
     QString m_snapshotJson;
     QByteArray m_outputBuffer;
     quint64 m_requestId = 0;
+    quint64 m_stateRequestId = 0;
     bool m_running = false;
     bool m_helloReceived = false;
     QString m_pendingMethod;

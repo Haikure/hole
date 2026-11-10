@@ -436,11 +436,6 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 	p.stats.ConnectMS = time.Since(started).Milliseconds()
 	p.stats.RelayState, p.stats.TURNExpiresAt = "", 0
 	p.mu.Unlock()
-	if a.ready.Voice {
-		if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
-			voice.bindPeer(a.ready.PeerDevice, a.ready.TransportID, a.ready.TransportGeneration, mux)
-		}
-	}
 	mux.syncMappings()
 	if old != nil {
 		old.close()

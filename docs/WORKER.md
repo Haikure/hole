@@ -53,6 +53,11 @@ wrangler deploy
 
 协议升级按 **Worker → 客户端** 顺序部署。
 
+新版 Worker 的 `joined.live_config` 能力支持在现有 WebSocket 更新服务声明，映射和语音变化
+无需反复退出房间。客户端仍兼容旧 Worker：未声明能力时回退到重新加入。语音原地开关还要求
+双方客户端支持在线配置协议，旧对端会重建对应传输。该能力不需要新增 Durable Object 迁移；
+更新时仍需同时发布两个 Worker 源文件。协议与修订确认规则见 [在线配置](PROTOCOL.md#在线配置与兼容)。
+
 <details>
 <summary>固定入口：能力、路径约束与网络准备</summary>
 
