@@ -118,7 +118,7 @@ Material 3 固定为 `1.5.0-alpha29`，以使用公开的 Expressive API。旧�
 | 模块 | 内容 |
 | --- | --- |
 | `app` | 手机界面、配置仓库、通知和前台服务 |
-| [wear](wear/README.md) | 共用手机源码的 Wear OS 安装包，独立设备声明和 ABI 选择 |
+| [wear](wear/README.md) | 共用业务源码，圆屏布局、表冠滚动与可收起导航，独立设备声明和 ABI 选择 |
 | `corebridge` | Go AAR 构建、Kotlin 接口、Android Network / DNS / socket 适配 |
 
 手机与 Wear OS 共用 Android 前端版本，统一定义在仓库根目录的 [versions.json](../versions.json)；Gradle 两个模块都直接读取该配置。

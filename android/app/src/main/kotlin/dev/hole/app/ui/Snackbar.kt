@@ -25,6 +25,16 @@ internal suspend fun SnackbarHostState.showUndoSnackbar(message: String): Snackb
 @Composable
 fun HoleSnackbarHost(state: SnackbarHostState, modifier: Modifier = Modifier) {
     SnackbarHost(state, modifier.padding(bottom = LocalFloatingInset.current)) { data ->
+        if (isWearUi()) {
+            WearDialog({ data.dismiss() }) {
+                HoleScrollColumn {
+                    androidx.compose.material3.Text(data.visuals.message)
+                    data.visuals.actionLabel?.let { label -> HoleButton(label, { data.performAction() }) }
+                    HoleTextButton("关闭提示", { data.dismiss() })
+                }
+            }
+            return@SnackbarHost
+        }
         key(data) {
             SwipeToDismissBox(
                 state = rememberSwipeToDismissBoxState(),

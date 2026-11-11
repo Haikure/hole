@@ -2,7 +2,7 @@ package dev.hole.app.ui
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
+import dev.hole.app.ui.HoleLazyColumn as LazyColumn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -74,8 +74,8 @@ fun HomeScreen(
 @Composable
 private fun DashboardPair(first: String, firstValue: String, second: String, secondValue: String) {
     BoxWithConstraints {
-        if (maxWidth < 280.dp || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.4f) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if ((!isWearUi() && maxWidth < 280.dp) || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.4f) {
+            Column(verticalArrangement = Arrangement.spacedBy(screenSpacing(12.dp))) {
                 DashboardMetric(first, firstValue, Modifier.fillMaxWidth())
                 DashboardMetric(second, secondValue, Modifier.fillMaxWidth())
             }
@@ -91,7 +91,7 @@ private fun DashboardPair(first: String, firstValue: String, second: String, sec
 @Composable
 private fun DashboardMetric(title: String, value: String, modifier: Modifier) {
     HoleCard(modifier) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(screenSpacing(18.dp)), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(title, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             AnimatedMetric(value)
         }

@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -216,6 +215,10 @@ fun ConsumeEditScreen(
 
 @Composable
 private fun EnabledRow(enabled: Boolean, onChange: (Boolean) -> Unit) {
+    if (isWearUi()) {
+        HoleSwitchPreference("保存后启用", "停用后保留设置，不参与转发。", checked = enabled, onCheckedChange = onChange)
+        return
+    }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("保存后启用")
@@ -246,16 +249,15 @@ private fun EditScaffold(
             FloatingIconAction(androidx.compose.material.icons.Icons.Default.Check, "保存", onSave, enabled = !attempted || !hasErrors)
         },
     ) { insets ->
-        Column(
+        HoleScrollColumn(
             Modifier
                 .fillMaxWidth()
-                .padding(insets)
-                .verticalScroll(scrollState)
-                .padding(horizontal = 16.dp),
+                .padding(insets),
+            state = scrollState, contentPadding = PaddingValues(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            HoleSettingsGroup("服务配置") { fields() }
-            androidx.compose.foundation.layout.Spacer(Modifier.height(96.dp))
+            if (isWearUi()) fields() else HoleSettingsGroup("服务配置") { fields() }
+            androidx.compose.foundation.layout.Spacer(Modifier.height(if (isWearUi()) 0.dp else 96.dp))
         }
     }
 }

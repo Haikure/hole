@@ -6,11 +6,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -23,7 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
+import dev.hole.app.ui.HoleDialog as Dialog
 import dev.hole.app.ConfigUiState
 import dev.hole.app.RunStateStore
 import dev.hole.app.config.ConfigExchange
@@ -105,7 +102,7 @@ fun ConfigTransferScreen(config: ConfigUiState, onImport: suspend (ImportPreview
         pasteDialog = true
     }
     HoleScaffold(title = "导入与导出", navigationIcon = { HoleBackButton(onBack) }) { insets ->
-        Column(Modifier.fillMaxWidth().padding(insets).verticalScroll(rememberScrollState()).padding(16.dp),
+        HoleScrollColumn(Modifier.fillMaxWidth().padding(insets),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
             HoleSettingsGroup("导出内容") {
                 HoleSwitchPreference("包含连接凭据", "默认关闭。开启后文件包含明文信令密码、房间密码和手动 TURN 凭据。", checked = includeSecrets, onCheckedChange = { includeSecrets = it })
@@ -125,9 +122,9 @@ fun ConfigTransferScreen(config: ConfigUiState, onImport: suspend (ImportPreview
     }
     if (pasteDialog) {
         Dialog(onDismissRequest = { if (!busy) pasteDialog = false }) {
-            HoleCard(Modifier.fillMaxWidth().padding(16.dp)) {
+            HoleCard(Modifier.fillMaxWidth().padding(screenSpacing(16.dp))) {
                 Column(
-                    Modifier.padding(20.dp).verticalScroll(rememberScrollState()),
+                    Modifier.padding(screenSpacing(20.dp)).phoneDialogScroll(),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text("粘贴配置", style = MaterialTheme.typography.titleLarge)
@@ -141,7 +138,7 @@ fun ConfigTransferScreen(config: ConfigUiState, onImport: suspend (ImportPreview
                         onValueChange = { pastedText = it; pasteError = null },
                         label = { Text("配置内容") },
                         modifier = Modifier.fillMaxWidth(),
-                        minLines = 8,
+                        minLines = if (isWearUi()) 3 else 8,
                         maxLines = 12,
                         enabled = !busy,
                     )
@@ -152,7 +149,7 @@ fun ConfigTransferScreen(config: ConfigUiState, onImport: suspend (ImportPreview
                             if (text == null) pasteError = "剪贴板没有可读取的文本配置。"
                             else { pastedText = text; pasteError = null }
                         })
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        WearStackedRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             HoleTextButton("取消", { if (!busy) pasteDialog = false })
                             HoleButton("检查并预览", onClick = {
                                 val text = pastedText
@@ -177,7 +174,7 @@ fun ConfigTransferScreen(config: ConfigUiState, onImport: suspend (ImportPreview
     preview?.let { draft ->
         Dialog(onDismissRequest = { if (!busy) preview = null }) {
             HoleCard {
-                Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.padding(screenSpacing(20.dp)).phoneDialogScroll(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("确认替换配置", style = MaterialTheme.typography.titleLarge)
                     DetailRow("提供 / 使用", "${draft.config.provide.size} / ${draft.config.consume.size} 项")
                     DetailRow("启用项", "${draft.config.provide.count { it.enabled } + draft.config.consume.count { it.enabled }} 项")

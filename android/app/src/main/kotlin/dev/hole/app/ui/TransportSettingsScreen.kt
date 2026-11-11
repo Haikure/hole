@@ -9,8 +9,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,7 +21,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
+import dev.hole.app.ui.HoleDialog as Dialog
 import dev.hole.app.ConfigUiState
 import dev.hole.app.config.*
 import kotlinx.coroutines.launch
@@ -82,7 +80,7 @@ fun TransportSettingsScreen(
     BackHandler(handleBack) { back() }
     HoleScaffold(title = "连接方式", navigationIcon = { HoleBackButton { back() } },
         floatingActions = { FloatingIconAction(androidx.compose.material.icons.Icons.Default.Check, "保存连接方式", saveTransport, enabled = configState.loaded && !busy) }) { insets ->
-        Column(Modifier.fillMaxWidth().padding(insets).verticalScroll(rememberScrollState(), enabled = !turnOrderDragging).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        HoleScrollColumn(Modifier.fillMaxWidth().padding(insets), enabled = !turnOrderDragging, verticalArrangement = Arrangement.spacedBy(16.dp)) {
             HoleSettingsGroup("连接策略") {
                 HoleSingleChoice(listOf("auto", "ice", "legacy").map { it to connectionModeLabel(it) }, mode, { mode = it }, Modifier.fillMaxWidth())
                 HoleHelp("策略说明", connectionModeDescription(mode))
@@ -119,7 +117,7 @@ fun TransportSettingsScreen(
                     onChange = { relayOrderText = it.joinToString(", "); relayOrderEdited = true },
                     onDraggingChanged = { turnOrderDragging = it },
                 )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                WearStackedRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     HoleTextButton("恢复默认顺序", { relayOrderText = ""; relayOrderEdited = true })
                 }
                 holeRelayOrderError(relayOrder)?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
@@ -140,11 +138,11 @@ fun TransportSettingsScreen(
                 }
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            androidx.compose.foundation.layout.Spacer(Modifier.padding(bottom = 96.dp))
+            androidx.compose.foundation.layout.Spacer(Modifier.padding(bottom = if (isWearUi()) 0.dp else 96.dp))
         }
     }
     if (confirm) Dialog(onDismissRequest = { confirm = false }) {
-        HoleCard { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        HoleCard { Column(Modifier.padding(screenSpacing(20.dp)), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("放弃未保存的修改？", style = MaterialTheme.typography.titleMedium)
             Row { HoleTextButton("继续编辑", { confirm = false }); HoleTextButton("放弃", { confirm = false; onBack() }) }
         } }

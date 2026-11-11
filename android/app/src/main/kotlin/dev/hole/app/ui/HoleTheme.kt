@@ -6,6 +6,7 @@ import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
@@ -14,6 +15,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -88,6 +90,22 @@ private val LightTypography = Typography().let { base ->
         labelLarge = base.labelLarge.copy(fontWeight = FontWeight.SemiBold),
     )
 }
+
+private val WearTypography = LightTypography.copy(
+    displaySmall = LightTypography.displaySmall.copy(fontSize = 24.sp, lineHeight = 28.sp),
+    labelLarge = LightTypography.labelLarge.copy(fontSize = 14.sp, lineHeight = 18.sp),
+    labelMedium = LightTypography.labelMedium.copy(fontSize = 13.sp, lineHeight = 17.sp),
+    labelSmall = LightTypography.labelSmall.copy(fontSize = 13.sp, lineHeight = 16.sp),
+    headlineLarge = LightTypography.headlineLarge.copy(fontSize = 24.sp, lineHeight = 28.sp),
+    headlineMedium = LightTypography.headlineMedium.copy(fontSize = 18.sp, lineHeight = 22.sp),
+    headlineSmall = LightTypography.headlineSmall.copy(fontSize = 18.sp, lineHeight = 22.sp),
+    titleLarge = LightTypography.titleLarge.copy(fontSize = 16.sp, lineHeight = 20.sp),
+    titleMedium = LightTypography.titleMedium.copy(fontSize = 14.sp, lineHeight = 18.sp),
+    titleSmall = LightTypography.titleSmall.copy(fontSize = 14.sp, lineHeight = 18.sp),
+    bodyLarge = LightTypography.bodyLarge.copy(fontSize = 15.sp, lineHeight = 19.sp),
+    bodyMedium = LightTypography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 18.sp),
+    bodySmall = LightTypography.bodySmall.copy(fontSize = 14.sp, lineHeight = 18.sp),
+)
 
 private val HoleShapes = Shapes(
     extraSmall = RoundedCornerShape(4.dp),
@@ -191,6 +209,7 @@ fun HoleTheme(
         ThemeMode.DARK -> true
     }
     val colors = holeColorScheme(LocalContext.current, dark, dynamic, palette)
+    val wear = isWearUi()
     val view = LocalView.current
     val activity = view.context as? Activity
     SideEffect {
@@ -203,8 +222,12 @@ fun HoleTheme(
     }
     MaterialExpressiveTheme(
         colorScheme = colors,
-        typography = LightTypography,
+        typography = if (wear) WearTypography else LightTypography,
         shapes = HoleShapes,
-        content = content,
+        content = {
+            if (wear) WearDisplayDensity {
+                CompositionLocalProvider(LocalContentColor provides colors.onBackground, content = content)
+            } else content()
+        },
     )
 }

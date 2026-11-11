@@ -43,6 +43,15 @@ fun HoleScaffold(
     floatingActions: @Composable RowScope.() -> Unit = {}, snackbarHost: @Composable () -> Unit = {},
     content: @Composable (PaddingValues) -> Unit,
 ) {
+    if (isWearUi()) {
+        androidx.compose.runtime.CompositionLocalProvider(LocalWearPageChrome provides WearPageChrome(title, navigationIcon, actions, floatingActions)) {
+            Box(modifier.fillMaxSize().imePadding().background(MaterialTheme.colorScheme.background)) {
+                content(PaddingValues(0.dp))
+                snackbarHost()
+            }
+        }
+        return
+    }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     Scaffold(
         modifier = modifier.imePadding().nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -76,7 +85,7 @@ fun HoleSettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit
         HoleSectionTitle(title)
         RaisedPanel(Modifier.fillMaxWidth()) {
             Column(
-                Modifier.padding(12.dp),
+                Modifier.padding(screenSpacing(12.dp)),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
                 content = content,
             )
@@ -87,6 +96,17 @@ fun HoleSettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit
 @Composable
 fun HoleSwitchPreference(title: String, summary: String, label: String = title, checked: Boolean, enabled: Boolean = true,
     insideMargin: PaddingValues = PaddingValues(16.dp), onCheckedChange: (Boolean) -> Unit) {
+    if (isWearUi()) {
+        Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).padding(end = 6.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                if (summary.length <= 18) Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else HoleInfoButton(title) { Text(summary) }
+            }
+            HoleSwitch(checked, onCheckedChange, label, enabled = enabled)
+        }
+        return
+    }
     Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(insideMargin), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(title, style = MaterialTheme.typography.titleSmall)
@@ -115,7 +135,7 @@ fun HoleButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier,
 @Composable fun HoleIconButton(onClick: () -> Unit, modifier: Modifier = Modifier, tonal: Boolean = false, content: @Composable () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val scale = pressScale(interaction)
-    val animated = modifier.graphicsLayer { scaleX = scale; scaleY = scale }
+    val animated = modifier.then(if (isWearUi()) Modifier.size(36.dp) else Modifier).graphicsLayer { scaleX = scale; scaleY = scale }
     if (tonal) FilledTonalIconButton(onClick, animated, interactionSource = interaction, content = content)
     else IconButton(onClick, animated, interactionSource = interaction, content = content)
 }
@@ -133,7 +153,7 @@ fun HoleTextField(value: String, onValueChange: (String) -> Unit, label: String,
     supportingText: @Composable (() -> Unit)? = null, isError: Boolean = false, singleLine: Boolean = false,
     visualTransformation: VisualTransformation = VisualTransformation.None, keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     trailingIcon: @Composable (() -> Unit)? = null) {
-    OutlinedTextField(value, onValueChange, modifier, label = { Text(label) }, supportingText = if (isError) supportingText else null,
+    OutlinedTextField(value, onValueChange, modifier.then(if (isWearUi()) Modifier.semantics { contentDescription = label } else Modifier), label = { Text(label) }, supportingText = if (isError) supportingText else null,
         isError = isError, singleLine = singleLine, visualTransformation = visualTransformation,
         keyboardOptions = keyboardOptions, trailingIcon = if (trailingIcon != null || (supportingText != null && !isError)) ({
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -146,10 +166,18 @@ fun HoleTextField(value: String, onValueChange: (String) -> Unit, label: String,
 @Composable
 fun HoleInfoButton(title: String, content: @Composable () -> Unit) {
     var open by rememberSaveable { mutableStateOf(false) }
-    IconButton(onClick = { open = true }) {
+    IconButton(onClick = { open = true }, modifier = if (isWearUi()) Modifier.size(32.dp) else Modifier) {
         Icon(Icons.Default.Info, contentDescription = "$title 说明", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    if (open) AlertDialog(
+    if (open && isWearUi()) {
+        WearDialog({ open = false }) {
+            HoleScrollColumn(Modifier.fillMaxSize()) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                content()
+                HoleButton("知道了", { open = false }, Modifier.fillMaxWidth())
+            }
+        }
+    } else if (open) AlertDialog(
         onDismissRequest = { open = false },
         title = { Text(title) },
         text = { Column(Modifier.verticalScroll(rememberScrollState())) { content() } },
@@ -178,7 +206,7 @@ fun FloatingIconAction(icon: androidx.compose.ui.graphics.vector.ImageVector, la
     val interaction = remember { MutableInteractionSource() }
     val scale = pressScale(interaction, 1.25f)
     FloatingSurface(Modifier.graphicsLayer { scaleX = scale; scaleY = scale }) {
-        Box(Modifier.size(56.dp).clickable(interactionSource = interaction, indication = null, enabled = enabled, role = Role.Button, onClick = onClick), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(if (isWearUi()) 44.dp else 56.dp).clickable(interactionSource = interaction, indication = null, enabled = enabled, role = Role.Button, onClick = onClick), contentAlignment = Alignment.Center) {
             Icon(icon, label, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = if (enabled) 1f else .38f))
         }
     }

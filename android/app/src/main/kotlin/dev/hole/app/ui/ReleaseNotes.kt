@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
@@ -55,7 +56,8 @@ internal fun ReleaseNotes(markdown: String, pageUrl: String) {
         releaseNotesRenderer(context, pageUrl, colors.primary.toArgb(), colors.surfaceContainerHighest.toArgb())
     }
     val rendered = remember(renderer, markdown) { renderer.toMarkdown(markdown) }
-    val textSize = MaterialTheme.typography.bodyMedium.fontSize.value
+    val fontSize = MaterialTheme.typography.bodyMedium.fontSize
+    val wearTextSize = if (isWearUi()) with(LocalDensity.current) { fontSize.toPx() } else null
     AndroidView(
         modifier = Modifier.fillMaxWidth(),
         factory = { TextView(it).apply {
@@ -64,7 +66,8 @@ internal fun ReleaseNotes(markdown: String, pageUrl: String) {
             setLineSpacing(0f, 1.15f)
         } },
         update = { view ->
-            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSize)
+            if (wearTextSize != null) view.setTextSize(TypedValue.COMPLEX_UNIT_PX, wearTextSize)
+            else view.setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSize.value)
             view.setTextColor(colors.onSurface.toArgb())
             view.setLinkTextColor(colors.primary.toArgb())
             renderer.setParsedMarkdown(view, rendered)

@@ -4,7 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
+import dev.hole.app.ui.HoleLazyColumn as LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -56,7 +56,12 @@ fun RuntimeDetailsScreen(
         HoleIconButton(onReconnect) { Icon(Icons.Default.Refresh, "重选路径") }
         Box {
             HoleIconButton({ menu = true }) { Icon(Icons.Default.MoreVert, "连接选项") }
-            DropdownMenu(menu, { menu = false }) {
+            if (menu && isWearUi()) InspectionSheet("连接选项", { menu = false }) {
+                HoleButton("网络诊断", { menu = false; diagnostics = true })
+                HoleButton("连接方式", { menu = false; onTransportSettings() })
+                HoleButton("导出报告", { menu = false; onExport() })
+            }
+            DropdownMenu(menu && !isWearUi(), { menu = false }) {
                 DropdownMenuItem(text = { Text("网络诊断") }, onClick = { menu = false; diagnostics = true })
                 DropdownMenuItem(text = { Text("连接方式") }, onClick = { menu = false; onTransportSettings() })
                 DropdownMenuItem(text = { Text("导出报告") }, onClick = { menu = false; onExport() })
@@ -76,7 +81,11 @@ fun RuntimeDetailsScreen(
             }
             item { NATDetectionEntry(snapshot.natDiagnostic, onNATDetection) }
             item {
-                TextField(query, { query = it }, Modifier.fillMaxWidth(),
+                if (isWearUi()) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    HoleTextField(query, { query = it }, if (tab == "devices") "搜索设备或地址" else "搜索服务或端口",
+                        Modifier.fillMaxWidth(), singleLine = true)
+                    if (query.isNotEmpty()) HoleTextButton("清除搜索", { query = "" }, Modifier.fillMaxWidth())
+                } else TextField(query, { query = it }, Modifier.fillMaxWidth(),
                     placeholder = { Text(if (tab == "devices") "搜索设备或地址" else "搜索服务或端口") },
                     leadingIcon = { Icon(Icons.Default.Search, null) },
                     trailingIcon = if (query.isNotEmpty()) ({ IconButton({ query = "" }) { Icon(Icons.Default.Close, "清除搜索") } }) else null,
@@ -171,7 +180,7 @@ fun RuntimeDetailsScreen(
 @Composable
 private fun PeerConnectionRow(peer: PeerSnapshot, modifier: Modifier, onClick: () -> Unit) {
     RaisedPanel(modifier.fillMaxWidth().clickable(onClickLabel = "查看 ${peer.peerId}", onClick = onClick)) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(Modifier.padding(screenSpacing(18.dp)), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
                     Icon(Icons.Default.Home, null, Modifier.padding(10.dp).size(22.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
@@ -195,7 +204,7 @@ private fun PeerConnectionRow(peer: PeerSnapshot, modifier: Modifier, onClick: (
 @Composable
 private fun ServiceConnectionRow(mapping: MappingSnapshot, modifier: Modifier, onClick: () -> Unit) {
     RaisedPanel(modifier.fillMaxWidth().clickable(onClickLabel = "查看 ${mapping.id}", onClick = onClick)) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(screenSpacing(18.dp)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(mapping.id, style = MaterialTheme.typography.titleMedium)
                 Text(mapping.protocol.uppercase(), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
@@ -209,6 +218,16 @@ private fun ServiceConnectionRow(mapping: MappingSnapshot, modifier: Modifier, o
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun InspectionSheet(title: String, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    if (isWearUi()) {
+        WearDialog(onDismiss) {
+            HoleScrollColumn(Modifier.fillMaxSize()) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                content()
+                HoleButton("关闭", onDismiss, Modifier.fillMaxWidth())
+            }
+        }
+        return
+    }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -220,6 +239,7 @@ private fun InspectionSheet(title: String, onDismiss: () -> Unit, content: @Comp
 
 @Composable
 private fun InspectionValue(label: String, value: String) {
+    if (isWearUi()) { DetailRow(label, value); return }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
         SelectionContainer(Modifier.weight(1.4f)) { Text(value, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.End) }

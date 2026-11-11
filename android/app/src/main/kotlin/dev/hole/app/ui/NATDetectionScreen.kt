@@ -3,7 +3,7 @@ package dev.hole.app.ui
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
+import dev.hole.app.ui.HoleLazyColumn as LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -87,7 +87,7 @@ fun NATDetectionScreen(report: NATDiagnostic, ready: Boolean, error: String?, on
                     val columns = (maxWidth.value / (145 * LocalDensity.current.fontScale)).toInt().coerceIn(1, 3)
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         report.highlights.chunked(columns).forEach { row ->
-                            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(Modifier.fillMaxWidth().then(if (isWearUi()) Modifier else Modifier.height(IntrinsicSize.Min)), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 row.forEach { tile ->
                                     RaisedPanel(Modifier.weight(1f).fillMaxHeight().testTag("nat-tile-${tile.icon}")) {
                                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -117,7 +117,7 @@ fun NATDetectionScreen(report: NATDiagnostic, ready: Boolean, error: String?, on
                         Text(section.title, style = MaterialTheme.typography.titleSmall, color = colors.ink)
                     }
                     HoleCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp)) {
+                        Column(Modifier.padding(screenSpacing(16.dp))) {
                             section.fields.forEachIndexed { index, field ->
                                 Column(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Text(field.label, style = MaterialTheme.typography.labelLarge, color = colors.ink)
@@ -151,7 +151,7 @@ private fun NATGuideRow(title: String, text: String) {
 fun NATDetectionEntry(report: NATDiagnostic, onClick: () -> Unit) {
     val colors = natColors(report.tone)
     RaisedPanel {
-        Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(screenSpacing(18.dp)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Surface(shape = CircleShape, color = colors.surface) {
                 Icon(Icons.Default.NetworkCheck, null, Modifier.padding(10.dp), tint = colors.ink)
             }

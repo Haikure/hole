@@ -14,7 +14,7 @@ val coreBridgeProject = evaluationDependsOn(":corebridge")
 val coreBinding = coreBridgeProject.tasks.named("bindGoCore")
 
 android {
-    // 手机和手表共用 Android 前端版本；这里只有设备声明和 ABI 不同。
+    // 手机和手表共用前端版本；共享 UI 根据 watch 设备类型选择小屏布局。
     namespace = "dev.hole.app"
     compileSdk = 37
     buildToolsVersion = "36.0.0"
@@ -49,7 +49,7 @@ android {
     }
     sourceSets {
         getByName("main") {
-            // 先修复安装兼容性；页面、配置与 Service 编译同一份源码，不复制实现。
+            // 页面按设备类型适配；配置与 Service 编译同一份源码，不复制业务实现。
             kotlin.directories.add("../app/src/main/kotlin")
             res.directories.add("../app/src/main/res")
             manifest.srcFile("../app/src/main/AndroidManifest.xml")

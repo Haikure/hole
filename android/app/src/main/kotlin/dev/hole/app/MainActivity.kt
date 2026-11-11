@@ -50,6 +50,7 @@ import dev.hole.app.ui.primaryRoutes
 import dev.hole.app.ui.showUndoSnackbar
 import dev.hole.app.ui.HoleScaffold
 import dev.hole.app.ui.HoleBackButton
+import dev.hole.app.ui.HoleScrollColumn
 import dev.hole.app.ui.ThemeSection
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.background
@@ -282,7 +283,7 @@ private fun AppRoot(
         )
         page == "release-update" -> ReleaseUpdateScreen(onBack = { goBack() })
         page == "appearance" -> HoleScaffold(title = "外观", navigationIcon = { HoleBackButton { goBack() } }) { insets ->
-            Column(Modifier.padding(insets).verticalScroll(rememberScrollState()).padding(20.dp)) {
+            HoleScrollColumn(Modifier.padding(insets), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp)) {
                 ThemeSection(
                     themeStyle = ThemeStyle.fromValue(configState.config.themeStyle),
                     themeMode = ThemeMode.fromValue(configState.config.themeMode),

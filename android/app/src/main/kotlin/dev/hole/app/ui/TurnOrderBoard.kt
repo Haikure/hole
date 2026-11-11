@@ -98,6 +98,29 @@ fun TurnOrderBoard(
     modifier: Modifier = Modifier,
     onDraggingChanged: (Boolean) -> Unit = {},
 ) {
+    if (isWearUi()) {
+        Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(if (order.isEmpty()) "默认顺序" else "已启用顺序", style = MaterialTheme.typography.titleSmall)
+            order.forEachIndexed { index, token ->
+                HoleCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(8.dp)) {
+                        Text("${index + 1} · ${turnOrderTypeLabel(token)}")
+                        HoleTextButton("上移 ${turnOrderTypeLabel(token)}", {
+                            onChange(order.toMutableList().apply { add(index - 1, removeAt(index)) })
+                        }, enabled = index > 0)
+                        HoleTextButton("下移 ${turnOrderTypeLabel(token)}", {
+                            onChange(order.toMutableList().apply { add(index + 1, removeAt(index)) })
+                        }, enabled = index < order.lastIndex)
+                        HoleTextButton("停用 ${turnOrderTypeLabel(token)}", { onChange(order - token) })
+                    }
+                }
+            }
+            turnOrderTypes.filterNot { it in order }.forEach { token ->
+                HoleButton("启用 ${turnOrderTypeLabel(token)}", { onChange(order + token) }, Modifier.fillMaxWidth(), secondary = true)
+            }
+        }
+        return
+    }
     var bounds by remember { mutableStateOf(mapOf<String, Rect>()) }
     var origin by remember { mutableStateOf(Offset.Zero) }
     var dividerY by remember { mutableStateOf(Float.MAX_VALUE) }

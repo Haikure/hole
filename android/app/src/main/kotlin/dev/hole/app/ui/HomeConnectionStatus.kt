@@ -63,7 +63,7 @@ fun HomeConnectionStatus(snapshot: CoreSnapshot) {
         .semantics(mergeDescendants = true) { stateDescription = phase.title; liveRegion = LiveRegionMode.Polite }
         .dropShadow(shape, Shadow(14.dp, color.copy(alpha = .22f), offset = DpOffset(0.dp, 6.dp)))
         .clip(shape).background(Brush.linearGradient(listOf(lerp(color, Color.White, .06f), color)))) {
-        val stacked = maxWidth < 300.dp || LocalDensity.current.fontScale > 1.3f
+        val stacked = (!isWearUi() && maxWidth < 300.dp) || LocalDensity.current.fontScale > 1.3f
         AnimatedContent(phase, transitionSpec = {
             (fadeIn(tween(220)) + slideInVertically(tween(300)) { it / 8 }) togetherWith
                 (fadeOut(tween(140)) + slideOutVertically(tween(200)) { -it / 8 })
@@ -72,12 +72,12 @@ fun HomeConnectionStatus(snapshot: CoreSnapshot) {
                 if (snapshot.mappings.any { it.state == "active" }) "已加入房间 · 服务通道可用" else "已加入房间 · 等待对端"
             } else displayed.hint
             if (stacked) {
-                Column(Modifier.fillMaxWidth().padding(22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(screenSpacing(22.dp)), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     ConnectionStatusGlyph(displayed)
                     StatusText(displayed.title, detail)
                 }
             } else {
-                Row(Modifier.fillMaxWidth().padding(22.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                Row(Modifier.fillMaxWidth().padding(screenSpacing(22.dp)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(screenSpacing(18.dp))) {
                     ConnectionStatusGlyph(displayed)
                     Column(Modifier.weight(1f)) { StatusText(displayed.title, detail) }
                 }
@@ -96,13 +96,13 @@ private fun StatusText(title: String, detail: String) {
 
 @Composable
 private fun ConnectionStatusGlyph(phase: HomeConnectionPhase) {
-    Box(Modifier.size(60.dp).background(Color.White.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
+    Box(Modifier.size(if (isWearUi()) 32.dp else 60.dp).background(Color.White.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
         when {
-            phase.pending -> CircularProgressIndicator(Modifier.size(48.dp), color = Color.White, strokeWidth = 3.dp, trackColor = Color.White.copy(alpha = .2f))
+            phase.pending -> CircularProgressIndicator(Modifier.size(if (isWearUi()) 26.dp else 48.dp), color = Color.White, strokeWidth = 3.dp, trackColor = Color.White.copy(alpha = .2f))
             phase == HomeConnectionPhase.CONNECTED -> {
                 val progress = remember { Animatable(0f) }
                 LaunchedEffect(Unit) { progress.animateTo(1f, tween(360, easing = FastOutSlowInEasing)) }
-                Canvas(Modifier.size(30.dp)) {
+                Canvas(Modifier.size(if (isWearUi()) 20.dp else 30.dp)) {
                     val path = Path().apply {
                         moveTo(size.width * .12f, size.height * .52f)
                         lineTo(size.width * .39f, size.height * .78f)
@@ -114,7 +114,7 @@ private fun ConnectionStatusGlyph(phase: HomeConnectionPhase) {
                     drawPath(segment, Color.White, style = Stroke(3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
                 }
             }
-            else -> Icon(if (phase == HomeConnectionPhase.ERROR) Icons.Default.Warning else Icons.Default.Close, null, Modifier.size(28.dp), tint = Color.White)
+            else -> Icon(if (phase == HomeConnectionPhase.ERROR) Icons.Default.Warning else Icons.Default.Close, null, Modifier.size(if (isWearUi()) 20.dp else 28.dp), tint = Color.White)
         }
     }
 }

@@ -21,6 +21,8 @@ import androidx.compose.ui.draw.clipToBounds
  */
 @Composable
 fun PageMotion(route: String, back: Boolean, content: @Composable (String) -> Unit) {
+    val wear = isWearUi()
+    val rotaryActive = LocalWearRotaryActive.current
     AnimatedContent(
         targetState = route,
         modifier = Modifier.fillMaxSize().clipToBounds(),
@@ -35,5 +37,9 @@ fun PageMotion(route: String, back: Boolean, content: @Composable (String) -> Un
             }
         },
         label = "page navigation",
-    ) { page -> content(page) }
+    ) { page ->
+        if (wear) androidx.compose.runtime.CompositionLocalProvider(
+            LocalWearRotaryActive provides (rotaryActive && page == route),
+        ) { content(page) } else content(page)
+    }
 }

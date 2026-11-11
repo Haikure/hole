@@ -23,8 +23,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 
 internal val primaryRoutes = setOf("home", "config", "details", "voice", "settings")
-private data class Destination(val route: String, val title: String, val icon: ImageVector)
-private val destinations = listOf(
+internal data class Destination(val route: String, val title: String, val icon: ImageVector)
+internal val destinations = listOf(
     Destination("home", "首页", Icons.Default.Home),
     Destination("config", "服务", Icons.Default.Build),
     Destination("details", "连接", Icons.Default.List),
@@ -43,7 +43,7 @@ fun AppNavigation(route: String, onNavigate: (String) -> Unit) {
 fun SettingsHub(onNavigate: (String) -> Unit) {
     val floatingInset = LocalFloatingInset.current
     HoleScaffold(title = "设置") { insets ->
-        androidx.compose.foundation.lazy.LazyColumn(Modifier.padding(insets).testTag("settings-hub"), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = floatingInset + 16.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+        HoleLazyColumn(Modifier.padding(insets).testTag("settings-hub"), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = floatingInset + 16.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
             item { HoleSettingsGroup("连接") {
                 SettingsLink("房间与身份", "服务器、房间、设备名", Icons.Default.Home) { onNavigate("connection-settings") }
                 SettingsLink("连接方式", "直连与中继", Icons.Default.Settings) { onNavigate("transport") }
@@ -61,6 +61,20 @@ fun SettingsHub(onNavigate: (String) -> Unit) {
 
 @Composable
 private fun SettingsLink(title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit) {
+    if (isWearUi()) {
+        Surface(onClick = onClick, shape = MaterialTheme.shapes.medium, color = androidx.compose.ui.graphics.Color.Transparent) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 4.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Icon(icon, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(title, style = MaterialTheme.typography.titleSmall)
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text("›", style = MaterialTheme.typography.titleMedium)
+            }
+        }
+        return
+    }
     Surface(onClick = onClick, color = androidx.compose.ui.graphics.Color.Transparent, shape = MaterialTheme.shapes.medium) {
         ListItem(
             headlineContent = { Text(title) }, supportingContent = { Text(subtitle) },

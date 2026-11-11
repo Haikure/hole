@@ -102,6 +102,32 @@ fun MappingRow(
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    if (isWearUi()) {
+        SwipeDismissRow(onDelete, modifier) {
+            HoleCard(Modifier.fillMaxWidth().semantics {
+                customActions = listOf(CustomAccessibilityAction("删除") { onDelete(); true })
+            }) {
+                Column(Modifier.padding(10.dp)) {
+                    Row(Modifier.fillMaxWidth().clickable(onClickLabel = "编辑 $title", onClick = onEdit),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                            Icon(if (direction == "提供") Icons.Default.Share else Icons.Default.Terminal, direction,
+                                Modifier.padding(6.dp).size(18.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text(title, style = MaterialTheme.typography.titleMedium)
+                            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(status.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        HoleSwitch(enabled, onToggle, "启用 $title")
+                    }
+                }
+            }
+        }
+        return
+    }
     SwipeDismissRow(onDelete = onDelete, modifier = modifier) {
         HoleCard(
             modifier = Modifier
@@ -170,6 +196,14 @@ fun SectionHeader(
     onAdd: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    if (isWearUi()) {
+        Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(title, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleMedium)
+            if (subtitle != null) HoleInfoButton(title) { Text(subtitle) }
+            HoleAddButton(addLabel, onAdd)
+        }
+        return
+    }
     Row(modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })

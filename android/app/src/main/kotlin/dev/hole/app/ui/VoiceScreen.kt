@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
+import dev.hole.app.ui.HoleLazyColumn as LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -55,15 +55,15 @@ fun VoiceScreen(
         largeTitle = true,
     ) { insets ->
         LazyColumn(
-            Modifier.fillMaxWidth().testTag("voice-screen").padding(insets).padding(horizontal = 20.dp),
+            Modifier.fillMaxWidth().testTag("voice-screen").padding(insets).padding(horizontal = if (isWearUi()) 0.dp else 20.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             item {
                 HoleCard(Modifier.fillMaxWidth(), containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
-                    Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Column(Modifier.padding(screenSpacing(22.dp)), verticalArrangement = Arrangement.spacedBy(screenSpacing(16.dp))) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Box(
-                                Modifier.size(54.dp).clip(CircleShape),
+                                Modifier.size(if (isWearUi()) 26.dp else 54.dp).clip(CircleShape),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 androidx.compose.material3.Surface(
@@ -73,8 +73,8 @@ fun VoiceScreen(
                                 ) {}
                                 MicrophoneGlyph(MaterialTheme.colorScheme.onSurface)
                             }
-                            Column(Modifier.weight(1f).padding(start = 14.dp)) {
-                                Text("房间语音", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+                            Column(Modifier.weight(1f).padding(start = if (isWearUi()) 6.dp else 14.dp)) {
+                                Text("房间语音", style = if (isWearUi()) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
                                 Text(voiceStateLabel(voice.state), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f))
                             }
                             HoleSwitch(
@@ -92,7 +92,7 @@ fun VoiceScreen(
                                     microphoneSourceOptions,
                                     normalizeMicrophoneSource(configState.config.voice.microphoneSource),
                                     onMicrophoneSourceChange,
-                                    Modifier.fillMaxWidth(),
+                                    Modifier.fillMaxWidth().testTag("microphone-source"),
                                 )
                                 Text(
                                     "自动会在耳机有麦克风时优先使用耳机，否则使用手机麦克风。",
@@ -111,7 +111,7 @@ fun VoiceScreen(
                             androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f))
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Filled.Call, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
-                                Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                                Column(Modifier.weight(1f).padding(start = if (isWearUi()) 0.dp else 10.dp)) {
                                     Text(if (voice.muted) "麦克风已静音" else if (voice.captureState == "capturing") "麦克风正在采集" else "等待麦克风音频", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
                                     Text("${voice.members.count { it.voice }} 人正在使用语音", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.78f))
                                 }
@@ -202,7 +202,7 @@ private fun VoiceSectionTitle(title: String, count: Int) {
 @Composable
 private fun VoiceMemberRow(member: VoiceMemberSnapshot) {
     HoleCard(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(screenSpacing(16.dp)), verticalAlignment = Alignment.CenterVertically) {
             androidx.compose.material3.Surface(
                 modifier = Modifier.size(44.dp),
                 shape = CircleShape,

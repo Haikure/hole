@@ -10,7 +10,6 @@ import androidx.compose.animation.core.tween
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,7 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -226,9 +224,9 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
     }
 
     HoleScaffold(title = "应用更新", navigationIcon = { HoleBackButton(onBack) }) { insets ->
-        Column(
-            Modifier.fillMaxWidth().padding(insets).verticalScroll(scrollState)
-                .padding(horizontal = 20.dp, vertical = 12.dp),
+        HoleScrollColumn(
+            Modifier.fillMaxWidth().padding(insets), state = scrollState,
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             HoleSettingsGroup("当前版本") {
@@ -262,7 +260,7 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
             HoleSettingsGroup("GitHub 加速服务") {
                 Column(Modifier.selectableGroup()) {
                     ReleaseAccelerators.presets.forEach { preset ->
-                        Row(
+                        WearStackedRow(
                             Modifier.fillMaxWidth().selectable(
                                 selected = acceleratorId == preset.id,
                                 role = Role.RadioButton,
@@ -375,7 +373,7 @@ internal fun ReleaseDownloadProgress(status: ReleaseDownloadSnapshot, bytesPerSe
     val progress = status.progress
     val animatedProgress by animateFloatAsState(progress ?: 0f, tween(450), label = "APK download progress")
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+        WearStackedRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically) {
             Text(downloadStatusText(status), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
             if (progress != null) Text("${(progress * 100).toInt()}%", style = MaterialTheme.typography.labelLarge)

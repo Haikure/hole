@@ -28,6 +28,10 @@ fun FloatingAppFrame(
     snackbarHostState: SnackbarHostState? = null,
     content: @Composable () -> Unit,
 ) {
+    if (isWearUi()) {
+        WearAppFrame(route, onNavigate, snapshot, enabled, onToggleRun, snackbarHostState, content)
+        return
+    }
     val floating = route in primaryRoutes
     val bottomInset = if (floating) 100.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() else 0.dp
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {

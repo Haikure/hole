@@ -46,8 +46,9 @@ fun LiquidSelection(
     val density = LocalDensity.current
     val textStyle = if (icons == null) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelSmall
     val measurer = rememberTextMeasurer()
-    val minimum = with(density) { (labels.maxOf { measurer.measure(it, textStyle).size.width }.toDp() + if (icons == null) 28.dp else 16.dp).coerceAtLeast(48.dp) }
-    val height = if (icons == null) 48.dp else 60.dp
+    val wear = isWearUi()
+    val minimum = with(density) { (labels.maxOf { measurer.measure(it, textStyle).size.width }.toDp() + if (wear) 12.dp else if (icons == null) 28.dp else 16.dp).coerceAtLeast(if (wear) 44.dp else 48.dp) }
+    val height = if (wear && icons == null) 44.dp else if (icons == null) 48.dp else 60.dp
     val colors = MaterialTheme.colorScheme
     val dark = colors.background.luminance() < .4f
     val lensShape = RoundedCornerShape(8.dp)

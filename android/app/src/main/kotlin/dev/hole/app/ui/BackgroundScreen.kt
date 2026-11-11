@@ -9,8 +9,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.Slider
@@ -80,7 +78,7 @@ fun BackgroundScreen(onBack: () -> Unit) {
         try { context.startActivity(intent) } catch (_: RuntimeException) { error = "请从系统应用信息中打开电池与后台运行设置" }
     }
     HoleScaffold(title = "后台运行", navigationIcon = { HoleBackButton(onBack) }) { insets ->
-        Column(Modifier.fillMaxWidth().padding(insets).verticalScroll(rememberScrollState()).padding(16.dp),
+        HoleScrollColumn(Modifier.fillMaxWidth().padding(insets),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
             HoleSettingsGroup("悬浮球") {
                 HoleSwitchPreference(

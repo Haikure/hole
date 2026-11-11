@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
+import dev.hole.app.ui.HoleLazyColumn as LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -50,7 +50,7 @@ fun ConfigOverviewScreen(
         snackbarHost = { snackbarHostState?.let { HoleSnackbarHost(it) } },
     ) { insets ->
         LazyColumn(
-            Modifier.fillMaxWidth().testTag("config-overview").padding(insets).padding(horizontal = 16.dp),
+            Modifier.fillMaxWidth().testTag("config-overview").padding(insets).padding(horizontal = screenSpacing(16.dp)),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             item {

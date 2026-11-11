@@ -116,7 +116,7 @@ internal fun PeerDetailsContent(peer: PeerSnapshot) {
     val issue = fixedConnectionIssue(peer.errorCode) ?: peer.errorMessage
     if (!issue.isNullOrBlank()) {
         HoleCard(containerColor = MaterialTheme.colorScheme.errorContainer) {
-            Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.padding(screenSpacing(16.dp)), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(Icons.Default.ErrorOutline, null, tint = MaterialTheme.colorScheme.onErrorContainer)
                 Text(issue, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodyMedium)
             }
@@ -153,7 +153,7 @@ private fun PeerDetailSection(title: String, icon: ImageVector, info: String? = 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         PeerSectionHeading(title, icon, info)
         HoleCard(Modifier.fillMaxWidth()) {
-            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp), content = content)
+            Column(Modifier.fillMaxWidth().padding(screenSpacing(16.dp)), verticalArrangement = Arrangement.spacedBy(14.dp), content = content)
         }
     }
 }
@@ -164,7 +164,7 @@ private fun PeerNATCard(title: String, snapshot: NATSnapshot, local: Boolean) {
     val tone = peerNATTone(current)
     val colors = natColors(tone)
     HoleCard(Modifier.fillMaxWidth().testTag(if (local) "peer-nat-local" else "peer-nat-remote"), containerColor = colors.surface) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.padding(screenSpacing(16.dp)), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(if (local) Icons.Default.PhoneAndroid else Icons.Default.DevicesOther, null, Modifier.size(20.dp), tint = colors.ink)
                 Text(title, style = MaterialTheme.typography.labelLarge, color = colors.ink, modifier = Modifier.weight(1f))

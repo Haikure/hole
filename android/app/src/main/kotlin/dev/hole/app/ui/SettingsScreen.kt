@@ -7,14 +7,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -32,7 +30,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
+import dev.hole.app.ui.HoleDialog as Dialog
 import dev.hole.app.ConfigUiState
 import dev.hole.app.config.ThemeMode
 import dev.hole.app.config.ThemeStyle
@@ -129,12 +127,11 @@ fun SettingsScreen(
                 enabled = dirty && serverUrlError == null && addressError == null && validTimeout && configState.loaded)
         },
     ) { insets ->
-        Column(
+        HoleScrollColumn(
             Modifier
                 .fillMaxWidth()
-                .padding(insets)
-                .verticalScroll(scrollState)
-                .padding(horizontal = 20.dp),
+                .padding(insets),
+            state = scrollState, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             saveError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
@@ -219,17 +216,17 @@ fun SettingsScreen(
                     }
                 }
             }
-            androidx.compose.foundation.layout.Spacer(Modifier.height(96.dp))
+            androidx.compose.foundation.layout.Spacer(Modifier.height(if (isWearUi()) 0.dp else 96.dp))
         }
     }
 
     if (showCancelConfirm) {
         Dialog(onDismissRequest = { showCancelConfirm = false }) {
             HoleCard {
-                Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.padding(screenSpacing(22.dp)), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("放弃未保存的修改？", style = MaterialTheme.typography.titleLarge)
                     Text("当前连接设置尚未保存。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                    WearStackedRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                         HoleTextButton("继续编辑", onClick = { showCancelConfirm = false })
                         HoleTextButton("放弃", onClick = {
                             showCancelConfirm = false
@@ -255,7 +252,7 @@ private fun SettingsActionRow(title: String, summary: String, onClick: () -> Uni
         color = MaterialTheme.colorScheme.surface,
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
     ) {
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        WearStackedRow(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(title, style = MaterialTheme.typography.titleSmall)
                 Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
