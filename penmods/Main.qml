@@ -972,7 +972,7 @@ Item {
         }
         if (Number(peer.rtt_ms) > 0) appendSnapshotLine(lines, "  延迟", asString(peer.rtt_ms) + " ms")
         appendSnapshotLine(lines, "  线路流量", "收 " + bytesText(peer.bytes_received) + " / 发 " + bytesText(peer.bytes_sent))
-        appendSnapshotLine(lines, "  QUIC 统计", "丢包率近 1 分钟 · 速率本次连接")
+        appendSnapshotLine(lines, "  QUIC 统计", "丢包率本次连接 · 平均按有效使用时长")
         appendSnapshotLine(lines, "  丢包率", page.quicLossText(peer))
         appendSnapshotLine(lines, "  峰值速率", page.bandwidthText(peer.bandwidth, true))
         appendSnapshotLine(lines, "  平均速率", page.bandwidthText(peer.bandwidth, false))

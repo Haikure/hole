@@ -13,8 +13,8 @@ for (const name of ['sendLossText', 'quicLossText', 'bandwidthText']) {
 }
 
 test('QUIC summaries preserve weighted rate and core simultaneous peak', () => {
-    assert.equal(context.sendLossText({ window_seconds: 60, samples: '1000', lost_packets: '19', rate_percent: 1.9 }), '1.90%');
-    assert.match(context.sendLossText({ window_seconds: 60, samples: '0', lost_packets: '0', rate_percent: null }), /暂无样本/);
+    assert.equal(context.sendLossText({ scope: 'connection', samples: '1000', lost_packets: '19', rate_percent: 1.9 }), '1.90%');
+    assert.match(context.sendLossText({ scope: 'connection', samples: '0', lost_packets: '0', rate_percent: null }), /暂无样本/);
     assert.equal(context.sendLossText(undefined), '—');
     assert.equal(context.quicLossText({ send_loss: { rate_percent: 0 } }), '合计 暂无反馈 · 上行 0.00% · 下行 暂无反馈');
     const bandwidth = {

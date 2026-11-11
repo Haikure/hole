@@ -90,7 +90,7 @@ pub struct Peer {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SendLoss {
-    pub window_seconds: u64,
+    pub scope: String,
     pub samples: String,
     pub lost_packets: String,
     pub rate_percent: Option<f64>,
@@ -98,7 +98,14 @@ pub struct SendLoss {
 
 impl SendLoss {
     fn from_json(v: &Value) -> Option<Self> {
-        let window_seconds = v["window_seconds"].as_u64().filter(|n| *n > 0)?;
+        let scope = match v["scope"].as_str() {
+            Some("connection") => "本连接".to_string(),
+            Some(_) => return None,
+            None => {
+                let seconds = v["window_seconds"].as_u64().filter(|n| *n > 0)?;
+                if seconds == 60 { "近 1 分钟".into() } else { format!("近 {seconds} 秒") }
+            }
+        };
         let samples = v["samples"].as_str()?;
         let lost_packets = v["lost_packets"].as_str()?;
         let count = samples.parse::<u64>().ok()?;
@@ -108,7 +115,7 @@ impl SendLoss {
             value if count > 0 => Some(value.as_f64().filter(|n| n.is_finite() && (0.0..=100.0).contains(n))?),
             _ => return None,
         };
-        Some(Self { window_seconds, samples: samples.into(), lost_packets: lost_packets.into(), rate_percent })
+        Some(Self { scope, samples: samples.into(), lost_packets: lost_packets.into(), rate_percent })
     }
 }
 
@@ -122,8 +129,7 @@ pub fn remote_loss_label(loss: Option<&SendLoss>, direction: &str) -> String {
 }
 
 fn loss_label(loss: &SendLoss, direction: &str) -> String {
-    let window = if loss.window_seconds == 60 { "近 1 分钟".into() } else { format!("近 {} 秒", loss.window_seconds) };
-    let scope = format!("{direction} · {window}");
+    let scope = format!("{direction} · {}", loss.scope);
     match loss.rate_percent {
         Some(rate) => format!("{rate:.2}% · {scope} · 丢失 {} / 已判定 {} 包", loss.lost_packets, loss.samples),
         None => format!("暂无样本 · {scope}"),
@@ -160,7 +166,7 @@ impl Bandwidth {
 pub fn bandwidth_label(bandwidth: Option<&Bandwidth>, peak: bool) -> String {
     let Some(b) = bandwidth else { return "未上报或采样中".into() };
     let rate = |v: &BandwidthRates| format!("{:.2} Mbps", (if peak { v.peak_bps } else { v.average_bps }) / 1_000_000.0);
-    let scope = if peak { "本连接 · 约 1 秒采样" } else { "本连接 · 含空闲时间" };
+    let scope = if peak { "本连接 · 约 1 秒采样" } else { "本连接 · 按有效使用时长" };
     format!("合计 {} · 上行 {} · 下行 {} · {scope}", rate(&b.total), rate(&b.send), rate(&b.receive))
 }
 
@@ -864,17 +870,17 @@ mod tests {
     #[test]
     fn bilateral_metrics_preserve_core_weighting_and_simultaneous_peak() {
         let s = parse_snapshot(&json!({"api_version":1,"peer_transports":[{
-            "quic_loss":{"window_seconds":60,"samples":"1000","lost_packets":"19","rate_percent":1.9},
-            "receive_loss":{"window_seconds":60,"samples":"900","lost_packets":"9","rate_percent":1},
+            "quic_loss":{"scope":"connection","samples":"1000","lost_packets":"19","rate_percent":1.9},
+            "receive_loss":{"scope":"connection","samples":"900","lost_packets":"9","rate_percent":1},
             "bandwidth":{"send":{"peak_bps":8000000,"average_bps":4000000},
                 "receive":{"peak_bps":16000000,"average_bps":8000000},
                 "total":{"peak_bps":16000000,"average_bps":12000000}}
         },{}]})).unwrap();
         let p = &s.peers[0];
-        assert_eq!(remote_loss_label(p.quic_loss.as_ref(), "双向合计"), "1.90% · 双向合计 · 近 1 分钟 · 丢失 19 / 已判定 1000 包");
+        assert_eq!(remote_loss_label(p.quic_loss.as_ref(), "双向合计"), "1.90% · 双向合计 · 本连接 · 丢失 19 / 已判定 1000 包");
         assert!(remote_loss_label(p.receive_loss.as_ref(), "对端 → 本机").starts_with("1.00% · 对端 → 本机"));
         assert_eq!(bandwidth_label(p.bandwidth.as_ref(), true), "合计 16.00 Mbps · 上行 8.00 Mbps · 下行 16.00 Mbps · 本连接 · 约 1 秒采样");
-        assert_eq!(bandwidth_label(p.bandwidth.as_ref(), false), "合计 12.00 Mbps · 上行 4.00 Mbps · 下行 8.00 Mbps · 本连接 · 含空闲时间");
+        assert_eq!(bandwidth_label(p.bandwidth.as_ref(), false), "合计 12.00 Mbps · 上行 4.00 Mbps · 下行 8.00 Mbps · 本连接 · 按有效使用时长");
         assert_eq!(remote_loss_label(s.peers[1].quic_loss.as_ref(), "双向合计"), "无有效对端反馈");
         assert_eq!(bandwidth_label(s.peers[1].bandwidth.as_ref(), true), "未上报或采样中");
         assert!(Bandwidth::from_json(&json!({"send":{"peak_bps":-1,"average_bps":0}})).is_none());
@@ -885,15 +891,16 @@ mod tests {
         let parse = |loss: Value| parse_snapshot(&json!({"api_version":1,"peer_transports":[{
             "retry_count":"99","dropped_datagrams":"999","send_loss":loss
         }]})).unwrap().peers.remove(0).send_loss;
-        let loss = parse(json!({"window_seconds":60,"samples":"18446744073709551615","lost_packets":"9007199254740993","rate_percent":1.25}));
-        assert_eq!(send_loss_label(loss.as_ref()), "1.25% · 本机 → 对端 · 近 1 分钟 · 丢失 9007199254740993 / 已判定 18446744073709551615 包");
-        let zero = parse(json!({"window_seconds":60,"samples":"80","lost_packets":"0","rate_percent":0}));
-        assert_eq!(send_loss_label(zero.as_ref()), "0.00% · 本机 → 对端 · 近 1 分钟 · 丢失 0 / 已判定 80 包");
-        let idle = parse(json!({"window_seconds":60,"samples":"0","lost_packets":"0","rate_percent":null}));
-        assert_eq!(send_loss_label(idle.as_ref()), "暂无样本 · 本机 → 对端 · 近 1 分钟");
-        for loss in [Value::Null, json!({}), json!({"window_seconds":60,"samples":"1","lost_packets":"0","rate_percent":"0"}),
-            json!({"window_seconds":60,"samples":"1","lost_packets":"0","rate_percent":101}),
-            json!({"window_seconds":60,"samples":"0","lost_packets":"0","rate_percent":0})] {
+        let loss = parse(json!({"scope":"connection","samples":"18446744073709551615","lost_packets":"9007199254740993","rate_percent":1.25}));
+        assert_eq!(send_loss_label(loss.as_ref()), "1.25% · 本机 → 对端 · 本连接 · 丢失 9007199254740993 / 已判定 18446744073709551615 包");
+        let zero = parse(json!({"scope":"connection","samples":"80","lost_packets":"0","rate_percent":0}));
+        assert_eq!(send_loss_label(zero.as_ref()), "0.00% · 本机 → 对端 · 本连接 · 丢失 0 / 已判定 80 包");
+        let idle = parse(json!({"scope":"connection","samples":"0","lost_packets":"0","rate_percent":null}));
+        assert_eq!(send_loss_label(idle.as_ref()), "暂无样本 · 本机 → 对端 · 本连接");
+        for loss in [Value::Null, json!({}), json!({"scope":"connection","samples":"1","lost_packets":"0","rate_percent":"0"}),
+            json!({"scope":"connection","samples":"1","lost_packets":"0","rate_percent":101}),
+            json!({"scope":"connection","samples":"0","lost_packets":"0","rate_percent":0}),
+            json!({"scope":"invalid","samples":"1","lost_packets":"0","rate_percent":0})] {
             assert_eq!(send_loss_label(parse(loss).as_ref()), "未上报");
         }
         let old = parse_snapshot(&json!({"api_version":1,"peer_transports":[{}]})).unwrap();

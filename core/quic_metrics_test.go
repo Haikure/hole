@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/apernet/quic-go"
-	"github.com/apernet/quic-go/monotime"
 )
 
 func TestQUICChannelLossWeightedFreshnessAndInvalidReports(t *testing.T) {
@@ -24,7 +23,7 @@ func TestQUICChannelLossWeightedFreshnessAndInvalidReports(t *testing.T) {
 			t.Fatalf("not weighted by packets: receive=%+v total=%+v", receive, total)
 		}
 	}
-	for _, invalid := range []*SendLossSnapshot{nil, {WindowSeconds: 1, Samples: 1}, {WindowSeconds: 60, Samples: 1, LostPackets: 2}} {
+	for _, invalid := range []*SendLossSnapshot{nil, {Scope: "window", Samples: 1}, {Scope: "connection", Samples: 1, LostPackets: 2}} {
 		m.receiveLoss(now.Add(5*time.Second), invalid)
 	}
 	if receive, total := m.lossSnapshot(now.Add(quicStatsMaxAge), local); receive != nil || total != nil {
@@ -56,11 +55,11 @@ func TestQUICBandwidthPeaksIdleAndDelayedSampling(t *testing.T) {
 		t.Fatalf("incorrect peaks or average: %+v", s)
 	}
 	m.recordBandwidth(now.Add(5*time.Second), quic.ConnectionStats{BytesSent: 1100, BytesReceived: 2200})
-	if s = m.bandwidthSnapshot(); s.Total.AverageBPS != 4800 || s.Total.PeakBPS != 16000 || s.ElapsedSeconds != 5 {
-		t.Fatalf("idle time missing: %+v", s)
+	if s = m.bandwidthSnapshot(); s.Total.AverageBPS != 12000 || s.Total.PeakBPS != 16000 || s.ElapsedSeconds != 5 {
+		t.Fatalf("idle time reduced average: %+v", s)
 	}
 	m.recordBandwidth(now.Add(8*time.Second), quic.ConnectionStats{BytesSent: 4100, BytesReceived: 2200})
-	if s = m.bandwidthSnapshot(); s.Send.PeakBPS != 8000 || s.Total.AverageBPS != 6000 {
+	if s = m.bandwidthSnapshot(); s.Send.PeakBPS != 8000 || s.Total.AverageBPS != 9600 {
 		t.Fatalf("delayed tick inflated bandwidth: %+v", s)
 	}
 	s.Send.PeakBPS = 0
@@ -98,7 +97,7 @@ func TestQUICMetricsFollowActivePath(t *testing.T) {
 	defer cancel()
 	now := time.Now()
 	mux := &muxPeer{ctx: ctx, sendLoss: &quicPacketLoss{}}
-	mux.sendLoss.record(monotime.Now(), 90, 10)
+	mux.sendLoss.record(90, 10)
 	mux.metrics.receiveLoss(now, lossFromCounts(900, 9))
 	mux.metrics.startBandwidth(now.Add(-time.Second), quic.ConnectionStats{})
 	mux.metrics.recordBandwidth(now, quic.ConnectionStats{BytesSent: 1000})
@@ -199,7 +198,7 @@ func TestQUICStatsControlStreamAndLegacyPeer(t *testing.T) {
 				}
 			}
 			for {
-				receive, _ := peer.metrics.lossSnapshot(time.Now(), peer.sendLoss.snapshot(monotime.Now()))
+				receive, _ := peer.metrics.lossSnapshot(time.Now(), peer.sendLoss.snapshot())
 				bandwidth := peer.metrics.bandwidthSnapshot()
 				if bandwidth != nil && (!enabled || (receive != nil && receive.LostPackets == 7)) {
 					break

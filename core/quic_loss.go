@@ -2,69 +2,53 @@ package core
 
 import (
 	"sync"
-	"time"
 
 	"github.com/apernet/quic-go/congestion"
 	"github.com/apernet/quic-go/monotime"
 )
 
-const packetLossWindowSeconds = 60
-
 // SendLossSnapshot measures the local sender's QUIC loss decisions, not local
 // receive-queue drops. Pending packets aren't counted until ACKed or declared
-// lost. A nil rate means there were no outcomes in the recent window.
+// lost. Counters cover the lifetime of the current QUIC connection. A nil rate
+// means there were no outcomes yet.
 // Collection runs with the connection, independently of snapshot/UI readers.
 type SendLossSnapshot struct {
-	WindowSeconds int      `json:"window_seconds"`
-	Samples       uint64   `json:"samples,string"`
-	LostPackets   uint64   `json:"lost_packets,string"`
-	RatePercent   *float64 `json:"rate_percent"`
-}
-
-type packetLossBucket struct {
-	second int64
-	acked  uint64
-	lost   uint64
+	Scope       string   `json:"scope"`
+	Samples     uint64   `json:"samples,string"`
+	LostPackets uint64   `json:"lost_packets,string"`
+	RatePercent *float64 `json:"rate_percent"`
 }
 
 type quicPacketLoss struct {
 	mu      sync.Mutex
-	buckets [packetLossWindowSeconds]packetLossBucket
+	samples uint64
+	lost    uint64
 }
 
-func (l *quicPacketLoss) record(now monotime.Time, acked, lost uint64) {
+func (l *quicPacketLoss) record(acked, lost uint64) {
 	if acked == 0 && lost == 0 {
 		return
 	}
-	second := int64(now) / int64(time.Second)
 	l.mu.Lock()
-	b := &l.buckets[second%packetLossWindowSeconds]
-	if b.second != second {
-		*b = packetLossBucket{second: second}
-	}
-	b.acked += acked
-	b.lost += lost
+	l.samples = saturatingAdd(l.samples, saturatingAdd(acked, lost))
+	l.lost = saturatingAdd(l.lost, lost)
 	l.mu.Unlock()
 }
 
-func (l *quicPacketLoss) snapshot(now monotime.Time) *SendLossSnapshot {
+func saturatingAdd(a, b uint64) uint64 {
+	if ^uint64(0)-a < b {
+		return ^uint64(0)
+	}
+	return a + b
+}
+
+func (l *quicPacketLoss) snapshot() *SendLossSnapshot {
 	if l == nil {
 		return nil
 	}
-	second := int64(now) / int64(time.Second)
-	s := &SendLossSnapshot{WindowSeconds: packetLossWindowSeconds}
 	l.mu.Lock()
-	for _, b := range l.buckets {
-		if b.second <= second && second-b.second < packetLossWindowSeconds {
-			s.Samples += b.acked + b.lost
-			s.LostPackets += b.lost
-		}
-	}
+	s := lossFromCounts(l.samples, l.lost)
 	l.mu.Unlock()
-	if s.Samples > 0 {
-		rate := float64(s.LostPackets) / float64(s.Samples) * 100
-		s.RatePercent = &rate
-	}
 	return s
 }
 
@@ -87,7 +71,7 @@ func (c *observedCongestion) OnCongestionEvent(number congestion.PacketNumber, l
 }
 
 func (c *observedCongestion) OnCongestionEventEx(priorInFlight congestion.ByteCount, eventTime monotime.Time, acked []congestion.AckedPacketInfo, lost []congestion.LostPacketInfo) {
-	c.loss.record(eventTime, uint64(len(acked)), c.pendingLost)
+	c.loss.record(uint64(len(acked)), c.pendingLost)
 	c.pendingLost = 0
 	c.CongestionControlEx.OnCongestionEventEx(priorInFlight, eventTime, acked, lost)
 }

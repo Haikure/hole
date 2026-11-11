@@ -122,7 +122,7 @@ impl PeerData {
             kv("建连耗时", &if p.connect_ms == "0" { "尚未完成".to_string() } else { format!("{} ms", p.connect_ms) }),
             kv("路径重试", &format!("{} 次", p.retry_count)),
             kv("本地丢弃报文", &p.dropped_datagrams),
-            kv("QUIC 统计", "丢包率近 1 分钟 · 速率本次连接"),
+            kv("QUIC 统计", "丢包率本次连接 · 平均按有效使用时长"),
             kv("丢包率", &snap::quic_loss_summary(p)),
             kv("峰值速率", &snap::bandwidth_summary(p.bandwidth.as_ref(), true)),
             kv("平均速率", &snap::bandwidth_summary(p.bandwidth.as_ref(), false)),
@@ -1153,15 +1153,15 @@ mod tests {
     fn quic_loss_details_update_independently_of_retries_and_receive_drops() {
         for path in ["direct", "relay", "hole", "fixed"] {
             for (loss, expected) in [
-                (serde_json::json!({"window_seconds":60,"samples":"80","lost_packets":"1","rate_percent":1.25}), "1.25%"),
-                (serde_json::json!({"window_seconds":60,"samples":"80","lost_packets":"0","rate_percent":0}), "0.00%"),
-                (serde_json::json!({"window_seconds":60,"samples":"0","lost_packets":"0","rate_percent":null}), "暂无样本"),
+                (serde_json::json!({"scope":"connection","samples":"80","lost_packets":"1","rate_percent":1.25}), "1.25%"),
+                (serde_json::json!({"scope":"connection","samples":"80","lost_packets":"0","rate_percent":0}), "0.00%"),
+                (serde_json::json!({"scope":"connection","samples":"0","lost_packets":"0","rate_percent":null}), "暂无样本"),
                 (Value::Null, "—"),
             ] {
                 let s = snap::parse_snapshot(&serde_json::json!({"api_version":1,"peer_transports":[{
                     "path_type":path,"retry_count":"99","dropped_datagrams":"999","send_loss":loss,
-                    "quic_loss":{"window_seconds":60,"samples":"1000","lost_packets":"19","rate_percent":1.9},
-                    "receive_loss":{"window_seconds":60,"samples":"900","lost_packets":"9","rate_percent":1},
+                    "quic_loss":{"scope":"connection","samples":"1000","lost_packets":"19","rate_percent":1.9},
+                    "receive_loss":{"scope":"connection","samples":"900","lost_packets":"9","rate_percent":1},
                     "bandwidth":{"send":{"peak_bps":8000000,"average_bps":4000000},
                         "receive":{"peak_bps":16000000,"average_bps":8000000},
                         "total":{"peak_bps":16000000,"average_bps":12000000}}

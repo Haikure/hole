@@ -92,12 +92,12 @@ internal fun PeerDetailsContent(peer: PeerSnapshot) {
         ))
     }
     PeerDetailSection("QUIC 统计", Icons.AutoMirrored.Filled.ShowChart,
-        info = "丢包率统计最近约 1 分钟的数据，合计按双向包数加权。下行与合计需要有效的对端反馈。\n\n" +
-            "速率统计本次连接：峰值取约 1 秒采样的最大值，平均包含空闲时间。数值包含重传和控制开销，不代表线路容量；切换连接后重新统计。") {
+        info = "丢包率按本次连接累计的丢失包 / 已判定总包计算，合计按双向包数加权。下行与合计需要有效的对端反馈。\n\n" +
+            "速率统计本次连接：峰值取约 1 秒采样的最大值，平均只计入有流量的采样时长，空闲区间不计。数值包含重传和控制开销，不代表线路容量；切换连接后重新统计。") {
         PeerQuicMetric("丢包率", "合计 ${peer.quicLoss?.rateLabel() ?: "暂无反馈"} · 上行 ${peer.sendLoss?.rateLabel() ?: "—"} · 下行 ${peer.receiveLoss?.rateLabel() ?: "暂无反馈"}")
         PeerQuicMetric("峰值速率", peer.bandwidth?.description(peak = true, concise = true) ?: "—")
         PeerQuicMetric("平均速率", peer.bandwidth?.description(peak = false, concise = true) ?: "—")
-        Text("丢包率近 1 分钟\n速率本次连接", style = MaterialTheme.typography.bodySmall,
+        Text("丢包率本次连接\n平均按有效使用时长", style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     if (!isFixedPeer(peer) && (peer.pathType in setOf("relay", "hole") || peer.relayDevice.isNotBlank())) {

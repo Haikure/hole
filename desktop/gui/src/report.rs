@@ -174,13 +174,13 @@ mod tests {
     fn quic_loss_report_includes_scope_samples_and_unavailable_states() {
         for path in ["direct", "relay", "hole", "fixed"] {
             let snapshot = crate::snapshot::parse_snapshot(&serde_json::json!({"api_version":1,"peer_transports":[
-                {"path_type":path,"dropped_datagrams":"999","send_loss":{"window_seconds":60,"samples":"80","lost_packets":"1","rate_percent":1.25},
-                    "quic_loss":{"window_seconds":60,"samples":"1000","lost_packets":"19","rate_percent":1.9},
-                    "receive_loss":{"window_seconds":60,"samples":"900","lost_packets":"9","rate_percent":1},
+                {"path_type":path,"dropped_datagrams":"999","send_loss":{"scope":"connection","samples":"80","lost_packets":"1","rate_percent":1.25},
+                    "quic_loss":{"scope":"connection","samples":"1000","lost_packets":"19","rate_percent":1.9},
+                    "receive_loss":{"scope":"connection","samples":"900","lost_packets":"9","rate_percent":1},
                     "bandwidth":{"send":{"peak_bps":8000000,"average_bps":4000000},
                         "receive":{"peak_bps":16000000,"average_bps":8000000},
                         "total":{"peak_bps":16000000,"average_bps":12000000}}},
-                {"path_type":path,"send_loss":{"window_seconds":60,"samples":"0","lost_packets":"0","rate_percent":null}},
+                {"path_type":path,"send_loss":{"scope":"connection","samples":"0","lost_packets":"0","rate_percent":null}},
                 {"path_type":path}
             ]})).unwrap();
             let report = diagnostic_report(&ReportContext {
@@ -188,7 +188,7 @@ mod tests {
                 gui_version: "fixture", bridge_version: 1, os_label: "fixture", resume_at_login: false,
                 last_resume_error: "", now_rfc3339: "fixture",
             });
-            for text in ["QUIC 上行丢包率 1.25% · 本机 → 对端 · 近 1 分钟 · 丢失 1 / 已判定 80 包",
+            for text in ["QUIC 上行丢包率 1.25% · 本机 → 对端 · 本连接 · 丢失 1 / 已判定 80 包",
                 "QUIC 上行丢包率 暂无样本", "QUIC 上行丢包率 未上报", "本地丢弃 999",
                 "QUIC 整体丢包率 1.90% · 双向合计", "QUIC 下行丢包率 1.00% · 对端 → 本机",
                 "QUIC 整体丢包率 无有效对端反馈", "QUIC 峰值带宽 合计 16.00 Mbps", "QUIC 平均带宽 合计 12.00 Mbps"] {

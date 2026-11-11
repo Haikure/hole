@@ -92,8 +92,8 @@ class PeerDetailsUiTest {
         compose.onNodeWithText("上行 —").assertExists()
         compose.onNodeWithText("合计 暂无反馈").assertExists()
         for (path in listOf("direct", "relay", "hole", "fixed")) {
-            compose.runOnIdle { peer = peer.copy(pathType = path, sendLoss = SendLossSnapshot(60, "80", "1", 1.25),
-                quicLoss = SendLossSnapshot(60, "1000", "19", 1.9), receiveLoss = SendLossSnapshot(60, "900", "9", 1.0),
+            compose.runOnIdle { peer = peer.copy(pathType = path, sendLoss = SendLossSnapshot("本连接", "80", "1", 1.25),
+                quicLoss = SendLossSnapshot("本连接", "1000", "19", 1.9), receiveLoss = SendLossSnapshot("本连接", "900", "9", 1.0),
                 bandwidth = BandwidthSnapshot(BandwidthRates(8e6, 4e6), BandwidthRates(16e6, 8e6), BandwidthRates(16e6, 12e6))) }
             for (value in listOf("合计 1.90%", "上行 1.25%", "下行 1.00%", "合计 16 Mbps", "上行 8 Mbps", "下行 16 Mbps",
                 "合计 12 Mbps", "上行 4 Mbps", "下行 8 Mbps")) {
@@ -101,9 +101,9 @@ class PeerDetailsUiTest {
             }
         }
         capture("peer-quic-loss-narrow.png")
-        compose.runOnIdle { peer = peer.copy(sendLoss = SendLossSnapshot(60, "80", "0", 0.0)) }
+        compose.runOnIdle { peer = peer.copy(sendLoss = SendLossSnapshot("本连接", "80", "0", 0.0)) }
         compose.onNodeWithText("上行 0.00%").assertExists()
-        compose.runOnIdle { peer = peer.copy(sendLoss = SendLossSnapshot(60, "0", "0", null)) }
+        compose.runOnIdle { peer = peer.copy(sendLoss = SendLossSnapshot("本连接", "0", "0", null)) }
         compose.onNodeWithText("上行 暂无样本").assertExists()
         compose.runOnIdle { peer = peer.copy(sendLoss = null) }
         compose.onNodeWithText("上行 —").assertExists()

@@ -75,7 +75,7 @@ Rectangle {
                         }
                     }
                 }
-                Text { Layout.fillWidth: true; text: "丢包率近 1 分钟 · 速率本次连接"; color: Theme.textMuted; font.family: Theme.fontFamily; font.pixelSize: 10; wrapMode: Text.Wrap }
+                Text { Layout.fillWidth: true; text: "丢包率本次连接 · 平均按有效使用时长"; color: Theme.textMuted; font.family: Theme.fontFamily; font.pixelSize: 10; wrapMode: Text.Wrap }
                 Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
                 DetailList { Layout.fillWidth: true; lines: card.form ? card.form.peerDetailLines(card.peer) : [] }
             }

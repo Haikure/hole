@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/apernet/quic-go"
-	"github.com/apernet/quic-go/monotime"
 )
 
 const (
@@ -28,6 +27,10 @@ type BandwidthSnapshot struct {
 	Total          BandwidthRates `json:"total"`
 }
 
+type bandwidthActiveTime struct {
+	send, receive, total float64
+}
+
 // Owned by one mux/QUIC connection. Readers never advance sampling or reset it.
 type quicChannelMetrics struct {
 	mu             sync.Mutex
@@ -35,11 +38,12 @@ type quicChannelMetrics struct {
 	remoteAt       time.Time
 	started, last  time.Time
 	base, previous quic.ConnectionStats
+	active         bandwidthActiveTime
 	bandwidth      *BandwidthSnapshot
 }
 
 func lossFromCounts(samples, lost uint64) *SendLossSnapshot {
-	s := &SendLossSnapshot{WindowSeconds: packetLossWindowSeconds, Samples: samples, LostPackets: lost}
+	s := &SendLossSnapshot{Scope: "connection", Samples: samples, LostPackets: lost}
 	if samples != 0 {
 		rate := float64(lost) / float64(samples) * 100
 		s.RatePercent = &rate
@@ -48,7 +52,7 @@ func lossFromCounts(samples, lost uint64) *SendLossSnapshot {
 }
 
 func (m *quicChannelMetrics) receiveLoss(now time.Time, loss *SendLossSnapshot) {
-	if loss == nil || loss.WindowSeconds != packetLossWindowSeconds || loss.LostPackets > loss.Samples {
+	if loss == nil || loss.Scope != "connection" || loss.LostPackets > loss.Samples {
 		return
 	}
 	m.mu.Lock()
@@ -90,15 +94,32 @@ func (m *quicChannelMetrics) recordBandwidth(now time.Time, stats quic.Connectio
 	}
 	s := m.bandwidth
 	s.ElapsedSeconds = now.Sub(m.started).Seconds()
-	up := float64(stats.BytesSent-m.previous.BytesSent) * 8 / seconds
-	down := float64(stats.BytesReceived-m.previous.BytesReceived) * 8 / seconds
+	sent := stats.BytesSent - m.previous.BytesSent
+	received := stats.BytesReceived - m.previous.BytesReceived
+	up, down := float64(sent)*8/seconds, float64(received)*8/seconds
 	s.Send.PeakBPS = max(s.Send.PeakBPS, up)
 	s.Receive.PeakBPS = max(s.Receive.PeakBPS, down)
 	// Peaks of the two directions can occur in different intervals.
 	s.Total.PeakBPS = max(s.Total.PeakBPS, up+down)
-	s.Send.AverageBPS = float64(stats.BytesSent-m.base.BytesSent) * 8 / s.ElapsedSeconds
-	s.Receive.AverageBPS = float64(stats.BytesReceived-m.base.BytesReceived) * 8 / s.ElapsedSeconds
-	s.Total.AverageBPS = s.Send.AverageBPS + s.Receive.AverageBPS
+	if sent > 0 {
+		m.active.send += seconds
+		m.active.total += seconds
+	}
+	if received > 0 {
+		m.active.receive += seconds
+		if sent == 0 {
+			m.active.total += seconds
+		}
+	}
+	if m.active.send > 0 {
+		s.Send.AverageBPS = float64(stats.BytesSent-m.base.BytesSent) * 8 / m.active.send
+	}
+	if m.active.receive > 0 {
+		s.Receive.AverageBPS = float64(stats.BytesReceived-m.base.BytesReceived) * 8 / m.active.receive
+	}
+	if m.active.total > 0 {
+		s.Total.AverageBPS = (float64(stats.BytesSent-m.base.BytesSent) + float64(stats.BytesReceived-m.base.BytesReceived)) * 8 / m.active.total
+	}
 	m.last, m.previous = now, stats
 }
 
@@ -130,7 +151,7 @@ func (p *muxPeer) reportQUICStats() {
 	ticker := time.NewTicker(quicStatsInterval)
 	defer ticker.Stop()
 	for {
-		if p.writeControl(mappingControl{Type: "QUIC_STATS", SendLoss: p.sendLoss.snapshot(monotime.Now())}) != nil {
+		if p.writeControl(mappingControl{Type: "QUIC_STATS", SendLoss: p.sendLoss.snapshot()}) != nil {
 			p.stop()
 			return
 		}

@@ -14,19 +14,25 @@ Section {
     subtitle: form && form.preferred === "ipv6" ? "IPv6" : "ICE / TURN"
     collapsible: true
 
-    Loader {
-        id: formLoader
+    Item {
         Layout.fillWidth: true
-        Layout.preferredWidth: Math.max(0, settings.width - 2 * Theme.cardPadding)
-        // Build the form with the available width and current data on each open.
-        // Drafts live in the page model, independently of these visual items.
-        active: settings.open && settings.visible && settings.form !== null
-                && settings.width > 2 * Theme.cardPadding
-        sourceComponent: AdvancedSettingsForm {
-            width: formLoader.width
-            form: settings.form
-            hostKeyboard: settings.hostKeyboard
-            scrollView: settings.scrollView
+        // A zero-width Column reports zero height. Keep Loader sizing outside
+        // layout management so the form can be measured before expansion.
+        implicitWidth: Math.max(0, settings.width - 2 * Theme.cardPadding)
+        implicitHeight: formLoader.item ? formLoader.item.implicitHeight : 0
+
+        Loader {
+            id: formLoader
+            width: Math.max(0, settings.width - 2 * Theme.cardPadding)
+            // Drafts live in the page model, independently of these items.
+            active: settings.open && settings.visible && settings.form !== null
+                    && settings.width > 2 * Theme.cardPadding
+            sourceComponent: AdvancedSettingsForm {
+                width: formLoader.width
+                form: settings.form
+                hostKeyboard: settings.hostKeyboard
+                scrollView: settings.scrollView
+            }
         }
     }
 }

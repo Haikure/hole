@@ -22,7 +22,7 @@ data class BandwidthSnapshot(val send: BandwidthRates, val receive: BandwidthRat
             val number = String.format(Locale.ROOT, "%.2f", bps / 1_000_000)
             return "${if (concise) number.trimEnd('0').trimEnd('.') else number} Mbps"
         }
-        val scope = if (peak) "本连接 · 约 1 秒采样" else "本连接 · 含空闲时间"
+        val scope = if (peak) "本连接 · 约 1 秒采样" else "本连接 · 按有效使用时长"
         val values = "合计 ${rate(total)} · 上行 ${rate(send)} · 下行 ${rate(receive)}"
         return if (concise) values else "$values · $scope"
     }

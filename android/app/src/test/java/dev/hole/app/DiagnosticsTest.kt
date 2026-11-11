@@ -26,10 +26,10 @@ class DiagnosticsTest {
     }
     @Test fun quicLossIsReportedForEveryPathWithoutUsingLocalDrops() {
         for (path in listOf("direct", "relay", "hole", "fixed")) {
-            val peer = PeerSnapshot(pathType = path, retryCount = "99", droppedDatagrams = "999", sendLoss = SendLossSnapshot(60, "80", "1", 1.25))
+            val peer = PeerSnapshot(pathType = path, retryCount = "99", droppedDatagrams = "999", sendLoss = SendLossSnapshot("本连接", "80", "1", 1.25))
             val report = diagnosticReport(CoreSnapshot(peers = listOf(peer, peer.copy(sendLoss = null),
-                peer.copy(sendLoss = SendLossSnapshot(60, "0", "0", null)))), ConfigUiState(), BackgroundInfo())
-            assertTrue(report.contains("QUIC 上行丢包率 1.25% · 本机 → 对端 · 近 1 分钟 · 丢失 1 / 已判定 80 包"))
+                peer.copy(sendLoss = SendLossSnapshot("本连接", "0", "0", null)))), ConfigUiState(), BackgroundInfo())
+            assertTrue(report.contains("QUIC 上行丢包率 1.25% · 本机 → 对端 · 本连接 · 丢失 1 / 已判定 80 包"))
             assertTrue(report.contains("QUIC 上行丢包率 未上报"))
             assertTrue(report.contains("QUIC 上行丢包率 暂无样本"))
             assertTrue(report.contains("本地丢弃 999"))

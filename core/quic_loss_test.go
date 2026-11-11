@@ -16,37 +16,36 @@ import (
 	"github.com/apernet/quic-go/monotime"
 )
 
-func TestQUICLossWindowAndEmptySamples(t *testing.T) {
+func TestQUICLossCountsPersistForConnectionLifetime(t *testing.T) {
 	loss := &quicPacketLoss{}
-	now := monotime.Time(100 * time.Second)
-	if loss.snapshot(now).RatePercent != nil {
-		t.Fatal("empty window reported zero loss")
+	if loss.snapshot().RatePercent != nil {
+		t.Fatal("empty connection reported zero loss")
 	}
-	loss.record(now, 9, 1)
-	s := loss.snapshot(now.Add(59 * time.Second))
-	if s.WindowSeconds != 60 || s.Samples != 10 || s.LostPackets != 1 || s.RatePercent == nil || *s.RatePercent != 10 {
+	loss.record(9, 1)
+	s := loss.snapshot()
+	if s.Scope != "connection" || s.Samples != 10 || s.LostPackets != 1 || s.RatePercent == nil || *s.RatePercent != 10 {
 		t.Fatalf("unexpected sample: %+v", s)
 	}
-	if loss.snapshot(now.Add(60*time.Second)).RatePercent != nil {
-		t.Fatal("idle connection retained old loss")
+	if s = loss.snapshot(); s.Samples != 10 || s.LostPackets != 1 || *s.RatePercent != 10 {
+		t.Fatalf("idle time expired packet counts: %+v", s)
 	}
-	loss.record(now.Add(60*time.Second), 4, 0)
-	s = loss.snapshot(now.Add(60 * time.Second))
-	if s.Samples != 4 || s.LostPackets != 0 || s.RatePercent == nil || *s.RatePercent != 0 {
-		t.Fatalf("new healthy traffic did not replace old samples: %+v", s)
+	loss.record(4, 0)
+	s = loss.snapshot()
+	if s.Samples != 14 || s.LostPackets != 1 || s.RatePercent == nil || *s.RatePercent < 7.14 || *s.RatePercent > 7.15 {
+		t.Fatalf("connection rate did not use lost / total packets: %+v", s)
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		for range 1000 {
-			loss.record(now.Add(61*time.Second), 1, 1)
+			loss.record(1, 1)
 		}
 	}()
 	go func() {
 		defer wg.Done()
 		for range 1000 {
-			loss.snapshot(now.Add(61 * time.Second))
+			loss.snapshot()
 		}
 	}()
 	wg.Wait()
@@ -65,14 +64,14 @@ func TestQUICLossCollectsBeforeFirstSnapshotAndReadsNeverReset(t *testing.T) {
 	c.OnCongestionEventEx(2400, now, []congestion.AckedPacketInfo{{PacketNumber: 2, BytesAcked: 1200}}, nil)
 	c.OnCongestionEventEx(1200, now.Add(30*time.Second), []congestion.AckedPacketInfo{{PacketNumber: 3, BytesAcked: 1200}}, nil)
 	for range 2 {
-		s := c.loss.snapshot(now.Add(45 * time.Second))
+		s := c.loss.snapshot()
 		if s.Samples != 3 || s.LostPackets != 1 || s.RatePercent == nil || *s.RatePercent < 33 || *s.RatePercent > 34 {
 			t.Fatalf("first or repeated read lost existing outcomes: %+v", s)
 		}
 	}
-	s := c.loss.snapshot(now.Add(60 * time.Second))
-	if s.Samples != 1 || s.LostPackets != 0 || s.RatePercent == nil || *s.RatePercent != 0 {
-		t.Fatalf("window failed to expire only the oldest outcomes: %+v", s)
+	s := c.loss.snapshot()
+	if s.Samples != 3 || s.LostPackets != 1 || s.RatePercent == nil || *s.RatePercent < 33 || *s.RatePercent > 34 {
+		t.Fatalf("connection count lost older outcomes: %+v", s)
 	}
 }
 
@@ -90,17 +89,17 @@ func TestQUICLossIgnoresECNAndMTUProbeFailures(t *testing.T) {
 	// ECN supplies no lost bytes. MTU failures appear only in the batch.
 	c.OnCongestionEvent(1, 0, 1200)
 	c.OnCongestionEventEx(1200, now, nil, []congestion.LostPacketInfo{{PacketNumber: 2, BytesLost: 1400}})
-	if c.loss.snapshot(now).RatePercent != nil {
+	if c.loss.snapshot().RatePercent != nil {
 		t.Fatal("ECN / MTU failure counted as network loss")
 	}
 	c.OnCongestionEvent(3, 1200, 2400)
 	c.OnCongestionEventEx(2400, now, []congestion.AckedPacketInfo{{PacketNumber: 4, BytesAcked: 1200}}, []congestion.LostPacketInfo{{PacketNumber: 3, BytesLost: 1200}})
-	s := c.loss.snapshot(now)
+	s := c.loss.snapshot()
 	if s.Samples != 2 || s.LostPackets != 1 || *s.RatePercent != 50 {
 		t.Fatalf("loss counted twice or missing: %+v", s)
 	}
 	c.OnCongestionEventEx(1200, now, []congestion.AckedPacketInfo{{PacketNumber: 5, BytesAcked: 1200}}, nil)
-	if c.loss.snapshot(now).LostPackets != 1 || f.scalar != 2 || f.batch != 3 {
+	if c.loss.snapshot().LostPackets != 1 || f.scalar != 2 || f.batch != 3 {
 		t.Fatal("callback lost or pending count not cleared")
 	}
 }
@@ -110,7 +109,7 @@ func TestPeerSendLossSnapshotFollowsActivePath(t *testing.T) {
 	defer cancel()
 	mux := &muxPeer{ctx: ctx, sendLoss: &quicPacketLoss{}}
 	mux.dropped.Store(999) // Local receive drops must never affect network loss.
-	mux.sendLoss.record(monotime.Now(), 75, 25)
+	mux.sendLoss.record(75, 25)
 	p := &icePeer{coordinator: &iceCoordinator{}, active: &liveICETransport{mux: mux}, online: true}
 	s := p.snapshot()
 	if s.SendLoss == nil || *s.SendLoss.RatePercent != 25 || s.DroppedDatagrams != 999 {
@@ -201,7 +200,7 @@ func TestQUICLossWithRealBBRAndDroppedPackets(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	s := loss.snapshot(monotime.Now())
+	s := loss.snapshot()
 	if socket.dropped.Load() == 0 || s.LostPackets == 0 || s.RatePercent == nil || *s.RatePercent <= 0 || *s.RatePercent >= 100 {
 		t.Fatalf("injected %d losses but reported %+v", socket.dropped.Load(), s)
 	}
