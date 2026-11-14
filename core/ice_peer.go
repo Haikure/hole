@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"github.com/apernet/quic-go"
 	"github.com/pion/ice/v4"
 	"github.com/pion/stun/v4"
@@ -26,6 +27,7 @@ type iceAttempt struct {
 	events          chan iceSignalMessage
 	failed          chan error
 	diagnostics     *iceDiagnostics
+	process         *natProcessRun
 	incoming        chan *fixedIncoming
 	fixedClaimed    bool // protected by icePeer.mu
 }
@@ -62,6 +64,7 @@ func (t *liveICETransport) close() {
 }
 
 type icePeer struct {
+	process             natProcessRecorder
 	natPublished        string
 	natPublishedAt      time.Time
 	coordinator         *iceCoordinator
@@ -133,6 +136,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 	identityChanged := old.PeerFingerprint != "" && (old.PeerFingerprint != m.PeerFingerprint || old.PeerRuntimeID != m.PeerRuntimeID)
 	if identityChanged {
 		p.stats.PunchDiagnostics = nil
+		p.process.reset()
 	}
 	p.ready = m
 	p.stats.Profile = m.Profile
@@ -184,6 +188,9 @@ func (p *icePeer) update(m iceSignalMessage) {
 		}
 		ctx, cancel := context.WithCancel(p.ctx)
 		a := &iceAttempt{ctx: ctx, cancel: cancel, ready: m, events: make(chan iceSignalMessage, maxICECandidates+4), failed: make(chan error, 1), incoming: make(chan *fixedIncoming, 1)}
+		if m.Profile == ProfileICE {
+			a.process = p.process.begin(m)
+		}
 		p.pending = a
 		p.requestedGeneration = 0
 		p.terminal = false
@@ -494,6 +501,11 @@ func (p *icePeer) stateChanged() {
 	p.coordinator.emit(Event{Kind: "transport", State: "changed", Peer: peer, Profile: profile})
 }
 func (p *icePeer) failed(a *iceAttempt, err error) {
+	detail := redact(err.Error(), p.coordinator.request().Config)
+	if a.diagnostics != nil {
+		detail = a.diagnostics.redact(err.Error())
+	}
+	a.process.finish("failed", detail)
 	if a.ctx.Err() != nil {
 		return
 	}
@@ -563,6 +575,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	owned := false
 	defer func() {
 		if !owned {
+			a.process.finish("cancelled", "连接尝试已取消")
 			a.cancel()
 		}
 	}()
@@ -586,6 +599,10 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		p.failed(a, err)
 		return
 	}
+	if source, ok := platform.(interface{ NATNetworkSnapshot() NetworkSnapshot }); ok {
+		a.process.network(source.NATNetworkSnapshot())
+	}
+	a.process.sampling(p.coordinator.localNATProcess())
 	var punch *natPunchSession
 	if a.ready.Phase == "direct" && a.ready.PunchVersion == natPunchVersion && a.ready.DirectOrder != directOrderICEFirst {
 		// Keep ICE first even when the Worker cannot coordinate fallback.
@@ -628,6 +645,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		p.failed(a, err)
 		return
 	}
+	network.process = a.process
 	if punch != nil && punch.mode == "cone" {
 		network.checkPace = newICECheckPacer()
 	}
@@ -694,6 +712,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	}
 	p.mu.Unlock()
 	started := time.Now()
+	a.processStep("ice", "收集候选并开始 ICE 检查", 0, 0)
 	p.transportEvent(a, "checking", nil)
 	logger := a.diagnostics
 	allow := stringSet(cfg.ICE.InterfaceAllowlist)
@@ -739,6 +758,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 	}
 	_ = agent.OnConnectionStateChange(func(state ice.ConnectionState) {
+		a.process.record(NATPunchProcessEvent{Kind: "ice_state", Title: "ICE 状态更新", Detail: state.String()})
 		if state == ice.ConnectionStateFailed {
 			fail(errors.New("ICE connectivity failed"))
 		}
@@ -764,6 +784,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		m.TransportGeneration = a.ready.TransportGeneration
 		m.ToPeerID = a.ready.PeerDevice
 		if candidate == nil {
+			a.process.record(NATPunchProcessEvent{Kind: "candidate_end", Title: "本机候选收集完成"})
 			m.EndOfCandidates = true
 			gatheredOnce.Do(func() { close(localGathered) })
 		} else {
@@ -775,6 +796,14 @@ func (p *icePeer) attempt(a *iceAttempt) {
 				return
 			}
 			m.ICECandidate = candidate.Marshal()
+			a.process.record(NATPunchProcessEvent{Kind: "candidate_local", Title: "发现本机候选",
+				SocketID: a.process.socketAddressID(candidateSocket(candidate)),
+				LocalAddress: net.JoinHostPort(candidate.Address(), fmt.Sprint(candidate.Port())), AddressSource: "ice_candidate", Detail: candidate.Type().String()})
+			if candidate.Type() == ice.CandidateTypeServerReflexive {
+				a.process.record(NATPunchProcessEvent{Kind: "mapped", Title: "ICE 收集到公网映射候选",
+					SocketID: a.process.socketAddressID(candidateSocket(candidate)),
+					MappedAddress: net.JoinHostPort(candidate.Address(), fmt.Sprint(candidate.Port())), AddressSource: "ice_candidate"})
+			}
 			p.mu.Lock()
 			if p.pending == a {
 				p.stats.LocalCandidates = n
@@ -794,6 +823,10 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 	})
 	_ = agent.OnSelectedCandidatePairChange(func(local, remote ice.Candidate) {
+		a.process.record(NATPunchProcessEvent{Kind: "ice_selected", Title: "ICE 选中候选对",
+			SocketID: a.process.socketAddressID(candidateSocket(local)),
+			LocalAddress:  net.JoinHostPort(local.Address(), fmt.Sprint(local.Port())),
+			RemoteAddress: net.JoinHostPort(remote.Address(), fmt.Sprint(remote.Port())), AddressSource: "ice_candidate"})
 		p.mu.Lock()
 		if p.ready.TransportGeneration != a.ready.TransportGeneration {
 			p.mu.Unlock()
@@ -893,6 +926,8 @@ func (p *icePeer) attempt(a *iceAttempt) {
 						fail(errors.New("invalid ICE candidate"))
 						return
 					}
+					a.process.record(NATPunchProcessEvent{Kind: "candidate_remote", Title: "收到对端候选",
+						RemoteAddress: net.JoinHostPort(candidate.Address(), fmt.Sprint(candidate.Port())), AddressSource: "peer_reported", Detail: candidate.Type().String()})
 					if candidate.Type() == ice.CandidateTypeRelay {
 						remoteRelay.Store(true)
 					}
@@ -1017,6 +1052,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		return
 	}
 	packet := newICEPacketConn(conn)
+	a.processStep("quic", "ICE 路径就绪，执行 QUIC 握手", 0, 0)
 	var packetConn net.PacketConn = packet
 	if !relayPhase {
 		base := ""
@@ -1077,6 +1113,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		p.failed(a, &Fault{Code: "protocol_mismatch", Message: "对端未启用 QUIC 数据报"})
 		return
 	}
+	a.process.record(NATPunchProcessEvent{Kind: "quic_established", Title: "QUIC 握手与对端身份校验通过", Validation: "authenticated"})
 	selectedPair, selectedPairErr := agent.GetSelectedCandidatePair()
 	if a.ready.RelayRequired && (selectedPairErr != nil || selectedPair == nil || relayLegs(selectedPair.Local, selectedPair.Remote) == 0 || (cfg.ICE.RelayOnly && selectedPair.Local.Type() != ice.CandidateTypeRelay)) {
 		_ = connection.CloseWithError(1, "relay required")
@@ -1090,11 +1127,15 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 		p.mu.Unlock()
 	}
+	a.processStep("mux", "协商设备身份与业务通道", 0, 0)
 	mux, err := newMuxPeer(a.ctx, p, connection, a.ready)
 	if err != nil {
 		_ = connection.CloseWithError(1, "mux negotiation failed")
 		p.failed(a, err)
 		return
+	}
+	if selectedPairErr == nil && selectedPair != nil {
+		a.process.selectedID(a.process.socketAddressID(candidateSocket(selectedPair.Local)), "", connection.RemoteAddr().String(), 0)
 	}
 	// Only the selected local relay allocation depends on these credentials.
 	// A direct path (or a relay used only by the remote peer) must not restart
@@ -1131,6 +1172,8 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	p.stats.Error = nil
 	p.stats.ConnectMS = time.Since(started).Milliseconds()
 	p.mu.Unlock()
+	a.processStep("connected", "业务线路已建立", 0, 0)
+	a.process.finish("connected", "业务通道已就绪")
 	mux.syncMappings()
 	if old != nil {
 		old.close()

@@ -82,6 +82,12 @@ type boundPlatform struct {
 }
 
 func (p *boundPlatform) NATNetworkIdentity() string { return p.network.Handle }
+func (p *boundPlatform) NATNetworkSnapshot() core.NetworkSnapshot {
+	n := p.network
+	n.Addresses = append([]string{}, n.Addresses...)
+	n.DNS = append([]string{}, n.DNS...)
+	return n
+}
 func (p *boundPlatform) NATIPv4Available() bool {
 	for _, raw := range p.network.Addresses {
 		if ip := net.ParseIP(raw); ip != nil && ip.To4() != nil {

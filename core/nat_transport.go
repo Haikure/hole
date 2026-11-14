@@ -52,6 +52,15 @@ func (c *iceCoordinator) localNAT() NATSnapshot {
 	return c.natSnapshot.Current()
 }
 
+func (c *iceCoordinator) localNATProcess() *natProcessRecorder {
+	c.natMu.Lock()
+	defer c.natMu.Unlock()
+	if c.natProbeEpoch != c.networkEpoch.Load() {
+		return nil
+	}
+	return c.natProbeProcess
+}
+
 func (c *iceCoordinator) monitorNAT() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -107,7 +116,19 @@ func (c *iceCoordinator) monitorNAT() {
 					c.natSnapshot = NATSnapshot{Status: "probing", Type: "unknown", Predictability: "unknown", Epoch: epoch}
 				}
 				c.natMu.Unlock()
-				s := probeNATWithRetries(ctx, platform, natURLs(cfg.ICE))
+				process := &natProcessRecorder{}
+				trace := process.begin(iceSignalMessage{TransportID: "nat-discovery", TransportGeneration: epoch, Phase: "nat"})
+				if source, ok := platform.(interface{ NATNetworkSnapshot() NetworkSnapshot }); ok {
+					trace.network(source.NATNetworkSnapshot())
+				}
+				c.natMu.Lock()
+				if epoch == c.networkEpoch.Load() {
+					c.natProbeProcess, c.natProbeEpoch = process, epoch
+				}
+				c.natMu.Unlock()
+				s := probeNATWithRetriesObserved(ctx, platform, natURLs(cfg.ICE), trace, 0)
+				trace.models(0, "discovery", s, NATSnapshot{})
+				trace.finish(s.Status, s.Reason)
 				s.Epoch = epoch
 				if source, ok := platform.(interface{ NATNetworkIdentity() string }); ok {
 					s.Network = source.NATNetworkIdentity()
@@ -141,15 +162,24 @@ func (c *iceCoordinator) monitorNAT() {
 // Repeat a full discovery, with fresh sockets, only while classification is
 // insufficient. A known irregular symmetric NAT is a conclusive classification.
 func probeNATWithRetries(ctx context.Context, network nat.Network, urls []string) NATSnapshot {
+	return probeNATWithRetriesObserved(ctx, network, urls, nil, 0)
+}
+
+func probeNATWithRetriesObserved(ctx context.Context, network nat.Network, urls []string, process *natProcessRun, round int) NATSnapshot {
 	s := nat.Unknown("NAT 探测未取得足够证据")
 	if len(urls) == 0 {
 		return s
 	}
 	for attempt := 0; attempt < 3 && ctx.Err() == nil; attempt++ {
 		probeCtx, stop := context.WithTimeout(ctx, natprobe.DefaultTimeout)
-		pc, err := network.ListenPacket(probeCtx, "udp4", "0.0.0.0:0")
+		probeNetwork := network
+		if process != nil {
+			probeNetwork = &natProcessNetwork{Network: network, process: process, round: round, trial: attempt + 1}
+			process.record(NATPunchProcessEvent{Kind: "stage", Stage: "nat_sampling", Title: "开始 NAT 映射与过滤采样", Round: round, Trial: attempt + 1})
+		}
+		pc, err := probeNetwork.ListenPacket(probeCtx, "udp4", "0.0.0.0:0")
 		if err == nil {
-			s, _ = nat.Probe(probeCtx, network, pc, urls)
+			s, _ = nat.Probe(probeCtx, probeNetwork, pc, urls)
 			_ = pc.Close()
 		}
 		stop()

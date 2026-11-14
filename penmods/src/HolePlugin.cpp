@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonParseError>
 #include <QSaveFile>
 
@@ -28,11 +29,19 @@ HolePlugin::HolePlugin(QObject* parent) : QObject(parent) {
             if (m_process) m_process->kill();
         }
     });
+    m_natPunchProcessTimer.setSingleShot(true);
+    m_natPunchProcessTimer.setInterval(5000);
+    connect(&m_natPunchProcessTimer, &QTimer::timeout, this, [this] {
+        const QString id = m_natPunchProcessRequestId;
+        m_natPunchProcessRequestId.clear();
+        emit natPunchProcessFailed(id, QStringLiteral("过程记录读取超时"));
+    });
     loadConfig();
 }
 
 HolePlugin::~HolePlugin() {
     m_reloadTimer.stop();
+    m_natPunchProcessTimer.stop();
     m_reloading = m_reloadStopping = m_resumeAfterReload = false;
     if (!m_process) return;
     // Teardown must never dispatch finished() into the reload path.
@@ -218,9 +227,9 @@ void HolePlugin::sendStart(const QString& method) {
     sendRequest(method, request);
 }
 
-void HolePlugin::sendRequest(const QString& method, const QJsonObject& params) {
-    if (m_reloading && method != QStringLiteral("hello") && method != QStringLiteral("shutdown")) return;
-    if (!m_process || m_process->state() == QProcess::NotRunning) return;
+QString HolePlugin::sendRequest(const QString& method, const QJsonObject& params) {
+    if (m_reloading && method != QStringLiteral("hello") && method != QStringLiteral("shutdown")) return {};
+    if (!m_process || m_process->state() == QProcess::NotRunning) return {};
     QJsonObject request;
     const QString id = QStringLiteral("p%1").arg(++m_requestId);
     if (method == QStringLiteral("start") || method == QStringLiteral("apply_config")) m_pendingRequestId = id;
@@ -233,6 +242,7 @@ void HolePlugin::sendRequest(const QString& method, const QJsonObject& params) {
     if (!params.isEmpty()) request.insert(QStringLiteral("params"), params);
     m_process->write(QJsonDocument(request).toJson(QJsonDocument::Compact));
     m_process->write("\n");
+    return id;
 }
 
 void HolePlugin::start() {
@@ -325,6 +335,25 @@ void HolePlugin::cancelNATProbe() {
     if (m_helloReceived) sendRequest(QStringLiteral("cancel_nat_probe"));
 }
 
+QString HolePlugin::requestNATPunchProcess(const QString& transportId, const QString& afterSequence,
+                                         const QString& generation, const QString& stream) {
+    if (m_reloading || !natPunchProcessAvailable() || !m_natPunchProcessRequestId.isEmpty()) return {};
+    if (transportId.isEmpty() || transportId.size() > 256 || afterSequence.size() > 20 || generation.size() > 20) return {};
+    QJsonObject params;
+    params.insert(QStringLiteral("transport_id"), transportId);
+    params.insert(QStringLiteral("after_sequence"), afterSequence);
+    params.insert(QStringLiteral("generation"), generation);
+    params.insert(QStringLiteral("stream"), stream);
+    params.insert(QStringLiteral("limit"), 256);
+    m_natPunchProcessRequestId = sendRequest(QStringLiteral("nat_punch_process"), params);
+    if (!m_natPunchProcessRequestId.isEmpty()) {
+        m_natPunchProcessRequests.append(m_natPunchProcessRequestId);
+        while (m_natPunchProcessRequests.size() > 8) m_natPunchProcessRequests.removeFirst();
+        m_natPunchProcessTimer.start();
+    }
+    return m_natPunchProcessRequestId;
+}
+
 void HolePlugin::clearError() {
     setError({});
 }
@@ -387,6 +416,21 @@ void HolePlugin::handleLine(const QByteArray& line) {
     }
 
     const QJsonObject errorObject = object.value(QStringLiteral("error")).toObject();
+    const QString responseId = object.value(QStringLiteral("id")).toString();
+    if (m_natPunchProcessRequests.contains(responseId)) {
+        m_natPunchProcessRequests.removeOne(responseId);
+        if (responseId != m_natPunchProcessRequestId) return;
+        m_natPunchProcessRequestId.clear();
+        m_natPunchProcessTimer.stop();
+        if (!errorObject.isEmpty()) {
+            const QJsonObject data = errorObject.value(QStringLiteral("data")).toObject();
+            emit natPunchProcessFailed(responseId, data.value(QStringLiteral("message")).toString(QStringLiteral("过程记录读取失败")));
+        } else {
+            const QJsonObject result = object.value(QStringLiteral("result")).toObject();
+            emit natPunchProcessReady(responseId, QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact)));
+        }
+        return;
+    }
     if (!errorObject.isEmpty()) {
         const QJsonObject data = errorObject.value(QStringLiteral("data")).toObject();
         if (m_reloading) {
@@ -411,6 +455,8 @@ void HolePlugin::handleLine(const QByteArray& line) {
         // operation alive until its own reply arrives; otherwise the first
         // start request is lost and the UI gets a false running state.
         m_helloReceived = true;
+        m_natPunchProcessAvailable = result.value(QStringLiteral("methods")).toArray().contains(QJsonValue(QStringLiteral("nat_punch_process")));
+        emit capabilitiesChanged();
         if (m_reloading) {
             m_reloadTimer.stop();
             m_reloading = false;
@@ -461,6 +507,13 @@ void HolePlugin::handleLine(const QByteArray& line) {
 
 void HolePlugin::clearProcessState() {
     m_helloReceived = false;
+    m_natPunchProcessAvailable = false;
+    m_natPunchProcessTimer.stop();
+    const QString processRequest = m_natPunchProcessRequestId;
+    m_natPunchProcessRequestId.clear();
+    m_natPunchProcessRequests.clear();
+    if (!processRequest.isEmpty()) emit natPunchProcessFailed(processRequest, QStringLiteral("核心进程已结束"));
+    emit capabilitiesChanged();
     m_outputBuffer.clear();
     m_pendingMethod.clear();
     m_pendingRequestId.clear();

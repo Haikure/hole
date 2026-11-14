@@ -78,6 +78,12 @@ func ProbeSocket(ctx context.Context, pc net.PacketConn, servers []*net.UDPAddr,
 	return ProbeSocketObserved(ctx, pc, servers, listen, localEndpoint, nil)
 }
 
+func observeProbeStage(pc net.PacketConn, stage string) {
+	if observer, ok := pc.(interface{ ObserveNATProbeStage(string) }); ok {
+		observer.ObserveNATProbeStage(stage)
+	}
+}
+
 // ProbeSocketObserved reports each base mapping response/error synchronously.
 // Extra sockets validate the model and are deliberately excluded from base counts.
 func ProbeSocketObserved(ctx context.Context, pc net.PacketConn, servers []*net.UDPAddr, listen func(string, string) (net.PacketConn, error), localEndpoint netip.AddrPort, observe func(netip.AddrPort, Sample, error)) (string, Snapshot, []netip.AddrPort) {
@@ -89,6 +95,7 @@ func ProbeSocketObserved(ctx context.Context, pc net.PacketConn, servers []*net.
 	samples := make([]Sample, 0, len(servers)*probeRounds+4)
 	baseline := make(map[netip.AddrPort]Sample, len(servers))
 	var lastRequest time.Time
+	observeProbeStage(pc, "nat_base")
 	for _, server := range servers {
 		if ctx.Err() != nil {
 			break
@@ -111,6 +118,7 @@ func ProbeSocketObserved(ctx context.Context, pc net.PacketConn, servers []*net.
 		fresh, err := listen("udp4", "0.0.0.0:0")
 		if err == nil {
 			defer fresh.Close()
+			observeProbeStage(fresh, "nat_extra")
 			// Verify against a responding destination; the first configured
 			// server may have failed while later servers supplied the trend.
 			server := net.UDPAddrFromAddrPort(samples[0].Server)
@@ -137,6 +145,7 @@ func ProbeSocketObserved(ctx context.Context, pc net.PacketConn, servers []*net.
 		}
 	}
 
+	observeProbeStage(pc, "nat_classify")
 	result := Classify(localEndpoint, samples, extra, filteringBehavior, filteringReason)
 	// Validate on additional, held-out sockets and different destinations.
 	// Keep their local ports reserved until discovery finishes.
@@ -154,12 +163,14 @@ func ProbeSocketObserved(ctx context.Context, pc net.PacketConn, servers []*net.
 				break
 			}
 			held = append(held, fresh)
+			observeProbeStage(fresh, "nat_validate")
 			server := net.UDPAddrFromAddrPort(samples[(i+1)*probeRounds%len(samples)].Server)
 			value, err := pacedBinding(ctx, fresh, server, 0, &lastRequest)
 			if err != nil || !advanceModel(&result, value) {
 				result.AllocationScope = "same_socket"
 				break
 			}
+			observeProbeStage(fresh, "nat_reuse")
 			reused, err := pacedBinding(ctx, fresh, server, 0, &lastRequest)
 			if err != nil || reused.Mapped != value.Mapped {
 				result.AllocationScope = "unknown"
@@ -177,8 +188,13 @@ func ProbeSocketObserved(ctx context.Context, pc net.PacketConn, servers []*net.
 	return localText, result, mappedAddresses(samples)
 }
 
-func Binding(ctx context.Context, pc net.PacketConn, server *net.UDPAddr, change byte, timeout time.Duration) (Sample, error) {
+func Binding(ctx context.Context, pc net.PacketConn, server *net.UDPAddr, change byte, timeout time.Duration) (sample Sample, bindingErr error) {
 	request := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
+	if observer, ok := pc.(interface {
+		ObserveSTUNBinding(netip.AddrPort, [stun.TransactionIDSize]byte, byte, Sample, error)
+	}); ok {
+		defer func() { observer.ObserveSTUNBinding(addrPort(server), request.TransactionID, change, sample, bindingErr) }()
+	}
 	if change != 0 {
 		request.Add(stun.AttrChangeRequest, []byte{0, 0, 0, change})
 	}
@@ -276,6 +292,7 @@ func filteringProbe(ctx context.Context, pc net.PacketConn, primary, other netip
 	if !usableOtherAddress(other, primary) {
 		return unknown("STUN 服务未提供有效的 RFC 5780 OTHER-ADDRESS")
 	}
+	observeProbeStage(pc, "nat_filter_ip_port")
 	changed, err := pacedBinding(ctx, pc, net.UDPAddrFromAddrPort(primary), 6, lastRequest)
 	if ctx.Err() != nil {
 		return unknown("过滤探测总时限已到")
@@ -290,6 +307,7 @@ func filteringProbe(ctx context.Context, pc net.PacketConn, primary, other netip
 		return unknown("过滤探测失败：" + err.Error())
 	}
 	portChanged := netip.AddrPortFrom(primary.Addr(), other.Port())
+	observeProbeStage(pc, "nat_filter_port")
 	changed, err = pacedBinding(ctx, pc, net.UDPAddrFromAddrPort(primary), 2, lastRequest)
 	if ctx.Err() != nil {
 		return unknown("过滤探测总时限已到")
@@ -306,6 +324,7 @@ func filteringProbe(ctx context.Context, pc net.PacketConn, primary, other netip
 	// RFC 5780's alternate-address check distinguishes restrictive filtering
 	// from a path that cannot reach the server's alternate IP at all.
 	alternateIP := netip.AddrPortFrom(other.Addr(), primary.Port())
+	observeProbeStage(pc, "nat_filter_alternate")
 	if check, err := pacedBinding(ctx, pc, net.UDPAddrFromAddrPort(alternateIP), 0, lastRequest); err == nil && ctx.Err() == nil && check.Source == alternateIP {
 		return "address_port_dependent", nil, nil, ""
 	}
@@ -320,6 +339,7 @@ func probeFiltering(ctx context.Context, server *net.UDPAddr, listen func(string
 		return "unknown", nil, nil, "创建过滤探测 UDP socket 失败：" + err.Error()
 	}
 	defer pc.Close()
+	observeProbeStage(pc, "nat_filter_base")
 	initial, err := pacedBinding(ctx, pc, server, 0, lastRequest)
 	if err != nil {
 		return "unknown", nil, nil, "过滤探测基础请求失败：" + err.Error()

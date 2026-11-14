@@ -22,6 +22,7 @@ Engine engine = Mobile.newEngineWithNetworkBinding(sink, binding);
 engine.start(requestJSON);
 engine.applyConfig(requestJSON);
 engine.snapshotJSON();
+engine.natPunchProcessJSON(transportId, afterSequence);
 engine.networkChanged(eventJSON);
 engine.renominateTransports();
 engine.startNATProbe(optionsJSON);
@@ -40,6 +41,15 @@ Android 使用带 `NetworkBinding` 的构造方法；旧 `newEngine` 和 `newEng
 结果在 `snapshot.nat_diagnostic`，包括状态、起止时间、原始分类、网络信息和带字段说明的分组。
 事件 `nat_diagnostic` 在停止转发时也能唤醒宿主；显式 `stop` 取消检测并抑制旧回调，之后可再次手动检测。
 Android 检测的 DNS 和 UDP 均绑定当前物理 Network，切网使旧结果失效。
+
+### 打洞过程
+
+`natPunchProcessJSON(transportId, afterSequence)` 增量读取一个设备对的打洞过程，`afterSequence` 为上一轮返回的
+十进制 `sequence` 字符串，首次传 `"0"`。结果独立于普通运行快照，包含连接尝试、NAT 模型、校准计划、socket
+状态及新事件；历史尝试的 `discovery` 包含当时关联的自动 NAT 采样记录。
+`sequence`、`generation`、毫秒时间与事件移出 / 未记录计数使用十进制字符串，其他报文计数使用 JSON 数值。
+读取不启动连接。宿主在页面可见时轮询，按序号合并事件；检测到代次起始时间或序号重置时从 `"0"` 重新读取。
+页面回放使用事件中的 `round_snapshot` 恢复对应时间的模型与端口计划。
 
 ### 运行请求
 

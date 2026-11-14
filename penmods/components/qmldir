@@ -22,3 +22,10 @@ PeerCard 1.0 PeerCard.qml
 RuntimePanel 1.0 RuntimePanel.qml
 Reveal 1.0 Reveal.qml
 PageEntrance 1.0 PageEntrance.qml
+NATPunchChips 1.0 NATPunchChips.qml
+NATPunchHero 1.0 NATPunchHero.qml
+NATPunchRow 1.0 NATPunchRow.qml
+NATPunchFacts 1.0 NATPunchFacts.qml
+NATPunchMatrix 1.0 NATPunchMatrix.qml
+NATPunchReplay 1.0 NATPunchReplay.qml
+NATPunchSamples 1.0 NATPunchSamples.qml

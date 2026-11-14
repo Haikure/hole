@@ -68,7 +68,11 @@ import dev.hole.corebridge.CoreSnapshot
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private var detailRequest by mutableStateOf(0)
@@ -178,6 +182,44 @@ private fun AppRoot(
         }
     }
 
+    var exportingNATPunchProcess by remember(model) { mutableStateOf(model.hasNATPunchProcessExport) }
+    val exportNATPunchProcess = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        val document = model.takeNATPunchProcessExport()
+        if (uri == null || document == null) {
+            exportingNATPunchProcess = false
+            if (uri != null) showNotice("导出内容已失效，请重新导出")
+        } else scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    requireNotNull(context.contentResolver.openOutputStream(uri, "wt")).bufferedWriter(Charsets.UTF_8).use { it.write(document) }
+                }
+                showNotice("打洞过程已导出")
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { showNotice("打洞过程写入失败，请重新选择位置") }
+            finally { exportingNATPunchProcess = false }
+        }
+    }
+
+    fun exportPunchProcess(transportId: String) {
+        if (exportingNATPunchProcess) return
+        exportingNATPunchProcess = true
+        scope.launch {
+            try {
+                model.prepareNATPunchProcessExport(transportId)
+                val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT))
+                exportNATPunchProcess.launch("hole-nat-punch-$timestamp.json")
+            } catch (cancelled: CancellationException) {
+                model.takeNATPunchProcessExport()
+                exportingNATPunchProcess = false
+                throw cancelled
+            } catch (failure: Exception) {
+                model.takeNATPunchProcessExport()
+                exportingNATPunchProcess = false
+                showNotice(failure.message ?: "打洞过程导出失败，请重试")
+            }
+        }
+    }
+
     // 串行处理撤销队列：每条 Snackbar 等待结束（超时、操作或被替换）再处理下一条。
     LaunchedEffect(Unit) {
         for (undo in undoQueue) {
@@ -281,6 +323,11 @@ private fun AppRoot(
             snapshot.natDiagnostic, snapshot.nativeReady && configState.loaded, commandError,
             model::startNATProbe, model::cancelNATProbe, { goBack() }, { navigate("transport") },
         )
+        page.startsWith("nat-process/") -> dev.hole.app.ui.NATPunchProcessScreen(
+            snapshot = snapshot, transportId = android.net.Uri.decode(page.removePrefix("nat-process/")),
+            readProcess = model::natPunchProcess, onBack = { goBack() },
+            onExport = ::exportPunchProcess, exporting = exportingNATPunchProcess,
+        )
         page == "release-update" -> ReleaseUpdateScreen(onBack = { goBack() })
         page == "appearance" -> HoleScaffold(title = "外观", navigationIcon = { HoleBackButton { goBack() } }) { insets ->
             HoleScrollColumn(Modifier.padding(insets), contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp)) {
@@ -348,6 +395,7 @@ private fun AppRoot(
                 exportReport.launch("hole-diagnostics.txt")
             }, onBackground = { navigate("background") }, onTransportSettings = { navigate("transport") },
             onNATDetection = { navigate("nat-detection") },
+            onNATPunchProcess = { navigate("nat-process/${android.net.Uri.encode(it)}") },
         )
         page.startsWith("provide") -> ProvideEditScreen(
             entryId = page.removePrefix("provide/").ifEmpty { null },

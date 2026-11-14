@@ -18,6 +18,7 @@ import (
 // Implements Pion's network boundary without creating stdnet (which enumerates
 // netlink on Android). Every socket/DNS operation stays on the pinned Platform.
 type iceNetwork struct {
+	process   *natProcessRun
 	ctx       context.Context
 	platform  Platform
 	facts     ICEPlatform
@@ -46,6 +47,12 @@ func (n *iceNetwork) ListenPacket(network, address string) (net.PacketConn, erro
 	if err == nil {
 		n.track(pc)
 		pc = n.paced(pc)
+		if n.process != nil {
+			id := n.process.socket(pc, "ice", 0, 0)
+			if udp, ok := pc.(transport.UDPConn); ok {
+				pc = &natProcessICEConn{UDPConn: udp, observer: &natProcessProbeConn{PacketConn: pc, process: n.process, id: id}}
+			}
+		}
 	}
 	return pc, err
 }

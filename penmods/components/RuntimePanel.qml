@@ -13,6 +13,7 @@ ColumnLayout {
     readonly property var peers: form ? form.orderedPeers(snapshot.peer_transports || []) : []
     signal refreshRequested()
     signal reconnectRequested()
+    signal punchProcessRequested(string peerId, string transportId)
     spacing: 6
     // Only membership/order changes touch the model. A poll updates existing
     // cards, preserving their Canvas icons, controls and expansion state.
@@ -57,6 +58,7 @@ ColumnLayout {
             peer: panel.peerData[model.peerKey] || ({})
             form: panel.form
             onExpansionRequested: expanded = value
+            onPunchProcessRequested: panel.punchProcessRequested(peerId, transportId)
         }
     }
     Section {

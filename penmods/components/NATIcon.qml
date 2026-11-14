@@ -39,6 +39,15 @@ Canvas {
             c.moveTo(6, 6); c.lineTo(18, 18); c.moveTo(18, 6); c.lineTo(6, 18)
         } else if (name === "refresh") {
             c.arc(12, 12, 8, 0.4, 5.6); c.moveTo(19, 3); c.lineTo(19, 8); c.lineTo(14, 8)
+        } else if (name === "play") {
+            c.moveTo(7, 4); c.lineTo(20, 12); c.lineTo(7, 20); c.closePath()
+        } else if (name === "pause") {
+            c.moveTo(8, 4); c.lineTo(8, 20); c.moveTo(16, 4); c.lineTo(16, 20)
+        } else if (name === "previous" || name === "next") {
+            if (name === "next") { c.translate(24, 0); c.scale(-1, 1) }
+            c.moveTo(6, 5); c.lineTo(6, 19); c.moveTo(18, 5); c.lineTo(9, 12); c.lineTo(18, 19)
+        } else if (name === "check") {
+            c.moveTo(4, 12); c.lineTo(9, 17); c.lineTo(20, 6)
         } else if (name === "upload" || name === "download") {
             if (name === "download") { c.translate(24, 24); c.rotate(Math.PI) }
             c.moveTo(12, 20); c.lineTo(12, 4); c.moveTo(6, 10); c.lineTo(12, 4); c.lineTo(18, 10)

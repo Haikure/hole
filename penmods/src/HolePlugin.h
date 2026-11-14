@@ -4,6 +4,7 @@
 #include <QProcess>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 
 class QQmlEngine;
@@ -20,6 +21,8 @@ class HolePlugin final : public QObject {
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(QString snapshotJson READ snapshotJson NOTIFY snapshotChanged)
     Q_PROPERTY(QString pluginDirectory READ pluginDirectory CONSTANT)
+    Q_PROPERTY(bool coreReady READ coreReady NOTIFY capabilitiesChanged)
+    Q_PROPERTY(bool natPunchProcessAvailable READ natPunchProcessAvailable NOTIFY capabilitiesChanged)
 
 public:
     explicit HolePlugin(QObject* parent = nullptr);
@@ -35,6 +38,8 @@ public:
     QString lastError() const { return m_lastError; }
     QString snapshotJson() const { return m_snapshotJson; }
     QString pluginDirectory() const { return m_pluginDirectory; }
+    bool coreReady() const { return m_helloReceived; }
+    bool natPunchProcessAvailable() const { return m_helloReceived && m_natPunchProcessAvailable; }
 
     void setServerUrl(const QString& value);
     void setConfigJson(const QString& value);
@@ -50,6 +55,8 @@ public:
     Q_INVOKABLE void renominateTransports();
     Q_INVOKABLE void startNATProbe(const QString& optionsJson);
     Q_INVOKABLE void cancelNATProbe();
+    Q_INVOKABLE QString requestNATPunchProcess(const QString& transportId, const QString& afterSequence,
+                                              const QString& generation, const QString& stream);
     Q_INVOKABLE bool saveConfig();
     Q_INVOKABLE bool loadConfig();
     Q_INVOKABLE void clearError();
@@ -62,6 +69,9 @@ signals:
     void snapshotChanged();
     void eventReceived(const QString& eventJson);
     void configApplyFailed(const QString& message);
+    void capabilitiesChanged();
+    void natPunchProcessReady(const QString& requestId, const QString& resultJson);
+    void natPunchProcessFailed(const QString& requestId, const QString& message);
 
 private slots:
     void onProcessStarted();
@@ -76,7 +86,7 @@ private:
     void failReload(const QString& message);
     void sendHello();
     void sendStart(const QString& method);
-    void sendRequest(const QString& method, const QJsonObject& params = {});
+    QString sendRequest(const QString& method, const QJsonObject& params = {});
     void handleLine(const QByteArray& line);
     void setState(const QString& value);
     void setError(const QString& value);
@@ -105,6 +115,10 @@ private:
     QString m_pendingRequestId;
     bool m_probePending = false;
     QJsonObject m_probeOptions;
+    bool m_natPunchProcessAvailable = false;
+    QString m_natPunchProcessRequestId;
+    QStringList m_natPunchProcessRequests;
+    QTimer m_natPunchProcessTimer;
 };
 
 extern "C" void init_plugin();

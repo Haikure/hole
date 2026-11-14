@@ -120,6 +120,7 @@ func (p *icePeer) calibrateNATPunch(ctx context.Context, a *iceAttempt, s *natPu
 		}
 		if synchronized {
 			diagnostic.Stage = "calibration_wait"
+			a.processStep("calibration_wait", "等待双方同序号校准准备完成", round, trial)
 			if err := p.sendNATPunch(a, natPunchSignal{Kind: "calibrate", Round: round, Trial: trial}); err != nil {
 				return nil, err
 			}
@@ -131,7 +132,9 @@ func (p *icePeer) calibrateNATPunch(ctx context.Context, a *iceAttempt, s *natPu
 		diagnostic.STUNServer, *previous = server.String(), server.String()
 		diagnostic.CalibrationAttempts = trial
 		diagnostic.MappedAddress = ""
-		sample, err := natprobe.Binding(ctx, calibrator, server, 0, 3*time.Second)
+		a.process.socket(calibrator, "calibration", round, trial)
+		a.processStep("calibration", "执行本轮 STUN 映射校准", round, trial)
+		sample, err := natprobe.Binding(ctx, a.process.probeConn(calibrator, round, trial), server, 0, 3*time.Second)
 		var plan *natPunchPlan
 		result := "ok"
 		if err != nil {

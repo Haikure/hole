@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
+import java.time.Instant
 
 // Java names/signatures were checked against the generated AAR using javap.
 // Construct, collect and close on a background dispatcher. Only application
@@ -43,6 +44,29 @@ class CoreClient(context: Context) : CoreController {
         voiceAudio?.let { snapshot.copy(voice = it.snapshot(snapshot.voice)) } ?: snapshot
     }.flowOn(Dispatchers.IO)
     override fun setTelemetryActive(active: Boolean) { sampler.setUiVisible(active) }
+
+    override suspend fun natPunchProcess(transportId: String, afterSequence: String): NATPunchProcess = withContext(Dispatchers.IO) {
+        NATPunchProcess.fromJson(engine.natPunchProcessJSON(transportId, afterSequence))
+    }
+
+    override suspend fun exportNATPunchProcess(transportId: String): String = withContext(Dispatchers.IO) {
+        require(transportId.isNotBlank() && transportId.length <= 256) { "需要有效的设备传输 ID" }
+        val exportedAt = Instant.now().toString()
+        // Keep the core JSON intact, including fields not used by the UI model.
+        val process = JSONObject(engine.natPunchProcessJSON(transportId, "0"))
+        check(process.optString("transport_id") == transportId && (process.optJSONArray("attempts")?.length() ?: 0) > 0) {
+            "当前连接暂无可导出的过程记录"
+        }
+        val snapshot = JSONObject(engine.snapshotJSON())
+        JSONObject()
+            .put("format", "hole-nat-punch-process")
+            .put("version", 1)
+            .put("exported_at", exportedAt)
+            .put("core_version", snapshot.optString("core_version"))
+            .put("core_build_id", snapshot.optString("core_build_id"))
+            .put("nat_punch_process", process)
+            .toString(2) + "\n"
+    }
 
     /**
      * 生命周期命令与快照采集、回调线程互不共享执行线程；

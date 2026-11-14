@@ -45,6 +45,7 @@ func run(ctx context.Context, data []byte) error {
 | `NetworkChanged` | 更换外部网络路径，保留符合恢复条件的应用会话 |
 | `RenominateTransports` | 对已有 ICE active 路径发起新代次；无可用路径时是幂等 no-op |
 | `StartNATProbe` / `CancelNATProbe` | 开始或取消无需房间的手动 NAT 检测，结果在独立诊断快照中 |
+| `NATPunchProcess` | 按设备传输 ID 和已读取序号增量读取打洞步骤、socket、端口计划与收发记录 |
 | `Stop` | 取消网络活动并等待资源清理，实例可再次启动 |
 | `Close` | 最终关闭实例和事件通道 |
 
@@ -82,6 +83,17 @@ CLI 仅在 `-debug` 下展示这些诊断。每次尝试最多输出 64 条底�
 NetworkChanged 使记录失效，完成的分类在 5 分钟后标为过期。原始字段及中文说明供各图形前端共同展示。
 共享探测使用平台的 IPv4 解析入口，避免双栈 DNS 返回顺序丢失 STUN 目标。手动结果另含逐服务的解析地址、
 基础样本、去重映射及失败原因，区分目标数、样本数和映射数；预测字段仅在对应模型成立时提供。
+
+### 打洞过程记录
+
+`Engine.NATPunchProcess(transportID, afterSequence)` 独立读取指定设备对的过程记录。记录包括普通 ICE、
+预测打洞及中继阶段，保留最近 6 次连接尝试、4096 条近期事件与 512 条步骤事件，序号单调递增。
+每次返回当前尝试、轮次、socket 状态及新事件；后台 NAT 采样过程附在对应尝试中。
+模型、双方端口计划、扫描端点与轮次汇总在事件中保留当时的快照，可按事件回放。
+
+STUN 记录包含事务编号、CHANGE-REQUEST、请求服务、实际响应来源、OTHER-ADDRESS 和已匹配事务的映射；
+UDP 打洞记录包含每次 PROBE / ACK 的端点、长度、序号、最小重传间隔与认证结果。地址保留其观测来源。
+记录窗口的移出数量及采集时未记录的数量单独返回；普通运行快照继续使用原有字段。
 
 ### DNS 与直连顺序
 

@@ -8,6 +8,7 @@ Rectangle {
     property var form: null
     property bool expanded: false
     signal expansionRequested(bool value)
+    signal punchProcessRequested(string peerId, string transportId)
     readonly property bool active: peer.state === "active" || peer.state === "switching"
     implicitHeight: body.height + 16
     radius: 10; color: Theme.surface
@@ -43,11 +44,21 @@ Rectangle {
             MetricTile { Layout.fillWidth: true; Layout.preferredWidth: 1; label: "上行"; iconName: "upload"; value: card.form ? card.form.bytesText(card.peer.bytes_sent) : "—" }
             MetricTile { Layout.fillWidth: true; Layout.preferredWidth: 1; label: "下行"; iconName: "download"; value: card.form ? card.form.bytesText(card.peer.bytes_received) : "—" }
         }
-        ActionButton {
-            objectName: "peerExpand"
-            Layout.fillWidth: true
-            text: card.expanded ? "收起连接详情" : "连接详情"; iconName: "activity"; variant: "link"
-            onClicked: card.expansionRequested(!card.expanded)
+        RowLayout {
+            Layout.fillWidth: true; spacing: 5
+            ActionButton {
+                objectName: "peerExpand"
+                Layout.fillWidth: true; Layout.preferredWidth: 1
+                text: card.expanded ? "收起详情" : "连接详情"; iconName: "activity"; variant: "link"
+                onClicked: card.expansionRequested(!card.expanded)
+            }
+            ActionButton {
+                objectName: "peerPunchProcess"
+                Layout.fillWidth: true; Layout.preferredWidth: 1
+                visible: !!card.peer.transport_id && !(card.form && card.form.isFixedPeer(card.peer))
+                text: "打洞过程"; iconName: "steps"; variant: "link"
+                onClicked: card.punchProcessRequested(card.peer.peer_id || "", card.peer.transport_id)
+            }
         }
         Reveal {
             Layout.fillWidth: true; expanded: card.expanded

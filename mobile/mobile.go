@@ -125,6 +125,20 @@ func (e *Engine) SnapshotJSON() string {
 	return string(data)
 }
 
+// NATPunchProcessJSON incrementally reads one peer's detailed process. It does
+// not open sockets or change the transport's lifetime.
+func (e *Engine) NATPunchProcessJSON(transportID, afterSequence string) string {
+	if len(transportID) > 256 || len(afterSequence) > 20 {
+		return "{}"
+	}
+	after, err := strconv.ParseUint(afterSequence, 10, 64)
+	if err != nil {
+		after = 0
+	}
+	data, _ := json.Marshal(e.engine.NATPunchProcess(transportID, after))
+	return string(data)
+}
+
 func (e *Engine) NetworkChanged(eventJSON string) error {
 	var event struct {
 		Sequence      string `json:"sequence"`

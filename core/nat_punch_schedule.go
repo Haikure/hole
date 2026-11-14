@@ -40,6 +40,7 @@ func (g *natAllocationGate) acquire(ctx context.Context) (func(), error) {
 // higher one's. All edges follow the same order, including triangles, so a
 // device never holds the higher allocator while waiting for the lower one.
 func (p *icePeer) reserveNATPunch(a *iceAttempt) (func(), error) {
+	a.processStep("reservation", "等待并预约双方打洞时段", 0, 0)
 	ctx, cancel := context.WithDeadline(a.ctx, time.UnixMilli(a.ready.LeaseUntil))
 	defer cancel()
 	initiator := a.ready.InitiatorID == p.coordinator.deviceID()
@@ -75,7 +76,8 @@ func (p *icePeer) refreshNATPunchModel(a *iceAttempt, platform Platform, cfg Con
 	if refresh || s.local.Current().Status != "complete" {
 		epoch := p.coordinator.networkEpoch.Load()
 		probeCtx, stop := context.WithTimeout(ctx, natprobe.DefaultTimeout)
-		s.local = probeNATWithRetries(probeCtx, platform, natURLs(cfg.ICE))
+		a.processStep("model_refresh", "刷新本轮 NAT 分配模型", round, 0)
+		s.local = probeNATWithRetriesObserved(probeCtx, platform, natURLs(cfg.ICE), a.process, round)
 		stop()
 		s.local.Epoch = epoch
 		if source, ok := platform.(interface{ NATNetworkIdentity() string }); ok {
@@ -102,6 +104,7 @@ func (p *icePeer) refreshNATPunchModel(a *iceAttempt, platform Platform, cfg Con
 	p.stats.PeerNAT = s.remote.Current()
 	p.mu.Unlock()
 	s.mode = punchMode(s.local, s.remote)
+	a.process.models(round, s.mode, s.local, s.remote)
 	if s.mode == "pool" && s.poolPrediction {
 		return nil
 	}

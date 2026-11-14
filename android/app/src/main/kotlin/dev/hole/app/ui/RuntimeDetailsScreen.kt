@@ -35,6 +35,7 @@ fun RuntimeDetailsScreen(
     onBack: () -> Unit, onReconnect: () -> Unit, onExport: () -> Unit, onBackground: () -> Unit,
     snackbarHostState: SnackbarHostState? = null, onTransportSettings: () -> Unit = {},
     onNATDetection: () -> Unit = {},
+    onNATPunchProcess: (String) -> Unit = {},
 ) {
     var tab by rememberSaveable { mutableStateOf("devices") }
     var query by rememberSaveable { mutableStateOf("") }
@@ -138,6 +139,10 @@ fun RuntimeDetailsScreen(
             val peer = snapshot.peers.firstOrNull { it.transportId == id }
             if (peer == null) Text("连接已结束") else {
                 PeerDetailsContent(peer)
+                if (!isFixedPeer(peer)) NATPunchProcessEntry {
+                    selectedPeer = null
+                    onNATPunchProcess(peer.transportId)
+                }
             }
         }
     }
@@ -217,7 +222,7 @@ private fun ServiceConnectionRow(mapping: MappingSnapshot, modifier: Modifier, o
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun InspectionSheet(title: String, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+internal fun InspectionSheet(title: String, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     if (isWearUi()) {
         WearDialog(onDismiss) {
             HoleScrollColumn(Modifier.fillMaxSize()) {

@@ -59,6 +59,7 @@ func decodeNATPunch(b, key []byte, round int) (natPunchPacket, bool) {
 }
 
 type natPunchAttempt struct {
+	process    *natProcessRun
 	sockets    []net.PacketConn
 	transports []*quic.Transport
 	listeners  []*quic.Listener
@@ -99,6 +100,10 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 		err   error
 	}
 	completed := make(chan result, len(a.sockets)+1)
+	socketIDs := make([]string, len(a.sockets))
+	for i, pc := range a.sockets {
+		socketIDs[i] = a.process.socketID(pc)
+	}
 	// Each reader owns one element; inspect them only after wg.Wait below.
 	reads := make([]NATPunchDiagnostic, len(a.sockets))
 	defer func() {
@@ -174,11 +179,15 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 				}
 				if target < 0 {
 					stats.SourceRejected++
+					a.process.packet(NATPunchProcessEvent{Kind: "source_rejected", Title: "收到范围外来源报文", Direction: "in", Packet: "UDP",
+						SocketID: socketIDs[i], RemoteAddress: from.String(), Bytes: n, Round: round, Validation: "source_rejected"})
 					continue
 				}
 				packet, ok := decodeNATPunch(buf[:n], key, round)
 				if !ok {
 					stats.PacketRejected++
+					a.process.packet(NATPunchProcessEvent{Kind: "packet_rejected", Title: "收到未通过认证的报文", Direction: "in", Packet: "UDP",
+						SocketID: socketIDs[i], RemoteAddress: from.String(), Bytes: n, Round: round, Validation: "packet_rejected"})
 					continue
 				}
 				if packet.kind == 1 {
@@ -186,6 +195,13 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 				} else {
 					stats.ACKsReceived++
 				}
+				kind, name := "probe_received", "PROBE"
+				if packet.kind == 2 {
+					kind, name = "ack_received", "ACK"
+				}
+				a.process.packet(NATPunchProcessEvent{Kind: kind, Title: "收到 " + name, Direction: "in", Packet: name,
+					SocketID: socketIDs[i], RemoteAddress: from.String(), Bytes: n, Round: round, Validation: "authenticated",
+					PacketSequence: packet.sequence, PeerSocket: int(packet.socket) + 1})
 				select {
 				case incoming <- event{i, target, packet}:
 				case <-ctx.Done():
@@ -232,6 +248,7 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 			}
 			a.selected = r.index
 			a.diagnostic.QUICEstablished = true
+			a.process.record(NATPunchProcessEvent{Kind: "quic_established", Title: "QUIC 握手完成", Round: round, SocketID: socketIDs[r.index], RemoteAddress: r.conn.RemoteAddr().String()})
 			cancel()
 			for i, t := range a.transports {
 				if i != r.index {
@@ -258,6 +275,11 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 				selected = i
 				a.diagnostic.ACKsVerified++
 				a.diagnostic.QUICDialStarted = true
+				a.process.record(NATPunchProcessEvent{Kind: "ack_verified", Title: "ACK 挑战回显匹配", Round: round,
+					SocketID: socketIDs[ev.index], RemoteAddress: targets[ev.target].String(), PacketSequence: packet.sequence, Validation: "echo_verified"})
+				a.process.record(NATPunchProcessEvent{Kind: "quic_started", Title: "开始拨号 QUIC", Round: round,
+					SocketID: socketIDs[ev.index], RemoteAddress: targets[ev.target].String()})
+				a.process.record(NATPunchProcessEvent{Kind: "stage", Stage: "quic", Title: "执行 QUIC 握手", Round: round})
 				wg.Go(func() {
 					c, e := a.transports[ev.index].Dial(ctx, targets[ev.target], tlsConfig, iceQUICConfig("direct"))
 					completed <- result{c, ev.index, e}
@@ -297,8 +319,21 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 			if i >= 0 {
 				s := slots[i]
 				if _, e := a.sockets[s.index].WriteTo(payload, targets[s.target]); e != nil {
+					a.process.record(NATPunchProcessEvent{Kind: "write_error", Title: "UDP 发送失败", Round: round,
+						SocketID: socketIDs[s.index], RemoteAddress: targets[s.target].String(), Detail: e.Error()})
 					return nil, e
 				}
+				kind, name := "probe_sent", "PROBE"
+				if payload[14] == 2 {
+					kind, name = "ack_sent", "ACK"
+				}
+				limit := 4
+				if i == selected || !dialer && slots[i].seen != [64]uint16{} {
+					limit = 8
+				}
+				a.process.packet(NATPunchProcessEvent{Kind: kind, Title: "发送 " + name, Direction: "out", Packet: name,
+					SocketID: socketIDs[s.index], RemoteAddress: targets[s.target].String(), Bytes: len(payload), Round: round,
+					PacketSequence: binary.BigEndian.Uint32(payload[10:14]), Validation: "sent", RetryAfterMS: natPunchInterval.Milliseconds(), ProbeLimit: limit})
 				if payload[14] == 1 {
 					a.diagnostic.ProbesSent++
 				} else {

@@ -307,6 +307,9 @@ func (h *host) dispatch(r request) (any, *rpcError, bool) {
 	accepted := struct {
 		Accepted bool `json:"accepted"`
 	}{true}
+	if r.Method == "nat_punch_process" {
+		return h.natPunchProcess(r.Params)
+	}
 	if r.Method == "start_nat_probe" || r.Method == "cancel_nat_probe" {
 		probe, ok := h.engine.(interface {
 			StartNATProbe(core.NATProbeOptions) error
@@ -381,7 +384,7 @@ func (h *host) dispatch(r request) (any, *rpcError, bool) {
 	case "hello":
 		return helloResult{
 			BridgeVersion: ProtocolVersion, APIVersion: core.APIVersion, CoreVersion: core.CoreVersion,
-			Methods: []string{"hello", "validate", "start", "apply_config", "stop", "snapshot", "network_changed", "renominate_transports", "start_nat_probe", "cancel_nat_probe", "decode_cli_config", "encode_cli_config", "set_voice_audio", "set_voice_muted", "shutdown"},
+			Methods: []string{"hello", "validate", "start", "apply_config", "stop", "snapshot", "network_changed", "renominate_transports", "start_nat_probe", "cancel_nat_probe", "nat_punch_process", "decode_cli_config", "encode_cli_config", "set_voice_audio", "set_voice_muted", "shutdown"},
 			Limits:  protocolLimits{MaxRequestBytes, MaxConfigBytes, MaxOutputBytes, eventCapacity, responseCapacity, int(writeTimeout / time.Millisecond)},
 		}, nil, false
 	case "snapshot":

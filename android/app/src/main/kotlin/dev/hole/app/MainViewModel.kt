@@ -61,11 +61,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var serviceReference = WeakReference<EngineService>(null)
     private val visibleOwners = mutableSetOf<Any>()
     private val telemetryOwner = Any()
+    private var pendingNATPunchProcessExport: String? = null
+    val hasNATPunchProcessExport: Boolean get() = pendingNATPunchProcessExport != null
 
     fun setUiVisible(owner: Any, visible: Boolean) {
         if (visible) visibleOwners.add(owner) else visibleOwners.remove(owner)
         serviceReference.get()?.setUiVisible(telemetryOwner, visibleOwners.isNotEmpty())
     }
+
+    suspend fun natPunchProcess(transportId: String, afterSequence: String) =
+        (serviceReference.get() ?: error("核心服务正在准备中")).natPunchProcess(transportId, afterSequence)
+
+    suspend fun prepareNATPunchProcessExport(transportId: String) {
+        pendingNATPunchProcessExport = (serviceReference.get() ?: error("核心服务正在准备中")).exportNATPunchProcess(transportId)
+    }
+
+    fun takeNATPunchProcessExport(): String? {
+        val document = pendingNATPunchProcessExport
+        pendingNATPunchProcessExport = null
+        return document
+    }
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             collector?.cancel()

@@ -159,9 +159,9 @@ internal fun HoleLazyColumn(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(0.dp),
     verticalArrangement: Arrangement.Vertical = Arrangement.Top,
+    state: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
     content: LazyListScope.() -> Unit,
 ) {
-    val state = rememberLazyListState()
     val wear = isWearUi()
     LazyColumn(
         modifier.wearRotary(state), state = state,

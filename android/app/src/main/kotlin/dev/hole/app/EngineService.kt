@@ -97,6 +97,9 @@ open class EngineService : Service() {
     fun startNATProbe(options: String) { commands.trySend(Command.NATProbe(options)) }
     fun cancelNATProbe() { commands.trySend(Command.CancelNATProbe) }
 
+    suspend fun natPunchProcess(transportId: String, afterSequence: String) = ready.await().natPunchProcess(transportId, afterSequence)
+    suspend fun exportNATPunchProcess(transportId: String) = ready.await().exportNATPunchProcess(transportId)
+
     override fun onCreate() {
         super.onCreate()
         getSystemService(NotificationManager::class.java).createNotificationChannel(

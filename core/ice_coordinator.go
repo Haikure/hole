@@ -24,6 +24,8 @@ type iceCoordinator struct {
 	natAllocation            *natAllocationGate
 	natMu                    sync.Mutex
 	natSnapshot              NATSnapshot
+	natProbeProcess          *natProcessRecorder
+	natProbeEpoch            uint64
 	natCancel                context.CancelFunc
 	ctx                      context.Context
 	cancel                   context.CancelFunc

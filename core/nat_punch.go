@@ -141,7 +141,13 @@ func (p *icePeer) sendNATPunch(a *iceAttempt, value natPunchSignal) error {
 	m := signalMessage("nat_punch")
 	m.TransportID, m.TransportGeneration, m.ToPeerID = a.ready.TransportID, a.ready.TransportGeneration, a.ready.PeerDevice
 	m.Punch = &value
-	return p.coordinator.send(m)
+	err := p.coordinator.send(m)
+	event := NATPunchProcessEvent{Kind: "signal_sent", Title: "提交 " + value.Kind, Direction: "out", Packet: value.Kind, Round: value.Round, Trial: value.Trial, Validation: "queued", Mode: value.Mode, Result: value.Result, Model: value.Snapshot, Plan: value.Plan}
+	if err != nil {
+		event.Kind, event.Detail, event.Validation = "signal_error", redact(err.Error(), p.coordinator.request().Config), "send_failed"
+	}
+	a.process.record(event)
+	return err
 }
 
 // One attempt reader owns negotiation. Keep readiness from a faster peer for
@@ -174,6 +180,8 @@ func (p *icePeer) waitNATPunchTrial(ctx context.Context, a *iceAttempt, kind str
 			if m.Punch == nil {
 				continue
 			}
+			a.process.record(NATPunchProcessEvent{Kind: "signal_received", Title: "收到 " + m.Punch.Kind,
+				Direction: "in", Packet: m.Punch.Kind, Round: m.Punch.Round, Trial: m.Punch.Trial, Mode: m.Punch.Mode, Result: m.Punch.Result, Model: m.Punch.Snapshot, Plan: m.Punch.Plan})
 			if m.Punch.Kind == "abort" {
 				return nil, errors.New("peer stopped prediction")
 			}
@@ -191,6 +199,8 @@ func (p *icePeer) waitNATPunchTrial(ctx context.Context, a *iceAttempt, kind str
 }
 
 func (p *icePeer) prepareNATPunch(a *iceAttempt, cfg Config) (*natPunchSession, error) {
+	a.processStep("waiting_nat", "等待本机 NAT 采样结果", 0, 0)
+	a.process.sampling(p.coordinator.localNATProcess())
 	ctx, cancel := context.WithTimeout(a.ctx, 3*natprobe.DefaultTimeout+2*time.Second)
 	defer cancel()
 	local := p.coordinator.localNAT()
@@ -203,6 +213,7 @@ func (p *icePeer) prepareNATPunch(a *iceAttempt, cfg Config) (*natPunchSession, 
 				return nil, ctx.Err()
 			case <-ticker.C:
 				local = p.coordinator.localNAT()
+				a.process.sampling(p.coordinator.localNATProcess())
 			}
 		}
 	}
@@ -252,6 +263,8 @@ func (p *icePeer) prepareNATPunch(a *iceAttempt, cfg Config) (*natPunchSession, 
 	p.stats.PeerNAT = peer.Snapshot.Current()
 	p.mu.Unlock()
 	p.transportEvent(a, "punch_"+s.mode, nil)
+	a.process.models(0, s.mode, s.local, s.remote)
+	a.processStep("strategy", "选定本次打洞策略", 0, 0)
 	return s, nil
 }
 
@@ -318,18 +331,21 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 		for _, pc := range held {
 			if pc != selected {
 				_ = pc.Close()
+				a.process.record(NATPunchProcessEvent{Kind: "socket_closed", Title: "释放未选中的 socket", SocketID: a.process.socketID(pc)})
 			}
 		}
 	}()
 	refresh := false
 	lastServer := ""
 	for round := 1; round <= 3; round++ {
+		a.processStep("model", "准备本轮 NAT 分配模型", round, 0)
 		if scheduled {
 			if e := p.refreshNATPunchModel(a, platform, cfg, s, round, refresh); e != nil {
 				return nil, e
 			}
 		}
 		model := s.local
+		a.process.models(round, s.mode, s.local, s.remote)
 		live, roundErr := func() (_ *liveICETransport, roundError error) {
 			diagnostic := NATPunchDiagnostic{Generation: a.ready.TransportGeneration, Round: round, Mode: s.mode,
 				StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Stage: "calibration"}
@@ -340,12 +356,20 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				diagnostic.ReadError = redact(diagnostic.ReadError, cfg)
 				diagnostic.UDPReadError = redact(diagnostic.UDPReadError, cfg)
 				p.recordPunchDiagnostic(a, diagnostic)
+				a.process.diagnostic(diagnostic)
+				if roundError != nil {
+					a.process.record(NATPunchProcessEvent{Kind: "round_failed", Title: "本轮打洞已结束", Round: round, Detail: diagnostic.Error})
+				}
 			}()
 			ctx, stopAttempt := context.WithTimeout(ctx, s.config.Timeout.Duration())
 			defer stopAttempt()
+			a.processStep("dns", "解析并选择本轮 IPv4 STUN 服务", round, 0)
 			servers, err := punchSTUNServers(ctx, platform, natURLs(cfg.ICE), lastServer)
 			if err != nil {
 				return nil, err
+			}
+			for _, server := range servers {
+				a.process.record(NATPunchProcessEvent{Kind: "stun_server", Title: "本轮可用 STUN 端点", Round: round, RemoteAddress: server.String()})
 			}
 			bindAddress, err := natPunchBind(ctx, platform, cfg.ICE)
 			if err != nil {
@@ -355,6 +379,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				pc, e := platform.ListenPacket(ctx, "udp4", bindAddress)
 				if e == nil {
 					held = append(held, pc)
+					a.process.socket(pc, "business", round, 0)
 				}
 				return pc, e
 			}
@@ -374,6 +399,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				count = min(count, max(1, 256/max(1, s.config.ScanWidth)))
 			}
 			var sockets []net.PacketConn
+			a.processStep("binding", "预绑定本轮业务 socket", round, 0)
 			for range count {
 				pc, e := open()
 				if e != nil {
@@ -388,6 +414,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			diagnostic.LocalAddress = sockets[0].LocalAddr().String()
 			diagnostic.Sockets = len(sockets)
 			diagnostic.Stage = "coordination"
+			a.processStep("coordination", "交换校准结果并校验双方计划", round, diagnostic.CalibrationAttempts)
 			plan, peerPlan := plans.local, plans.remote
 			trial := 0
 			if a.ready.PunchCalibration == natPunchCalibration {
@@ -416,6 +443,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			if *want != *peerPlan {
 				return nil, errors.New("peer punch plan differs from model")
 			}
+			a.process.plans(round, trial, plan, peerPlan)
 			controlling := a.ready.InitiatorID == p.coordinator.deviceID()
 			if controlling {
 				e = p.sendNATPunch(a, natPunchSignal{Kind: "go", Round: round, Trial: trial})
@@ -443,6 +471,12 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				dialer = natGroup(model) == "cone"
 			}
 			attempt := newNATPunchAttempt(sockets)
+			attempt.process = a.process
+			for _, pc := range sockets {
+				a.process.socket(pc, "business", round, trial)
+			}
+			a.process.targets(round, targets, dialer)
+			a.processStep("udp", "向本轮目标端口发送 UDP 探测", round, trial)
 			diagnostic.Stage, diagnostic.Dialer = "udp", dialer
 			diagnostic.TargetFirst, diagnostic.TargetLast = targets[0].String(), targets[len(targets)-1].String()
 			attempt.diagnostic = diagnostic
@@ -455,6 +489,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			}
 			if e == nil {
 				diagnostic.Stage = "mux"
+				a.processStep("mux", "QUIC 已建立，协商身份与业务通道", round, trial)
 				deadline, _ := ctx.Deadline()
 				mux, muxErr := newMuxPeerPrepared(a.ctx, p, connection, a.ready, nil, deadline)
 				if muxErr != nil {
@@ -463,17 +498,33 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				}
 				selected = sockets[attempt.selected]
 				localAddress, localType := natPunchPathAddress(ctx, platform, connection.LocalAddr(), connection.RemoteAddr(), mux.observedLocalAddress)
+				if localType == "prflx" {
+					a.process.mapped(selected, localAddress, "peer_observed", round, trial)
+				}
+				localSocketAddress := ""
+				if localType == "host" {
+					localSocketAddress = localAddress
+				}
+				a.process.selected(selected, localSocketAddress, connection.RemoteAddr().String(), round)
 				p.mu.Lock()
 				p.stats.PathType, p.stats.LocalType, p.stats.RemoteType = "direct", localType, "prflx"
 				p.stats.AddressFamily = "IPv4"
 				p.stats.LocalAddress, p.stats.RemoteAddress = localAddress, connection.RemoteAddr().String()
 				p.mu.Unlock()
 				live := &liveICETransport{ready: a.ready, mux: mux, quic: attempt.transports[attempt.selected], session: connection, cancel: a.cancel}
-				live.fixedCleanup = func() { attempt.close(); _ = selected.Close() }
+				live.fixedCleanup = func() {
+					attempt.close()
+					_ = selected.Close()
+					a.process.record(NATPunchProcessEvent{Kind: "socket_closed", Title: "业务 socket 已关闭", SocketID: a.process.socketID(selected), Round: round})
+				}
 				diagnostic.Stage = "connected"
+				a.processStep("connected", "直连业务通道已就绪", round, trial)
 				return live, nil
 			}
 			attempt.close()
+			for _, pc := range sockets {
+				a.process.record(NATPunchProcessEvent{Kind: "socket_retained", Title: "保留本轮端口占用", SocketID: a.process.socketID(pc), Round: round})
+			}
 			s.local.LastMappingPort, s.remote.LastMappingPort = plan.Port, peerPlan.Port
 			return nil, e
 		}()

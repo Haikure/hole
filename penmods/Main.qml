@@ -1177,6 +1177,7 @@ Item {
                     busy: holePlugin.reloading || holePlugin.state === "stopping"
                     onRefreshRequested: page.refreshSnapshot()
                     onReconnectRequested: page.renominateTransports()
+                    onPunchProcessRequested: page.openSeparatePage("NATPunchProcessPage.qml", {form: page, hostKeyboard: keyboard, peerId: peerId, transportId: transportId})
                 }
             }
             ActionButton {
