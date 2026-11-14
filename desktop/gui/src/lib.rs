@@ -6,6 +6,7 @@ pub mod core_host;
 #[cfg(any(windows, all(test, target_os = "linux")))]
 pub mod core_runtime;
 pub mod model;
+pub mod motion;
 pub mod punch;
 pub mod report;
 pub mod snapshot;

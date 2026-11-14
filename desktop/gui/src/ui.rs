@@ -47,8 +47,8 @@ impl Palette {
             accent: rgb_to_hsla(rgb(if dark { strong } else { light })),
             soft: rgb_to_hsla(rgb(if dark { deep } else { soft })),
             on_accent: rgb_to_hsla(rgb(if dark { on_dark } else { 0xFFFFFF })),
-            good: rgb_to_hsla(rgb(if dark { 0x9BD5A9 } else { 0x238461 })),
-            warn: rgb_to_hsla(rgb(if dark { 0xF2BF6B } else { 0x98630F })),
+            good: rgb_to_hsla(rgb(if dark { 0x8EE0AE } else { 0x14643A })),
+            warn: rgb_to_hsla(rgb(if dark { 0xF5D477 } else { 0x755600 })),
             bad: rgb_to_hsla(rgb(if dark { 0xFFB1B1 } else { 0xBB4051 })),
             dark,
         }
@@ -92,9 +92,10 @@ impl Palette {
             ("tokens.control.input.horizontal_padding", 14.),
             ("tokens.control.input.vertical_padding", 10.),
             ("tokens.control.input.radius", 12.),
-            ("tokens.control.switch.track_w", 44.),
-            ("tokens.control.switch.track_h", 26.),
-            ("tokens.control.switch.knob_size", 20.),
+            ("tokens.control.switch.track_w", 48.),
+            ("tokens.control.switch.track_h", 28.),
+            ("tokens.control.switch.knob_size", 22.),
+            ("tokens.control.switch.padding", 3.),
             ("tokens.control.button.radius", 22.),
         ] {
             theme.set(key, serde_json::json!(value));
@@ -121,7 +122,7 @@ pub fn row() -> Div {
 pub fn card(p: Palette) -> Div {
     col()
         .p_5()
-        .rounded(px(20.))
+        .rounded(px(24.))
         .bg(surface_gradient(p))
         .shadow(vec![BoxShadow {
             color: rgba(if p.dark { 0x071B3C47 } else { 0x071B3C14 }).into(),
@@ -186,6 +187,25 @@ pub fn status_palette(mut p: Palette, kind: &str) -> Palette {
     p.text = gpui::white();
     p.muted = blend(tone, gpui::white(), 0.86);
     p.accent = gpui::white();
+    p
+}
+/// Android natColors 的浅色容器与深色文字，供连接详情、NAT 和打洞过程共用。
+pub fn tone_palette(mut p: Palette, kind: &str) -> Palette {
+    let (ink, surface) = match (kind, p.dark) {
+        ("good", false) => (0x14643A, 0xE1F5E8),
+        ("good", true) => (0x8EE0AE, 0x183B2A),
+        ("warn", false) => (0x755600, 0xFFF3C5),
+        ("warn", true) => (0xF5D477, 0x40351A),
+        ("bad", false) => (0x9B3039, 0xFFDAD6),
+        ("bad", true) => (0xFFB4AB, 0x442024),
+        ("info", false) => (0x1B579A, 0xE5F0FF),
+        ("info", true) => (0x9EC8FF, 0x1A3555),
+        _ => return p,
+    };
+    p.accent = rgb_to_hsla(rgb(ink));
+    p.surface = blend(p.surface, rgb_to_hsla(rgb(surface)), 0.65);
+    p.soft = blend(p.surface, p.accent, 0.10);
+    p.muted = p.accent;
     p
 }
 pub const APP_ICON: &[u8] = include_bytes!("../ui/assets/app-icon.png");
@@ -263,6 +283,7 @@ pub fn fact(label: impl Into<SharedString>, value: impl Into<SharedString>, p: P
         .child(div().text_sm().child(value.into()))
 }
 pub fn metric(name: &str, label: &str, value: String, detail: &str, p: Palette) -> Div {
+    let value_key = format!("metric-{name}-{label}-{value}");
     card(p)
         .flex_1()
         .gap_3()
@@ -278,12 +299,14 @@ pub fn metric(name: &str, label: &str, value: String, detail: &str, p: Palette) 
                         .child(icon(name, p.accent, 20.)),
                 ),
         )
-        .child(
+        .child(crate::motion::enter(
+            value_key,
             div()
                 .text_3xl()
+                .font_family("monospace")
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(value),
-        )
+        ))
         .children((!detail.is_empty()).then(|| {
             div()
                 .text_xs()
@@ -360,6 +383,8 @@ const ICONS: &[(&str, &str)] = &[
         "M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7",
     ),
     ("check", "m5 12 4 4L19 6"),
+    ("expand", "m6 9 6 6 6-6"),
+    ("collapse", "m6 15 6-6 6 6"),
     ("close", "m6 6 12 12M6 18 18 6"),
     (
         "refresh",

@@ -136,12 +136,13 @@ pub struct Process {
     pub selected_round: Option<(u64, u64)>,
     pub view: usize,
     pub filter: String,
+    pub transaction: String,
     pub direction: String,
     pub packet: String,
     pub page: usize,
     pub target_page: usize,
     pub socket_page: usize,
-    frozen: Option<Record>,
+    frozen: HashMap<String, Record>,
     next_stream: String,
 }
 impl Process {
@@ -235,31 +236,46 @@ impl Process {
         true
     }
     pub fn record(&self) -> Option<&Record> {
+        self.record_for(if self.stream.is_empty() {
+            "connection"
+        } else {
+            &self.stream
+        })
+    }
+    pub fn record_for(&self, stream: &str) -> Option<&Record> {
         if self.paused {
-            return self.frozen.as_ref();
+            return self.frozen.get(stream);
         }
-        self.records.get(&(
-            self.generation.clone(),
-            if self.stream.is_empty() {
-                "connection".into()
-            } else {
-                self.stream.clone()
-            },
-        ))
+        self.records.get(&(self.generation.clone(), stream.into()))
     }
     pub fn pause(&mut self) -> bool {
         // 分页未读完时继续读取，不能把不完整的窗口误当作全部记录。
-        if self.pending || self.record().is_none_or(|r| r.more) {
+        if self.pending
+            || self.record().is_none()
+            || (self
+                .record_for("connection")
+                .is_some_and(|r| r.has_discovery)
+                && self.record_for("discovery").is_none())
+            || self
+                .records
+                .iter()
+                .any(|((generation, _), r)| generation == &self.generation && r.more)
+        {
             return false;
         }
-        self.frozen = self.record().cloned();
-        self.position = self.frozen.as_ref().map(|r| r.events.len()).unwrap_or(0);
+        self.frozen = self
+            .records
+            .iter()
+            .filter(|((generation, _), _)| generation == &self.generation)
+            .map(|((_, stream), record)| (stream.clone(), record.clone()))
+            .collect();
+        self.position = self.record().map(|r| r.events.len()).unwrap_or(0);
         self.paused = true;
         true
     }
     pub fn live(&mut self) {
         self.paused = false;
-        self.frozen = None;
+        self.frozen.clear();
         self.page = 0;
     }
     pub fn count(&self) -> usize {
@@ -291,6 +307,8 @@ impl Process {
                         round
                             && direction
                             && packet
+                            && (self.transaction.is_empty()
+                                || text(event, "transaction_id") == self.transaction)
                             && (self.filter.is_empty()
                                 || event
                                     .to_string()
@@ -301,6 +319,46 @@ impl Process {
             })
             .unwrap_or_default()
     }
+}
+
+/// 保持 IPv6 地址完整；没有明确端口的地址不能猜测最后一段是端口。
+pub fn endpoint(value: &str) -> (&str, &str) {
+    if let Some((host, port)) = value.strip_prefix('[').and_then(|v| v.rsplit_once("]:")) {
+        if port.parse::<u16>().is_ok() {
+            return (host, port);
+        }
+    } else if value.matches(':').count() == 1 {
+        if let Some((host, port)) = value.rsplit_once(':') {
+            if port.parse::<u16>().is_ok() {
+                return (host, port);
+            }
+        }
+    }
+    (value, "")
+}
+
+pub struct StageGroup<'a> {
+    pub stage: &'a str,
+    pub events: Vec<&'a Value>,
+}
+pub fn stage_groups<'a>(events: &[&'a Value]) -> Vec<StageGroup<'a>> {
+    let mut groups: Vec<StageGroup<'a>> = Vec::new();
+    for event in events {
+        let stage = text(event, "stage");
+        let stage = if stage.is_empty() {
+            groups.last().map(|g| g.stage).unwrap_or("preparing")
+        } else {
+            stage
+        };
+        if groups.last().is_none_or(|g| g.stage != stage) {
+            groups.push(StageGroup {
+                stage,
+                events: Vec::new(),
+            });
+        }
+        groups.last_mut().unwrap().events.push(event);
+    }
+    groups
 }
 
 pub fn stage(value: &str) -> &str {
@@ -328,6 +386,104 @@ pub fn stage(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn endpoint_preserves_ipv6_and_addresses_without_ports() {
+        for (value, expected) in [
+            ("192.0.2.2:4000", ("192.0.2.2", "4000")),
+            ("[2001:db8::2]:3478", ("2001:db8::2", "3478")),
+            ("[fe80::2%wlan0]:4000", ("fe80::2%wlan0", "4000")),
+            ("2001:db8::3478", ("2001:db8::3478", "")),
+            ("", ("", "")),
+            ("stun.invalid:3478", ("stun.invalid", "3478")),
+        ] {
+            assert_eq!(endpoint(value), expected);
+        }
+    }
+    #[test]
+    fn transaction_filter_matches_the_complete_identifier() {
+        let mut process = Process::default();
+        process.select("peer".into(), "3".into());
+        let mut record = Record::default();
+        for (sequence, transaction) in [(1, "tx-1"), (2, "tx-10"), (3, "tx-1")] {
+            record.events.insert(
+                sequence,
+                json!({"sequence":sequence.to_string(),"transaction_id":transaction}),
+            );
+        }
+        process
+            .records
+            .insert(("3".into(), "connection".into()), record);
+        process.filter = "tx-1".into();
+        assert_eq!(process.events().len(), 3);
+        process.transaction = "tx-1".into();
+        assert_eq!(
+            process
+                .events()
+                .iter()
+                .map(|e| number(e, "sequence"))
+                .collect::<Vec<_>>(),
+            [1, 3]
+        );
+    }
+    #[test]
+    fn timeline_groups_packets_with_their_stage_and_keeps_revisited_stages_separate() {
+        let events = json!([
+            {"sequence":"1","stage":"ice"},
+            {"sequence":"2","packet":"STUN"},
+            {"sequence":"3","stage":"quic"},
+            {"sequence":"4","stage":"ice"},
+            {"sequence":"5","stage":"ice","packet":"STUN"}
+        ]);
+        let refs: Vec<_> = events.as_array().unwrap().iter().collect();
+        let groups = stage_groups(&refs);
+        assert_eq!(
+            groups
+                .iter()
+                .map(|g| (g.stage, g.events.len()))
+                .collect::<Vec<_>>(),
+            [("ice", 2), ("quic", 1), ("ice", 2)]
+        );
+        assert_eq!(text(groups[2].events[0], "sequence"), "4");
+    }
+    #[test]
+    fn pause_freezes_both_connection_and_discovery_and_requires_complete_pages() {
+        let mut process = Process::default();
+        process.select("peer".into(), "3".into());
+        process.records.insert(
+            ("3".into(), "connection".into()),
+            Record {
+                has_discovery: true,
+                ..Default::default()
+            },
+        );
+        assert!(!process.pause());
+        process.records.insert(
+            ("3".into(), "discovery".into()),
+            Record {
+                more: true,
+                ..Default::default()
+            },
+        );
+        assert!(!process.pause());
+        let discovery = process
+            .records
+            .get_mut(&("3".into(), "discovery".into()))
+            .unwrap();
+        discovery.more = false;
+        discovery
+            .events
+            .insert(1, json!({"sequence":"1","mapped_address":"192.0.2.2:4000"}));
+        assert!(process.pause());
+        process
+            .records
+            .get_mut(&("3".into(), "discovery".into()))
+            .unwrap()
+            .events
+            .clear();
+        assert_eq!(process.record_for("discovery").unwrap().events.len(), 1);
+        process.live();
+        assert_eq!(process.record_for("discovery").unwrap().events.len(), 0);
+    }
     fn reply(sequence: &str, start: &str, more: bool) -> Value {
         json!({"selected_generation":"3","stream":"connection","more":more,"attempts":[{"generation":"3"}],
             "nat_punch_process":{"sequence":sequence,"attempts":[{"started_at":start}],"events":[{"sequence":sequence,"title":"记录"}]}})

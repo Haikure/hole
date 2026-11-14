@@ -1,11 +1,11 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod app;
-mod motion;
 mod pages;
 mod punch_ui;
 mod settings;
 mod ui;
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use hole_desktop::motion;
 use hole_desktop::{config::StoredConfig, storage::Storage};
 
 fn main() {

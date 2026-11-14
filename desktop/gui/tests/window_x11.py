@@ -126,9 +126,12 @@ class Window:
     def scroll(self, down=True, steps=6):
         _, _, width, height = self.geometry()
         self.move(width - 60, height - 100)
+        time.sleep(0.08)
         for _ in range(steps):
             for pressed in (1, 0):
                 self.xt.XTestFakeButtonEvent(self.display, 5 if down else 4, pressed, 0)
+            self.x.XFlush(self.display)
+            time.sleep(0.01)
         self.x.XFlush(self.display)
         time.sleep(0.4)
 
@@ -140,7 +143,8 @@ class Window:
         while True:
             image = ImageGrab.grab().crop((x, y, x + width, y + height))
             image.save(path)
-            if len(image.getcolors(width * height) or []) > 100:
+            low, high = image.convert("L").getextrema()
+            if high - low > 64 and len(image.getcolors(width * height) or []) > 100:
                 break
             assert time.monotonic() < deadline, f"window did not render: {self.geometry()}"
             time.sleep(0.5)

@@ -1,5 +1,6 @@
 use crate::{
     app::{Desktop, Page},
+    motion,
     pages::section,
     ui::{card, col, fact, heading, icon, row},
 };
@@ -9,26 +10,18 @@ use hole_desktop::{config, controller::Command};
 impl Desktop {
     pub fn settings(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette(cx);
-        let mut tabs = row().flex_wrap().gap_2();
-        for (index, (title, name)) in [
-            ("房间与身份", "shield"),
-            ("连接方式", "route"),
-            ("外观", "sun"),
-            ("桌面行为", "devices"),
-        ]
-        .iter()
-        .enumerate()
-        {
-            tabs = tabs.child(self.action(
-                format!("settings-tab-{index}"),
-                *title,
-                name,
-                self.settings_tab == index,
-                false,
-                move |app, _, _| app.settings_tab = index,
-                cx,
-            ));
-        }
+        let tabs = self.segmented(
+            "settings",
+            &[
+                ("房间与身份", "shield"),
+                ("连接方式", "route"),
+                ("外观", "sun"),
+                ("桌面行为", "devices"),
+            ],
+            self.settings_tab,
+            |app, index| app.settings_tab = index,
+            cx,
+        );
         let body = match self.settings_tab {
             0 => self.connection_settings(window, cx),
             1 => self.transport_settings(window, cx),
@@ -38,7 +31,10 @@ impl Desktop {
         col()
             .gap_5()
             .child(tabs)
-            .child(body)
+            .child(motion::enter(
+                format!("settings-body-{}", self.settings_tab),
+                body,
+            ))
             .child(
                 card(p)
                     .py_3()
@@ -565,8 +561,8 @@ impl Desktop {
             .child(accents)
             .child(self.toggle(
                 "reduce-motion",
-                "减少动画",
-                "关闭页面过渡和导航动画",
+                "减少动态效果",
+                "立即完成所有界面过渡",
                 self.draft.prefs.reduce_motion,
                 |a, v| a.draft.prefs.reduce_motion = v,
                 cx,

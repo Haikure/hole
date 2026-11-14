@@ -13,7 +13,7 @@ snapshot = {
     "peer_transports": [{"transport_id": "peer-fixture", "peer_id": "Android 手机", "state": "active", "profile": "ice-quic-mux-v1", "phase": "ice",
         "path_type": "direct", "rtt_ms": "18", "local_type": "host", "remote_type": "srflx", "local_address": "192.0.2.2:4000",
         "remote_address": "198.51.100.2:5000", "active_channels": 1, "mapping_count": 1}],
-    "nat_diagnostic": {"state": "complete", "title": "端口受限锥形 NAT", "summary": "固定测试数据，不代表真实网络检测结果。",
+    "nat_diagnostic": {"state": "complete", "tone": "yellow", "title": "端口受限锥形 NAT", "summary": "固定测试数据，不代表真实网络检测结果。",
         "highlights": [{"label": "映射", "value": "端点无关"}, {"label": "过滤", "value": "地址与端口相关"}, {"label": "端口", "value": "稳定"}],
         "sections": [{"title": "采样结果", "fields": [{"label": "公网映射", "value": "198.51.100.2:5000"}, {"label": "采样时间", "value": "2026-11-14T00:00:00Z"}]}]},
     "voice": {"enabled": False, "state": "off"},
@@ -24,13 +24,29 @@ events = [{"sequence": str(i), "generation": "3", "elapsed_ms": str(i * 10), "ro
 events.insert(0, {"sequence": "1", "generation": "3", "elapsed_ms": "0", "stage": "ice", "kind": "stage", "title": "开始 ICE 候选检查"})
 events.append({"sequence": "300", "generation": "3", "elapsed_ms": "3000", "stage": "connected", "kind": "ack_verified", "title": "ACK 回显验证成功",
     "socket_id": "udp-1", "round": 1, "trial": 1, "remote_address": "198.51.100.2:5000", "validation": "echo_verified"})
-run = {"generation": "3", "phase": "prediction", "state": "active", "stage": "connected", "started_at": "2026-11-14T00:00:00Z", "elapsed_ms": "3000",
+events[0].update(stage="preparing", title="开始连接尝试")
+for event in events[1:-1]:
+    sequence = int(event["sequence"])
+    event["stage"] = "ice" if sequence < 261 else "quic" if sequence < 279 else "mux" if sequence < 285 else "connected"
+events[-1].update(direction="in", packet="ACK", local_address="192.0.2.2:4000", bytes=64)
+run = {"generation": "3", "phase": "prediction", "state": "connected", "stage": "connected", "started_at": "2026-11-14T00:00:00Z", "elapsed_ms": "3000",
+    "network": {"handle": "fixture-network", "transport": "Wi-Fi", "interface": "wlan0", "addresses": ["192.0.2.2", "2001:db8::2"], "dns": ["192.0.2.1"]},
     "rounds": [{"round": 1, "trial": 1, "mode": "prediction", "targets": ["198.51.100.2:5000", "198.51.100.2:5001"],
         "local_model": {"type": "restricted_cone"}, "peer_model": {"type": "symmetric"},
         "local_plan": {"ip": "203.0.113.2", "port": 4000, "target": 4000, "width": 1, "sockets": 2},
         "peer_plan": {"ip": "198.51.100.2", "port": 4999, "target": 5000, "width": 2, "sockets": 4}}],
     "sockets": [{"id": "udp-1", "round": 1, "trial": 1, "role": "dialer", "bound_address": "0.0.0.0:4000", "local_address": "192.0.2.2:4000",
-        "mapped_address": "198.51.100.2:4000", "target": "198.51.100.2:5000", "state": "selected"}]}
+        "mapped_address": "198.51.100.2:4000", "target": "198.51.100.2:5000", "state": "selected", "probes_sent": 298, "acks_received": 1}]}
+for index in range(2, 7):
+    run["sockets"].append({"id": f"udp-{index}", "round": 1, "trial": 1, "role": "ice", "state": "bound",
+        "bound_address": f"[2001:db8::2]:{4000 + index}", "local_address": f"[2001:db8::2]:{4000 + index}"})
+samples = [{"sequence": str(i), "generation": "3", "elapsed_ms": str(i * 100), "stage": "nat_sampling",
+    "kind": "stun_response", "title": "Binding response", "direction": "in", "packet": "STUN", "bytes": 64,
+    "socket_id": f"nat/{i}", "socket_role": "nat_base" if i <= 18 else "nat_validation" if i <= 24 else "nat_filtering",
+    "local_address": "192.0.2.2:4000", "remote_address": "203.0.113.1:3478", "mapped_address": f"198.51.100.2:{4248 + (i // 3)}",
+    "server_address": "stun.fixture.invalid:3478", "validation": "transaction_matched", "transaction_id": f"fixture-tx-{i}"} for i in range(1, 28)]
+discovery = {"generation": "3", "phase": "nat", "state": "complete", "stage": "nat_sampling", "started_at": "2026-11-14T00:00:00Z",
+    "elapsed_ms": "2700", "rounds": [], "sockets": [], "network": copy.deepcopy(run["network"])}
 
 for line in sys.stdin:
     query = json.loads(line)
@@ -47,11 +63,13 @@ for line in sys.stdin:
         result = {"snapshot": snapshot}
     elif method == "nat_punch_process":
         after, limit = int(params.get("after_sequence") or 0), params.get("limit", 256)
-        selected = [event for event in events if int(event["sequence"]) > after]
+        sampling = params.get("stream") == "discovery"
+        history, current = (samples, discovery) if sampling else (events, run)
+        selected = [event for event in history if int(event["sequence"]) > after]
         page = selected[:limit]
         result = {"selected_generation": "3", "stream": params.get("stream", "connection"), "attempts": [{key: run[key] for key in ("generation", "phase", "state", "stage", "started_at", "elapsed_ms")}],
-            "has_discovery": False, "more": len(selected) > limit,
-            "nat_punch_process": {"transport_id": "peer-fixture", "sequence": page[-1]["sequence"] if len(selected) > limit else "300", "events_dropped": "0", "events_evicted": "0", "attempts": [copy.deepcopy(run)], "events": page}}
+            "has_discovery": True, "more": len(selected) > limit,
+            "nat_punch_process": {"transport_id": "peer-fixture", "sequence": page[-1]["sequence"] if len(selected) > limit else str(len(history)), "events_dropped": "0", "events_evicted": "0", "attempts": [copy.deepcopy(current)], "events": page}}
     print(json.dumps({"jsonrpc": "2.0", "id": query["id"], "result": result}), flush=True)
     if method == "shutdown":
         break

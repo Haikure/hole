@@ -2,7 +2,7 @@ use crate::{
     app::{Desktop, Dialog, Page},
     ui::{self, Palette, badge, card, col, empty, fact, heading, icon, metric, row},
 };
-use gpui::{AnyElement, Context, Div, Window, div, prelude::*, px, rgba};
+use gpui::{AnyElement, Context, Div, Window, div, prelude::*, px};
 use hole_desktop::{
     config,
     controller::Command,
@@ -70,6 +70,7 @@ impl Desktop {
             "请先在设置中填写服务器、房间和凭据。".into()
         };
         let hero = card(hp)
+            .id("home-status")
             .p_7()
             .gap_6()
             .text_color(hp.text)
@@ -91,6 +92,7 @@ impl Desktop {
                 spread_radius: px(0.),
                 inset: false,
             }])
+            .transitions(|t| t.bg(crate::motion::NORMAL))
             .child(
                 row()
                     .justify_between()
@@ -521,7 +523,7 @@ impl Desktop {
                                 )),
                         ),
                 );
-                group = group.child(item);
+                group = group.child(crate::motion::enter(format!("service-{role}-{id}"), item));
             }
             if count == 0 {
                 group = group.child(card(p).child(empty(
@@ -595,8 +597,10 @@ impl Desktop {
             let selected = self.selected_peer == id || self.selected_peer.is_empty() && index == 0;
             list = list.child(
                 card(p)
+                    .id(format!("peer-card-{index}"))
                     .p_3()
                     .bg(if selected { p.soft } else { p.surface })
+                    .transitions(|t| t.bg(crate::motion::NORMAL))
                     .child(self.action(
                         format!("select-peer-{index}"),
                         peer.peer_id.clone(),
@@ -632,7 +636,12 @@ impl Desktop {
             .find(|p| p.transport_id == self.selected_peer)
             .or_else(|| self.state.snapshot.peers.first());
         let details = selected
-            .map(|peer| self.peer_details(peer, cx))
+            .map(|peer| {
+                col().child(crate::motion::enter(
+                    format!("peer-details-{}", peer.transport_id),
+                    self.peer_details(peer, cx),
+                ))
+            })
             .unwrap_or_else(|| card(p).child(empty("devices", "暂无连接设备", "", p)));
         let layout = if wide {
             row()
@@ -679,11 +688,25 @@ impl Desktop {
         let p = self.palette(cx);
         let fixed = snapshot::is_fixed_peer(peer);
         let transport = peer.transport_id.clone();
+        let identity = row()
+            .gap_4()
+            .child(
+                div()
+                    .p_4()
+                    .rounded_full()
+                    .bg(p.soft)
+                    .child(icon("devices", p.accent, 30.)),
+            )
+            .child(heading(
+                peer.peer_id.clone(),
+                snapshot::peer_path_label(peer),
+                p,
+            ));
         let mut top = card(p)
             .child(
                 row()
                     .justify_between()
-                    .child(section("devices", &peer.peer_id, p))
+                    .child(section("check", "连接概览", p))
                     .child(badge(
                         snapshot::peer_state_label(&peer.state),
                         if matches!(peer.state.as_str(), "active" | "switching") {
@@ -706,6 +729,15 @@ impl Desktop {
                         p,
                     )),
             )
+            .child(fact(
+                "连接过程",
+                if peer.state == "active" {
+                    "线路已建立"
+                } else {
+                    snapshot::peer_state_label(&peer.state)
+                },
+                p,
+            ))
             .child(row().child(self.action(
                 "reselect-path",
                 "重选路径",
@@ -750,8 +782,6 @@ impl Desktop {
                     snapshot::selected_connection_label(&peer.remote_type, &peer.remote_address),
                     p,
                 ))
-                .child(fact("本机 NAT", &peer.local_nat, p))
-                .child(fact("对端 NAT", &peer.peer_nat, p))
                 .child(
                     row()
                         .gap_6()
@@ -819,33 +849,62 @@ impl Desktop {
                 ],
             ])
             .render(cx);
-        col().gap_5().child(top).child(addresses).child(
-            card(p)
-                .child(section("activity", "传输质量", p))
-                .child(stats)
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(p.muted)
-                        .child("丢包率统计本次 QUIC 连接；平均速率按有流量的采样时长计算。"),
-                )
-                .child(
-                    row()
-                        .flex_wrap()
-                        .gap_7()
-                        .child(fact(
-                            "发送 / 接收",
-                            format!(
-                                "{} / {}",
-                                snapshot::format_bytes(peer.bytes_sent),
-                                snapshot::format_bytes(peer.bytes_received)
-                            ),
-                            p,
-                        ))
-                        .child(fact("路径重试", &peer.retry_count, p))
-                        .child(fact("本地丢弃", &peer.dropped_datagrams, p)),
-                ),
-        )
+        let mut nat_details = col().gap_4();
+        if !fixed {
+            nat_details = nat_details.child(section("route", "NAT 与端口映射", p));
+            for (title, value, name) in [
+                ("本机 NAT", &peer.local_nat, "devices"),
+                ("对端 NAT", &peer.peer_nat, "network"),
+            ] {
+                let tone = ui::tone_palette(
+                    p,
+                    if value.contains("对称") {
+                        "warn"
+                    } else {
+                        "neutral"
+                    },
+                );
+                nat_details = nat_details.child(
+                    card(tone)
+                        .gap_3()
+                        .child(section(name, title, tone))
+                        .child(div().text_sm().child(value.clone())),
+                );
+            }
+        }
+        col()
+            .gap_5()
+            .child(identity)
+            .child(top)
+            .child(addresses)
+            .child(nat_details)
+            .child(
+                card(p)
+                    .child(section("activity", "传输质量", p))
+                    .child(stats)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child("丢包率统计本次 QUIC 连接；平均速率按有流量的采样时长计算。"),
+                    )
+                    .child(
+                        row()
+                            .flex_wrap()
+                            .gap_7()
+                            .child(fact(
+                                "发送 / 接收",
+                                format!(
+                                    "{} / {}",
+                                    snapshot::format_bytes(peer.bytes_sent),
+                                    snapshot::format_bytes(peer.bytes_received)
+                                ),
+                                p,
+                            ))
+                            .child(fact("路径重试", &peer.retry_count, p))
+                            .child(fact("本地丢弃", &peer.dropped_datagrams, p)),
+                    ),
+            )
     }
 
     fn voice(&self, _: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -988,6 +1047,16 @@ impl Desktop {
         let p = self.palette(cx);
         let nat = &self.state.snapshot.nat_diagnostic;
         let running = matches!(text(nat, "state"), "running" | "queued" | "probing");
+        let tone = ui::tone_palette(
+            p,
+            match text(nat, "tone") {
+                "green" => "good",
+                "yellow" => "warn",
+                "red" => "bad",
+                "blue" => "info",
+                _ => "neutral",
+            },
+        );
         let mut page = col()
             .gap_5()
             .child(
@@ -1036,7 +1105,7 @@ impl Desktop {
                     ),
             )
             .child(
-                card(p).child(
+                card(tone).child(
                     row()
                         .gap_5()
                         .child(
@@ -1072,8 +1141,19 @@ impl Desktop {
         }
         page = page.child(tiles);
         for section_data in nat["sections"].as_array().into_iter().flatten() {
-            let mut section_card = card(p).child(section("info", text(section_data, "title"), p));
-            for field in section_data["fields"].as_array().into_iter().flatten() {
+            let mut section_card =
+                card(p)
+                    .gap_4()
+                    .child(section("info", text(section_data, "title"), tone));
+            for (index, field) in section_data["fields"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                if index > 0 {
+                    section_card = section_card.child(div().h(px(1.)).bg(p.inset));
+                }
                 section_card = section_card.child(
                     col()
                         .gap_1()
@@ -1169,7 +1249,8 @@ impl Desktop {
 
     pub fn mapping_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette(cx);
-        let e = self.mapping.as_ref().unwrap();
+        let e = self.mapping_presence.content.as_ref().unwrap();
+        let reveal = self.mapping_presence.value();
         let provide = e.role == "provide";
         let mut form = col()
             .gap_5()
@@ -1263,11 +1344,16 @@ impl Desktop {
             .occlude()
             .absolute()
             .inset_0()
-            .bg(rgba(0x12182A48))
+            .bg(gpui::Hsla {
+                alpha: 0.28 * reveal,
+                ..gpui::rgb_to_hsla(gpui::rgb(0x12182A))
+            })
             .flex()
             .justify_end()
             .child(
                 col()
+                    .relative()
+                    .left(px(440. * (1. - reveal)))
                     .w(px(440.))
                     .h_full()
                     .p_6()
@@ -1329,7 +1415,8 @@ impl Desktop {
     }
     pub fn dialog_view(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette(cx);
-        let (title, detail, confirm) = match self.dialog.as_ref().unwrap() {
+        let reveal = self.dialog_presence.value();
+        let (title, detail, confirm) = match self.dialog_presence.content.as_ref().unwrap() {
             Dialog::Close => (
                 "退出 Hole",
                 if self.state.snapshot.run_requested {
@@ -1350,12 +1437,18 @@ impl Desktop {
             .occlude()
             .absolute()
             .inset_0()
-            .bg(rgba(0x12182A66))
+            .bg(gpui::Hsla {
+                alpha: 0.4 * reveal,
+                ..gpui::rgb_to_hsla(gpui::rgb(0x12182A))
+            })
             .flex()
             .items_center()
             .justify_center()
             .child(
                 card(p)
+                    .relative()
+                    .top(px(20. * (1. - reveal)))
+                    .opacity(reveal)
                     .w(px(440.))
                     .p_7()
                     .gap_6()

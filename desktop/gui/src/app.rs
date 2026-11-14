@@ -1,10 +1,8 @@
 use crate::{
-    motion::Spring,
+    motion::{self, Presence, Spring},
     ui::{self, Palette, card, col, row},
 };
-use gpui::{
-    AnimationExt, AnyElement, App, Context, Div, ElementId, Render, Window, div, prelude::*, px,
-};
+use gpui::{AnyElement, App, Context, Div, ElementId, Render, Window, div, prelude::*, px};
 use hole_desktop::{
     config::{self, ConsumeEntry, ProvideEntry, Secrets, StoredConfig},
     controller::{Command, Controller, ImportPreview, State, Update},
@@ -80,6 +78,7 @@ pub struct MappingDraft {
     pub port: String,
     pub enabled: bool,
 }
+#[derive(Clone)]
 pub enum Dialog {
     Close,
     Delete(String, usize),
@@ -122,7 +121,17 @@ pub struct Desktop {
     pub frame_at: Instant,
     pub replay_ms: f64,
     pub was_playing: bool,
-    rendered_view: Option<(Page, u64, usize, usize, bool, bool)>,
+    pub mapping_presence: Presence<MappingDraft>,
+    pub dialog_presence: Presence<Dialog>,
+    pub toast_presence: Presence<String>,
+    pub event_presence: Presence<String>,
+    pub expanded_stages: std::collections::HashSet<String>,
+    pub expanded_samples: bool,
+    pub selected_socket: String,
+    pub sample_filter: String,
+    pub sample_ip: String,
+    pub expanded_raw: bool,
+    rendered_view: Option<(Page, u64, usize, usize, bool, bool, bool)>,
 }
 impl Desktop {
     pub fn new(
@@ -191,6 +200,16 @@ impl Desktop {
             frame_at: Instant::now(),
             replay_ms: 0.,
             was_playing: false,
+            mapping_presence: Presence::new(),
+            dialog_presence: Presence::new(),
+            toast_presence: Presence::new(),
+            event_presence: Presence::new(),
+            expanded_stages: Default::default(),
+            expanded_samples: false,
+            selected_socket: String::new(),
+            sample_filter: String::new(),
+            sample_ip: String::new(),
+            expanded_raw: false,
             rendered_view: None,
         }
     }
@@ -207,6 +226,14 @@ impl Desktop {
             _ => 4.,
         };
         changed |= self.nav_lens.step(dt, self.draft.prefs.reduce_motion);
+        changed |= self
+            .mapping_presence
+            .step(dt, self.draft.prefs.reduce_motion);
+        changed |= self
+            .dialog_presence
+            .step(dt, self.draft.prefs.reduce_motion);
+        changed |= self.toast_presence.step(dt, self.draft.prefs.reduce_motion);
+        changed |= self.event_presence.step(dt, self.draft.prefs.reduce_motion);
         while let Ok(update) = self.controller.updates.try_recv() {
             changed = true;
             match update {
@@ -353,7 +380,9 @@ impl Desktop {
             _ => "",
         };
         let nav = name.starts_with("nav-");
+        let segment = name.starts_with("segment-");
         let choice = [
+            "segment-",
             "settings-tab-",
             "punch-tab-",
             "theme-",
@@ -361,6 +390,13 @@ impl Desktop {
             "mode-",
             "nat-stun-mode-",
             "attempt-",
+            "packet-",
+            "punch-round-",
+            "punch-peer-",
+            "sample-",
+            "mapping-tcp",
+            "mapping-udp",
+            "select-peer-",
         ]
         .iter()
         .any(|prefix| name.starts_with(prefix));
@@ -420,7 +456,7 @@ impl Desktop {
                 .when(!disabled, |button| button.cursor_pointer())
         } else if nav || choice {
             let color = if primary { p.accent } else { p.muted };
-            let background = if nav {
+            let background = if nav || segment {
                 gpui::transparent_black()
             } else if primary {
                 p.soft
@@ -446,13 +482,58 @@ impl Desktop {
                         )
                         .children((!caption.is_empty()).then_some(caption)),
                 )
+                .when(segment, |el| el.w_full().rounded(px(14.)))
                 .hover(|style| style.bg(if primary { p.soft } else { p.inset }))
                 .active(|style| style.opacity(0.72))
                 .cursor_pointer()
         } else {
-            props.render(cx).active(|style| style.opacity(0.78))
+            props
+                .apply(
+                    row()
+                        .h(px(40.))
+                        .px_4()
+                        .gap_2()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(if primary { p.accent } else { p.inset })
+                        .text_color(if primary { p.on_accent } else { p.text })
+                        .opacity(if disabled { 0.4 } else { 1. })
+                        .children((!icon.is_empty()).then(|| {
+                            ui::icon(icon, if primary { p.on_accent } else { p.text }, 18.)
+                        }))
+                        .children((!caption.is_empty()).then_some(caption)),
+                )
+                .when(!disabled, |el| {
+                    el.cursor_pointer().hover(|s| {
+                        s.bg(if primary {
+                            ui::blend(p.accent, p.text, 0.12)
+                        } else {
+                            p.soft
+                        })
+                    })
+                })
         };
         element
+            .relative()
+            .top(px(0.))
+            .when(!disabled, |el| {
+                el.hover(|s| {
+                    s.top(px(-1.)).bg(if nav || choice {
+                        if primary { p.soft } else { p.inset }
+                    } else if primary {
+                        ui::blend(p.accent, p.text, 0.12)
+                    } else {
+                        p.soft
+                    })
+                })
+                .active(|s| s.top(px(1.)).opacity(0.72))
+            })
+            .transitions(|t| {
+                t.bg(motion::FAST)
+                    .text_color(motion::FAST)
+                    .opacity(motion::FAST)
+                    .top(motion::FAST)
+            })
             .focus_visible(|style| {
                 style.shadow(vec![gpui::BoxShadow {
                     color: self.palette(cx).accent.into(),
@@ -479,6 +560,51 @@ impl Desktop {
                 }
             })
             .into_any_element()
+    }
+    pub fn segmented(
+        &self,
+        id: &str,
+        items: &[(&str, &str)],
+        selected: usize,
+        setter: impl Fn(&mut Self, usize) + Send + Sync + 'static,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let p = self.palette(cx);
+        let setter = Arc::new(setter);
+        let mut track = row().relative().gap_0().child(
+            div()
+                .id(format!("{id}-lens"))
+                .absolute()
+                .top_0()
+                .left(gpui::relative(selected as f32 / items.len() as f32))
+                .w(gpui::relative(1. / items.len() as f32))
+                .h(px(40.))
+                .rounded(px(14.))
+                .bg(ui::surface_gradient(Palette {
+                    surface: ui::blend(p.surface, p.soft, 0.45),
+                    ..p
+                }))
+                .shadow(ui::dock_shadow(p))
+                .transitions(|t| t.left(motion::NORMAL).bg(motion::NORMAL)),
+        );
+        for (index, (title, icon)) in items.iter().enumerate() {
+            let setter = setter.clone();
+            track = track.child(div().flex_1().min_w_0().child(self.action(
+                format!("segment-{id}-{index}"),
+                *title,
+                icon,
+                selected == index,
+                false,
+                move |app, _, _| setter(app, index),
+                cx,
+            )));
+        }
+        col()
+            .gap_0()
+            .p_1()
+            .rounded(px(18.))
+            .bg(p.inset)
+            .child(track)
     }
     pub fn field(
         &self,
@@ -552,7 +678,29 @@ impl Desktop {
                 })
                 .ok();
             })
-            .render(cx)
+            .apply(
+                div()
+                    .relative()
+                    .w(px(48.))
+                    .h(px(28.))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(if checked { p.accent } else { p.inset })
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .id("switch-knob")
+                            .absolute()
+                            .top(px(3.))
+                            .left(px(if checked { 23. } else { 3. }))
+                            .size(px(22.))
+                            .rounded_full()
+                            .bg(if checked { p.on_accent } else { p.muted })
+                            .transitions(|t| t.left(motion::NORMAL).bg(motion::FAST)),
+                    ),
+            )
+            .hover(|s| s.opacity(0.88))
+            .transitions(|t| t.bg(motion::NORMAL).opacity(motion::FAST))
             .focus_visible(|style| {
                 style.shadow(vec![gpui::BoxShadow {
                     color: p.accent.into(),
@@ -694,6 +842,8 @@ impl Desktop {
         self.selected_event.clear();
         self.page = Page::Punch;
         self.playing = false;
+        self.expanded_stages.clear();
+        self.selected_socket.clear();
     }
     pub fn load_file(&mut self) {
         match Storage::read_document(std::path::Path::new(self.path.trim())) {
@@ -715,6 +865,7 @@ impl Render for Desktop {
             self.punch.view,
             self.mapping.is_some(),
             self.dialog.is_some(),
+            !self.selected_event.is_empty(),
         );
         if self.rendered_view != Some(view) {
             // 离开页面后释放旧控件焦点，让快捷键和 Tab 始终从当前页面继续。
@@ -737,6 +888,16 @@ impl Render for Desktop {
             self.theme_key = Some(theme_key);
         }
         let compact = window.bounds().size.width < px(1000.);
+        let reduce = self.draft.prefs.reduce_motion;
+        self.mapping_presence.sync(self.mapping.clone(), reduce);
+        self.dialog_presence.sync(self.dialog.clone(), reduce);
+        self.toast_presence
+            .sync((!self.toast.is_empty()).then(|| self.toast.clone()), reduce);
+        self.event_presence.sync(
+            (self.page == Page::Punch && !self.selected_event.is_empty())
+                .then(|| self.selected_event.clone()),
+            reduce,
+        );
         let content = self.render_page(window, cx);
         let mut nav = col()
             .h_full()
@@ -930,19 +1091,10 @@ impl Render for Desktop {
                 .overflow_y_scroll()
                 .px_7()
                 .pb_7()
-                .child(
-                    div().w_full().child(content).with_animation(
-                        format!("page-enter-{}", self.page.title()),
-                        gpui::Animation::new(Duration::from_millis(260))
-                            .with_easing(gpui::ease_out_quint()),
-                        |element, delta| {
-                            element
-                                .relative()
-                                .top(px(10. * (1. - delta)))
-                                .opacity(delta)
-                        },
-                    ),
-                ),
+                .child(motion::enter(
+                    format!("page-enter-{}", self.page.title()),
+                    div().w_full().child(content),
+                )),
         );
         if !self.state.error.is_empty() {
             body = body.child(
@@ -964,6 +1116,7 @@ impl Render for Desktop {
             .text_color(p.text)
             .text_base()
             .font_family("sans-serif")
+            .transitions(|t| t.bg(motion::NORMAL).text_color(motion::NORMAL))
             .track_focus(&self.root_focus)
             .child(nav)
             .child(body)
@@ -996,17 +1149,21 @@ impl Render for Desktop {
                         app.dialog = None;
                     } else if app.mapping.is_some() {
                         app.dialog = Some(Dialog::DiscardMapping);
+                    } else if !app.selected_event.is_empty() {
+                        app.selected_event.clear();
                     } else {
                         app.page = Page::Home;
                     }
                     cx.notify();
                 }
             }));
-        if !self.toast.is_empty() {
+        if let Some(message) = &self.toast_presence.content {
+            let reveal = self.toast_presence.value();
             root = root.child(
                 div()
                     .absolute()
-                    .top(px(82.))
+                    .top(px(82. - 12. * (1. - reveal)))
+                    .opacity(reveal)
                     .w(px(if compact { 360. } else { 420. }))
                     .right_7()
                     .child(
@@ -1018,7 +1175,7 @@ impl Render for Desktop {
                             .child(
                                 row()
                                     .child(ui::icon("check", p.good, 18.))
-                                    .child(self.toast.clone()),
+                                    .child(message.clone()),
                             )
                             .child(self.action(
                                 "dismiss-toast",
@@ -1032,10 +1189,13 @@ impl Render for Desktop {
                     ),
             );
         }
-        if self.mapping.is_some() {
+        if self.event_presence.content.is_some() {
+            root = root.child(self.process_inspection(cx));
+        }
+        if self.mapping_presence.content.is_some() {
             root = root.child(self.mapping_panel(window, cx));
         }
-        if self.dialog.is_some() {
+        if self.dialog_presence.content.is_some() {
             root = root.child(self.dialog_view(cx));
         }
         root
