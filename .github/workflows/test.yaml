@@ -83,7 +83,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev libfontconfig1-dev
+          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev libfontconfig1-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libvulkan1 mesa-vulkan-drivers xvfb libxtst6 python3-pil
 
       - name: Set up MSVC
         if: runner.os == 'Windows'
@@ -114,7 +114,7 @@ jobs:
       - name: Build embedded desktop Release
         run: bash ./build.sh desktop --os '${{ matrix.os }}' --arch amd64
 
-      - name: Test Rust, configuration, snapshots and Slint
+      - name: Test Rust, platform contracts and Yororen UI data
         run: |
           set -euo pipefail
           source scripts/build-env.sh
@@ -122,7 +122,14 @@ jobs:
           if [[ '${{ matrix.os }}' == windows ]]; then core_binary+=.exe; fi
           export HOLE_EMBED_CORE="$core_binary"
           cd desktop/gui
-          cargo test --locked --release --features embedded-core
+          cargo test --locked --release --no-default-features --features embedded-core
+
+      - name: Test Linux window and embedded core lifecycle
+        if: runner.os == 'Linux'
+        run: |
+          source scripts/build-env.sh
+          xvfb-run -a -s '-screen 0 1600x1100x24' /usr/bin/python3 desktop/gui/tests/ui_x11.py dist/desktop/linux-amd64/hole-desktop
+          xvfb-run -a /usr/bin/python3 desktop/gui/tests/embedded_core_linux.py dist/desktop/linux-amd64/hole-desktop
 
       - name: Test NAT timestamps in UTC, Shanghai and New York
         run: |

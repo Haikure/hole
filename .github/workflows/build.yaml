@@ -184,7 +184,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev libfontconfig1-dev
+          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev libfontconfig1-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
 
       - name: Set up Rust
         if: ${{ matrix.target == 'desktop' && matrix.rust_target == '' }}

@@ -6,12 +6,11 @@ xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop/linux-
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
 
-from ui_driver import PAGES
+from window_x11 import Window
 
 
 def live(pid):
@@ -56,13 +55,13 @@ def main():
             shutil.copy2(source, binary)
             config = root / "config"
             config.mkdir()
-            shots = root / "shots"
-            shots.mkdir()
-            env = dict(os.environ, SLINT_BACKEND="winit-software", HOLE_DESKTOP_CONFIG_DIR=str(config), HOLE_DESKTOP_SCREENSHOT_DIR=str(shots))
-            env.pop("HOLE_CORE", None)
-            env.pop("HOLE_EMBED_CORE", None)
-            env.pop("CARGO_MANIFEST_DIR", None)
-            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            old_core = os.environ.pop("HOLE_CORE", None)
+            try:
+                window = Window(binary, config)
+            finally:
+                if old_core is not None:
+                    os.environ["HOLE_CORE"] = old_core
+            process = window.process
             core_pid = None
             try:
                 core_pid = wait_for_core(process)
@@ -70,10 +69,17 @@ def main():
                 assert not list(root.rglob("hole-core*"))
                 if crash:
                     process.kill()
-                _, error = process.communicate(timeout=30)
+                else:
+                    # WM_DELETE is intentionally confirmed in the real window.
+                    window.key("F4", "Alt_L")
+                    # Xvfb without a window manager does not bind Alt+F4.
+                    # Send the protocol message directly instead.
+                    send_close(window)
+                    _, _, width, height = window.geometry()
+                    window.click(width // 2 + 110, height // 2 + 55)
+                process.wait(timeout=30)
                 if not crash:
-                    assert process.returncode == 0, error.decode(errors="replace")
-                    assert PAGES <= {path.stem for path in shots.glob("*.ppm")}, "GUI screenshot cycle missed required pages"
+                    assert process.returncode == 0, (config / "gui.log").read_text()
                 deadline = time.monotonic() + 5
                 while live(core_pid) and time.monotonic() < deadline:
                     time.sleep(0.05)
@@ -84,7 +90,30 @@ def main():
                     process.communicate(timeout=5)
                 if core_pid and live(core_pid):
                     os.kill(core_pid, 15)
-    print("PASS: copied GUI only, memfd execution, named pages, graceful shutdown, and crash EOF cleanup")
+                window.close()
+    print("PASS: copied GUI only, memfd execution, graceful shutdown, and crash EOF cleanup")
+
+
+def send_close(window):
+    import ctypes as C
+    class Client(C.Structure):
+        _fields_ = [("type", C.c_int), ("serial", C.c_ulong), ("send_event", C.c_int), ("display", C.c_void_p),
+                    ("window", C.c_ulong), ("message_type", C.c_ulong), ("format", C.c_int), ("data", C.c_long * 5)]
+    class Event(C.Union):
+        _fields_ = [("client", Client), ("padding", C.c_long * 24)]
+    window.x.XInternAtom.argtypes = [C.c_void_p, C.c_char_p, C.c_int]
+    window.x.XInternAtom.restype = C.c_ulong
+    window.x.XSendEvent.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_long, C.POINTER(Event)]
+    event = Event()
+    event.client.type = 33
+    event.client.display = window.display
+    event.client.window = window.window
+    event.client.message_type = window.x.XInternAtom(window.display, b"WM_PROTOCOLS", 0)
+    event.client.format = 32
+    event.client.data[0] = window.x.XInternAtom(window.display, b"WM_DELETE_WINDOW", 0)
+    window.x.XSendEvent(window.display, window.window, 0, 0, C.byref(event))
+    window.x.XFlush(window.display)
+    time.sleep(0.5)
 
 
 if __name__ == "__main__":

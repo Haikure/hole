@@ -1,1206 +1,646 @@
-//! 应用控制器：用户意图、配置应用与核心状态同步。
-//!
-//! 线程模型：
-//! - UI 线程：Slint 回调；本地校验 + 原子保存配置，再向工作线程投递命令。
-//! - 工作线程：持有 `CoreClient`，执行 RPC、采样快照、处理事件，并通过
-//!   `invoke_from_event_loop` 把视图模型写回 UI。
-//!
-//! 采样策略对齐 Android `SnapshotSampler`：运行且窗口可见 1500ms、隐藏 15000ms、
-//! 停止态只由事件/命令唤醒；事件触发的读取最短间隔 100ms。
-
-use crate::config::{self, Secrets, StoredConfig};
-use crate::core_client::{self, CoreClient, Inbound, RpcError};
-use crate::report;
-use crate::snapshot::{self as snap, Snapshot};
-use crate::storage::{RunState, Storage};
-use serde_json::Value;
-use slint::{ComponentHandle, Model, ModelRc, VecModel, Weak};
-use std::collections::VecDeque;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
-
-use crate::{App, EventRow, HostInfo, ImportPreview, MainWindow, MappingRow, PeerRow, Status, KV};
-
-/// 线程安全的行数据（纯字段）；到 UI 线程再转换成带 ModelRc 的 Slint 结构。
-#[derive(Clone, Default)]
-struct MappingData {
-    entry_id: String,
-    id: String,
-    role: String,
-    role_label: String,
-    protocol: String,
-    endpoint: String,
-    enabled: bool,
-    state: String,
-    state_label: String,
-    kind: String,
-    sessions: String,
-    peer: String,
-    details: Vec<KV>,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct PeerData {
-    peer_id: String,
-    transport_id: String,
-    state_label: String,
-    path_label: String,
-    kind: String,
-    channels: String,
-    rtt: String,
-    traffic: String,
-    note: String,
-    error: String,
-    details: Vec<KV>,
-}
-
-impl MappingData {
-    fn into_row(self) -> MappingRow {
-        MappingRow {
-            entry_id: self.entry_id.into(),
-            id: self.id.into(),
-            role: self.role.into(),
-            role_label: self.role_label.into(),
-            protocol: self.protocol.into(),
-            endpoint: self.endpoint.into(),
-            enabled: self.enabled,
-            state: self.state.into(),
-            state_label: self.state_label.into(),
-            kind: self.kind.into(),
-            sessions: self.sessions.into(),
-            peer: self.peer.into(),
-            details: ModelRc::new(VecModel::from(self.details)),
-        }
-    }
-}
-
-impl PeerData {
-    pub(crate) fn from_peer(p: &snap::Peer) -> Self {
-        let fixed = snap::is_fixed_peer(p);
-        let mut details = vec![kv("连接过程", &snap::peer_phase_label(p))];
-        details.extend([kv("本机 NAT", &p.local_nat),kv("对端 NAT", &p.peer_nat)]);
-        if !p.relay_device.is_empty() {
-            details.extend([
-                kv("Hole 中继设备", &p.relay_device),
-                kv("公布入口", &p.relay_endpoint),
-                kv("实际接入地址", &p.relay_access_address),
-            ]);
-        }
-        if fixed {
-            details.extend(snap::fixed_peer_details(p).into_iter().map(|(key, value)| kv(key, &value)));
-        } else {
-            details.extend([
-                kv("本机中继顺序", &snap::relay_order_label(&p.relay_order)),
-                kv(
-                    "对端中继顺序", &snap::relay_order_label(&p.peer_relay_order)),
-            ]);
-            if p.relay_order_fallback {
-                details.push(kv("顺序状态", "对端或协调服务不支持自定义顺序，已回退默认顺序"));
-            } else if p.relay_round > 0 {
-                details.push(kv("共享中继轮次", &format!("第 {} 轮", p.relay_round)));
-            }
-            if p.path_type == "relay" {
-                details.push(kv("中继使用方", match p.relay_side.as_str() { "both" => "本机与对端", "local" => "本机", "remote" => "对端", _ => "等待确认" }));
-                details.push(kv("中继接入", &snap::relay_path_label(p)));
-            }
-            details.extend([
-                kv("本机连接", &snap::selected_connection_label(&p.local_type, &p.local_address)),
-                kv("对端连接", &snap::selected_connection_label(&p.remote_type, &p.remote_address)),
-            ]);
-            if p.phase != "hole" {
-                details.push(kv("已发现候选地址", &format!("本机 {} · 对端 {}", p.local_candidates, p.remote_candidates)));
-                details.push(kv(
-                    "本机 TURN 来源", match p.relay_state.as_str() { "ready" => "短期凭据已就绪", "manual" => "手动配置", "off" => "不申请本机 TURN", "unavailable" | "expired" => "暂不可用", _ => "准备中" }));
-            }
-            if p.turn_expires_at != 0 {
-                details.push(kv("中继凭据剩余时间", &snap::remaining_time(p.turn_expires_at)));
-            }
-        }
-        details.extend([
-            kv("建连耗时", &if p.connect_ms == "0" { "尚未完成".to_string() } else { format!("{} ms", p.connect_ms) }),
-            kv("路径重试", &format!("{} 次", p.retry_count)),
-            kv("本地丢弃报文", &p.dropped_datagrams),
-            kv("QUIC 统计", "丢包率本次连接 · 平均按有效使用时长"),
-            kv("丢包率", &snap::quic_loss_summary(p)),
-            kv("峰值速率", &snap::bandwidth_summary(p.bandwidth.as_ref(), true)),
-            kv("平均速率", &snap::bandwidth_summary(p.bandwidth.as_ref(), false)),
-            kv("授权确认剩余时间", &snap::remaining_time(p.lease_until)),
-            kv("传输标识", &format!("{} · 第 {} 次路径", p.transport_id, p.generation)),
-        ]);
-        Self { details,
-            peer_id: p.peer_id.clone(), transport_id: p.transport_id.clone(),
-            state_label: snap::peer_state_label(&p.state).into(),
-            path_label: snap::peer_path_label(p), kind: snap::peer_kind(&p.state).into(),
-            channels: format!("{} / {}", p.active_channels, p.mapping_count),
-            rtt: if p.rtt_ms == "0" { "正在测量".to_string() } else { format!("{} ms", p.rtt_ms) },
-            traffic: format!("{} / {}", snap::format_bytes(p.bytes_sent), snap::format_bytes(p.bytes_received)),
-            note: if p.pending_phase.is_empty() { String::new() } else { format!("同时{}，新路径就绪后切换。", snap::phase_label(&p.pending_phase)) },
-            error: p.error.as_ref().filter(|_| !matches!(p.state.as_str(), "active" | "switching")).map(|e| snap::connection_issue(&e.code).to_string()).unwrap_or_default(),
-        }
-    }
-
-    pub(crate) fn into_row(self) -> PeerRow {
-        PeerRow {
-            peer_id: self.peer_id.into(),
-            transport_id: self.transport_id.into(),
-            state_label: self.state_label.into(),
-            path_label: self.path_label.into(),
-            kind: self.kind.into(),
-            channels: self.channels.into(),
-            rtt: self.rtt.into(),
-            traffic: self.traffic.into(),
-            note: self.note.into(),
-            error: self.error.into(),
-            details: ModelRc::new(VecModel::from(self.details)),
-        }
-    }
-}
+//! 单一工作线程拥有核心客户端；页面只发送用户意图，刷新只读快照。
+use crate::{
+    config::{self, Secrets, StoredConfig},
+    core_client::{CoreClient, Hello, Inbound},
+    model::NetworkIntent,
+    report,
+    snapshot::{self, Snapshot},
+    storage::{RunState, Storage},
+    voice_audio::VoiceAudio,
+};
+use serde_json::{Value, json};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 pub const GUI_VERSION: &str = env!("CARGO_PKG_VERSION");
-const FOREGROUND_INTERVAL: Duration = Duration::from_millis(1500);
-const BACKGROUND_INTERVAL: Duration = Duration::from_millis(15000);
-const MIN_INTERVAL: Duration = Duration::from_millis(100);
-const MAX_EVENTS: usize = 200;
-const HISTORY_LEN: usize = 60;
 
-/// UI 线程与工作线程共享的持久状态。
-pub struct Shared {
-    pub storage: Storage,
-    pub config: StoredConfig,
-    pub secrets: Secrets,
-    pub run_state: RunState,
-    pub config_error: Option<String>,
-    /// 删除撤销缓存：(角色, 位置, 条目 JSON)
-    pub undo: Option<(String, usize, Value)>,
-    pub pending_import: Option<PendingImport>,
+#[derive(Clone, Default)]
+pub struct State {
+    pub snapshot: Snapshot,
+    pub ready: bool,
+    pub error: String,
+    pub message: String,
+    pub host: String,
+    pub voice_error: String,
+    pub voice_route: String,
+    pub voice_running: bool,
+    pub events: Vec<Value>,
+    pub up_rate: f64,
+    pub down_rate: f64,
 }
 
-pub struct PendingImport {
+#[cfg(all(test, feature = "embedded-core"))]
+mod tests {
+    use super::*;
+    fn state(controller: &Controller, until: impl Fn(&State) -> bool) -> State {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let update = controller
+                .updates
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("等待核心状态超时");
+            if let Update::State(state) = update {
+                if until(&state) {
+                    return *state;
+                }
+            }
+        }
+    }
+    #[test]
+    fn real_core_keeps_run_intent_and_generation_when_only_preferences_change() {
+        let directory =
+            std::env::temp_dir().join(format!("hole-controller-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut config = StoredConfig::default();
+        config.connection.server_url = "wss://127.0.0.1:9/ws".into();
+        config.connection.room = "controller-contract".into();
+        config.connection.device_name = "desktop".into();
+        config.connection.ice.stun_urls.clear();
+        config.connection.ice.nat_stun_urls = Some(vec![]);
+        config.connection.ice.port_mapping = "off".into();
+        config.connection.turn.mode = "off".into();
+        let secrets = Secrets {
+            password: "fixture".into(),
+            token: "fixture".into(),
+            ..Default::default()
+        };
+        let mut controller = Controller::with_host(
+            Storage {
+                dir: directory.clone(),
+            },
+            config.clone(),
+            secrets.clone(),
+            RunState::default(),
+            String::new(),
+            crate::core_host::embedded,
+        );
+        let ready = state(&controller, |s| s.ready);
+        assert!(!ready.snapshot.run_requested);
+        assert_eq!(ready.snapshot.generation, "0");
+        controller.send(Command::Start);
+        let started = state(&controller, |s| s.snapshot.run_requested);
+        let generation = started.snapshot.generation;
+        assert!(generation.parse::<u64>().unwrap() > 0);
+        config.prefs.theme_mode = "dark".into();
+        controller.send(Command::Save(Box::new(config), secrets));
+        let saved = state(&controller, |s| s.message == "已保存");
+        assert!(saved.snapshot.run_requested);
+        assert_eq!(saved.snapshot.generation, generation);
+        controller.send(Command::Network(NetworkIntent::ReselectPath));
+        controller.send(Command::Refresh);
+        let reselected = state(&controller, |s| s.snapshot.run_requested);
+        assert_eq!(
+            reselected.snapshot.network_changes,
+            started.snapshot.network_changes
+        );
+        controller.send(Command::Stop);
+        let stopped = state(&controller, |s| !s.snapshot.run_requested);
+        assert!(!stopped.snapshot.run_requested);
+        controller.finish();
+        let run: RunState = serde_json::from_str(
+            &std::fs::read_to_string(directory.join("run-state.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(!run.run_requested);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+pub struct ImportPreview {
     pub config: StoredConfig,
     pub secrets: Secrets,
-    pub resume_at_login: bool,
     pub source: String,
+}
+pub enum Update {
+    State(Box<State>),
+    Saved(Box<StoredConfig>, Secrets),
+    Preview(Box<ImportPreview>),
+    Document(String),
+    Process {
+        token: u64,
+        result: Result<Value, String>,
+    },
+    RunFinished,
 }
 
 pub enum Command {
-    NATProbe,
-    CancelNATProbe,
     Start,
     Stop,
-    Reconnect,
+    Network(NetworkIntent),
     Refresh,
-    /// 配置已变更；运行中则重配核心。
-    ConfigChanged,
+    Visible(bool),
+    Save(Box<StoredConfig>, Secrets),
+    NATProbe,
+    CancelNATProbe,
     VoiceMuted(bool),
     RetryVoiceAudio,
-    Visible(bool),
-    ImportText { text: String, kind: String },
+    Import(String),
     ConfirmImport,
-    Export { path: String, kind: String, include_secrets: bool },
-    BuildReport,
+    Export {
+        path: String,
+        backup: bool,
+        secrets: bool,
+    },
+    Report,
+    Process {
+        token: u64,
+        transport: String,
+        after: String,
+        generation: String,
+        stream: String,
+    },
     Quit,
 }
-
-pub struct Controller {
-    pub shared: Arc<Mutex<Shared>>,
-    pub tx: Sender<Command>,
-    thread: Mutex<Option<thread::JoinHandle<()>>>,
+enum Message {
+    Command(Command),
+    Inbound(Inbound),
 }
-
-struct TrafficSample {
-    at: Instant,
-    sent: u64,
-    received: u64,
+pub struct Controller {
+    tx: Sender<Message>,
+    pub updates: Receiver<Update>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+impl Controller {
+    pub fn start(
+        storage: Storage,
+        config: StoredConfig,
+        secrets: Secrets,
+        run_state: RunState,
+        error: String,
+    ) -> Self {
+        Self::with_host(
+            storage,
+            config,
+            secrets,
+            run_state,
+            error,
+            crate::core_host::prepare,
+        )
+    }
+    fn with_host(
+        storage: Storage,
+        config: StoredConfig,
+        secrets: Secrets,
+        run_state: RunState,
+        error: String,
+        prepare: impl FnOnce() -> Result<crate::core_host::PreparedCore, String> + Send + 'static,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let (updates, update_rx) = mpsc::channel();
+        let wake = tx.clone();
+        let thread = thread::Builder::new()
+            .name("hole-controller".into())
+            .spawn(move || {
+                Worker {
+                    storage,
+                    config,
+                    secrets,
+                    run_state,
+                    rx,
+                    updates,
+                    client: None,
+                    hello: Hello::default(),
+                    state: State {
+                        error,
+                        ..Default::default()
+                    },
+                    events: VecDeque::new(),
+                    visible: true,
+                    muted: false,
+                    audio: None,
+                    preview: None,
+                    last_event: (0, 0),
+                    last_read: Instant::now() - Duration::from_secs(1),
+                    sample: None,
+                }
+                .run(wake, prepare);
+            })
+            .expect("控制器线程启动失败");
+        Self {
+            tx,
+            updates: update_rx,
+            thread: Some(thread),
+        }
+    }
+    pub fn send(&self, command: Command) {
+        let _ = self.tx.send(Message::Command(command));
+    }
+    pub fn finish(&mut self) {
+        self.send(Command::Quit);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+impl Drop for Controller {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 struct Worker {
-    window: Weak<MainWindow>,
-    shared: Arc<Mutex<Shared>>,
-    rx: Receiver<Command>,
-    wake_rx: Receiver<Inbound>,
+    storage: Storage,
+    config: StoredConfig,
+    secrets: Secrets,
+    run_state: RunState,
+    rx: Receiver<Message>,
+    updates: Sender<Update>,
     client: Option<Arc<CoreClient>>,
-    hello: core_client::Hello,
-    bridge_error: String,
-    snapshot: Snapshot,
+    hello: Hello,
+    state: State,
+    events: VecDeque<Value>,
     visible: bool,
-    busy: bool,
-    command_error: String,
-    events: VecDeque<EventRow>,
-    last_generation: u64,
-    last_sequence: u64,
-    history: VecDeque<TrafficSample>,
+    muted: bool,
+    audio: Option<VoiceAudio>,
+    preview: Option<ImportPreview>,
+    last_event: (u64, u64),
     last_read: Instant,
-    bridge_path: String,
-    audio: Option<crate::voice_audio::VoiceAudio>,
-    audio_error: String,
-    voice_muted: bool,
+    sample: Option<(Instant, u64, u64)>,
 }
-
-impl Controller {
-    pub fn start(window: &MainWindow, shared: Arc<Mutex<Shared>>) -> Controller {
-        let (tx, rx) = mpsc::channel();
-        let (wake_tx, wake_rx) = mpsc::channel();
-        let weak = window.as_weak();
-        let shared_worker = shared.clone();
-        let worker_thread = thread::Builder::new()
-            .name("hole-controller".into())
-            .spawn(move || {
-                let mut worker = Worker {
-                    window: weak,
-                    shared: shared_worker,
-                    rx,
-                    wake_rx,
-                    client: None,
-                    hello: Default::default(),
-                    bridge_error: String::new(),
-                    snapshot: Snapshot::default(),
-                    visible: true,
-                    busy: false,
-                    command_error: String::new(),
-                    events: VecDeque::new(),
-                    last_generation: 0,
-                    last_sequence: 0,
-                    history: VecDeque::new(),
-                    last_read: Instant::now() - MIN_INTERVAL,
-                    bridge_path: String::new(),
-                    audio: None,
-                    audio_error: String::new(),
-                    voice_muted: false,
-                };
-                worker.connect_bridge(wake_tx.clone());
-                worker.run(wake_tx);
-            })
-            .expect("控制器线程启动失败");
-        Controller { shared, tx, thread: Mutex::new(Some(worker_thread)) }
-    }
-
-    pub fn send(&self, command: Command) {
-        let _ = self.tx.send(command);
-    }
-
-    pub fn finish(&self) {
-        self.send(Command::Quit);
-        if let Some(worker) = self.thread.lock().unwrap().take() {
-            let _ = worker.join();
-        }
-    }
-}
-
 impl Worker {
-    fn connect_bridge(&mut self, wake_tx: Sender<Inbound>) {
-        match crate::core_host::prepare() {
-            Ok(host) => {
-                self.bridge_path = host.description.clone();
-                let tx = wake_tx;
-                match CoreClient::spawn(host, move |inbound| {
-                    let _ = tx.send(inbound);
-                }) {
-                    Ok(client) => match client.hello() {
-                        Ok(hello) if hello.bridge_version == core_client::BRIDGE_VERSION && hello.api_version == core_client::API_VERSION => {
-                            self.hello = hello;
-                            self.client = Some(client);
-                            self.bridge_error.clear();
-                            self.read_snapshot();
-                        }
-                        Ok(hello) => {
-                            self.bridge_error = format!("核心宿主协议不匹配：桥接 {} / API {}，GUI 需要 {} / {}", hello.bridge_version, hello.api_version, core_client::BRIDGE_VERSION, core_client::API_VERSION);
-                            client.shutdown(Duration::from_secs(3));
-                        }
-                        Err(e) => self.bridge_error = format!("核心宿主握手失败：{e}"),
-                    },
-                    Err(e) => self.bridge_error = e,
-                }
+    fn run(
+        mut self,
+        wake: Sender<Message>,
+        prepare: impl FnOnce() -> Result<crate::core_host::PreparedCore, String>,
+    ) {
+        let connected = (|| {
+            let host = prepare()?;
+            self.state.host = host.description.clone();
+            let client = CoreClient::spawn(host, move |inbound| {
+                let _ = wake.send(Message::Inbound(inbound));
+            })?;
+            let hello = client.hello().map_err(|e| e.display())?;
+            if hello.bridge_version != crate::core_client::BRIDGE_VERSION
+                || hello.api_version != crate::core_client::API_VERSION
+            {
+                client.shutdown(Duration::from_secs(3));
+                return Err("核心宿主协议不匹配，请更新配套核心".into());
             }
-            Err(e) => self.bridge_error = e,
+            self.hello = hello;
+            self.client = Some(client);
+            self.state.ready = true;
+            self.refresh()?;
+            Ok::<(), String>(())
+        })();
+        if let Err(error) = connected {
+            self.state.error = error;
         }
-        self.push_ui();
-        self.maybe_resume();
-    }
-
-    /// 登录恢复：只有用户开启且上次仍请求运行时，执行一次明确的新启动。
-    fn maybe_resume(&mut self) {
-        let (resume, requested) = {
-            let s = self.shared.lock().unwrap();
-            (s.config.prefs.resume_at_login, s.run_state.run_requested)
-        };
-        if resume && requested && self.client.is_some() {
-            if let Err(e) = self.start() {
-                let mut s = self.shared.lock().unwrap();
-                s.run_state.last_resume_error = format!("登录恢复失败：{e}");
-                let _ = s.storage.save_run_state(&s.run_state);
+        if self.state.ready && self.config.prefs.resume_at_login && self.run_state.run_requested {
+            if let Err(error) = self.start() {
+                self.state.error = error.clone();
+                self.run_state.last_resume_error = error;
+                let _ = self.storage.save_run_state(&self.run_state);
             }
-            self.push_ui();
         }
-    }
-
-    fn run(mut self, _wake_tx: Sender<Inbound>) {
+        self.publish();
         loop {
-            let diagnostic = self.snapshot.nat_diagnostic["state"].as_str().is_some_and(|s| s != "idle");
-            let timeout = if (self.snapshot.run_requested || diagnostic) && self.client.is_some() {
-                if self.snapshot.voice.enabled { Duration::from_millis(500) }
-                else if self.visible { FOREGROUND_INTERVAL } else { BACKGROUND_INTERVAL }
+            let probe = matches!(
+                self.state.snapshot.nat_diagnostic["state"].as_str(),
+                Some("running" | "queued" | "probing" | "complete" | "insufficient")
+            );
+            let interval = if self.state.snapshot.voice.enabled {
+                Duration::from_millis(500)
+            } else if self.visible {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_secs(15)
+            };
+            let interval = if self.state.snapshot.run_requested || probe {
+                interval
             } else {
                 Duration::from_secs(3600)
             };
-            // 先排空事件通道，再等待命令；两者都能唤醒采样。
-            let mut wake = false;
-            while let Ok(inbound) = self.wake_rx.try_recv() {
-                wake |= self.handle_inbound(inbound);
-            }
-            if wake {
-                self.throttled_read();
-                continue;
-            }
-            match self.rx.recv_timeout(timeout) {
-                Ok(Command::Quit) => {
-                    self.quit();
-                    return;
+            if self.state.ready && self.last_read.elapsed() >= interval {
+                if let Err(error) = self.refresh() {
+                    self.state.error = error;
+                    self.last_read = Instant::now();
                 }
-                Ok(command) => self.handle_command(command),
+                self.publish();
+            }
+            let wait = if self.state.ready {
+                interval.saturating_sub(self.last_read.elapsed())
+            } else {
+                Duration::from_secs(3600)
+            };
+            match self.rx.recv_timeout(wait) {
+                Ok(Message::Command(Command::Quit)) | Err(RecvTimeoutError::Disconnected) => break,
+                Ok(Message::Command(command)) => {
+                    let run_command = matches!(
+                        command,
+                        Command::Start | Command::Stop | Command::Network(_)
+                    );
+                    if let Err(error) = self.command(command) {
+                        self.state.error = error;
+                    }
+                    self.publish();
+                    if run_command {
+                        self.updates.send(Update::RunFinished).ok();
+                    }
+                }
+                Ok(Message::Inbound(Inbound::Exited(reason))) => {
+                    self.audio.take();
+                    self.client.take();
+                    self.state.ready = false;
+                    self.state.error = reason.clone();
+                    self.state.snapshot = Snapshot::failure("bridge_exited", &reason);
+                    self.publish();
+                }
+                Ok(Message::Inbound(Inbound::Event(event))) => {
+                    if event["kind"] == "log" {
+                        continue;
+                    }
+                    let number = |key: &str| {
+                        event[key]
+                            .as_str()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(0)
+                    };
+                    let order = (number("generation"), number("sequence"));
+                    if order.1 != 0 && order <= self.last_event {
+                        continue;
+                    }
+                    self.last_event = order;
+                    self.events.push_front(event);
+                    self.events.truncate(200);
+                    if self.last_read.elapsed() >= Duration::from_millis(100) {
+                        if let Err(error) = self.refresh() {
+                            self.state.error = error;
+                        }
+                        self.publish();
+                    }
+                }
                 Err(RecvTimeoutError::Timeout) => {
-                    if self.snapshot.run_requested || diagnostic {
-                        self.read_snapshot();
-                        self.push_ui();
+                    if let Err(error) = self.refresh() {
+                        self.state.error = error;
+                        self.last_read = Instant::now();
                     }
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    self.quit();
-                    return;
+                    self.publish();
                 }
             }
         }
-    }
-
-    fn handle_inbound(&mut self, inbound: Inbound) -> bool {
-        match inbound {
-            Inbound::Event(params) => self.handle_event(&params),
-            Inbound::Exited(reason) => {
-                self.audio.take();
-                self.client = None;
-                self.bridge_error = format!("{reason}；转发已中断。重新打开应用以重新启动核心宿主。");
-                self.snapshot = Snapshot::failure("bridge_exited", &reason);
-                self.push_ui();
-                false
-            }
+        self.stop_audio();
+        if let Some(client) = self.client.take() {
+            client.shutdown(Duration::from_secs(5));
         }
     }
-
-    fn handle_event(&mut self, e: &Value) -> bool {
-        let kind = e["kind"].as_str().unwrap_or_default();
-        if kind == "log" {
-            return false;
-        }
-        let generation: u64 = e["generation"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let sequence: u64 = e["sequence"].as_str().and_then(|s| s.parse().ok()).unwrap_or(0);
-        if generation < self.last_generation || (generation == self.last_generation && sequence <= self.last_sequence && sequence != 0) {
-            return false; // 旧代次或重复
-        }
-        self.last_generation = generation;
-        self.last_sequence = sequence;
-        let state = e["state"].as_str().unwrap_or_default();
-        let message = e["message"].as_str().unwrap_or_default();
-        let error = e.get("error").and_then(|f| f.get("code")).and_then(Value::as_str).unwrap_or_default();
-        let (level, summary) = match kind {
-            "engine" => (if state == "error" { "bad" } else if state == "running" { "good" } else { "info" }, format!("核心 {}", snap::engine_label(&Snapshot { engine_state: state.into(), configured: true, ..Default::default() }))),
-            "signal" => (if state == "error" { "bad" } else if state == "joined" { "good" } else { "info" }, format!("信令 {}", snap::signal_label(state))),
-            "mapping" => (snap::mapping_kind(state), format!("映射 {} {}", e["mapping_id"].as_str().unwrap_or_default(), snap::mapping_label(state))),
-            "peer" => (snap::peer_kind(state), format!("设备 {} {}", e["peer"].as_str().unwrap_or_default(), snap::peer_state_label(state))),
-            "network" => ("warn", "网络变化，正在重建路径".to_string()),
-            "session" => ("info", format!("会话 {} {}", e["mapping_id"].as_str().unwrap_or_default(), e["stage"].as_str().unwrap_or_default())),
-            other => ("info", format!("{other} {state}")),
-        };
-        let level = if !error.is_empty() { "bad" } else { level };
-        let mut detail = String::new();
-        if !message.is_empty() {
-            detail.push_str(message);
-        }
-        if !error.is_empty() {
-            if !detail.is_empty() {
-                detail.push_str(" · ");
-            }
-            detail.push_str(snap::connection_issue(error));
-        }
-        for key in ["phase", "path", "profile", "target"] {
-            if let Some(v) = e[key].as_str().filter(|v| !v.is_empty()) {
-                if !detail.is_empty() {
-                    detail.push_str(" · ");
-                }
-                detail.push_str(v);
-            }
-        }
-        self.events.push_front(EventRow {
-            time: snap::short_time(e["time"].as_str().unwrap_or_default()).into(),
-            kind: kind.into(),
-            level: level.into(),
-            summary: summary.into(),
-            detail: detail.into(),
-        });
-        while self.events.len() > MAX_EVENTS {
-            self.events.pop_back();
-        }
-        true
+    fn rpc(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
+        self.client
+            .as_ref()
+            .ok_or("核心宿主未运行")?
+            .call(method, params)
+            .map_err(|e| e.display())
     }
-
-    fn throttled_read(&mut self) {
-        let since = self.last_read.elapsed();
-        if since < MIN_INTERVAL {
-            thread::sleep(MIN_INTERVAL - since);
-        }
-        // 合并这段时间内到达的事件，而不是持续延后。
-        while let Ok(inbound) = self.wake_rx.try_recv() {
-            self.handle_inbound(inbound);
-        }
-        self.read_snapshot();
-        self.push_ui();
+    fn start(&mut self) -> Result<(), String> {
+        let request = config::to_run_request(&self.config, &self.secrets)?;
+        self.rpc("start", Some(request))?;
+        self.run_state.run_requested = true;
+        self.storage.save_run_state(&self.run_state)?;
+        self.refresh()
     }
-
-    fn read_snapshot(&mut self) {
-        self.last_read = Instant::now();
-        let Some(client) = self.client.clone() else { return;
-        };
-        match client.call("snapshot", None).and_then(|v| {
-            snap::parse_snapshot_result(&v).map_err(|e| RpcError { code: 0, message: e, fault_code: None, fault_message: None })
-        }) {
-            Ok(s) => {
-                if s.run_requested {
-                    self.history.push_back(TrafficSample { at: Instant::now(), sent: s.bytes_sent(), received: s.bytes_received() });
-                    while self.history.len() > HISTORY_LEN {
-                        self.history.pop_front();
-                    }
-                } else {
-                    self.history.clear();
-                }
-                self.snapshot = s;
-                self.sync_audio();
-            }
-            Err(e) => self.command_error = format!("读取快照失败：{e}"),
-        }
-    }
-
-    fn handle_command(&mut self, command: Command) {
+    fn command(&mut self, command: Command) -> Result<(), String> {
+        self.state.error.clear();
         match command {
-            Command::NATProbe | Command::CancelNATProbe => {
-                let start = matches!(command, Command::NATProbe);
-                let options = if start {
-                    let shared = self.shared.lock().unwrap();
-                    let ice = &shared.config.connection.ice;
-                    Some(serde_json::json!({"stun_urls": ice.stun_urls, "nat_stun_urls": ice.nat_stun_urls, "interface_allowlist": ice.interface_allowlist}))
-                } else { None };
-                if let Some(client) = &self.client {
-                    match client.call(if start { "start_nat_probe" } else { "cancel_nat_probe" }, options) {
-                        Ok(_) => self.command_error.clear(),
-                        Err(e) => self.command_error = format!("NAT 检测失败：{e}"),
-                    }
-                }
-                self.read_snapshot();
-                self.push_ui();
-            }
-            Command::Start => {
-                self.set_busy(true);
-                match self.start() {
-                    Ok(()) => self.command_error.clear(),
-                    Err(e) => self.command_error = e,
-                }
-                self.set_busy(false);
-            }
+            Command::Start => self.start()?,
             Command::Stop => {
-                self.set_busy(true);
-                self.stop();
-                self.set_busy(false);
-            }
-            Command::Reconnect => {
-                if let Some(c) = &self.client {
-                    match c.call("network_changed", None) {
-                        Ok(_) => self.command_error.clear(),
-                        Err(e) => self.command_error = format!("重新连接失败：{e}"),
-                    }
-                }
-                self.read_snapshot();
-                self.push_ui();
-            }
-            Command::Refresh => {
-                self.read_snapshot();
-                self.push_ui();
-            }
-            Command::ConfigChanged => {
                 self.stop_audio();
-                self.audio_error.clear();
-                if self.snapshot.run_requested {
-                    self.apply_config();
+                self.rpc("stop", None)?;
+                self.run_state.run_requested = false;
+                self.storage.save_run_state(&self.run_state)?;
+                self.refresh()?;
+            }
+            Command::Network(intent) => {
+                self.rpc(intent.method(), None)?;
+                self.refresh()?;
+            }
+            Command::Refresh => self.refresh()?,
+            Command::Visible(visible) => {
+                self.visible = visible;
+                if visible {
+                    self.refresh()?;
                 }
-                self.push_ui();
+            }
+            Command::Save(config, secrets) => self.save(*config, secrets)?,
+            Command::NATProbe => {
+                let ice = &self.config.connection.ice;
+                self.rpc("start_nat_probe", Some(json!({"stun_urls":ice.stun_urls,"nat_stun_urls":ice.nat_stun_urls,"interface_allowlist":ice.interface_allowlist})))?;
+                self.refresh()?;
+            }
+            Command::CancelNATProbe => {
+                self.rpc("cancel_nat_probe", None)?;
+                self.refresh()?;
             }
             Command::VoiceMuted(muted) => {
-                if let Some(client) = &self.client {
-                    match client.call("set_voice_muted", Some(serde_json::json!({"muted": muted}))) {
-                        Ok(_) => { self.voice_muted = muted; self.command_error.clear(); }
-                        Err(e) => self.command_error = format!("语音静音操作失败：{e}"),
-                    }
-                }
-                self.read_snapshot();
-                self.push_ui();
+                self.rpc("set_voice_muted", Some(json!({"muted":muted})))?;
+                self.muted = muted;
+                self.refresh()?;
             }
             Command::RetryVoiceAudio => {
                 self.stop_audio();
-                self.audio_error.clear();
-                self.read_snapshot();
-                self.push_ui();
+                self.state.voice_error.clear();
+                self.refresh()?;
             }
-            Command::Visible(v) => {
-                self.visible = v;
+            Command::Import(text) => {
+                if text.len() > crate::storage::MAX_DOCUMENT_BYTES {
+                    return Err("导入内容超过 128 KiB".into());
+                }
+                let preview = if let Ok(backup) = config::read_backup(&text, &self.config) {
+                    ImportPreview {
+                        config: backup.config,
+                        secrets: backup.secrets,
+                        source: backup.source.into(),
+                    }
+                } else {
+                    let decoded = self.rpc("decode_cli_config", Some(json!({"text":text})))?;
+                    let (config, secrets) =
+                        config::from_portable_document(&decoded["config"], &self.config)?;
+                    ImportPreview {
+                        config,
+                        secrets,
+                        source: "CLI YAML / JSON".into(),
+                    }
+                };
+                self.updates
+                    .send(Update::Preview(Box::new(ImportPreview {
+                        config: preview.config.clone(),
+                        secrets: preview.secrets.clone(),
+                        source: preview.source.clone(),
+                    })))
+                    .ok();
+                self.preview = Some(preview);
             }
-            Command::ImportText { text, kind } => self.import(text, kind),
-            Command::ConfirmImport => self.confirm_import(),
-            Command::Export { path, kind, include_secrets } => self.export(path, kind, include_secrets),
-            Command::BuildReport => self.build_report(),
+            Command::ConfirmImport => {
+                let mut preview = self.preview.take().ok_or("请先预览导入内容")?;
+                preview.config.prefs.resume_at_login = false;
+                self.save(preview.config, preview.secrets)?;
+            }
+            Command::Export {
+                path,
+                backup,
+                secrets: include_secrets,
+            } => {
+                let text = if backup {
+                    serde_json::to_string_pretty(&config::backup_document(
+                        &self.config,
+                        &self.secrets,
+                        include_secrets,
+                    ))
+                    .map_err(|e| e.to_string())?
+                } else {
+                    let document =
+                        config::to_portable_document(&self.config, &self.secrets, include_secrets)?;
+                    self.rpc(
+                        "encode_cli_config",
+                        Some(json!({"config":document,"include_secrets":include_secrets})),
+                    )?["text"]
+                        .as_str()
+                        .ok_or("转换结果缺少 text")?
+                        .to_string()
+                };
+                if path.trim().is_empty() {
+                    self.updates.send(Update::Document(text)).ok();
+                } else {
+                    Storage::write_document(
+                        std::path::Path::new(path.trim()),
+                        &text,
+                        include_secrets,
+                    )?;
+                    self.state.message = format!("已导出到 {}", path.trim());
+                }
+            }
+            Command::Report => {
+                let text = report::diagnostic_report(&report::ReportContext {
+                    snapshot: &self.state.snapshot,
+                    config: &self.config,
+                    secrets: &self.secrets,
+                    gui_version: GUI_VERSION,
+                    bridge_version: self.hello.bridge_version,
+                    os_label: std::env::consts::OS,
+                    resume_at_login: self.config.prefs.resume_at_login,
+                    last_resume_error: &self.run_state.last_resume_error,
+                    now_rfc3339: &chrono::Utc::now().to_rfc3339(),
+                });
+                self.updates.send(Update::Document(text)).ok();
+            }
+            Command::Process {
+                token,
+                transport,
+                after,
+                generation,
+                stream,
+            } => {
+                let result = if self.hello.methods.iter().any(|m| m == "nat_punch_process") {
+                    self.rpc("nat_punch_process", Some(json!({"transport_id":transport,"after_sequence":after,"generation":generation,"stream":stream,"limit":256})))
+                } else {
+                    Err("当前核心未提供打洞过程，请更新配套核心".into())
+                };
+                self.updates.send(Update::Process { token, result }).ok();
+            }
             Command::Quit => {}
         }
-    }
-
-    fn set_busy(&mut self, busy: bool) {
-        self.busy = busy;
-        self.push_ui();
-    }
-
-    fn build_request(&self) -> Result<Value, String> {
-        let s = self.shared.lock().unwrap();
-        config::to_run_request(&s.config, &s.secrets)
-    }
-
-    fn start(&mut self) -> Result<(), String> {
-        self.audio_error.clear();
-        let client = self.client.clone().ok_or_else(|| self.bridge_error.clone())?;
-        let request = self.build_request()?;
-        client.call("validate", Some(request.clone())).map_err(|e| e.display())?;
-        client.call("start", Some(request)).map_err(|e| e.display())?;
-        {
-            let mut s = self.shared.lock().unwrap();
-            s.run_state.run_requested = true;
-            s.run_state.last_resume_error.clear();
-            let _ = s.storage.save_run_state(&s.run_state);
-        }
-        self.read_snapshot();
         Ok(())
     }
-
-    fn stop(&mut self) {
-        self.stop_audio();
-        self.audio_error.clear();
-        {
-            let mut s = self.shared.lock().unwrap();
-            s.run_state.run_requested = false;
-            let _ = s.storage.save_run_state(&s.run_state);
-        }
-        if let Some(c) = &self.client {
-            match c.call("stop", None) {
-                Ok(_) => self.command_error.clear(),
-                Err(e) => self.command_error = format!("停止失败：{e}"),
+    fn save(&mut self, config: StoredConfig, secrets: Secrets) -> Result<(), String> {
+        config::validate_draft(&config)?;
+        let request = config::to_run_request(&config, &secrets);
+        let changed = config::to_run_request(&self.config, &self.secrets).ok()
+            != request.as_ref().ok().cloned();
+        self.storage.save_secrets(&secrets)?;
+        self.storage.save_config(&config)?;
+        self.config = config;
+        self.secrets = secrets;
+        self.updates
+            .send(Update::Saved(
+                Box::new(self.config.clone()),
+                self.secrets.clone(),
+            ))
+            .ok();
+        self.state.message = "已保存".into();
+        if self.state.snapshot.run_requested && changed {
+            match request {
+                Ok(request) => {
+                    self.stop_audio();
+                    self.state.voice_error.clear();
+                    self.rpc("apply_config", Some(request))?;
+                    self.state.message = "已保存，已提交核心应用".into();
+                    self.refresh()?;
+                }
+                Err(error) => self.state.message = format!("已保存，暂未应用：{error}"),
             }
         }
-        self.history.clear();
-        self.read_snapshot();
-        self.push_ui();
+        Ok(())
     }
-
-    fn apply_config(&mut self) {
-        let Some(client) = self.client.clone() else { return };
-        match self.build_request() {
-            Ok(request) => match client.call("apply_config", Some(request)) {
-                Ok(_) => self.command_error.clear(),
-                Err(e) => self.command_error = format!("应用配置失败：{e}"),
-            },
-            Err(e) => self.command_error = format!("配置未应用：{e}"),
+    fn refresh(&mut self) -> Result<(), String> {
+        let snapshot = snapshot::parse_snapshot_result(&self.rpc("snapshot", None)?)?;
+        let now = Instant::now();
+        if let Some((at, up, down)) = self.sample {
+            let elapsed = now.duration_since(at).as_secs_f64().max(0.001);
+            self.state.up_rate = snapshot.bytes_sent().saturating_sub(up) as f64 / elapsed;
+            self.state.down_rate = snapshot.bytes_received().saturating_sub(down) as f64 / elapsed;
         }
-        self.read_snapshot();
+        self.sample = Some((now, snapshot.bytes_sent(), snapshot.bytes_received()));
+        self.state.snapshot = snapshot;
+        self.last_read = now;
+        self.sync_audio();
+        Ok(())
     }
-
-    fn import(&mut self, text: String, kind: String) {
-        let result = (|| -> Result<PendingImport, String> {
-            let current = self.shared.lock().unwrap().config.clone();
-            if kind == "backup" {
-                let p = config::read_backup(&text, &current)?;
-                Ok(PendingImport { config: p.config, secrets: p.secrets, resume_at_login: p.resume_at_login, source: p.source.into() })
-            } else {
-                let client = self.client.clone().ok_or("核心宿主未运行，无法解析 CLI 配置")?;
-                let value = client.call("decode_cli_config", Some(serde_json::json!({ "text": text }))).map_err(|e| e.display())?;
-                let doc = value.get("config").ok_or("转换结果缺少 config")?;
-                let (cfg, secrets) = config::from_portable_document(doc, &current)?;
-                Ok(PendingImport { config: cfg, secrets, resume_at_login: false, source: "CLI YAML / JSON".into() })
-            }
-        })();
-        let preview = match result {
-            Ok(p) => {
-                let preview = ImportPreview {
-                    visible: true,
-                    kind_label: p.source.clone().into(),
-                    provide_count: p.config.provide.len().to_string().into(),
-                    consume_count: p.config.consume.len().to_string().into(),
-                    enabled_count: (p.config.provide.iter().filter(|e| e.enabled).count() + p.config.consume.iter().filter(|e| e.enabled).count()).to_string().into(),
-                    server_url: p.config.connection.server_url.clone().into(),
-                    room: p.config.connection.room.clone().into(),
-                    secrets_note: if !p.secrets.password.is_empty() && !p.secrets.token.is_empty() { "文件含凭据，将重新加密保存" } else { "凭据不完整，导入后在设置中填写" }.into(),
-                    resume_note: if p.source.starts_with("Android") || p.source.starts_with("桌面") { if p.resume_at_login { "备份中开启；导入后需在设置中确认系统集成" } else { "关闭" } } else { "" }.into(),
-                };
-                self.shared.lock().unwrap().pending_import = Some(p);
-                Some(preview)
-            }
-            Err(e) => {
-                self.set_exchange_message(format!("导入检查未通过：{e}。原配置保持不变。"));
-                None
-            }
-        };
-        if let Some(preview) = preview {
-            let _ = self.window.upgrade_in_event_loop(move |w| {
-                let app = w.global::<App>();
-                app.set_import_preview(preview);
-                app.set_exchange_message("".into());
-            });
-        }
-        self.set_exchange_busy(false);
-    }
-
-    /// 与 Android 顺序一致：清除运行意图 → 等待 stop → 原子保存 → 保持停止。
-    fn confirm_import(&mut self) {
-        let pending = self.shared.lock().unwrap().pending_import.take();
-        let Some(p) = pending else {
-            self.set_exchange_busy(false);
-            return;
-        };
-        self.stop();
-        let result = {
-            let mut s = self.shared.lock().unwrap();
-            let mut cfg = p.config;
-            cfg.prefs.resume_at_login = false; // 系统集成由用户显式确认
-            s.storage.save_config(&cfg).and_then(|_| s.storage.save_secrets(&p.secrets)).map(|_| {
-                s.config = cfg;
-                s.secrets = p.secrets;
-                s.config_error = None;
-            })
-        };
-        match result {
-            Ok(()) => self.set_exchange_message("配置已替换，连接保持停止。".into()),
-            Err(e) => self.set_exchange_message(format!("配置保存失败：{e}")),
-        }
-        let _ = self.window.upgrade_in_event_loop(|w| {
-            let app = w.global::<App>();
-            app.set_import_preview(ImportPreview::default());
-        });
-        self.set_exchange_busy(false);
-        self.push_ui();
-        crate::push_config_forms(&self.window, &self.shared);
-    }
-
-    fn export(&mut self, path: String, kind: String, include_secrets: bool) {
-        let result = (|| -> Result<String, String> {
-            let (cfg, secrets, dir) = {
-                let s = self.shared.lock().unwrap();
-                (s.config.clone(), s.secrets.clone(), s.storage.dir.clone())
-            };
-            let (text, default_name) = if kind == "backup" {
-                (serde_json::to_string_pretty(&config::backup_document(&cfg, &secrets, include_secrets)).map_err(|e| e.to_string())?, "hole-desktop-backup.json")
-            } else {
-                let client = self.client.clone().ok_or("核心宿主未运行，无法生成 CLI YAML")?;
-                let doc = config::to_portable_document(&cfg, &secrets, include_secrets)?;
-                let value = client.call("encode_cli_config", Some(serde_json::json!({ "config": doc, "include_secrets": include_secrets }))).map_err(|e| e.display())?;
-                (value["text"].as_str().ok_or("转换结果缺少 text")?.to_string(), "hole-config.yaml")
-            };
-            let target = if path.trim().is_empty() { dir.join(default_name) } else { std::path::PathBuf::from(path.trim()) };
-            Storage::write_document(&target, &text, include_secrets)?;
-            Ok(target.display().to_string())
-        })();
-        match result {
-            Ok(p) => self.set_exchange_message(format!("已导出到 {p}")),
-            Err(e) => self.set_exchange_message(format!("导出失败：{e}")),
-        }
-        self.set_exchange_busy(false);
-    }
-
-    fn set_exchange_message(&self, text: String) {
-        let _ = self.window.upgrade_in_event_loop(move |w| w.global::<App>().set_exchange_message(text.into()));
-    }
-
-    fn set_exchange_busy(&self, busy: bool) {
-        let _ = self.window.upgrade_in_event_loop(move |w| w.global::<App>().set_exchange_busy(busy));
-    }
-
-    fn build_report(&mut self) {
-        let text = {
-            let s = self.shared.lock().unwrap();
-            report::diagnostic_report(&report::ReportContext {
-                snapshot: &self.snapshot,
-                config: &s.config,
-                secrets: &s.secrets,
-                gui_version: GUI_VERSION,
-                bridge_version: self.hello.bridge_version,
-                os_label: &os_label(),
-                resume_at_login: s.config.prefs.resume_at_login,
-                last_resume_error: &s.run_state.last_resume_error,
-                now_rfc3339: &now_rfc3339(),
-            })
-        };
-        let _ = self.window.upgrade_in_event_loop(move |w| w.global::<App>().set_report_text(text.into()));
-    }
-
-    fn quit(&mut self) {
-        self.stop_audio();
-        if let Some(c) = self.client.take() {
-            if self.snapshot.run_requested {
-                let _ = c.call("stop", None);
-            }
-            c.shutdown(Duration::from_secs(5));
-        }
-        let _ = slint::quit_event_loop();
-    }
-
-    // ---------- 视图模型 ----------
-
     fn stop_audio(&mut self) {
         if self.audio.take().is_some() {
-            if let Some(client) = &self.client {
-                let _ = client.call("set_voice_audio", Some(serde_json::json!({"enabled": false})));
-            }
+            let _ = self.rpc("set_voice_audio", Some(json!({"enabled":false})));
         }
+        self.state.voice_running = false;
+        self.state.voice_route.clear();
     }
-
     fn sync_audio(&mut self) {
-        let wanted = self.shared.lock().unwrap().config.voice.enabled;
-        if !wanted || !self.snapshot.run_requested || !self.snapshot.voice.enabled {
+        if !self.config.voice.enabled
+            || !self.state.snapshot.run_requested
+            || !self.state.snapshot.voice.enabled
+        {
             self.stop_audio();
             return;
         }
-        if let Some(error) = self.audio.as_ref().and_then(|a| a.error()) {
+        if let Some(error) = self.audio.as_ref().and_then(|audio| audio.error()) {
             self.stop_audio();
-            self.audio_error = error;
+            self.state.voice_error = error;
         }
-        if self.audio.is_some() || !self.audio_error.is_empty() || self.snapshot.engine_state != "running" { return; }
-        let Some(client) = self.client.clone() else { return };
+        if self.audio.is_some()
+            || !self.state.voice_error.is_empty()
+            || self.state.snapshot.engine_state != "running"
+        {
+            return;
+        }
         let result = (|| {
-            if !self.hello.methods.iter().any(|m| m == "set_voice_audio") { return Err("核心宿主不支持桌面语音，请更新配套宿主".into()); }
-            // Preserve mute across device restart and configuration changes.
-            client.call("set_voice_muted", Some(serde_json::json!({"muted": self.voice_muted}))).map_err(|e| e.display())?;
-            let reply = client.call("set_voice_audio", Some(serde_json::json!({"enabled": true}))).map_err(|e| e.display())?;
-            let id = reply["stream_id"].as_str().and_then(|s| s.parse::<u64>().ok()).filter(|id| *id != 0).ok_or("语音流标识无效")?;
-            crate::voice_audio::VoiceAudio::open(client.clone(), id)
+            self.rpc("set_voice_muted", Some(json!({"muted":self.muted})))?;
+            let response = self.rpc("set_voice_audio", Some(json!({"enabled":true})))?;
+            let id = response["stream_id"]
+                .as_str()
+                .and_then(|id| id.parse::<u64>().ok())
+                .filter(|id| *id != 0)
+                .ok_or("语音流标识无效")?;
+            VoiceAudio::open(self.client.clone().ok_or("核心未运行")?, id)
         })();
         match result {
-            Ok(audio) => self.audio = Some(audio),
+            Ok(audio) => {
+                self.state.voice_route = audio.route.clone();
+                self.state.voice_running = true;
+                self.audio = Some(audio);
+            }
             Err(error) => {
-                let _ = client.call("set_voice_audio", Some(serde_json::json!({"enabled": false})));
-                self.audio_error = error;
+                let _ = self.rpc("set_voice_audio", Some(json!({"enabled":false})));
+                self.state.voice_error = error;
             }
         }
     }
-
-    fn build_voice_status(&self) -> crate::VoiceStatus {
-        let enabled = self.shared.lock().unwrap().config.voice.enabled;
-        let v = &self.snapshot.voice;
-        let label = if !enabled { "语音未启用" } else if !self.snapshot.run_requested { "已启用，等待连接" }
-            else if !self.audio_error.is_empty() { "音频设备需要处理" }
-            else if self.audio.is_none() { "正在准备语音" }
-            else { match v.state.as_str() {
-                "active" | "running" => "语音通话中", "connecting" => "语音线路连接中",
-                "ready" => "线路已连接，等待音频", _ => "等待语音成员",
-            } };
-        crate::VoiceStatus {
-            enabled, available: self.hello.methods.iter().any(|m| m == "set_voice_audio"),
-            muted: v.muted, running: self.audio.is_some(), label: label.into(),
-            capture: if v.muted { "麦克风已静音".into() } else { snap::media_label(&v.capture_state).into() },
-            route: self.audio.as_ref().map(|a| a.route.clone()).unwrap_or_default().into(),
-            error: self.audio_error.clone().into(),
-            stats: format!("采集 {} 帧 · 混音 {} 帧", v.captured_frames, v.mixed_frames).into(),
-        }
-    }
-
-    fn push_ui(&mut self) {
-        // Deterministic fixtures own the view throughout the screenshot session.
-        if std::env::var_os("HOLE_DESKTOP_SCREENSHOT_DIR").is_some()
-            && std::env::var_os("HOLE_DESKTOP_SCREENSHOT_SCENARIO").is_some() { return; }
-        let nat = self.snapshot.nat_diagnostic.clone();
-        let status = self.build_status();
-        let (provides, consumes, runtime) = self.build_mappings();
-        let peers = self.build_peers();
-        let events: Vec<EventRow> = self.events.iter().cloned().collect();
-        let network = self.build_network_info();
-        let versions = self.build_version_info();
-        let host = self.build_host_info();
-        let voice = self.build_voice_status();
-        let members = self.snapshot.voice.members.clone();
-        let voice_peers = self.snapshot.voice.peers.clone();
-        let _ = self.window.upgrade_in_event_loop(move |w| {
-            let app = w.global::<App>();
-            app.set_nat_state(nat["state"].as_str().unwrap_or("idle").into());
-            app.set_nat_tone(nat["tone"].as_str().unwrap_or("neutral").into());
-            app.set_nat_badge(nat["badge"].as_str().unwrap_or("待检测").into());
-            let highlights = nat["highlights"].as_array().map(|tiles| tiles.iter().map(|tile| crate::NATTile {
-                icon: tile["icon"].as_str().unwrap_or_default().into(),
-                label: tile["label"].as_str().unwrap_or_default().into(),
-                value: tile["value"].as_str().unwrap_or_default().into(),
-            }).collect::<Vec<_>>()).unwrap_or_default();
-            app.set_nat_highlights(ModelRc::new(VecModel::from(highlights)));
-            app.set_nat_title(nat["title"].as_str().unwrap_or("检测当前网络").into());
-            app.set_nat_summary(nat["summary"].as_str().unwrap_or("检查 IPv4 NAT 的映射、过滤与端口特征。无需加入房间。").into());
-            let mut report = format!("NAT 检测\n{}\n{}\n", app.get_nat_title(), app.get_nat_summary());
-            let sections = nat["sections"].as_array().map(|sections| sections.iter().map(|section| {
-                let title = section["title"].as_str().unwrap_or_default();
-                report.push_str(&format!("\n{title}\n"));
-                let fields = section["fields"].as_array().map(|fields| fields.iter().map(|field| {
-                    let label = field["label"].as_str().unwrap_or_default();
-                    let value = snap::nat_time(field["value"].as_str().unwrap_or_default());
-                    let detail = field["detail"].as_str().unwrap_or_default();
-                    report.push_str(&format!("{label}：{value}\n{detail}\n"));
-                    crate::NATField { label: label.into(), value: value.into(), detail: detail.into() }
-                }).collect::<Vec<_>>()).unwrap_or_default();
-                crate::NATSection { title: title.into(), fields: ModelRc::new(VecModel::from(fields)) }
-            }).collect::<Vec<_>>()).unwrap_or_default();
-            app.set_nat_sections(ModelRc::new(VecModel::from(sections)));
-            app.set_nat_report(report.into());
-            app.set_status(status);
-            app.set_voice(voice);
-            app.set_voice_members(ModelRc::new(VecModel::from(members)));
-            app.set_voice_peers(ModelRc::new(VecModel::from(voice_peers)));
-            crate::view_state::update(&w,
-                provides.into_iter().map(MappingData::into_row).collect(),
-                consumes.into_iter().map(MappingData::into_row).collect(),
-                runtime.into_iter().map(MappingData::into_row).collect(),
-                peers.into_iter().map(PeerData::into_row).collect());
-            app.set_events(ModelRc::new(VecModel::from(events)));
-            app.set_network_info(ModelRc::new(VecModel::from(network)));
-            app.set_version_info(ModelRc::new(VecModel::from(versions)));
-            app.set_host(host);
-        });
-    }
-
-    fn build_status(&self) -> Status {
-        let s = &self.snapshot;
-        let shared = self.shared.lock().unwrap();
-        let cfg = &shared.config;
-        let mode = cfg.connection.connection_mode.as_str();
-        let (rate_up, rate_down, spark_up, spark_down) = self.traffic_series();
-        let network_label = if s.network.transport.is_empty() || s.network.transport == "none" {
-            if s.run_requested { "等待可用网络" } else { "未提供" }.to_string()
-        } else {
-            s.network.transport.clone()
-        };
-        let network_state = if !s.run_requested {
-            "显示最近使用的网络"
-        } else if s.network.validated {
-            "系统已确认互联网可用"
-        } else if s.network.available {
-            "网络已连接，等待互联网验证"
-        } else {
-            "桌面平台未提供网络状态"
-        };
-        let error = s.error.as_ref().map(|e| {
-                format!("{} {}", snap::connection_issue(&e.code), if e.message.is_empty() { String::new() } else { format!("（{}）", e.message) })
-            }).unwrap_or_default();
-        Status {
-            bridge_ready: self.client.is_some(),
-            bridge_error: self.bridge_error.clone().into(),
-            run_requested: s.run_requested,
-            configured: s.configured,
-            busy: self.busy,
-            engine_state: s.engine_state.clone().into(),
-            engine_label: snap::engine_label(s).into(),
-            signal_state: s.signal_state.clone().into(),
-            signal_label: snap::signal_label(&s.signal_state).into(),
-            title: snap::connection_title(s).into(),
-            subtitle: if s.run_requested { format!("{} · {}", snap::engine_label(s), snap::signal_label(&s.signal_state)) } else { "开启总开关后连接房间并建立映射".into() }.into(),
-            kind: snap::connection_kind(s).into(),
-            error: error.trim().to_string().into(),
-            command_error: self.command_error.clone().into(),
-            config_error: shared.config_error.clone().unwrap_or_default().into(),
-            uptime: snap::elapsed_label(&s.started_at, s.run_requested).into(),
-            tcp_sessions: s.tcp_sessions().to_string().into(),
-            udp_sessions: s.udp_sessions().to_string().into(),
-            provide_enabled: cfg.provide.iter().filter(|e| e.enabled).count().to_string().into(),
-            consume_enabled: cfg.consume.iter().filter(|e| e.enabled).count().to_string().into(),
-            runtime_provide: s.provide_count().to_string().into(),
-            runtime_consume: s.consume_count().to_string().into(),
-            active_channels: s.active_mappings().to_string().into(),
-            total_channels: s.mappings.len().to_string().into(),
-            peers_active: s.peers.iter().filter(|p| matches!(p.state.as_str(), "active" | "switching")).count().to_string().into(),
-            peers_total: s.peers.len().to_string().into(),
-            network_label: network_label.into(),
-            network_state: network_state.into(),
-            policy_label: snap::connection_policy_label(mode).into(),
-            configuration_text: snap::configuration_text(s).into(),
-            recovery_text: format!("切网 {} 次 · 协调重连 {} 次", s.network_changes, s.reconnects).into(),
-            session_timeout: cfg.connection.session_timeout.clone().into(),
-            core_version: s.core_version.clone().into(),
-            generation: s.generation.clone().into(),
-            transport_generation: s.transport_generation.clone().into(),
-            protocol_versions: format!("{} / {}", s.api_version, s.session_protocol).into(),
-            traffic_up: snap::format_bytes(s.bytes_sent()).into(),
-            traffic_down: snap::format_bytes(s.bytes_received()).into(),
-            traffic_rate_up: rate_up.into(),
-            traffic_rate_down: rate_down.into(),
-            sparkline_up: spark_up.into(),
-            sparkline_down: spark_down.into(),
-            events_dropped: format!("{} / 桥接 {}", s.events_dropped, s.bridge_events_dropped).into(),
-        }
-    }
-
-    /// 由累计字节差分出速率序列，生成 viewbox 100x32 的折线命令。
-    fn traffic_series(&self) -> (String, String, String, String) {
-        let samples: Vec<&TrafficSample> = self.history.iter().collect();
-        if samples.len() < 2 {
-            return (snap::format_rate(0.0), snap::format_rate(0.0), String::new(), String::new());
-        }
-        let mut up = Vec::with_capacity(samples.len());
-        let mut down = Vec::with_capacity(samples.len());
-        for pair in samples.windows(2) {
-            let dt = pair[1].at.duration_since(pair[0].at).as_secs_f64().max(0.001);
-            up.push(pair[1].sent.saturating_sub(pair[0].sent) as f64 / dt);
-            down.push(pair[1].received.saturating_sub(pair[0].received) as f64 / dt);
-        }
-        let max = up.iter().chain(down.iter()).cloned().fold(1.0_f64, f64::max);
-        let path = |series: &[f64]| -> String {
-            let n = HISTORY_LEN.max(2) - 1;
-            let mut out = String::new();
-            let offset = n.saturating_sub(series.len());
-            for (i, v) in series.iter().enumerate() {
-                let x = (offset + i) as f64 / n as f64 * 100.0;
-                let y = 30.0 - (v / max) * 28.0;
-                out.push_str(if i == 0 { "M" } else { " L" });
-                out.push_str(&format!(" {x:.1} {y:.1}"));
-            }
-            out
-        };
-        (snap::format_rate(*up.last().unwrap()), snap::format_rate(*down.last().unwrap()), path(&up), path(&down))
-    }
-
-    fn build_mappings(&self) -> (Vec<MappingData>, Vec<MappingData>, Vec<MappingData>) {
-        let s = &self.snapshot;
-        let shared = self.shared.lock().unwrap();
-        let cfg = &shared.config;
-        let runtime_state = |role: &str, id: &str| s.mappings.iter().find(|m| m.role == role && m.id == id);
-        let provides = cfg
-            .provide
-            .iter()
-            .map(|e| {
-                let rt = runtime_state("provide", &e.id);
-                let (state, label, kind) = match (e.enabled, rt) {
-                    (false, _) => ("disabled", "已停用".to_string(), "idle"),
-                    (true, Some(m)) => (m.state.as_str(), snap::mapping_label(&m.state).to_string(), snap::mapping_kind(&m.state)),
-                    (true, None) => ("saved", if s.run_requested { "准备中".into() } else { "已启用".into() }, "idle"),
-                };
-                MappingData { details: vec![kv("host", &e.host), kv("port", &e.port.to_string())],
-                    entry_id: e.entry_id.clone().into(),
-                    id: e.id.clone().into(),
-                    role: "provide".into(),
-                    role_label: "提供服务".into(),
-                    protocol: e.protocol.to_uppercase().into(),
-                    endpoint: config::compose_service(&e.protocol, &e.host, e.port).into(),
-                    enabled: e.enabled,
-                    state: state.into(),
-                    state_label: label.into(),
-                    kind: kind.into(),
-                    sessions: rt.map(|m| format!("TCP {} · UDP {}", m.tcp_sessions, m.udp_sessions)).unwrap_or_default().into(),
-                    peer: rt.map(|m| m.peer.clone()).unwrap_or_default().into(),
-                }
-            })
-            .collect();
-        let consumes = cfg
-            .consume
-            .iter()
-            .map(|e| {
-                let rt = runtime_state("consume", &e.id);
-                let (state, label, kind) = match (e.enabled, rt) {
-                    (false, _) => ("disabled", "已停用".to_string(), "idle"),
-                    (true, Some(m)) => (m.state.as_str(), snap::mapping_label(&m.state).to_string(), snap::mapping_kind(&m.state)),
-                    (true, None) => ("saved", if s.run_requested { "等待匹配".into() } else { "已启用".into() }, "idle"),
-                };
-                MappingData { details: vec![kv("host", &e.host), kv("port", &e.port.to_string())],
-                    entry_id: e.entry_id.clone().into(),
-                    id: e.id.clone().into(),
-                    role: "consume".into(),
-                    role_label: "使用服务".into(),
-                    protocol: rt.map(|m| m.protocol.to_uppercase()).filter(|p| !p.is_empty()).unwrap_or_default().into(),
-                    endpoint: config::compose_expose(&e.host, e.port).into(),
-                    enabled: e.enabled,
-                    state: state.into(),
-                    state_label: label.into(),
-                    kind: kind.into(),
-                    sessions: rt.map(|m| format!("TCP {} · UDP {}", m.tcp_sessions, m.udp_sessions)).unwrap_or_default().into(),
-                    peer: rt.map(|m| m.peer.clone()).unwrap_or_default().into(),
-                }
-            })
-            .collect();
-        let runtime = s
-            .mappings
-            .iter()
-            .map(|m| MappingData { details: vec![
-                    kv("传输方式", snap::profile_label(&m.profile)),
-                    kv("线路地址", if m.path.is_empty() { "由设备线路统一承载" } else { &m.path }),
-                    kv("TCP 应用上行 / 下行", &format!("{} / {}", snap::format_bytes_str(&m.tcp_read_bytes), snap::format_bytes_str(&m.tcp_written_bytes))),
-                    kv("TCP 待确认数据", &snap::format_bytes_str(&m.replay_bytes)),
-                    kv("当前服务提示", &m.error.as_ref().map(|e| format!("{}（{}）", e.message, e.code)).unwrap_or_else(|| "无".into())),
-                ],
-                entry_id: "".into(),
-                id: m.id.clone().into(),
-                role: m.role.clone().into(),
-                role_label: if m.role == "provide" { "提供服务" } else { "使用服务" }.into(),
-                protocol: m.protocol.to_uppercase().into(),
-                endpoint: m.endpoint.clone().into(),
-                enabled: true,
-                state: m.state.clone().into(),
-                state_label: snap::mapping_label(&m.state).into(),
-                kind: snap::mapping_kind(&m.state).into(),
-                sessions: format!("TCP {} · UDP {}", m.tcp_sessions, m.udp_sessions).into(),
-                peer: m.peer.clone().into(),
-            })
-            .collect();
-        (provides, consumes, runtime)
-    }
-
-    fn build_peers(&self) -> Vec<PeerData> {
-        self.snapshot
-            .peers
-            .iter()
-            .map(PeerData::from_peer)
-            .collect()
-    }
-
-    fn build_network_info(&self) -> Vec<KV> {
-        let s = &self.snapshot;
-        let shared = self.shared.lock().unwrap();
-        let c = &shared.config.connection;
-        let ipv6_only = c.connection_mode == "legacy";
-        vec![
-            kv("网卡", if s.network.interface.is_empty() { "由系统选择" } else { &s.network.interface }),
-            kv("本机地址", &if s.network.addresses.is_empty() { "桌面平台未提供".to_string() } else { s.network.addresses.join("\n") }),
-            kv("DNS", &if s.network.dns.is_empty() { "由当前网络提供".to_string() } else { s.network.dns.join("\n") }),
-            kv("本机 NAT", &s.network.nat),
-            kv("STUN", &if ipv6_only { "未使用（仅 IPv6 模式）".to_string() } else if c.ice.stun_urls.is_empty() { "未启用，仅探测本地地址".to_string() } else { c.ice.stun_urls.join("\n") }),
-            kv("计费网络", if s.network.metered { "是" } else { "未提供" }),
-            kv("网络绑定", if s.network_binding { "外部连接与 DNS 跟随所选网络" } else { "使用系统网络" }),
-        ]
-    }
-
-    fn build_version_info(&self) -> Vec<KV> {
-        let s = &self.snapshot;
-        let mut items = vec![
-            kv("GUI", &format!("{GUI_VERSION} · Slint {}", slint_version())),
-            kv("共享核心", if s.core_version.is_empty() { &self.hello.core_version } else { &s.core_version }),
-            kv("桥接协议 / API", &format!("{} / {}", self.hello.bridge_version, self.hello.api_version)),
-            kv("会话协议", &s.session_protocol.to_string()),
-            kv("运行 / 网络重建编号", &format!("{} / {}", s.generation, s.transport_generation)),
-            kv("传输能力", &s.transport_label),
-        ];
-        if let Some(e) = &s.error {
-            items.push(kv("当前错误详情", &format!("{}: {}", e.code, e.message)));
-        }
-        items
-    }
-
-    fn build_host_info(&self) -> HostInfo {
-        let shared = self.shared.lock().unwrap();
-        HostInfo {
-            os_label: os_label().into(),
-            gui_version: GUI_VERSION.into(),
-            bridge_path: if self.bridge_path.is_empty() { "未找到".into() } else { self.bridge_path.clone().into() },
-            config_path: shared.storage.dir.display().to_string().into(),
-            tray_available: false,
-            tray_note: "系统托盘尚未接入；隐藏窗口时转发继续由本进程保持。".into(),
-            autostart_note: "登录自启动尚未接入系统；开启后仅在本应用启动时按运行意图恢复。".into(),
-            last_resume_error: shared.run_state.last_resume_error.clone().into(),
-        }
-    }
-}
-
-fn kv(key: &str, value: &str) -> KV {
-    KV { key: key.into(), value: value.into() }
-}
-
-fn slint_version() -> &'static str {
-    "1.18"
-}
-
-pub fn os_label() -> String {
-    format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)
-}
-
-pub fn now_rfc3339() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-    // civil from days (Howard Hinnant)
-    let days = secs.div_euclid(86400);
-    let rem = secs.rem_euclid(86400);
-    let z = days + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem / 60 % 60, rem % 60)
-}
-
-#[allow(dead_code)]
-fn model_len<T: Clone + 'static>(m: &ModelRc<T>) -> usize {
-    m.row_count()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn quic_loss_details_update_independently_of_retries_and_receive_drops() {
-        for path in ["direct", "relay", "hole", "fixed"] {
-            for (loss, expected) in [
-                (serde_json::json!({"scope":"connection","samples":"80","lost_packets":"1","rate_percent":1.25}), "1.25%"),
-                (serde_json::json!({"scope":"connection","samples":"80","lost_packets":"0","rate_percent":0}), "0.00%"),
-                (serde_json::json!({"scope":"connection","samples":"0","lost_packets":"0","rate_percent":null}), "暂无样本"),
-                (Value::Null, "—"),
-            ] {
-                let s = snap::parse_snapshot(&serde_json::json!({"api_version":1,"peer_transports":[{
-                    "path_type":path,"retry_count":"99","dropped_datagrams":"999","send_loss":loss,
-                    "quic_loss":{"scope":"connection","samples":"1000","lost_packets":"19","rate_percent":1.9},
-                    "receive_loss":{"scope":"connection","samples":"900","lost_packets":"9","rate_percent":1},
-                    "bandwidth":{"send":{"peak_bps":8000000,"average_bps":4000000},
-                        "receive":{"peak_bps":16000000,"average_bps":8000000},
-                        "total":{"peak_bps":16000000,"average_bps":12000000}}
-                }]})).unwrap();
-                let row = PeerData::from_peer(&s.peers[0]).into_row();
-                let details: Vec<_> = row.details.iter().collect();
-                assert!(details.iter().any(|d| d.key == "丢包率" && d.value == format!("合计 1.90% · 上行 {expected} · 下行 1.00%")));
-                assert!(details.iter().any(|d| d.key == "峰值速率" && d.value == "合计 16 Mbps · 上行 8 Mbps · 下行 16 Mbps"));
-                assert!(details.iter().any(|d| d.key == "平均速率" && d.value == "合计 12 Mbps · 上行 4 Mbps · 下行 8 Mbps"));
-                assert!(details.iter().any(|d| d.key == "本地丢弃报文" && d.value == "999"));
-            }
-        }
-    }
-
-    #[test]
-    fn fixed_details_omit_ice_fields_but_keep_connection_statistics() {
-        let mut s = crate::visual_fixtures::fixed_snapshot();
-        s.peers[0].relay_order = vec!["udp".into()];
-        s.peers[0].turn_expires_at = i64::MAX;
-        for p in &s.peers {
-            let row = PeerData::from_peer(p);
-            assert_eq!(row.state_label, snap::peer_state_label(&p.state));
-            for detail in &row.details {
-                assert!(!["TURN", "候选", "中继", "凭据"].iter().any(|token| detail.key.contains(token)));
-            }
-            assert!(row.details.iter().any(|d| d.key == "路径重试"));
-        }
-        let row = PeerData::from_peer(&s.peers[0]);
-        assert!(row.details.iter().any(|d| d.key == "公布入口" && d.value == "gateway.example:40000"));
-        assert!(row.details.iter().any(|d| d.key == "对端连接" && d.value.contains("[2001:db8:7:8:9:a:b:c]:40000")));
-        let row = PeerData::from_peer(&s.peers[3]);
-        assert!(!row.details.iter().any(|d| ["公布入口", "监听方", "拨号方", "本机连接", "对端连接"].contains(&d.key.as_str())));
-    }
-
-    #[test]
-    fn rfc3339_now_shape() {
-        let t = now_rfc3339();
-        assert_eq!(t.len(), 20);
-        assert!(t.ends_with('Z'));
-        assert_eq!(snap::parse_rfc3339_secs(&t).is_some(), true);
+    fn publish(&mut self) {
+        self.state.events = self.events.iter().cloned().collect();
+        self.updates
+            .send(Update::State(Box::new(self.state.clone())))
+            .ok();
     }
 }

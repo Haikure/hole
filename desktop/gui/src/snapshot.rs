@@ -481,7 +481,7 @@ pub fn engine_label(s: &Snapshot) -> String {
 
 pub fn signal_label(state: &str) -> &'static str {
     match state {
-        "disconnected" => "未连接",
+        "" | "disconnected" | "stopped" => "未连接",
         "connecting" => "连接中",
         "joining" => "正在加入房间",
         "joined" => "已加入房间",

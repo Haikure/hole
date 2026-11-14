@@ -31,7 +31,7 @@ def main():
                 env["TZ"] = zone
             print(f"NAT timestamp tests: {zone}", flush=True)
             subprocess.run([
-                "cargo", "test", "--locked", "--release", "--features", "embedded-core",
+                "cargo", "test", "--locked", "--release", "--no-default-features", "--features", "embedded-core",
                 "snapshot::tests::nat_time_system_timezone_cases", "--", "--ignored", "--exact", "--nocapture",
             ], cwd=ROOT / "desktop/gui", env=env, check=True)
     finally:

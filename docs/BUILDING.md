@@ -20,9 +20,9 @@ PenMods 使用 [插件构建入口](../penmods/README.md#构建)。
 
 | 目标 | 工具与依赖 |
 | --- | --- |
-| CLI / `core` | Bash、Python 3、Go 1.27.3；独立宿主无需 Qt、Slint 或 CGo |
+| CLI / `core` | Bash、Python 3、Go 1.27.3；独立宿主无需图形库或 CGo |
 | `desktop` | 额外需要 Rust stable / Cargo；支持 Linux / Windows AMD64、ARM64 |
-| Linux 桌面 | Slint / fontconfig、CPAL / ALSA；构建需 `pkg-config`、`libfontconfig1-dev`、`libasound2-dev`（Debian / Ubuntu），运行需系统 ALSA 库与默认音频设备 |
+| Linux 桌面 | Yororen UI 0.4 / GPUI CE 0.3，Rust 1.95+；构建需 `pkg-config`、`libfontconfig1-dev`、`libasound2-dev`、`libwayland-dev`、`libxkbcommon-dev`、`libxkbcommon-x11-dev`、`libxcb1-dev`（Debian / Ubuntu）；运行需 Vulkan 驱动、X11 或 Wayland，语音另需系统 ALSA 库与默认音频设备 |
 | Windows 桌面 | 系统 WASAPI |
 
 交叉构建需提前安装对应 Rust target 和平台 linker / sysroot（Linux 含目标 ALSA 库），构建脚本不会自动安装 Rust 工具链或系统音频开发包。
@@ -231,7 +231,7 @@ Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使�
 
 ### 桌面 CI
 
-桌面 Rust 编译与测试使用独立的 [test.yaml](../.github/workflows/test.yaml)，在 Linux / Windows amd64 runner 上构建内嵌核心的 Release，并运行 Rust、配置、快照和 Slint 测试。本机不执行 Cargo 构建。
+桌面 Rust 编译与测试使用独立的 [test.yaml](../.github/workflows/test.yaml)，在 Linux / Windows amd64 runner 上构建内嵌核心的 Release，并运行 Rust、配置、快照和跨端契约测试。Linux 另外使用 Xvfb 与 Mesa Vulkan 驱动验证 Yororen UI 窗口和内嵌核心退出清理；本地使用相同入口，命令见 [桌面验证说明](../desktop/README.md#回归验证)。
 
 | 项目 | 说明 |
 | --- | --- |

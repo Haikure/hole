@@ -443,6 +443,9 @@ pub fn find_connection_error(c: &ConnectionSettings, secrets: &Secrets) -> Optio
 
 /// 只把启用项映射为核心运行请求；返回可展示的错误。
 pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, String> {
+    if cfg.voice.enabled && cfg.connection.connection_mode == "legacy" {
+        return Err("语音需要 ICE，请先关闭语音或选择自动 / ICE 连接方式".into());
+    }
     if let Some(e) = find_connection_error(&cfg.connection, secrets) {
         return Err(e);
     }
@@ -972,6 +975,7 @@ mod tests {
         assert!(!serde_json::from_str::<StoredConfig>("{}").unwrap().voice.enabled);
         cfg.connection.connection_mode = "legacy".into();
         assert!(validate_draft(&cfg).is_err());
+        assert!(to_run_request(&cfg, &Secrets::default()).unwrap_err().contains("语音需要 ICE"));
     }
 
     #[test]
