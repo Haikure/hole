@@ -22,6 +22,7 @@ const (
 var muxMagic = [4]byte{'H', 'M', 'X', 1}
 
 type muxHello struct {
+	PeerRelayVersion   string `json:"peer_relay_version,omitempty"`
 	Profile            string `json:"profile"`
 	TransportID        string `json:"transport_id"`
 	Generation         uint64 `json:"transport_generation,string"`
@@ -56,6 +57,8 @@ type receivedPacket struct {
 	data []byte
 }
 type muxPeer struct {
+	peerRelay            bool
+	peerRelaySend        chan []byte
 	owner                *icePeer
 	conn                 *quic.Conn
 	ctx                  context.Context
@@ -172,6 +175,7 @@ func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, re
 	defer stopIO()
 	hello := muxHello{Profile: ready.Profile, TransportID: ready.TransportID, Generation: ready.TransportGeneration, LocalRuntime: owner.coordinator.runtimeID, RemoteRuntime: ready.PeerRuntimeID, Version: sessionProtocol, LocalRelayProtocol: localRelayProtocol, RelayProtocol: localRelayProtocol, Voice: ready.Voice, VoiceVersion: voiceProtocolVersion}
 	hello.QUICStats = true
+	hello.PeerRelayVersion = peerRelayVersion
 	hello.LiveConfig = true
 	hello.ObservedAddress = conn.RemoteAddr().String()
 	var remote muxHello
@@ -234,11 +238,14 @@ func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, re
 	// succeed. NAT punching validates the optional address before using it.
 	p.observedLocalAddress = remote.ObservedAddress
 	p.statsEnabled = remote.QUICStats
+	p.peerRelay = remote.PeerRelayVersion == peerRelayVersion
+	p.peerRelaySend = make(chan []byte, 64)
 	p.voiceEnabled.Store(ready.Voice && !p.liveConfig)
 	p.metrics.startBandwidth(time.Now(), conn.ConnectionStats())
 	p.spawn(p.readControl)
 	p.spawn(p.readStreams)
 	p.spawn(p.readDatagrams)
+	p.spawn(p.writePeerRelay)
 	p.spawn(p.sampleBandwidth)
 	p.spawn(p.writeVoice)
 	if p.statsEnabled {
@@ -519,6 +526,9 @@ func (p *muxPeer) readDatagrams() {
 			return
 		}
 		if p.receiveVoice(data) {
+			continue
+		}
+		if p.receivePeerRelay(data) {
 			continue
 		}
 		if len(data) < 4 {

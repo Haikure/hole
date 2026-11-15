@@ -442,6 +442,7 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 	}
 	p.stateChanged()
 	status := signalMessage("transport_established")
+	status.PathType = "fixed"
 	status.TransportID, status.TransportGeneration = a.ready.TransportID, a.ready.TransportGeneration
 	_ = p.coordinator.send(status)
 	select {

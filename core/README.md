@@ -120,6 +120,12 @@ UDP 打洞记录包含每次 PROBE / ACK 的端点、长度、序号、最小重
 
 ### 固定入口与设备中继
 
+Peer Relay 在直连及打洞预算耗尽后、Hole / TURN 之前自动尝试。Worker 根据两端已确认的直连选择
+同房间节点，并授权一条绑定运行实例、连接代次和租约的单跳路径；三端共享核心再次核对实际直连。
+数据通过已有 QUIC DATAGRAM 转发，内部端到端 QUIC 继续提供身份验证、TCP / UDP、语音和会话恢复。
+无节点、握手超时或直连断开后进入原有中继轮次。`PeerTransports.path_type=peer_relay`，
+`relay_device` 为实际节点；不增加移动端专用传输逻辑。边界见 [Peer Relay 协议](../docs/PROTOCOL.md#peer-relay-节点中继)。
+
 `relay.device` / `relay.order` 提供 Hole 设备中继配置，`relay.serve` 仅由根 CLI 显式能力
 `Options.AllowRelayServe` 开放。固定 UDP socket 由单一分流器读取；Linux 批量后端和其他
 平台数据报后端共用授权、限速、公平队列和统计。`Snapshot.Relay` 为服务端统计，

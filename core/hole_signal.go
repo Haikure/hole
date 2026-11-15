@@ -43,7 +43,7 @@ func (c *iceCoordinator) validateHoleReady(m iceSignalMessage) error {
 		return bad()
 	}
 	want := deviceRelayPlan(a, b, ad, bd)
-	if !reflect.DeepEqual(want, m.RelayPlan) || len(want) > 36 || plannedPhase(m, *m.RelayRound, local) != m.Phase {
+	if !reflect.DeepEqual(want, m.RelayPlan) || len(want) > 36 || (m.Phase != "peer_relay" && plannedPhase(m, *m.RelayRound, local) != m.Phase) {
 		return bad()
 	}
 	if m.Phase != "hole" {

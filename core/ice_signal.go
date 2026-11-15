@@ -17,6 +17,9 @@ type peerMappingRecord struct {
 	Expose   HostPort        `json:"expose"`
 }
 type iceSignalMessage struct {
+	PeerRelayVersion string            `json:"peer_relay_version,omitempty"`
+	PeerRelay        *peerRelayGrant   `json:"peer_relay,omitempty"`
+	PathType         string            `json:"path_type,omitempty"`
 	DirectOrder      string            `json:"direct_order,omitempty"`
 	DirectStage      string            `json:"direct_stage,omitempty"`
 	PunchSchedule    string            `json:"punch_schedule,omitempty"`

@@ -1,7 +1,7 @@
 # Worker 部署
 
 `worker/worker.js` 提供房间 WebSocket 协调，`worker/worker_ice.mjs` 提供 ICE / 固定入口关系管理和 TURN broker。
-Worker 不转发业务数据；客户端之间使用直连 QUIC、Hole 设备中继或 TURN。
+Worker 不转发业务数据；客户端之间使用直连 QUIC、Peer Relay 节点中继、Hole 设备中继或 TURN。
 
 [准备](#准备) · [配置与发布](#配置与发布) · [升级兼容](#升级与兼容) · [Hole 授权](#hole-三方授权) · [TURN broker](#turn-broker) · [验证](#验证) · [项目首页](../README.md)
 
@@ -52,6 +52,11 @@ wrangler deploy
 ## 升级与兼容
 
 协议升级按 **Worker → 客户端** 顺序部署。
+
+Peer Relay 需要 Worker 和三端客户端协商 `peer-relay-v1`，无需新增绑定、secret 或 Durable Object 迁移。
+Worker 只选择同房间、已与两端直连且有剩余容量的节点，向节点发放短期路由授权；业务密文经客户端的已有连接转发。
+直连及打洞耗尽后尝试一次节点路径，无候选或失败则进入原 Hole / TURN 轮次。旧客户端和旧 Worker 保持原有回退行为。
+授权字段、租约及数据帧见 [Peer Relay 协议](PROTOCOL.md#peer-relay-节点中继)。
 
 新版 Worker 的 `joined.live_config` 能力支持在现有 WebSocket 更新服务声明，映射和语音变化
 无需反复退出房间。客户端仍兼容旧 Worker：未声明能力时回退到重新加入。语音原地开关还要求

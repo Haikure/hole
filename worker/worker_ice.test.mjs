@@ -5,6 +5,45 @@ import { Room } from './worker.js';
 import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_POLICY, negotiateProfile, iceJoinFields, validateTurnResponse, relayPairs, validFixedEndpoint } from './worker_ice.mjs';
 import {HOLE_VERSION,deviceRelayPlan,validNATPlan,validPunch} from './worker_ice.mjs';
 
+test('Peer Relay requires two current direct legs and holds the ordinary fallback round',async()=>{
+ for (const evidence of ['missing','relay','stale','direct']) {
+  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket(),relay=f.socket();
+  const caps={voice:true,peer_relay_version:'peer-relay-v1',relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};
+  for (const [ws,name] of [[a,'alpha'],[b,'beta'],[relay,'relay']]) await r.webSocketMessage(ws,JSON.stringify({...join(name),...caps}));
+  const record=[...r.ice.records.values()].find(r=>r.a==='alpha' && r.b==='beta');
+  for (const leg of [...r.ice.records.values()].filter(r=>r!==record)) {
+   for (const name of [leg.a,leg.b]) {
+    if (evidence==='missing' && name==='relay') continue;
+    const ws=name==='alpha'?a:name==='beta'?b:relay;
+    await r.webSocketMessage(ws,JSON.stringify({type:'transport_established',transport_id:leg.id,
+     transport_generation:evidence==='stale'?'0':leg.generation,path_type:evidence==='relay'?'relay':'direct'}));
+   }
+  }
+  await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,
+   expected_generation:record.generation,relay_round:1,reason:'direct_exhausted'}));
+  const ready=a.messages.filter(m=>m.type==='transport_ready' && m.transport_id===record.id).at(-1);
+  assert.equal(ready.phase,evidence==='direct'?'peer_relay':'relay_udp');
+  assert.equal(ready.relay_round,1);
+  if (evidence!=='direct') continue;
+  const grant=relay.messages.find(m=>m.type==='peer_relay_grant');
+  assert.equal(grant.peer_relay.device,'relay');
+  assert.equal(grant.peer_relay.links.length,2);
+  const generation=record.generation;
+  // An unrelated or stale relay failure must not advance this generation.
+  await r.webSocketMessage(b,JSON.stringify({type:'peer_relay_failed',transport_id:record.id,transport_generation:generation}));
+  assert.equal(record.generation,generation);
+  const resumed=new Room(f.state,{});
+  await resumed.webSocketMessage(relay,JSON.stringify({type:'transport_sync'}));
+  assert.equal(relay.messages.filter(m=>m.type==='peer_relay_grant').at(-1).peer_relay.route,grant.peer_relay.route);
+  await resumed.webSocketMessage(relay,JSON.stringify({type:'peer_relay_failed',transport_id:record.id,transport_generation:generation}));
+  const fallback=a.messages.filter(m=>m.type==='transport_ready' && m.transport_id===record.id).at(-1);
+  assert.equal(fallback.phase,'relay_udp');
+  assert.equal(fallback.relay_round,1);
+  assert.equal(fallback.peer_relay,undefined);
+  assert.equal(relay.messages.some(m=>m.type==='peer_relay_revoke'),true);
+ }
+});
+
 test('address pool evidence stays bounded and does not assert a global model',()=>{
  const snapshot={status:'complete',type:'address_pool',predictability:'unverified',samples:2,ip_evidence:[
   {ip:'198.51.100.1',targets:1,ports:1,trend:'unknown'},

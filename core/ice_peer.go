@@ -147,6 +147,9 @@ func (p *icePeer) update(m iceSignalMessage) {
 	} else {
 		p.stats.RelayDevice, p.stats.RelayEndpoint, p.stats.RelayAccessAddress = "", "", ""
 	}
+	if m.PeerRelay != nil {
+		p.stats.RelayDevice = m.PeerRelay.Device
+	}
 	p.stats.LeaseUntil = m.LeaseUntil
 	p.stats.RelayPolicy = m.RelayPolicy
 	p.stats.RelayRound = 0
@@ -214,6 +217,8 @@ func (p *icePeer) update(m iceSignalMessage) {
 			defer p.workers.Done()
 			if m.Profile == ProfileFixed {
 				p.attemptFixed(a)
+			} else if m.Phase == "peer_relay" {
+				p.attemptPeerRelay(a)
 			} else if m.Phase == "hole" {
 				p.attemptHole(a)
 			} else {
@@ -557,6 +562,8 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 		}
 		if a.ready.Profile == ProfileFixed {
 			p.restart("fixed", "path_failed")
+		} else if a.ready.Phase == "peer_relay" {
+			p.restartWithRound(a.ready.RelayRound, "", "peer_relay_failed")
 		} else if a.ready.HoleVersion == HoleRelayVersion && a.ready.RelayRound != nil {
 			p.restartRound(nextICERound(*a.ready.RelayRound, len(a.ready.RelayPlan)), "", reason)
 		} else if a.ready.RelayPairing == relayPairingAll && a.ready.RelayRound != nil {
@@ -1182,6 +1189,7 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	status := signalMessage("transport_established")
 	status.TransportID = a.ready.TransportID
 	status.TransportGeneration = a.ready.TransportGeneration
+	status.PathType = p.snapshot().PathType
 	_ = p.coordinator.send(status)
 	select {
 	case <-mux.ctx.Done():
@@ -1204,7 +1212,11 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	p.mu.Unlock()
 	if current && p.ctx.Err() == nil {
 		p.stateChanged()
-		p.restart("direct", "path_lost")
+		if a.ready.Phase == "peer_relay" {
+			p.restartWithRound(a.ready.RelayRound, "", "peer_relay_failed")
+		} else {
+			p.restart("direct", "path_lost")
+		}
 	}
 }
 func (p *icePeer) maintain() {
@@ -1313,9 +1325,9 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 		active.mux.mu.Unlock()
 	}
 	_, expires, state := p.coordinator.servers()
-	if s.Profile == ProfileFixed || s.Phase == "hole" {
+	if s.Profile == ProfileFixed || s.Phase == "hole" || s.Phase == "peer_relay" {
 		expires, state = 0, ""
-		if s.Phase == "hole" {
+		if s.Phase == "hole" || s.Phase == "peer_relay" {
 			state = s.State
 		}
 	}

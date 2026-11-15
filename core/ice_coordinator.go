@@ -21,6 +21,9 @@ type iceSignalSink struct {
 	messages chan iceSignalMessage
 }
 type iceCoordinator struct {
+	peerRelayMu              sync.Mutex
+	peerRelayGrants          map[sessionID]peerRelayGrant
+	peerRelayPaths           map[sessionID]*peerRelayPath
 	natAllocation            *natAllocationGate
 	natMu                    sync.Mutex
 	natSnapshot              NATSnapshot
@@ -346,6 +349,7 @@ func (c *iceCoordinator) memberDeclaration(ctx context.Context, platform Platfor
 		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll, RelayOnly: r.Config.ICE.RelayOnly}
 	join.Voice = r.Config.Voice.Enabled
 	join.LiveConfig = true
+	join.PeerRelayVersion = peerRelayVersion
 	join.PunchVersion = natPunchVersion
 	join.DirectOrder = directOrderICEFirst
 	join.PunchSchedule = natPunchSchedule
@@ -464,6 +468,8 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if err := c.updateVoiceMembers(m.RoomState); err != nil {
 			return &Fault{Code: "protocol_mismatch", Message: err.Error()}
 		}
+	case "peer_relay_grant", "peer_relay_revoke":
+		return c.handlePeerRelayGrant(m)
 	case "hole_grant", "hole_revoke":
 		return c.handleHoleGrant(m)
 	case "transport_lease":
@@ -480,6 +486,11 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			return nil
 		}
 		cfg := c.request().Config
+		if m.Phase == "peer_relay" {
+			if err := c.validatePeerRelayReady(m); err != nil {
+				return err
+			}
+		}
 		if m.HoleVersion != "" || (cfg.Relay.Device != "" && m.Profile != ProfileFixed) {
 			if err := c.validateHoleReady(m); err != nil {
 				return err
@@ -514,7 +525,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			if m.RelayPolicy != "" && m.RelayPolicy != RelayPolicyUDPTCPTLS {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不受支持的中继策略"}
 			}
-			if m.HoleVersion == HoleRelayVersion {
+			if m.Phase == "peer_relay" {
+				// The relay round is held while the optional peer path is tried.
+			} else if m.HoleVersion == HoleRelayVersion {
 				if m.RelayRound == nil || plannedPhase(m, *m.RelayRound, cfg.DeviceName) != m.Phase {
 					return &Fault{Code: "protocol_mismatch", Message: "Hole 路径轮次无效"}
 				}
@@ -959,7 +972,7 @@ func (c *iceCoordinator) leaseRequest() (iceSignalMessage, bool) {
 func (c *iceCoordinator) needsTURN() bool {
 	for _, p := range c.peerList() {
 		p.mu.Lock()
-		needed := p.online && !p.closed && p.ready.Profile != ProfileFixed && ((p.pending != nil && p.pending.ready.Phase != "direct" && p.pending.ready.Phase != "hole" && p.pending.ready.Phase != "relay_wait") || (p.active != nil && p.active.expires > 0))
+		needed := p.online && !p.closed && p.ready.Profile != ProfileFixed && ((p.pending != nil && p.pending.ready.Phase != "direct" && p.pending.ready.Phase != "hole" && p.pending.ready.Phase != "peer_relay" && p.pending.ready.Phase != "relay_wait") || (p.active != nil && p.active.expires > 0))
 		p.mu.Unlock()
 		if needed {
 			return true

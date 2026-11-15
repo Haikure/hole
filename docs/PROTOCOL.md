@@ -6,7 +6,7 @@
 | --- | --- |
 | 身份与传输模式 | [信令与认证](#信令与认证) · [传输选择](#传输选择) |
 | NAT 与直连 | [手动检测](#图形客户端手动-nat-检测) · [ICE、打洞与端口映射](#ice-直连nat-状态与端口映射) |
-| 固定入口与中继 | [固定入口](#固定入口直连) · [Hole 中继](#hole-设备中继) · [ICE / TURN](#ice-与-turn) |
+| 固定入口与中继 | [固定入口](#固定入口直连) · [Peer Relay](#peer-relay-节点中继) · [Hole 中继](#hole-设备中继) · [ICE / TURN](#ice-与-turn) |
 | 数据通道与恢复 | [共享 QUIC](#共享-quic-与通道) · [TCP / UDP 会话](#可恢复应用会话) · [协调与租约](#协调与租约) |
 | 平台接入 | [Android 网络边界](#android-网络边界) · [桥接 API](../mobile/README.md) |
 
@@ -262,6 +262,34 @@ ECN 信号与 MTU 探测失败不计入丢失；每个 ACK 或判丢结果在核
 固定入口功能只扩展当前协议，没有固定入口的旧版兼容分支；固定入口的发布顺序为 Worker、两端核心。
 上述 QUIC 统计扩展只需更新客户端核心和展示端，无需更新 Worker。
 Android / Wear、桌面和 PenMods 的固定监听配置界面后续接入。
+
+## Peer Relay 节点中继
+
+Peer Relay 是同房间单跳中继：A 与 B 无法直连时，复用 A↔R、R↔B 两条已存在的直连。
+不主动建立辅助连接，也不经过 TURN、Hole 或其他 Peer Relay 作为外层路径。
+普通 ICE、预测打洞以及固定入口产生的已验证直连都可作为外层连接；仅中继设备对与固定入口设备对自身仍遵守原有路径策略。
+
+三端 join 与 QUIC mux hello 声明 `peer_relay_version: peer-relay-v1`。
+端点通过带代次的 `transport_established.path_type` 报告实际路径，Worker 只接受双方均报告为
+`direct` / `fixed` 且运行实例、网络代次和租约仍有效的边。候选按设备名稳定排序，选择首个同时连通双方且未满额的节点。
+能力不齐或无可用节点时，直接进入原有 Hole / TURN 顺序。
+
+直连预算耗尽后，Worker 暂存原本要尝试的普通中继轮次，递增 generation，向 R 下发
+`peer_relay_grant`，向 A、B 下发 `phase: peer_relay` 的 `transport_ready`。
+`peer_relay` 授权包含随机 128 位 `route`、中继设备及 runtime、两端设备及 runtime、
+两条直连 transport ID / generation、端到端 transport ID / generation 和租约截止时间。
+客户端再次确认对应连接仍是当前已认证直连，禁止跨代次、跨运行实例或中继链转发。
+授权随 `transport_sync` / `transport_renew` 更新，Worker 休眠恢复可重放；离开路径时发送 `peer_relay_revoke`。
+
+外层 DATAGRAM 使用 `HPR\x01` 前缀，后接现有 UDP 分片格式：其中 session ID 为 route。
+每帧不超过 1100 字节；内部 QUIC 包固定为最多 1200 字节，按需分片并在终端有界重组。
+R 不重组或解密内部包，只在两条授权直连之间转发。每条外层连接发送队列上限 64 帧，拥塞时丢包，
+由端到端 QUIC 恢复；不将数据报装进可靠流。每节点最多 8 条转发授权，每端最多 8 条 Peer Relay 路径，沿用共享核心的会话和重组限额。
+
+内部 QUIC 使用信令中的终端证书指纹和原有 mux 身份检查，业务通道、TCP 重放、UDP 和语音协议复用共享实现。
+握手限时 8 秒；本地直连失效、授权到期或中继报告目标直连不可用后，双方递增代次并进入暂存的普通中继轮次，
+不会跳过第一条 Hole / TURN 路径，也不会在本轮反复尝试同一 Peer Relay。若普通中继也不可用，继续原有重试退避。
+快照以 `path_type: peer_relay` 和 `relay_device` 标识此路径，RTT 来自内部 QUIC；不公布虚拟 PacketConn 地址。
 
 ## Hole 设备中继
 
