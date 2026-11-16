@@ -21,6 +21,7 @@ DetailList 1.0 DetailList.qml
 PeerCard 1.0 PeerCard.qml
 RuntimePanel 1.0 RuntimePanel.qml
 Reveal 1.0 Reveal.qml
+ContentLoader 1.0 ContentLoader.qml
 PageEntrance 1.0 PageEntrance.qml
 NATPunchChips 1.0 NATPunchChips.qml
 NATPunchHero 1.0 NATPunchHero.qml

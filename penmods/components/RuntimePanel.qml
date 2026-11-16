@@ -62,12 +62,15 @@ ColumnLayout {
         }
     }
     Section {
+        id: diagnostics
         Layout.fillWidth: true; title: "运行诊断"; iconName: "samples"; collapsible: true; expanded: panel.diagnosticsOpen
         onHeaderTapped: panel.diagnosticsOpen = !panel.diagnosticsOpen
-        Loader {
+        ContentLoader {
             Layout.fillWidth: true
+            contentWidth: diagnostics.contentWidth
             active: panel.diagnosticsOpen
             sourceComponent: ColumnLayout {
+                width: diagnostics.contentWidth
                 DetailList { objectName: "runtimeDiagnostics"; Layout.fillWidth: true; lines: panel.form ? panel.form.humanSnapshot(panel.snapshot) : [] }
                 Text { Layout.fillWidth: true; text: panel.form ? panel.form.statusRaw : ""; visible: text.length > 0; color: Theme.textMuted; font.family: Theme.fontFamily; font.pixelSize: 11; wrapMode: Text.WrapAnywhere }
             }

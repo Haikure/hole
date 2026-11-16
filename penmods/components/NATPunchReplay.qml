@@ -15,6 +15,7 @@ Rectangle {
         id: body
         x: 8; y: 8; width: parent.width - 16; spacing: 5
         Text { Layout.fillWidth: true; text: replay.frame.frozen ? (replay.frame.time || "0 ms") + " / " + (replay.frame.durationText || "0 ms") : "正在读取暂停位置…"; color: Theme.accent; font.family: "monospace"; font.pixelSize: 10 }
+        Text { objectName: "replaySteps"; Layout.fillWidth: true; visible: !!replay.frame.frozen; text: "步骤 " + (replay.frame.eventIndex || 0) + " / " + (replay.frame.eventCount || 0); color: Theme.textSecondary; font.family: Theme.fontFamily; font.pixelSize: 10 }
         Item {
             id: track
             Layout.fillWidth: true; Layout.preferredHeight: 26
@@ -44,9 +45,9 @@ Rectangle {
         }
         RowLayout {
             Layout.fillWidth: true; spacing: 6
-            ActionButton { Layout.preferredWidth: 32; iconName: "previous"; Accessible.name: "上一个事件"; enabled: !!replay.frame.frozen; onClicked: replay.stepRequested(-1) }
+            ActionButton { objectName: "replayPrevious"; Layout.preferredWidth: 32; iconName: "previous"; Accessible.name: "上一个事件"; enabled: !!replay.frame.frozen && replay.frame.eventIndex > 0; onClicked: replay.stepRequested(-1) }
             ActionButton { Layout.fillWidth: true; text: replay.playing ? "暂停回放" : "播放回放"; iconName: replay.playing ? "pause" : "play"; enabled: !!replay.frame.frozen; onClicked: replay.playRequested() }
-            ActionButton { Layout.preferredWidth: 32; iconName: "next"; Accessible.name: "下一个事件"; enabled: !!replay.frame.frozen; onClicked: replay.stepRequested(1) }
+            ActionButton { objectName: "replayNext"; Layout.preferredWidth: 32; iconName: "next"; Accessible.name: "下一个事件"; enabled: !!replay.frame.frozen && replay.frame.eventIndex < replay.frame.eventCount; onClicked: replay.stepRequested(1) }
         }
     }
 }

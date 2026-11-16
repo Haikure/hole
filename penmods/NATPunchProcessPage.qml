@@ -25,7 +25,9 @@ YBackButtonPage {
     property bool workerBusy: false
     property bool projectionDirty: true
     property bool jumpToRows: false
-    property bool jumpToEnd: false
+    property var scrollAnchor: null
+    property bool restoringScroll: false
+    property bool publishingView: false
     property int epoch: 0
     property int revision: 0
     property string requestId: ""
@@ -81,7 +83,7 @@ YBackButtonPage {
     }
     function options() {
         var value = copy(filters)
-        value.generation = selectedGeneration; value.paused = paused; value.freezeReady = freezeReady; value.pauseToken = pauseToken; value.follow = follow || playing
+        value.generation = selectedGeneration; value.paused = paused; value.freezeReady = freezeReady; value.pauseToken = pauseToken; value.follow = follow
         return value
     }
     function invalidate() {
@@ -95,9 +97,10 @@ YBackButtonPage {
         invalidate()
     }
     function resetRecords() {
+        scrollAnchor = null
         epoch += 1; cursors = {}; pendingJson = ""; pendingRead = null; pendingCommand = null
         selectedGeneration = ""; paused = false; playing = false; follow = false; freezeReady = false
-        readError = ""; retryAt = 0; nextStream = "connection"; jumpToRows = false; jumpToEnd = false
+        readError = ""; retryAt = 0; nextStream = "connection"; jumpToRows = false
         var next = freshFilters()
         next.tab = filters.tab; filters = next
         frame = emptyFrame(); rows.clear(); rowData = {}
@@ -112,14 +115,14 @@ YBackButtonPage {
         if (value === transportId) return
         for (var i = 0; i < peerChoices.length; ++i) if (peerChoices[i].value === value) peerId = peerChoices[i].label
         selectedGeneration = ""; transportId = value
-        list.positionViewAtBeginning()
+        showOverview()
     }
     function chooseGeneration(value) {
         if (value === selectedGeneration) return
         selectedGeneration = value; paused = false; playing = false; follow = false; freezeReady = false
         readError = ""; retryAt = 0; nextStream = "connection"
         applyFilters({round: -1, trial: -1, socket: "", target: "", stageSequence: "", detail: "", expanded: {}, packetPage: 0, matrixPortPage: 0, matrixSocketPage: 0})
-        list.positionViewAtBeginning()
+        showOverview()
     }
     function chooseTab(value) {
         follow = false
@@ -160,7 +163,7 @@ YBackButtonPage {
             pauseToken += 1; follow = false; nextStream = "connection"
             applyFilters({packetPage: Number(frame.pageIndex) || 0})
         } else {
-            follow = true; jumpToEnd = true; retryAt = 0; nextStream = "connection"
+            retryAt = 0; nextStream = "connection"
             invalidate()
         }
         Qt.callLater(page.requestRead)
@@ -191,25 +194,120 @@ YBackButtonPage {
         currentRead = {epoch: epoch, transport: transportId, generation: selectedGeneration, stream: stream, key: key}
         requestId = holePlugin.requestNATPunchProcess(transportId, cursor.sequence, selectedGeneration, stream)
     }
+    function captureScroll() {
+        // Headers and earlier rows can resize without changing the visible record.
+        if (list.moving) return null
+        var header = list.headerItem, y = list.contentY
+        if (header && y < header.y + header.height) {
+            for (var i = 0; i < header.children.length; ++i) {
+                var child = header.children[i], top = header.y + child.y
+                if (child.visible && child.height > 0 && top + child.height > y)
+                    return {item: child, offset: top - y}
+            }
+        }
+        var index = list.indexAt(1, y + 1)
+        if (index < 0) index = list.indexAt(1, y + list.spacing + 1)
+        return rowScrollAnchor(index)
+    }
+    function rowScrollAnchor(index) {
+        var item = index >= 0 ? list.itemAtIndex(index) : null
+        return item ? {key: item.rowKey, offset: item.y - list.contentY} : null
+    }
+    function scheduleScroll() {
+        // Geometry changes can happen during polish, after queued JS has run.
+        // Compensate synchronously before the displaced position can be painted.
+        if (scrollAnchor && !publishingView && !restoringScroll && !list.moving && !closing && visible)
+            restoreScroll(false)
+    }
+    Connections {
+        target: page.scrollAnchor && page.scrollAnchor.item ? page.scrollAnchor.item : null
+        function onYChanged() { page.scheduleScroll() }
+        function onHeightChanged() { page.scheduleScroll() }
+    }
+    Connections {
+        target: list.headerItem
+        function onYChanged() { page.scheduleScroll() }
+        function onHeightChanged() { page.scheduleScroll() }
+    }
+    function restoreScroll(flushLayout) {
+        if (!scrollAnchor || publishingView || list.moving || closing || !visible) return
+        restoringScroll = true
+        if (flushLayout !== false) list.forceLayout()
+        var anchor = scrollAnchor
+        if (anchor.target === "bottom") {
+            // Keep the bottom pinned through deferred row/header measurements.
+            list.positionViewAtEnd()
+        } else if (anchor.target === "first") {
+            if (rows.count > 0) {
+                list.positionViewAtIndex(0, ListView.Beginning)
+                list.forceLayout()
+                scrollAnchor = rowScrollAnchor(0) || anchor
+            } else scrollAnchor = captureScroll()
+        } else {
+            var item = anchor.item
+            if (anchor.key) {
+                item = null
+                for (var i = 0; i < rows.count; ++i) {
+                    if (rows.get(i).rowKey !== anchor.key) continue
+                    item = list.itemAtIndex(i)
+                    if (!item) {
+                        // Do not re-enter ListView layout from a geometry signal.
+                        if (flushLayout === false) { restoringScroll = false; return }
+                        list.positionViewAtIndex(i, ListView.Beginning)
+                        list.forceLayout()
+                        item = list.itemAtIndex(i)
+                    }
+                    break
+                }
+            }
+            if (item && item.visible) {
+                var top = item.mapToItem(list.contentItem, 0, 0).y
+                var start = list.originY, end = start + Math.max(0, list.contentHeight - list.height)
+                list.contentY = Math.max(start, Math.min(end, top - anchor.offset))
+            } else scrollAnchor = captureScroll()
+        }
+        restoringScroll = false
+    }
+    function showOverview() {
+        follow = false; scrollAnchor = null; jumpToRows = false
+        list.positionViewAtBeginning()
+        scrollAnchor = captureScroll()
+        invalidate()
+    }
+    function finishScroll() {
+        var atBottom = !paused && list.contentHeight > list.height && list.atYEnd
+        var changed = follow !== atBottom
+        follow = atBottom
+        scrollAnchor = follow ? {target: "bottom"} : captureScroll()
+        if (changed) invalidate()
+    }
+    function showBottom() {
+        if (paused) return
+        list.cancelFlick()
+        scrollAnchor = {target: "bottom"}; jumpToRows = false
+        restoreScroll()
+        finishScroll()
+    }
     function publish(view) {
-        var entries = view.rows || [], next = {}, oldSequence = frame.hero ? frame.hero.sequence : "", oldTime = frame.time
+        var entries = view.rows || [], next = {}
+        if (!scrollAnchor) scrollAnchor = captureScroll()
+        if (jumpToRows) scrollAnchor = {target: "first"}
+        else if (follow && !list.moving) scrollAnchor = {target: "bottom"}
+        jumpToRows = false
+        publishingView = true
+        // New delegates must see their real record on their first layout pass.
+        for (var n = 0; n < entries.length; ++n) next[entries[n].key] = entries[n]
+        rowData = next
         frame = view
         for (var i = 0; i < entries.length; ++i) {
             var key = entries[i].key, found = -1
-            next[key] = entries[i]
             for (var j = i; j < rows.count; ++j) if (rows.get(j).rowKey === key) { found = j; break }
             if (found < 0) rows.insert(i, {rowKey: key})
             else if (found !== i) rows.move(found, i, 1)
         }
         if (rows.count > entries.length) rows.remove(entries.length, rows.count - entries.length)
-        rowData = next
-        var end = jumpToEnd || (follow || playing) && ((frame.hero ? frame.hero.sequence : "") !== oldSequence || frame.time !== oldTime), first = jumpToRows
-        jumpToEnd = false; jumpToRows = false
-        if (first || end) Qt.callLater(function() {
-            if (page.closing || !page.visible || rows.count === 0) return
-            if (first) list.positionViewAtIndex(0, ListView.Beginning)
-            else list.positionViewAtEnd()
-        })
+        publishingView = false
+        restoreScroll()
         if (playing && frame.atEnd && !pendingCommand) playing = false
     }
 
@@ -270,6 +368,7 @@ YBackButtonPage {
         }
     }
     onTransportIdChanged: if (initialized) resetRecords()
+    onFollowChanged: if (!follow && scrollAnchor && scrollAnchor.target === "bottom") scrollAnchor = captureScroll()
     onKeyboardBusyChanged: if (initialized) { if (keyboardBusy) playing = false; else invalidate() }
     onVisibleChanged: if (initialized) { if (!visible) playing = false; else { invalidate(); Qt.callLater(page.requestRead) } }
     onBackButtonClickedCallback: { closing = true; playing = false }
@@ -283,7 +382,14 @@ YBackButtonPage {
         clip: true; spacing: 7; model: rows
         boundsBehavior: Flickable.StopAtBounds
         cacheBuffer: height
-        onMovementStarted: if (page.follow) { page.follow = false; page.invalidate() }
+        onContentHeightChanged: page.scheduleScroll()
+        onOriginYChanged: page.scheduleScroll()
+        onContentYChanged: page.scheduleScroll()
+        onMovementStarted: {
+            page.scrollAnchor = null; page.jumpToRows = false
+            if (page.follow) { page.follow = false; page.invalidate() }
+        }
+        onMovementEnded: page.finishScroll()
         header: ColumnLayout {
             width: list.width; spacing: 7
             RowLayout {
@@ -307,13 +413,14 @@ YBackButtonPage {
             GridLayout {
                 Layout.fillWidth: true; columns: 4; columnSpacing: 5; visible: (page.frame.metrics || []).length > 0
                 Repeater {
-                    model: page.frame.metrics || []
+                    model: (page.frame.metrics || []).length
                     Rectangle {
+                        readonly property var metric: (page.frame.metrics || [])[index] || ({})
                         Layout.fillWidth: true; Layout.preferredWidth: 1; implicitHeight: 45; radius: 7; color: Theme.surfaceRaised
                         ColumnLayout {
                             anchors.fill: parent; anchors.margins: 5; spacing: 2
-                            Text { Layout.fillWidth: true; text: modelData.label; color: Theme.textMuted; font.family: Theme.fontFamily; font.pixelSize: 9; elide: Text.ElideRight }
-                            Text { Layout.fillWidth: true; text: modelData.text; color: Theme.accent; font.family: "monospace"; font.pixelSize: 17; elide: Text.ElideRight }
+                            Text { Layout.fillWidth: true; text: metric.label || ""; color: Theme.textMuted; font.family: Theme.fontFamily; font.pixelSize: 9; elide: Text.ElideRight }
+                            Text { Layout.fillWidth: true; text: metric.text === undefined ? "" : metric.text; color: Theme.accent; font.family: "monospace"; font.pixelSize: 17; elide: Text.ElideRight }
                         }
                     }
                 }
@@ -321,7 +428,7 @@ YBackButtonPage {
             RowLayout {
                 Layout.fillWidth: true; visible: !!page.frame.hero; spacing: 5
                 ActionButton { Layout.fillWidth: true; Layout.preferredWidth: 1; text: page.paused ? "回到实时" : "暂停画面"; iconName: page.paused ? "play" : "pause"; onClicked: page.pauseView() }
-                ActionButton { Layout.fillWidth: true; Layout.preferredWidth: 1; text: page.follow ? "跟随中" : "跟随当前"; iconName: "activity"; variant: page.follow ? "primary" : "secondary"; enabled: !page.paused; onClicked: { page.follow = !page.follow; page.jumpToEnd = page.follow; page.invalidate() } }
+                ActionButton { Layout.fillWidth: true; Layout.preferredWidth: 1; text: page.follow ? "跟随底部" : "回到底部"; iconName: "activity"; variant: page.follow ? "primary" : "secondary"; enabled: !page.paused; onClicked: page.showBottom() }
             }
             NATPunchReplay { Layout.fillWidth: true; visible: page.paused; frame: page.frame; playing: page.playing; onPlayRequested: page.playReplay(); onStepRequested: page.command("step", direction); onSeekRequested: page.command("seek", fraction) }
             RowLayout {
@@ -335,11 +442,13 @@ YBackButtonPage {
                 NATPunchChips { Layout.fillWidth: true; options: page.frame.trials || []; selectedValue: String(page.filters.trial); onChosen: page.applyFilters({trial: Number(value), detail: "", packetPage: 0}) }
             }
             Section {
+                id: modelsSection
                 Layout.fillWidth: true; visible: !!page.frame.hero; title: "双端 NAT 模型"; iconName: "shield"; collapsible: true; expanded: page.modelsOpen
                 onHeaderTapped: page.modelsOpen = !page.modelsOpen
-                Loader {
-                    Layout.fillWidth: true; Layout.preferredHeight: item ? item.implicitHeight : 0; active: page.modelsOpen && width > 0
+                ContentLoader {
+                    Layout.fillWidth: true; contentWidth: modelsSection.contentWidth; active: page.modelsOpen
                     sourceComponent: GridLayout {
+                        width: modelsSection.contentWidth
                         columns: width >= 218 ? 2 : 1; columnSpacing: 6; rowSpacing: 6
                         NATPunchFacts { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; title: "本机 NAT"; iconName: "device"; tone: "blue"; lines: page.frame.localModel || [] }
                         NATPunchFacts { Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop; title: "对端上报"; iconName: "device"; tone: "green"; lines: page.frame.peerModel || [] }
@@ -347,11 +456,13 @@ YBackButtonPage {
                 }
             }
             Section {
+                id: planSection
                 Layout.fillWidth: true; visible: (page.frame.plans || []).length > 0; title: "端口预测与本轮计划"; iconName: "trend"; collapsible: true; expanded: page.planOpen
                 onHeaderTapped: page.planOpen = !page.planOpen
-                Loader {
-                    Layout.fillWidth: true; Layout.preferredHeight: item ? item.implicitHeight : 0; active: page.planOpen && width > 0
+                ContentLoader {
+                    Layout.fillWidth: true; contentWidth: planSection.contentWidth; active: page.planOpen
                     sourceComponent: ColumnLayout {
+                        width: planSection.contentWidth
                         spacing: 7
                         Text { Layout.fillWidth: true; text: page.frame.formula || ""; visible: text.length > 0; color: Theme.accent; font.family: "monospace"; font.pixelSize: 17; wrapMode: Text.WrapAnywhere }
                         NATPunchFacts { Layout.fillWidth: true; lines: page.frame.plans || []; tone: "blue" }
@@ -359,11 +470,13 @@ YBackButtonPage {
                 }
             }
             Section {
+                id: samplesSection
                 Layout.fillWidth: true; visible: !!page.frame.hasDiscovery; title: "NAT 采样轨道"; subtitle: "STUN 映射与过滤"; iconName: "samples"; collapsible: true; expanded: page.samplesOpen
                 onHeaderTapped: page.samplesOpen = !page.samplesOpen
-                Loader {
-                    Layout.fillWidth: true; Layout.preferredHeight: item ? item.implicitHeight : 0; active: page.samplesOpen && width > 0
+                ContentLoader {
+                    Layout.fillWidth: true; contentWidth: samplesSection.contentWidth; active: page.samplesOpen
                     sourceComponent: NATPunchSamples {
+                        width: samplesSection.contentWidth
                         view: page.frame; sampleIp: page.filters.sampleIp; sampleRole: page.filters.sampleRole
                         onIpChosen: page.applyFilters({sampleIp: value, detail: ""})
                         onRoleChosen: page.applyFilters({sampleRole: value, sampleIp: "", detail: ""})
@@ -374,13 +487,15 @@ YBackButtonPage {
                 }
             }
             Section {
+                id: networkSection
                 Layout.fillWidth: true; visible: !!page.frame.hero; title: "当前网络"; iconName: "network"; collapsible: true; expanded: page.networkOpen
                 onHeaderTapped: page.networkOpen = !page.networkOpen
-                Loader { Layout.fillWidth: true; Layout.preferredHeight: item ? item.implicitHeight : 0; active: page.networkOpen && width > 0; sourceComponent: NATPunchFacts { lines: page.frame.network || [] } }
+                ContentLoader { Layout.fillWidth: true; contentWidth: networkSection.contentWidth; active: page.networkOpen; sourceComponent: NATPunchFacts { width: networkSection.contentWidth; lines: page.frame.network || [] } }
             }
-            Loader {
-                Layout.fillWidth: true; Layout.preferredHeight: item ? item.implicitHeight : 0; active: page.filters.tab === "ports" && !!page.frame.hero; visible: active
+            ContentLoader {
+                Layout.fillWidth: true; contentWidth: list.width; active: page.filters.tab === "ports" && !!page.frame.hero; visible: active
                 sourceComponent: ColumnLayout {
+                    width: list.width
                     spacing: 7
                     PageHeading { Layout.fillWidth: true; title: "端口 × socket"; subtitle: (page.frame.matrix.socketCount || 0) + " socket · " + (page.frame.matrix.targetCount || 0) + " 目标"; iconName: "mapping" }
                     GridLayout {
@@ -403,9 +518,10 @@ YBackButtonPage {
                     PageHeading { Layout.fillWidth: true; title: "socket 明细"; iconName: "core" }
                 }
             }
-            Loader {
-                Layout.fillWidth: true; Layout.preferredHeight: item ? item.implicitHeight : 0; active: page.filters.tab === "packets" && !!page.frame.hero; visible: active
+            ContentLoader {
+                Layout.fillWidth: true; contentWidth: list.width; active: page.filters.tab === "packets" && !!page.frame.hero; visible: active
                 sourceComponent: ColumnLayout {
+                    width: list.width
                     spacing: 6
                     NATPunchChips { Layout.fillWidth: true; options: [{value: "connection", label: "连接收发"}, {value: "discovery", label: "NAT 采样"}]; selectedValue: page.filters.packetStream; onChosen: { page.follow = false; page.applyFilters({packetStream: value, socket: "", target: "", stageSequence: "", packetPage: 0, detail: ""}) } }
                     NATPunchChips { Layout.fillWidth: true; options: [{value: "all", label: "全部方向"}, {value: "out", label: "发送 ↑"}, {value: "in", label: "接收 ↓"}]; selectedValue: page.filters.direction; onChosen: page.packetFilter("direction", value) }
@@ -426,8 +542,11 @@ YBackButtonPage {
             Item { Layout.fillWidth: true; implicitHeight: 2 }
         }
         delegate: NATPunchRow {
+            readonly property string rowKey: model.rowKey
             width: list.width
-            record: page.rowData[model.rowKey] || ({})
+            record: page.rowData[rowKey] || ({})
+            onYChanged: page.scheduleScroll()
+            onHeightChanged: page.scheduleScroll()
             onToggleRequested: page.toggleRecord(value)
             onSocketRequested: page.showSocket(socketId, sample)
             onTransactionRequested: page.showTransaction(transactionId, sample)
@@ -439,5 +558,5 @@ YBackButtonPage {
             Text { id: message; width: parent.width; visible: rows.count === 0 && !page.frame.waiting; text: page.filters.tab === "packets" ? "暂无符合筛选的收发记录" : "暂无对应过程记录"; color: Theme.textMuted; font.family: Theme.fontFamily; font.pixelSize: 10; wrapMode: Text.Wrap }
         }
     }
-    ActionButton { anchors.right: parent.right; anchors.rightMargin: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 8; z: 5; width: 32; visible: list.contentY > list.height; iconName: "upload"; Accessible.name: "回到过程概览与控制"; onClicked: list.positionViewAtBeginning() }
+    ActionButton { anchors.right: parent.right; anchors.rightMargin: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 8; z: 5; width: 32; visible: list.contentY > list.originY + list.height; iconName: "upload"; Accessible.name: "回到过程概览与控制"; onClicked: page.showOverview() }
 }

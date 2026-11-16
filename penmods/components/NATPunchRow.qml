@@ -16,16 +16,16 @@ Rectangle {
     Component.onCompleted: syncChildren()
     function syncChildren() {
         var children = record.children || [], next = {}
+        for (var n = 0; n < children.length; ++n) next[children[n].key] = children[n]
+        childData = next
         for (var i = 0; i < children.length; ++i) {
             var key = children[i].key, found = -1
-            next[key] = children[i]
             for (var j = i; j < childModel.count; ++j)
                 if (childModel.get(j).rowKey === key) { found = j; break }
             if (found < 0) childModel.insert(i, {rowKey: key})
             else if (found !== i) childModel.move(found, i, 1)
         }
         if (childModel.count > children.length) childModel.remove(children.length, childModel.count - children.length)
-        childData = next
     }
     readonly property color ink: Theme.natInk(record.tone || "neutral")
     implicitHeight: body.implicitHeight + 16

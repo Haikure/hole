@@ -29,15 +29,15 @@ ColumnLayout {
     }
     function syncRows() {
         var entries = showSteps ? view.sampleSteps || [] : view.sampleRows || [], next = {}
+        for (var n = 0; n < entries.length; ++n) next[entries[n].key] = entries[n]
+        rowData = next
         for (var i = 0; i < entries.length; ++i) {
             var key = entries[i].key, found = -1
-            next[key] = entries[i]
             for (var j = i; j < rows.count; ++j) if (rows.get(j).rowKey === key) { found = j; break }
             if (found < 0) rows.insert(i, {rowKey: key})
             else if (found !== i) rows.move(found, i, 1)
         }
         if (rows.count > entries.length) rows.remove(entries.length, rows.count - entries.length)
-        rowData = next
     }
     NATPunchChips { Layout.fillWidth: true; options: [{value: "all", label: "全部用途"}, {value: "nat_base", label: "基础映射"}, {value: "nat_validation", label: "跨 socket"}, {value: "nat_filtering", label: "过滤探测"}]; selectedValue: samples.sampleRole; onChosen: samples.roleChosen(value) }
     NATPunchChips { Layout.fillWidth: true; visible: options.length > 0; options: samples.view.sampleIps || []; selectedValue: samples.sampleIp || (options.length ? options[0].value : ""); onChosen: samples.ipChosen(value) }
@@ -76,9 +76,10 @@ ColumnLayout {
     ActionButton { Layout.fillWidth: true; visible: !!samples.selectedPoint && !!samples.selectedPoint.transaction; text: "查看此 STUN 事务"; iconName: "samples"; variant: "link"; onClicked: samples.transactionRequested(samples.selectedPoint.transaction, true) }
     ActionButton { Layout.fillWidth: true; text: samples.recordsOpen ? "收起采样记录" : "展开采样记录"; iconName: "samples"; variant: "link"; onClicked: samples.recordsOpen = !samples.recordsOpen }
     NATPunchChips { Layout.fillWidth: true; visible: samples.recordsOpen; options: [{value: "mapped", label: "最近映射"}, {value: "steps", label: "采样步骤"}]; selectedValue: samples.showSteps ? "steps" : "mapped"; onChosen: samples.showSteps = value === "steps" }
-    Loader {
-        Layout.fillWidth: true; Layout.preferredHeight: item ? item.implicitHeight : 0; active: samples.recordsOpen; visible: active
+    ContentLoader {
+        Layout.fillWidth: true; contentWidth: samples.width; active: samples.recordsOpen; visible: active
         sourceComponent: ColumnLayout {
+            width: samples.width
             spacing: 7
             Repeater {
                 model: rows

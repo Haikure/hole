@@ -197,10 +197,11 @@ function command(message) {
 function projection() {
     var generation = selection(), live = records[generation + "/connection"], record = options.paused && frozen && frozen.key === generation ? frozen.main : live
     var frame = {generation: generation, attempts: attempts.map(function(a) { return {value: text(a.generation), label: phase(a.phase) + " · " + a.generation} }), rows: [], rounds: [], trials: [],
-        waiting: !record, hasDiscovery: !!live && live.hasDiscovery, paused: !!options.paused, frozen: !!options.paused && !!frozen, duration: 1, progress: 1, time: "0 ms", markers: [], packetCount: 0, pageCount: 1, pageIndex: 0,
+        waiting: !record, hasDiscovery: !!live && live.hasDiscovery, paused: !!options.paused, frozen: !!options.paused && !!frozen, duration: 1, progress: 1, time: "0 ms", eventIndex: 0, eventCount: 0, markers: [], packetCount: 0, pageCount: 1, pageIndex: 0,
         plans: [], formula: "", summary: [], localModel: [], peerModel: [], network: [], sampleRows: [], samplePoints: [], sampleRange: "", sampleSteps: [], sampleIps: [], matrix: {sockets: [], targets: [], cells: []}, loss: ""}
     if (!record) return frame
     var run = record.run, full = record.events, history = options.paused && frozen ? full.slice(0, replayIndex + 1) : full
+    frame.eventIndex = history.length; frame.eventCount = full.length
     frame.duration = Math.max(number(run.elapsed_ms), full.length ? number(full[full.length - 1].elapsed_ms) : 0, 1)
     var cursor = options.paused && frozen ? replayMs : frame.duration
     frame.progress = cursor / frame.duration; frame.time = elapsed(cursor); frame.atEnd = cursor >= frame.duration

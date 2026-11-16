@@ -18,6 +18,7 @@ ColumnLayout {
     signal headerTapped()
 
     readonly property bool open: !section.collapsible || section.expanded
+    readonly property real contentWidth: Math.max(0, width - 2 * Theme.cardPadding)
 
     implicitWidth: Theme.contentWidth
     spacing: 4
@@ -100,7 +101,7 @@ ColumnLayout {
             id: body
 
             x: Theme.cardPadding; y: Theme.cardPadding
-            width: parent.width - 2 * Theme.cardPadding
+            width: section.contentWidth
             spacing: Theme.cardSpacing
         }
     }
