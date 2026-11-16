@@ -55,7 +55,7 @@ func decodeNATPunch(b, key []byte, round int) (natPunchPacket, bool) {
 	p.kind = b[14]
 	copy(p.nonce[:], b[15:31])
 	copy(p.echo[:], b[31:47])
-	return p, p.round == uint32(round) && p.socket < 64 && p.sequence >= 1 && p.sequence <= 8 && (p.kind == 1 || p.kind == 2)
+	return p, p.round == uint32(round) && p.socket < 64 && p.sequence >= 1 && (p.kind == 1 || p.kind == 2)
 }
 
 type natPunchAttempt struct {
@@ -216,7 +216,7 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 		sent          uint32
 		last          time.Time
 		ack           *natPunchPacket
-		seen          [64]uint16
+		seen          [64]holeReplay // Bounded sequence windows, including reordered probes.
 	}
 	var slots []slot
 	for i := range a.sockets {
@@ -264,11 +264,9 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 			s := &slots[i]
 			packet := ev.packet
 			if packet.kind == 1 {
-				bit := uint16(1) << packet.sequence
-				if s.seen[packet.socket]&bit != 0 {
+				if !s.seen[packet.socket].accept(uint64(packet.sequence)) {
 					continue
 				}
-				s.seen[packet.socket] |= bit
 				ack := natPunchPacket{kind: 2, round: uint32(round), socket: uint16(ev.index), sequence: packet.sequence, nonce: s.nonce, echo: packet.nonce}
 				s.ack = &ack
 			} else if dialer && selected < 0 && s.sent > 0 && packet.echo == s.nonce && packet.sequence <= s.sent {
@@ -296,16 +294,11 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 					break
 				}
 			}
-			if i < 0 {
+			if i < 0 && selected < 0 {
 				for j, s := range slots {
-					if selected >= 0 && j != selected {
-						continue
-					}
-					limit := uint32(4)
-					if j == selected || !dialer && s.seen != [64]uint16{} {
-						limit = 8
-					}
-					if s.sent < limit && now.Sub(s.last) >= natPunchInterval && (i < 0 || s.last.Before(slots[i].last)) {
+					// Keep opening/refreshing mappings until a verified ACK
+					// starts QUIC or the round ends. ACK replies remain active.
+					if now.Sub(s.last) >= natPunchInterval && (i < 0 || s.last.Before(slots[i].last)) {
 						i = j
 					}
 				}
@@ -327,13 +320,9 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 				if payload[14] == 2 {
 					kind, name = "ack_sent", "ACK"
 				}
-				limit := 4
-				if i == selected || !dialer && slots[i].seen != [64]uint16{} {
-					limit = 8
-				}
 				a.process.packet(NATPunchProcessEvent{Kind: kind, Title: "发送 " + name, Direction: "out", Packet: name,
 					SocketID: socketIDs[s.index], RemoteAddress: targets[s.target].String(), Bytes: len(payload), Round: round,
-					PacketSequence: binary.BigEndian.Uint32(payload[10:14]), Validation: "sent", RetryAfterMS: natPunchInterval.Milliseconds(), ProbeLimit: limit})
+					PacketSequence: binary.BigEndian.Uint32(payload[10:14]), Validation: "sent", RetryAfterMS: natPunchInterval.Milliseconds()})
 				if payload[14] == 1 {
 					a.diagnostic.ProbesSent++
 				} else {

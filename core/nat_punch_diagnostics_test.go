@@ -99,6 +99,62 @@ func TestNATPunchDiagnosticDistinguishesRejectedAndAuthenticatedPackets(t *testi
 	}
 }
 
+func TestNATPunchExtendedSequencesAcknowledgeReorderingAndRejectReplays(t *testing.T) {
+	open := func() net.PacketConn {
+		pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = pc.Close() })
+		return pc
+	}
+	local, remote := open(), open()
+	key := []byte("extended-sequence-fixture")
+	a := newNATPunchAttempt([]net.PacketConn{local})
+	defer a.close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.run(ctx, true, 1, key, []*net.UDPAddr{remote.LocalAddr().(*net.UDPAddr)}, nil)
+		done <- err
+	}()
+	_ = remote.SetReadDeadline(time.Now().Add(time.Second))
+	buffer := make([]byte, 2048)
+	for _, tc := range []struct {
+		sequence uint32
+		ack      bool
+	}{{9, true}, {9, false}, {11, true}, {10, true}, {10, false}, {80, true}, {11, false}, {79, true}, {79, false}} {
+		probe := natPunchPacket{kind: 1, round: 1, sequence: tc.sequence, nonce: [16]byte{1}}
+		if _, err := remote.WriteTo(probe.encode(key), local.LocalAddr()); err != nil {
+			t.Fatal(err)
+		}
+		if !tc.ack {
+			continue
+		}
+		for {
+			n, _, err := remote.ReadFrom(buffer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			packet, ok := decodeNATPunch(buffer[:n], key, 1)
+			if !ok || packet.kind != 2 {
+				continue
+			}
+			if packet.sequence != probe.sequence || packet.echo != probe.nonce {
+				t.Fatalf("ACK did not echo probe %d: %+v", probe.sequence, packet)
+			}
+			break
+		}
+	}
+	if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	if d := a.diagnostic; d.ProbesReceived != 9 || d.ACKsSent != 5 || d.PacketRejected != 0 || d.QUICDialStarted {
+		t.Fatalf("extended sequence replay window accounting: %+v", d)
+	}
+}
+
 func TestNATPunchDiagnosticsSurviveRelayAndSnapshotDoesNotAlias(t *testing.T) {
 	_, p := lifecycleCoordinator(t)
 	a := &iceAttempt{ctx: p.ctx, ready: p.ready}

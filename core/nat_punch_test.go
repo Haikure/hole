@@ -103,6 +103,19 @@ func TestNATPunchAuthenticatedPackets(t *testing.T) {
 	}
 }
 
+func TestNATPunchPacketSequenceRange(t *testing.T) {
+	key := []byte("continuous-probing")
+	for _, kind := range []byte{1, 2} {
+		for _, sequence := range []uint32{0, 1, 8, 9, 64, 65, 151, ^uint32(0)} {
+			p := natPunchPacket{kind: kind, round: 1, socket: 63, sequence: sequence}
+			got, ok := decodeNATPunch(p.encode(key), key, 1)
+			if ok != (sequence != 0) || got != p {
+				t.Fatalf("kind=%d sequence=%d: packet=%+v valid=%v", kind, sequence, got, ok)
+			}
+		}
+	}
+}
+
 func TestNATPunchRoundSignalsKeepFutureReadiness(t *testing.T) {
 	_, p := lifecycleCoordinator(t)
 	a := &iceAttempt{events: make(chan iceSignalMessage, 4), failed: make(chan error, 1)}

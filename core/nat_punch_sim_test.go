@@ -291,13 +291,15 @@ func TestNATPunchDualSymmetricEstablishesRealQUICOnOriginalSocket(t *testing.T) 
 		steps, background [2]int
 		drop              int
 		duplicate         bool
-		delay             time.Duration
+		delay             [2]time.Duration
 		count             int
 	}{
-		{"strict step one", [2]int{1, 1}, [2]int{}, 0, false, 0, 32},
-		{"different steps and allocation offsets", [2]int{1, 2}, [2]int{4, 7}, 2, true, 90 * time.Millisecond, 32},
-		{"next port prediction", [2]int{2, 1}, [2]int{}, 1, false, 40 * time.Millisecond, 1},
-		{"expanded batch covers larger drift", [2]int{2, 1}, [2]int{20, 24}, 1, false, 40 * time.Millisecond, 64},
+		{"strict step one", [2]int{1, 1}, [2]int{}, 0, false, [2]time.Duration{}, 32},
+		{"different steps and allocation offsets", [2]int{1, 2}, [2]int{4, 7}, 2, true, [2]time.Duration{0, 90 * time.Millisecond}, 32},
+		{"next port prediction", [2]int{2, 1}, [2]int{}, 1, false, [2]time.Duration{0, 40 * time.Millisecond}, 1},
+		{"expanded batch covers larger drift", [2]int{2, 1}, [2]int{20, 24}, 1, false, [2]time.Duration{0, 40 * time.Millisecond}, 64},
+		{"listener starts after eight probes", [2]int{1, 1}, [2]int{}, 0, true, [2]time.Duration{1900 * time.Millisecond, 0}, 32},
+		{"dialer starts after eight probes", [2]int{1, 1}, [2]int{}, 0, true, [2]time.Duration{0, 1900 * time.Millisecond}, 32},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n, sockets, targets := simulatedNATs(tc.steps, tc.background, tc.count)
@@ -323,8 +325,8 @@ func TestNATPunchDualSymmetricEstablishesRealQUICOnOriginalSocket(t *testing.T) 
 			done := make(chan outcome, 2)
 			for side := range 2 {
 				go func() {
-					if side == 1 {
-						timer := time.NewTimer(tc.delay)
+					if tc.delay[side] > 0 {
+						timer := time.NewTimer(tc.delay[side])
 						defer timer.Stop()
 						select {
 						case <-timer.C:
@@ -353,6 +355,9 @@ func TestNATPunchDualSymmetricEstablishesRealQUICOnOriginalSocket(t *testing.T) 
 				}
 				if conns[side].LocalAddr().String() != sockets[side][a.selected].LocalAddr().String() {
 					t.Fatal("QUIC replaced punched socket")
+				}
+				if tc.delay[1-side] > time.Second && a.diagnostic.ProbesSent <= tc.count*8 {
+					t.Fatalf("early side %d stopped probing before the peer opened its mappings: %+v", side, a.diagnostic)
 				}
 			}
 			stream, err := conns[1].OpenStreamSync(ctx)
@@ -386,11 +391,97 @@ func TestNATPunchDualSymmetricEstablishesRealQUICOnOriginalSocket(t *testing.T) 
 	}
 }
 
+func TestNATPunchStopsProbingDuringQUICHandshake(t *testing.T) {
+	_, sockets, targets := simulatedNATs([2]int{1, 1}, [2]int{}, 2)
+	defer func() {
+		for _, side := range sockets {
+			for _, pc := range side {
+				_ = pc.Close()
+			}
+		}
+	}()
+	peer := sockets[1][0]
+	key := []byte("handshake-probe-stop")
+	// Open the peer's mapping, then leave QUIC unanswered to hold the dialer
+	// in its handshake longer than the candidate's probe interval.
+	if _, err := peer.WriteTo([]byte("open mapping"), targets[0]); err != nil {
+		t.Fatal(err)
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	a := newNATPunchAttempt(sockets[0])
+	defer a.close()
+	config := dualTLS(t)[0]
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	done := make(chan struct{})
+	var runErr error
+	go func() {
+		defer close(done)
+		_, runErr = a.run(ctx, true, 1, key, []*net.UDPAddr{targets[1]}, config)
+	}()
+	defer func() { cancel(); <-done }()
+	buffer := make([]byte, 2048)
+	n, _, err := peer.ReadFrom(buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, ok := decodeNATPunch(buffer[:n], key, 1)
+	if !ok || probe.kind != 1 {
+		t.Fatal("missing initial probe")
+	}
+	ack := natPunchPacket{kind: 2, round: 1, sequence: probe.sequence, echo: probe.nonce}
+	if _, err := peer.WriteTo(ack.encode(key), targets[0]); err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the first QUIC packet so no pre-selection PROBE is mistaken
+	// for a probe sent while the handshake is pending.
+	for {
+		n, _, err = peer.ReadFrom(buffer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := decodeNATPunch(buffer[:n], key, 1); !ok {
+			break
+		}
+	}
+	peerProbe := natPunchPacket{kind: 1, round: 1, sequence: 9, nonce: [16]byte{1}}
+	if _, err := peer.WriteTo(peerProbe.encode(key), targets[0]); err != nil {
+		t.Fatal(err)
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(2 * natPunchInterval))
+	acked := false
+	for {
+		n, _, err = peer.ReadFrom(buffer)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		packet, ok := decodeNATPunch(buffer[:n], key, 1)
+		if !ok {
+			continue
+		}
+		if packet.kind == 1 {
+			t.Fatal("active PROBE sent during QUIC handshake")
+		}
+		if packet.sequence == peerProbe.sequence && packet.echo == peerProbe.nonce {
+			acked = true
+		}
+	}
+	cancel()
+	<-done
+	if !acked || !errors.Is(runErr, context.Canceled) || a.diagnostic.ACKsVerified != 1 || !a.diagnostic.QUICDialStarted || a.diagnostic.QUICEstablished {
+		t.Fatalf("handshake must suppress probes while retaining ACK replies: acked=%v err=%v diagnostic=%+v", acked, runErr, a.diagnostic)
+	}
+}
+
 func TestNATPunchDualSymmetricOccupiedTargetCannotReportSuccess(t *testing.T) {
-	n, sockets, targets := simulatedNATs([2]int{1, 2}, [2]int{}, 8)
+	const count = 64
+	const roundTimeout = 1900 * time.Millisecond
+	n, sockets, targets := simulatedNATs([2]int{1, 2}, [2]int{}, count)
 	n.sides[0].occupied = targets[0].Port
 	configs := dualTLS(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), roundTimeout)
 	defer cancel()
 	done := make(chan error, 2)
 	for side := range 2 {
@@ -413,8 +504,11 @@ func TestNATPunchDualSymmetricOccupiedTargetCannotReportSuccess(t *testing.T) {
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if n.writes > 8*4*2 {
-		t.Fatal(fmt.Sprintf("packet budget exceeded: %d", n.writes))
+	if n.writes <= count*4*2 {
+		t.Fatalf("probing stopped after four sends per socket: %d packets", n.writes)
+	}
+	if n.writes > int(roundTimeout/(5*time.Millisecond)+1)*2 {
+		t.Fatalf("aggregate packet rate exceeded 200 pps per side: %d packets", n.writes)
 	}
 }
 

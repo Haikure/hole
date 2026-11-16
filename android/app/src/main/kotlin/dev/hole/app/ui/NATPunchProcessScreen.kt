@@ -944,9 +944,10 @@ private fun ProcessSocketDetails(socket: NATPunchSocket, events: List<NATPunchEv
         val last = sends.last()
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .35f))
         ProcessField("探测目标", target)
-        ProcessField("发送序号 / 上限", last.packetSequence.toString() + " / " + last.probeLimit)
+        ProcessField("发送序号", last.packetSequence.toString())
+        ProcessField("探测次数上限", if (last.probeLimit > 0) last.probeLimit.toString() else "不限次数")
         ProcessField("重传间隔", "至少 " + last.retryAfterMs + " ms")
-        if (last.packetSequence < last.probeLimit && socket.state !in setOf("closed", "retained", "selected")) {
+        if ((last.probeLimit <= 0 || last.packetSequence < last.probeLimit) && socket.state !in setOf("closed", "retained", "selected")) {
             ProcessField("最早可重传", "+" + processTime(last.elapsedMs + last.retryAfterMs))
         }
     }
@@ -976,7 +977,7 @@ private fun ProcessEventDetails(event: NATPunchEvent) {
     if (event.result.isNotBlank()) ProcessField("结果", processResult(event.result))
     if (event.packetSequence > 0) ProcessField("报文序号", event.packetSequence.toString())
     if (event.kind == "probe_sent") {
-        ProcessField("探测次数上限", event.probeLimit.toString())
+        ProcessField("探测次数上限", if (event.probeLimit > 0) event.probeLimit.toString() else "不限次数")
         ProcessField("候选重传间隔", "至少 " + event.retryAfterMs + " ms")
     }
     if (event.peerSocket > 0) ProcessField("对端 socket 编号", event.peerSocket.toString())

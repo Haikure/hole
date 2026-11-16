@@ -111,7 +111,7 @@ type NATPunchProcessEvent struct {
 	Packet         string `json:"packet,omitempty"`
 	PacketSequence uint32 `json:"packet_sequence,omitempty"`
 	RetryAfterMS   int64  `json:"retry_after_ms,omitempty"`
-	ProbeLimit     int    `json:"probe_limit,omitempty"`
+	ProbeLimit     int    `json:"probe_limit,omitempty"` // Zero/omitted means no fixed probe count.
 	PeerSocket     int    `json:"peer_socket,omitempty"`
 	LocalAddress   string `json:"local_address,omitempty"`
 	BoundAddress   string `json:"bound_address,omitempty"`
