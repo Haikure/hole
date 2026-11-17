@@ -27,6 +27,10 @@ type iceCoordinator struct {
 	natAllocation            *natAllocationGate
 	natMu                    sync.Mutex
 	natSnapshot              NATSnapshot
+	natConnected             bool
+	natProbeRequested        bool
+	natProbeRunning          bool
+	natProbeWake             chan struct{}
 	natProbeProcess          *natProcessRecorder
 	natProbeEpoch            uint64
 	natCancel                context.CancelFunc
@@ -76,7 +80,7 @@ func (c *iceCoordinator) voiceRuntimePtr() *voiceRuntime {
 
 func newICECoordinator(ctx context.Context, r Request, platform Platform, sessions *sessionManager, identity *tls.Config, runtimeID string, epoch uint64, emit func(Event), networkObserved func(NetworkSnapshot)) *iceCoordinator {
 	ctx, cancel := context.WithCancel(ctx)
-	c := &iceCoordinator{ctx: ctx, cancel: cancel, platform: platform, sessions: sessions, identity: identity, runtimeID: runtimeID, fingerprint: certFingerprint(identity.Certificates[0]), emit: emit, networkObserved: networkObserved, desired: r, reset: make(chan struct{}, 1), updates: make(chan struct{}, 1), peers: map[string]*icePeer{}, turnState: "pending", turnChanged: make(chan struct{}), voiceMembers: map[string]voiceRoomMember{}}
+	c := &iceCoordinator{ctx: ctx, cancel: cancel, platform: platform, sessions: sessions, identity: identity, runtimeID: runtimeID, fingerprint: certFingerprint(identity.Certificates[0]), emit: emit, networkObserved: networkObserved, desired: r, reset: make(chan struct{}, 1), updates: make(chan struct{}, 1), peers: map[string]*icePeer{}, turnState: "pending", turnChanged: make(chan struct{}), voiceMembers: map[string]voiceRoomMember{}, natProbeWake: make(chan struct{}, 1)}
 	if r.Config.Voice.Enabled {
 		c.voice = newConfiguredVoiceRuntime(ctx)
 	}
@@ -141,6 +145,8 @@ func (c *iceCoordinator) submit(r Request) {
 			c.natCancel()
 		}
 		c.natSnapshot = natUnknown()
+		c.natConnected = false
+		c.natProbeRequested = false
 		c.natMu.Unlock()
 		c.turnMu.Lock()
 		c.turnServers = nil
@@ -166,6 +172,8 @@ func (c *iceCoordinator) networkChanged() {
 		c.natCancel()
 	}
 	c.natSnapshot = natUnknown()
+	c.natConnected = false
+	c.natProbeRequested = false
 	c.natMu.Unlock()
 	select {
 	case c.reset <- struct{}{}:

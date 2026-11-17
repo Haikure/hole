@@ -1179,6 +1179,7 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	p.stats.Error = nil
 	p.stats.ConnectMS = time.Since(started).Milliseconds()
 	p.mu.Unlock()
+	p.coordinator.natConnectionEstablished()
 	a.processStep("connected", "业务线路已建立", 0, 0)
 	a.process.finish("connected", "业务通道已就绪")
 	mux.syncMappings()

@@ -426,7 +426,7 @@ func TestNATPunchStopsProbingDuringQUICHandshake(t *testing.T) {
 	}
 	probe, ok := decodeNATPunch(buffer[:n], key, 1)
 	if !ok || probe.kind != 1 {
-		t.Fatal("missing initial probe")
+		t.Fatalf("missing initial probe: valid=%v packet=%+v bytes=%x", ok, probe, buffer[:n])
 	}
 	ack := natPunchPacket{kind: 2, round: 1, sequence: probe.sequence, echo: probe.nonce}
 	if _, err := peer.WriteTo(ack.encode(key), targets[0]); err != nil {
@@ -476,10 +476,18 @@ func TestNATPunchStopsProbingDuringQUICHandshake(t *testing.T) {
 }
 
 func TestNATPunchDualSymmetricOccupiedTargetCannotReportSuccess(t *testing.T) {
-	const count = 64
+	const count = 1
 	const roundTimeout = 1900 * time.Millisecond
 	n, sockets, targets := simulatedNATs([2]int{1, 2}, [2]int{}, count)
 	n.sides[0].occupied = targets[0].Port
+	n.blockOneWay = true
+	var scanTargets [2][]*net.UDPAddr
+	for side := range 2 {
+		base := targets[1-side]
+		for offset := range 20 {
+			scanTargets[side] = append(scanTargets[side], &net.UDPAddr{IP: base.IP, Port: base.Port + offset})
+		}
+	}
 	configs := dualTLS(t)
 	ctx, cancel := context.WithTimeout(context.Background(), roundTimeout)
 	defer cancel()
@@ -493,7 +501,7 @@ func TestNATPunchDualSymmetricOccupiedTargetCannotReportSuccess(t *testing.T) {
 					s.Close()
 				}
 			}()
-			_, err := a.run(ctx, side == 1, 1, []byte("key"), []*net.UDPAddr{targets[1-side]}, configs[side])
+			_, err := a.run(ctx, side == 1, 1, []byte("key"), scanTargets[side], configs[side])
 			done <- err
 		}()
 	}
@@ -507,8 +515,8 @@ func TestNATPunchDualSymmetricOccupiedTargetCannotReportSuccess(t *testing.T) {
 	if n.writes <= count*4*2 {
 		t.Fatalf("probing stopped after four sends per socket: %d packets", n.writes)
 	}
-	if n.writes > int(roundTimeout/(5*time.Millisecond)+1)*2 {
-		t.Fatalf("aggregate packet rate exceeded 200 pps per side: %d packets", n.writes)
+	if maxPerSocket := int(roundTimeout/natPunchInterval+1) * count * 2; n.writes > maxPerSocket {
+		t.Fatalf("per-socket pacing exceeded five packets per second while scanning 20 targets: %d packets, max %d", n.writes, maxPerSocket)
 	}
 }
 

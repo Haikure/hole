@@ -229,10 +229,12 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 		}
 	}
 	selected := -1
-	// 5 ms aggregate pacing includes ACKs. Each candidate is retried no
-	// faster than 200 ms; this also bounds single-symmetric scans to 200 pps.
+	// Keep each socket to five packets per second, including both probes and
+	// ACKs. A socket may have many candidate targets, so per-slot pacing alone
+	// would multiply its actual send rate by the scan width.
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
+	lastSend := make([]time.Time, len(a.sockets))
 	for {
 		select {
 		case <-ctx.Done():
@@ -286,47 +288,54 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 		case now := <-ticker.C:
 			i := -1
 			var payload []byte
+			isACK := false
 			for j := range slots {
-				if slots[j].ack != nil {
+				socket := slots[j].index
+				if slots[j].ack != nil && now.Sub(lastSend[socket]) >= natPunchInterval &&
+					(i < 0 || lastSend[socket].Before(lastSend[slots[i].index])) {
 					i = j
 					payload = slots[j].ack.encode(key)
-					slots[j].ack = nil
+					isACK = true
 					break
 				}
 			}
 			if i < 0 && selected < 0 {
 				for j, s := range slots {
 					// Keep opening/refreshing mappings until a verified ACK
-					// starts QUIC or the round ends. ACK replies remain active.
-					if now.Sub(s.last) >= natPunchInterval && (i < 0 || s.last.Before(slots[i].last)) {
+					// starts QUIC or the round ends. ACK replies share the socket cap.
+					if now.Sub(lastSend[s.index]) >= natPunchInterval && now.Sub(s.last) >= natPunchInterval &&
+						(i < 0 || lastSend[s.index].Before(lastSend[slots[i].index]) ||
+							lastSend[s.index].Equal(lastSend[slots[i].index]) && s.last.Before(slots[i].last)) {
 						i = j
 					}
-				}
-				if i >= 0 {
-					s := &slots[i]
-					s.sent++
-					s.last = now
-					payload = (natPunchPacket{kind: 1, round: uint32(round), socket: uint16(s.index), sequence: s.sent, nonce: s.nonce}).encode(key)
 				}
 			}
 			if i >= 0 {
 				s := slots[i]
+				if isACK {
+					slots[i].ack = nil
+				} else {
+					slots[i].sent++
+					slots[i].last = now
+					payload = (natPunchPacket{kind: 1, round: uint32(round), socket: uint16(s.index), sequence: slots[i].sent, nonce: s.nonce}).encode(key)
+				}
 				if _, e := a.sockets[s.index].WriteTo(payload, targets[s.target]); e != nil {
 					a.process.record(NATPunchProcessEvent{Kind: "write_error", Title: "UDP 发送失败", Round: round,
 						SocketID: socketIDs[s.index], RemoteAddress: targets[s.target].String(), Detail: e.Error()})
 					return nil, e
 				}
+				lastSend[s.index] = now
 				kind, name := "probe_sent", "PROBE"
-				if payload[14] == 2 {
+				if isACK {
 					kind, name = "ack_sent", "ACK"
 				}
 				a.process.packet(NATPunchProcessEvent{Kind: kind, Title: "发送 " + name, Direction: "out", Packet: name,
 					SocketID: socketIDs[s.index], RemoteAddress: targets[s.target].String(), Bytes: len(payload), Round: round,
 					PacketSequence: binary.BigEndian.Uint32(payload[10:14]), Validation: "sent", RetryAfterMS: natPunchInterval.Milliseconds()})
-				if payload[14] == 1 {
-					a.diagnostic.ProbesSent++
-				} else {
+				if isACK {
 					a.diagnostic.ACKsSent++
+				} else {
+					a.diagnostic.ProbesSent++
 				}
 			}
 		}

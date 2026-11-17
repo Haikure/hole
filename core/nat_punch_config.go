@@ -35,7 +35,7 @@ func (c *NATPunchConfig) normalize() {
 		c.Timeout = ConfigDuration(10 * time.Second)
 	}
 	if c.RoundTimeout == 0 {
-		c.RoundTimeout = ConfigDuration(2500 * time.Millisecond)
+		c.RoundTimeout = ConfigDuration(6 * time.Second)
 	}
 }
 

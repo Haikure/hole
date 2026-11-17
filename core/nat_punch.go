@@ -203,8 +203,12 @@ func (p *icePeer) prepareNATPunch(a *iceAttempt, cfg Config) (*natPunchSession, 
 	a.process.sampling(p.coordinator.localNATProcess())
 	ctx, cancel := context.WithTimeout(a.ctx, 3*natprobe.DefaultTimeout+2*time.Second)
 	defer cancel()
+	urls := natURLs(cfg.ICE)
+	if len(urls) > 0 {
+		p.coordinator.requestNATProbeForConnection()
+	}
 	local := p.coordinator.localNAT()
-	if len(natURLs(cfg.ICE)) > 0 {
+	if len(urls) > 0 {
 		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
 		for local.ProbedAt == "" {
@@ -457,7 +461,8 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			for port := want.Target; port < want.Target+want.Width; port++ {
 				targets = append(targets, &net.UDPAddr{IP: net.ParseIP(want.IP), Port: port})
 			}
-			if s.mode == "pool" && want.Target < want.Port {
+			if want.Target < want.Port && (s.mode == "pool" || s.mode == "single" &&
+				(s.remote.Predictability == "predictable_decremental" || s.remote.Predictability == "decremental")) {
 				// Try the nearest predicted decrement first, preserving the
 				// allocation order when the two peers have opposite directions.
 				for i, j := 0, len(targets)-1; i < j; i, j = i+1, j-1 {

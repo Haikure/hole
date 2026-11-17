@@ -22,12 +22,13 @@ func (p *icePeer) publishNAT() {
 	}
 	p.mu.Lock()
 	ready := p.ready
+	connected := p.active != nil
 	published := p.natPublished
 	lastPublished := p.natPublishedAt
 	online := p.online && !p.closed
 	p.mu.Unlock()
 	key := fmt.Sprintf("%s/%d/%s", ready.TransportID, ready.TransportGeneration, s.ProbedAt)
-	if !online || ready.Profile != ProfileICE || ready.RelayRequired || ready.LeaseUntil <= time.Now().UnixMilli() || key == published || time.Since(lastPublished) < 30*time.Second {
+	if !online || !connected || ready.Profile != ProfileICE || ready.RelayRequired || ready.LeaseUntil <= time.Now().UnixMilli() || key == published || time.Since(lastPublished) < 30*time.Second {
 		return
 	}
 	m := signalMessage("nat_status")
@@ -61,22 +62,66 @@ func (c *iceCoordinator) localNATProcess() *natProcessRecorder {
 	return c.natProbeProcess
 }
 
+func (c *iceCoordinator) natConnectionEstablished() {
+	c.natMu.Lock()
+	c.natConnected = true
+	c.natMu.Unlock()
+}
+
+func (c *iceCoordinator) requestNATProbeForConnection() {
+	c.natMu.Lock()
+	snapshot := c.natSnapshot.Current()
+	needed := c.natConnected || snapshot.ProbedAt == "" || snapshot.Status == "expired"
+	if needed && c.natProbeRunning {
+		// The in-flight probe started this discovery cycle and will publish the
+		// fresh result that the connection attempt is waiting for.
+		c.natConnected = false
+		needed = false
+	}
+	if needed {
+		c.natConnected = false
+		c.natSnapshot = natUnknown()
+		c.natProbeRequested = true
+	}
+	c.natMu.Unlock()
+	if needed {
+		select {
+		case c.natProbeWake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func natProbeDue(epoch, lastEpoch uint64, initialized, connected bool, next, now time.Time) bool {
+	return !initialized || epoch != lastEpoch || (!connected && now.After(next))
+}
+
 func (c *iceCoordinator) monitorNAT() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var lastEpoch uint64
+	var initialized bool
 	var next time.Time
 	for {
 		cfg := c.request().Config
 		epoch := c.networkEpoch.Load()
-		if !cfg.ICE.RelayOnly && cfg.Transport.FixedEndpoint == nil && (epoch != lastEpoch || time.Now().After(next)) {
+		c.natMu.Lock()
+		connected := c.natConnected
+		requested := c.natProbeRequested
+		c.natMu.Unlock()
+		if !cfg.ICE.RelayOnly && cfg.Transport.FixedEndpoint == nil && (requested || natProbeDue(epoch, lastEpoch, initialized, connected, next, time.Now())) {
 			lastEpoch = epoch
+			initialized = true
 			next = time.Now().Add(nat.Lifetime)
 			ctx, cancel := context.WithCancel(c.ctx)
 			c.natMu.Lock()
+			c.natProbeRequested = false
+			c.natProbeRunning = true
 			c.natCancel = cancel
 			if epoch != c.networkEpoch.Load() {
 				cancel()
+			} else {
+				c.natSnapshot = NATSnapshot{Status: "probing", Type: "unknown", Predictability: "unknown", Epoch: epoch}
 			}
 			c.natMu.Unlock()
 			// Queue before starting the probe budget. Do not consume mappings
@@ -87,6 +132,9 @@ func (c *iceCoordinator) monitorNAT() {
 				if c.ctx.Err() != nil {
 					return
 				}
+				c.natMu.Lock()
+				c.natProbeRunning = false
+				c.natMu.Unlock()
 				continue
 			}
 			probeCtx, stopProbe := context.WithTimeout(ctx, 3*natprobe.DefaultTimeout)
@@ -102,6 +150,9 @@ func (c *iceCoordinator) monitorNAT() {
 					stopProbe()
 					release()
 					cancel()
+					c.natMu.Lock()
+					c.natProbeRunning = false
+					c.natMu.Unlock()
 					select {
 					case <-c.ctx.Done():
 						return
@@ -111,11 +162,6 @@ func (c *iceCoordinator) monitorNAT() {
 				}
 			}
 			if err == nil {
-				c.natMu.Lock()
-				if epoch == c.networkEpoch.Load() {
-					c.natSnapshot = NATSnapshot{Status: "probing", Type: "unknown", Predictability: "unknown", Epoch: epoch}
-				}
-				c.natMu.Unlock()
 				process := &natProcessRecorder{}
 				trace := process.begin(iceSignalMessage{TransportID: "nat-discovery", TransportGeneration: epoch, Phase: "nat"})
 				if source, ok := platform.(interface{ NATNetworkSnapshot() NetworkSnapshot }); ok {
@@ -150,10 +196,15 @@ func (c *iceCoordinator) monitorNAT() {
 				c.natSnapshot.Epoch = epoch
 			}
 			c.natMu.Unlock()
+			c.natMu.Lock()
+			c.natProbeRunning = false
+			c.natMu.Unlock()
 		}
 		select {
 		case <-c.ctx.Done():
 			return
+		case <-c.natProbeWake:
+			continue
 		case <-ticker.C:
 		}
 	}

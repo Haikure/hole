@@ -11,6 +11,7 @@ func TestNATStatusPublishedAfterGenerationChange(t *testing.T) {
 	c, p := lifecycleCoordinator(t)
 	p.ready.Profile = ProfileICE
 	p.ready.Mappings = nil
+	p.active = &liveICETransport{}
 	c.natSnapshot = NATSnapshot{Status: "complete", Type: "endpoint_independent", Predictability: "stable", Epoch: c.networkEpoch.Load(), ProbedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	p.publishNAT()
 	first := <-c.sink.messages
@@ -29,7 +30,9 @@ func TestNATStatusPublishedAfterGenerationChange(t *testing.T) {
 	ctx, cancel := context.WithCancel(p.ctx)
 	p.ctx = ctx
 	t.Cleanup(func() { cancel(); p.workers.Wait() })
+	p.active = nil
 	p.update(ready)
+	p.active = &liveICETransport{}
 	p.publishNAT()
 	second := <-c.sink.messages
 	if second.Type != "nat_status" || second.TransportGeneration != 2 {
@@ -45,6 +48,21 @@ func TestNATStatusPublishedAfterGenerationChange(t *testing.T) {
 	p.publishNAT()
 	if len(c.sink.messages) != 1 {
 		t.Fatal("new probe result was lost during rate limiting")
+	}
+}
+
+func TestNATStatusWaitsForEstablishedConnection(t *testing.T) {
+	c, p := lifecycleCoordinator(t)
+	p.ready.Profile = ProfileICE
+	c.natSnapshot = NATSnapshot{Status: "complete", Type: "endpoint_independent", Epoch: c.networkEpoch.Load(), ProbedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	p.publishNAT()
+	if len(c.sink.messages) != 0 {
+		t.Fatal("NAT status was published before the path became active")
+	}
+	p.active = &liveICETransport{}
+	p.publishNAT()
+	if len(c.sink.messages) != 1 {
+		t.Fatal("NAT status was not published after the path became active")
 	}
 }
 

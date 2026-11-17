@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 	"hole/core/natprobe"
@@ -43,6 +44,27 @@ func TestNATConfigProbeConsentAndRoundTrip(t *testing.T) {
 		if !reflect.DeepEqual(restored.NATSTUNURLs, cfg.ICE.NATSTUNURLs) {
 			t.Fatalf("NAT service presence lost: %s", data)
 		}
+	}
+}
+
+func TestNATPunchConfigRoundTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want time.Duration
+	}{
+		{"default", "ice: {}", 6 * time.Second},
+		{"explicit", "ice: {punch: {round_timeout: 2.5s}}", 2500 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseConfig([]byte(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Normalized().ICE.Punch.RoundTimeout.Duration(); got != tc.want {
+				t.Fatalf("round_timeout = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 
