@@ -73,12 +73,12 @@ func TestClassifyAddressPool(t *testing.T) {
 		noPAT                              string
 		validSamples                       int
 	}{
-		{"one classifiable IP", []Sample{a, b, c}, nil, "cone", "stable", "preserved", "unknown", 3},
-		{"two classifiable IPs", []Sample{a, b, c, d}, nil, "cone", "stable", "preserved", "unknown", 4},
-		{"fresh socket does not change type", []Sample{a, b, c}, &extra, "cone", "stable", "preserved", "unknown", 3},
+		{"one classifiable IP", []Sample{a, b, c}, nil, "cone", "stable", "preserved", "suspected", 3},
+		{"two classifiable IPs", []Sample{a, b, c, d}, nil, "cone", "stable", "preserved", "suspected", 4},
+		{"fresh socket does not change type", []Sample{a, b, c}, &extra, "cone", "stable", "preserved", "suspected", 3},
 		{"different stable ports per IP", []Sample{a, b, mapping(c.Server.String(), "198.51.100.2:45000")}, nil, "cone", "unknown", "mixed", "not_detected", 3},
 		{"different stable ports with fresh socket", []Sample{a, b, mapping(c.Server.String(), "198.51.100.2:45000")}, &extra, "cone", "irregular", "mixed", "not_detected", 3},
-		{"same target rotates IP", []Sample{a, mapping(a.Server.String(), c.Mapped.String()), b, c}, nil, "cone", "stable", "preserved", "unknown", 4},
+		{"same target rotates IP", []Sample{a, mapping(a.Server.String(), c.Mapped.String()), b, c}, nil, "cone", "stable", "preserved", "suspected", 4},
 		{"unstable group does not hide valid group", []Sample{a, mapping(a.Server.String(), "198.51.100.1:40001"), b, c, d}, nil, "cone", "unknown", "mixed", "not_detected", 5},
 		{"symmetric group takes priority", []Sample{a, b, c, mapping(d.Server.String(), "198.51.100.2:40001")}, nil, "symmetric", "unverified", "mixed", "not_detected", 4},
 		{"symmetric group and singleton", []Sample{a, mapping(b.Server.String(), "198.51.100.1:40001"), c}, &extra, "symmetric", "unverified", "mixed", "not_detected", 3},
@@ -110,8 +110,8 @@ func TestClassifyAddressPool(t *testing.T) {
 				case "address_pool":
 					behavior = "unknown"
 				}
-				// A pool must never report the whole path as open or No-PAT,
-				// even when the local endpoint happens to match one pool entry.
+				// A pool must never report the whole path as open. Port-preserving
+				// cone groups can only suggest No-PAT, even if one exit is local.
 				for _, local := range []netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:40000"), a.Mapped} {
 					samples := append([]Sample(nil), tc.samples...)
 					var reason string
@@ -256,7 +256,7 @@ func TestClassifyPortPreservationAndNoPAT(t *testing.T) {
 		{"single target preserves port", local, []Sample{a, a}, nil, "preserved", "unknown"},
 		{"single target rewrites port", netip.MustParseAddrPort("10.0.0.1:12345"), []Sample{a}, nil, "translated", "not_detected"},
 		{"only one target IP", local, []Sample{a, mapping("192.0.2.1:3479", a.Mapped.String())}, nil, "preserved", "unknown"},
-		{"unstable mapped IP", local, []Sample{a, mapping(a.Server.String(), otherIP.Mapped.String()), b}, nil, "preserved", "unknown"},
+		{"rotating mapped IP with cone evidence", local, []Sample{a, mapping(a.Server.String(), otherIP.Mapped.String()), b}, nil, "preserved", "suspected"},
 		{"unstable mapped port", local, []Sample{a, extra, b}, nil, "mixed", "not_detected"},
 		{"unknown local endpoint", netip.AddrPort{}, []Sample{a, b}, nil, "unknown", "unknown"},
 		{"zero local port", netip.MustParseAddrPort("10.0.0.1:0"), []Sample{a, b}, nil, "unknown", "unknown"},

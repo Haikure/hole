@@ -108,17 +108,23 @@ func TestPoolPunchEstablishesQUICWithCalibration(t *testing.T) {
 		step         int
 		sparse, cone bool
 		width        int
+		fallback     bool
 	}{
-		{"cone increasing", 1, false, true, 20},
-		{"cone decreasing", -1, false, true, 20},
-		{"sparse defaults upward", 1, true, true, 20},
-		{"dual opposite directions", -1, false, false, 1},
-		{"dual scan opposite directions", -1, false, false, 20},
-		{"dual maximum window", -1, false, false, 256},
+		{"cone increasing", 1, false, true, 20, false},
+		{"cone decreasing", -1, false, true, 20, false},
+		{"sparse defaults upward", 1, true, true, 20, false},
+		{"dual opposite directions", -1, false, false, 1, false},
+		{"dual scan opposite directions", -1, false, false, 20, false},
+		{"dual maximum window", -1, false, false, 256, false},
+		{"retained cone alternate exit", 1, false, true, 20, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n, _, _ := simulatedNATs([2]int{tc.step, 1}, [2]int{}, 0)
 			n.sides[1].cone = tc.cone
+			if tc.fallback {
+				n.sides[1].conePoolIP = net.IPv4(203, 0, 113, 2)
+				n.drop = 1 // the alternate path must survive losing its first valid packet
+			}
 			ca, pa := lifecycleCoordinator(t)
 			cb, pb := lifecycleCoordinator(t)
 			ca.desired.Config.DeviceName, cb.desired.Config.DeviceName = "alpha", "beta"
@@ -127,11 +133,21 @@ func TestPoolPunchEstablishesQUICWithCalibration(t *testing.T) {
 			pb.ready.PeerFingerprint = certFingerprint(ca.identity.Certificates[0])
 			pa.ready.PeerRuntimeID, pb.ready.PeerRuntimeID = cb.runtimeID, ca.runtimeID
 			pa.ready.Profile, pb.ready.Profile = ProfileICE, ProfileICE
-			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			timeout := 6 * time.Second
+			if tc.fallback {
+				timeout = 10 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			attempts := []*iceAttempt{
 				{ctx: ctx, cancel: cancel, ready: pa.ready, events: make(chan iceSignalMessage, 32), failed: make(chan error, 1)},
 				{ctx: ctx, cancel: cancel, ready: pb.ready, events: make(chan iceSignalMessage, 32), failed: make(chan error, 1)},
+			}
+			if tc.fallback {
+				for _, a := range attempts {
+					a.ready.PunchSchedule, a.ready.PunchCalibration, a.ready.PunchConePool = natPunchSchedule, natPunchCalibration, natPunchConePool
+					a.ready.LeaseUntil = time.Now().Add(time.Minute).UnixMilli()
+				}
 			}
 			var forwarding sync.WaitGroup
 			for side, c := range []*iceCoordinator{ca, cb} {
@@ -170,6 +186,15 @@ func TestPoolPunchEstablishesQUICWithCalibration(t *testing.T) {
 				models[1] = NATSnapshot{Status: "complete", Type: "port_restricted_cone", MappingBehavior: "endpoint_independent", Predictability: "stable"}
 			}
 			config := NATPunchConfig{Sockets: 10, ScanWidth: tc.width, Timeout: ConfigDuration(3 * time.Second), RoundTimeout: ConfigDuration(2 * time.Second)}
+			if tc.fallback {
+				models[0].Type, models[0].MappingBehavior = "symmetric", "endpoint_dependent"
+				models[1].NoPAT, models[1].PortPreservation = "suspected", "preserved"
+				models[1].IPEvidence = []natprobe.IPEvidence{
+					{IP: n.sides[1].ip.String(), Targets: 2, Ports: 1, Trend: "stable"},
+					{IP: n.sides[1].conePoolIP.String(), Targets: 2, Ports: 1, Trend: "stable"},
+				}
+				config.RoundTimeout = ConfigDuration(1500 * time.Millisecond)
+			}
 			type outcome struct {
 				live *liveICETransport
 				err  error
@@ -188,6 +213,26 @@ func TestPoolPunchEstablishesQUICWithCalibration(t *testing.T) {
 				}
 				if got.err != nil {
 					t.Error(got.err)
+				}
+			}
+			if tc.fallback {
+				for side, peer := range []*icePeer{pa, pb} {
+					peer.mu.Lock()
+					diagnostics := append([]NATPunchDiagnostic(nil), peer.stats.PunchDiagnostics...)
+					peer.mu.Unlock()
+					if len(diagnostics) != 4 {
+						t.Fatalf("side %d: rounds=%+v", side, diagnostics)
+					}
+					last := diagnostics[3]
+					if last.Round != 4 || last.PoolIP != n.sides[1].conePoolIP.String() || !last.QUICEstablished {
+						t.Errorf("side %d: fallback=%+v", side, last)
+					}
+					if side == 1 && (!last.RetainedSocket || last.LocalAddress != diagnostics[2].LocalAddress || last.STUNServer != "") {
+						t.Fatalf("cone replaced or recalibrated retained socket: %+v", diagnostics)
+					}
+					if side == 0 && (last.RetainedSocket || last.STUNServer == "" || last.LocalAddress == diagnostics[2].LocalAddress) {
+						t.Fatalf("symmetric side reused stale sockets/calibration: %+v", diagnostics)
+					}
 				}
 			}
 		})

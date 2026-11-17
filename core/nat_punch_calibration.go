@@ -87,6 +87,7 @@ func punchSTUNServers(ctx context.Context, platform Platform, urls []string, pre
 // by predictNATPunch until the entire prediction ends.
 func (p *icePeer) calibrateNATPunch(ctx context.Context, a *iceAttempt, s *natPunchSession, round int, servers []*net.UDPAddr, sockets []net.PacketConn, open func() (net.PacketConn, error), previous *string, diagnostic *NATPunchDiagnostic) (*punchCalibrationPlans, error) {
 	synchronized := a.ready.PunchCalibration == natPunchCalibration
+	retained := round > 3 && s.conePoolPlan != nil && natGroup(s.local) == "cone"
 	separate := s.mode == "fixed" || s.mode == "single" && natGroup(s.local) == "symmetric" || s.mode == "pool" && natGroup(s.local) != "cone"
 	var lastErr error
 	failed := map[string]bool{}
@@ -104,11 +105,11 @@ func (p *icePeer) calibrateNATPunch(ctx context.Context, a *iceAttempt, s *natPu
 				break
 			}
 		}
-		if server == nil {
+		if server == nil && !retained {
 			return nil, fmt.Errorf("calibration STUN servers exhausted: %w", lastErr)
 		}
 		calibrator := sockets[0]
-		if separate || trial > 1 {
+		if !retained && (separate || trial > 1) {
 			var err error
 			calibrator, err = open()
 			if err != nil {
@@ -129,15 +130,27 @@ func (p *icePeer) calibrateNATPunch(ctx context.Context, a *iceAttempt, s *natPu
 			}
 		}
 		diagnostic.Stage = "calibration"
-		diagnostic.STUNServer, *previous = server.String(), server.String()
 		diagnostic.CalibrationAttempts = trial
 		diagnostic.MappedAddress = ""
-		a.process.socket(calibrator, "calibration", round, trial)
-		a.processStep("calibration", "执行本轮 STUN 映射校准", round, trial)
-		sample, err := natprobe.Binding(ctx, a.process.probeConn(calibrator, round, trial), server, 0, 3*time.Second)
+		if retained {
+			a.process.socket(calibrator, "business", round, trial)
+			a.processStep("calibration_wait", "复用第三轮 socket 与映射端口，等待对端校准", round, trial)
+		} else {
+			a.process.socket(calibrator, "calibration", round, trial)
+			a.processStep("calibration", "执行本轮 STUN 映射校准", round, trial)
+		}
+		var sample natprobe.Sample
+		var err error
+		if !retained {
+			diagnostic.STUNServer, *previous = server.String(), server.String()
+			sample, err = natprobe.Binding(ctx, a.process.probeConn(calibrator, round, trial), server, 0, 3*time.Second)
+		}
 		var plan *natPunchPlan
 		result := "ok"
-		if err != nil {
+		if retained {
+			copy := *s.conePoolPlan
+			plan = &copy
+		} else if err != nil {
 			failed[server.String()] = true
 			lastErr, result = err, "retry"
 			if len(failed) == len(servers) {

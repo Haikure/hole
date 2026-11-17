@@ -34,6 +34,7 @@ type simNAT struct {
 	occupied   int
 	cone       bool
 	pool       bool
+	conePoolIP net.IP // peer-facing exit; the STUN exit rejects peer ingress
 	nextLocal  int
 	byPort     map[int]*simMapping
 }
@@ -73,6 +74,9 @@ func (s *simSocket) WriteTo(p []byte, addr net.Addr) (int, error) {
 	if m == nil {
 		port := s.nat.next
 		s.nat.next += s.nat.step
+		if s.nat.conePoolIP != nil {
+			port = s.port
+		}
 		if s.nat.cone {
 			for _, old := range s.mappings {
 				port = old.port
@@ -100,8 +104,12 @@ func (s *simSocket) WriteTo(p []byte, addr net.Addr) (int, error) {
 		}
 	}
 	var peer *simNAT
+	sourceIP := s.nat.ip
+	if s.nat.conePoolIP != nil {
+		sourceIP = s.nat.conePoolIP
+	}
 	for _, candidate := range n.sides {
-		if target.IP.Equal(candidate.ip) {
+		if target.IP.Equal(candidate.ip) || target.IP.Equal(candidate.conePoolIP) {
 			peer = candidate
 			break
 		}
@@ -109,11 +117,14 @@ func (s *simSocket) WriteTo(p []byte, addr net.Addr) (int, error) {
 	if peer == nil {
 		return len(p), nil
 	}
+	if peer.conePoolIP != nil && !target.IP.Equal(peer.conePoolIP) {
+		return len(p), nil
+	}
 	remote := peer.byPort[target.Port]
 	if remote != nil && peer.cone {
-		remote = remote.socket.mappings[(&net.UDPAddr{IP: s.nat.ip, Port: m.port}).String()]
+		remote = remote.socket.mappings[(&net.UDPAddr{IP: sourceIP, Port: m.port}).String()]
 	}
-	if !target.IP.Equal(peer.ip) || remote == nil || !remote.target.IP.Equal(s.nat.ip) || remote.target.Port != m.port {
+	if remote == nil || !remote.target.IP.Equal(sourceIP) || remote.target.Port != m.port {
 		return len(p), nil
 	}
 	if n.drop > 0 {
@@ -123,7 +134,7 @@ func (s *simSocket) WriteTo(p []byte, addr net.Addr) (int, error) {
 	if n.blockOneWay && s.nat.index == 0 {
 		return len(p), nil
 	}
-	d := datagram{append([]byte(nil), p...), &net.UDPAddr{IP: s.nat.ip, Port: m.port}}
+	d := datagram{append([]byte(nil), p...), &net.UDPAddr{IP: sourceIP, Port: m.port}}
 	select {
 	case remote.socket.incoming <- d:
 	default:

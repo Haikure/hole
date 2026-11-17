@@ -261,6 +261,73 @@ test('calibration barriers gate bilateral retries and GO and survive complete re
  assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).punch_calibration,'barrier-v1');
 });
 
+test('retained cone pool negotiates, gates extra rounds and preserves plans through retries and replay',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const caps={punch_version:'nat-punch-v1',punch_schedule:'ordered-v1',direct_order:'ice-first-v1',punch_calibration:'barrier-v1',punch_cone_pool:'retained-v1'};
+ assert.equal(iceJoinFields({...join('alpha'),...caps,punch_calibration:undefined}),null);
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+ const record=[...r.ice.records.values()][0];
+ assert.equal(a.messages.filter(m=>m.type==='transport_ready').at(-1).punch_cone_pool,'retained-v1');
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'relay_udp',reason:'ice_failed'}));
+ const send=(ws,to,punch)=>r.webSocketMessage(ws,JSON.stringify({type:'nat_punch',transport_id:record.id,transport_generation:record.generation,to_peer_id:to,punch}));
+ const rejected=async(ws,to,punch)=>{
+  const receiver=ws===a?b:a,before=receiver.messages.filter(m=>m.type==='nat_punch').length;
+  await send(ws,to,punch);
+  assert.equal(receiver.messages.filter(m=>m.type==='nat_punch').length,before,JSON.stringify(punch));
+ };
+ const cone={status:'complete',type:'port_restricted_cone',mapping_behavior:'endpoint_independent',predictability:'stable',no_pat:'suspected',port_preservation:'preserved',samples:8,
+  ip_evidence:[1,2,3,4].map(n=>({ip:`198.51.100.${n}`,targets:2,ports:1,trend:'stable'}))};
+ const symmetric={status:'complete',type:'symmetric',mapping_behavior:'endpoint_dependent',predictability:'incremental',samples:3};
+ const original={ip:'198.51.100.1',port:40000,target:40000,width:1,sockets:1};
+ const remote={ip:'203.0.113.1',port:50000,target:50001,width:20,sockets:10};
+ const selected={kind:'pool_select',round:4,mode:'single',plan:{...original,ip:'198.51.100.2'}};
+ await rejected(a,'beta',selected);
+ await send(a,'beta',{kind:'reserve'});await send(b,'alpha',{kind:'reserved'});
+ for(let round=1;round<=6;round++) {
+  let plan=original;
+  if(round<=3) {
+   await send(a,'beta',{kind:'model',round,snapshot:cone});
+   await send(b,'alpha',{kind:'model',round,snapshot:symmetric});
+  } else {
+   plan={...original,ip:`198.51.100.${round-2}`};
+   const selection={...selected,round,plan:Object.fromEntries(Object.entries(plan).reverse())};
+   await rejected(b,'alpha',selection);
+   await rejected(a,'beta',{...selection,plan:{...plan,ip:original.ip}});
+   await rejected(a,'beta',{...selection,plan:{...plan,ip:'198.51.100.99'}});
+   await rejected(a,'beta',{...selection,plan:{...plan,port:40001,target:40001}});
+   if(round>4) await rejected(a,'beta',{...selection,plan:{...plan,ip:'198.51.100.2'}});
+   await rejected(a,'beta',{kind:'calibrate',round,trial:1});
+   await send(a,'beta',selection);
+   assert.deepEqual(b.messages.filter(m=>m.type==='nat_punch').at(-1).punch,selection);
+  }
+  const trials=round===4?2:1;
+  for(let trial=1;trial<=trials;trial++) {
+   for(const [ws,to] of [[a,'beta'],[b,'alpha']]) await send(ws,to,{kind:'calibrate',round,trial});
+   const result={kind:'calibrated',round,trial,result:'ok',mode:'single',plan};
+   if(round>3) await rejected(a,'beta',{...result,plan:{...plan,ip:original.ip}});
+   await send(a,'beta',result);
+   await send(b,'alpha',{...result,plan:trial===trials?remote:undefined,result:trial===trials?'ok':'retry'});
+  }
+  await send(a,'beta',{kind:'go',round,trial:trials});
+  assert.equal(b.messages.filter(m=>m.type==='nat_punch').at(-1).punch.kind,'go');
+  for(const [ws,to] of [[a,'beta'],[b,'alpha']]) await send(ws,to,{kind:'failed',round,result:'unreachable'});
+ }
+ assert.equal(validPunch({...selected,round:7}),false);
+ const before=b.messages.filter(m=>m.type==='nat_punch').length;
+ const resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));
+ assert.equal(b.messages.filter(m=>m.type==='nat_punch').length,2*before);
+ const generation=record.generation;
+ const replacement=f.socket();
+ await resumed.webSocketMessage(replacement,JSON.stringify({...join('beta',[],['one']),...caps,punch_cone_pool:undefined}));
+ const latest=[...resumed.ice.records.values()][0];
+ assert.notEqual(latest.generation,generation);
+ assert.equal(latest.punch_cone_pool,'');
+ await resumed.webSocketMessage(a,JSON.stringify({type:'nat_punch',transport_id:latest.id,transport_generation:latest.generation,to_peer_id:'beta',punch:selected}));
+ assert.equal(replacement.messages.some(m=>m.type==='nat_punch'),false);
+});
+
 test('calibration results validate plans and stop retries after terminal outcomes',async()=>{
  const plan={ip:'198.51.100.1',port:40001,target:40002,width:1,sockets:1};
  const result={kind:'calibrated',round:1,trial:1,mode:'next',result:'ok',plan};

@@ -59,13 +59,14 @@ func decodeNATPunch(b, key []byte, round int) (natPunchPacket, bool) {
 }
 
 type natPunchAttempt struct {
-	process    *natProcessRun
-	sockets    []net.PacketConn
-	transports []*quic.Transport
-	listeners  []*quic.Listener
-	selected   int
-	diagnostic NATPunchDiagnostic // populated after run has joined its readers
-	observed   []*punchSocketObservation
+	process        *natProcessRun
+	sockets        []net.PacketConn
+	transports     []*quic.Transport
+	listeners      []*quic.Listener
+	selected       int
+	continueProbes bool               // retained cone must not let incoming ACK work starve probes
+	diagnostic     NATPunchDiagnostic // populated after run has joined its readers
+	observed       []*punchSocketObservation
 }
 
 func newNATPunchAttempt(sockets []net.PacketConn) *natPunchAttempt {
@@ -235,6 +236,7 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 	lastSend := make([]time.Time, len(a.sockets))
+	lastWasACK := make([]bool, len(a.sockets))
 	for {
 		select {
 		case <-ctx.Done():
@@ -291,6 +293,12 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 			isACK := false
 			for j := range slots {
 				socket := slots[j].index
+				// With many peer sockets, a retained cone can have an ACK
+				// queued every tick. Reserve the next eligible send for a
+				// probe after an ACK, until its path challenge is verified.
+				if a.continueProbes && selected < 0 && lastWasACK[socket] {
+					continue
+				}
 				if slots[j].ack != nil && now.Sub(lastSend[socket]) >= natPunchInterval &&
 					(i < 0 || lastSend[socket].Before(lastSend[slots[i].index])) {
 					i = j
@@ -325,6 +333,7 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 					return nil, e
 				}
 				lastSend[s.index] = now
+				lastWasACK[s.index] = isACK
 				kind, name := "probe_sent", "PROBE"
 				if isACK {
 					kind, name = "ack_sent", "ACK"

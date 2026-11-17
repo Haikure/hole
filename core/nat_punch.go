@@ -43,6 +43,8 @@ type natPunchSession struct {
 	mode           string
 	key            []byte
 	poolPrediction bool
+	conePoolPlan   *natPunchPlan // selected alternate IP, retaining round-three port
+	poolTried      map[string]bool
 }
 
 var errNATPunchModel = errors.New("calibration no longer follows allocation model")
@@ -158,7 +160,7 @@ func (p *icePeer) waitNATPunch(ctx context.Context, a *iceAttempt, kind string, 
 
 func (p *icePeer) waitNATPunchTrial(ctx context.Context, a *iceAttempt, kind string, round, trial int) (*natPunchSignal, error) {
 	for i, m := range a.punchBuffered {
-		if m.Kind == "failed" && m.Round == round {
+		if m.Kind == "failed" && m.Round == round && kind != "failed" {
 			a.punchBuffered = append(a.punchBuffered[:i], a.punchBuffered[i+1:]...)
 			return nil, errors.New("peer round failed")
 		}
@@ -185,7 +187,7 @@ func (p *icePeer) waitNATPunchTrial(ctx context.Context, a *iceAttempt, kind str
 			if m.Punch.Kind == "abort" {
 				return nil, errors.New("peer stopped prediction")
 			}
-			if m.Punch.Kind == "failed" && m.Punch.Round == round {
+			if m.Punch.Kind == "failed" && m.Punch.Round == round && kind != "failed" {
 				return nil, errors.New("peer round failed")
 			}
 			if m.Punch.Kind == kind && m.Punch.Round == round && m.Punch.Trial == trial {
@@ -341,15 +343,39 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 	}()
 	refresh := false
 	lastServer := ""
-	for round := 1; round <= 3; round++ {
+	poolEnabled := a.ready.PunchConePool == natPunchConePool && a.ready.PunchCalibration == natPunchCalibration && scheduled
+	poolUnreachable := true
+	var poolOriginal *natPunchPlan
+	var poolSocket net.PacketConn
+	var poolIPs []string
+	for round := 1; round <= 3+maxConePoolAttempts; round++ {
+		extra := round > 3
+		if extra {
+			if !poolEnabled || !poolUnreachable || poolOriginal == nil || !conePoolPair(s) {
+				break
+			}
+			if round == 4 {
+				cone := s.local
+				if natGroup(cone) != "cone" {
+					cone = s.remote
+				}
+				poolIPs = conePoolCandidates(cone, poolOriginal.IP)
+			}
+			if round-4 >= len(poolIPs) {
+				break
+			}
+		}
 		a.processStep("model", "准备本轮 NAT 分配模型", round, 0)
-		if scheduled {
+		if scheduled && !extra {
 			if e := p.refreshNATPunchModel(a, platform, cfg, s, round, refresh); e != nil {
 				return nil, e
 			}
 		}
 		model := s.local
+		poolPair := poolEnabled && conePoolPair(s)
 		a.process.models(round, s.mode, s.local, s.remote)
+		roundUnreachable := false
+		executionDeadline := time.Now().Add(s.config.Timeout.Duration())
 		live, roundErr := func() (_ *liveICETransport, roundError error) {
 			diagnostic := NATPunchDiagnostic{Generation: a.ready.TransportGeneration, Round: round, Mode: s.mode,
 				StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Stage: "calibration"}
@@ -365,12 +391,23 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 					a.process.record(NATPunchProcessEvent{Kind: "round_failed", Title: "本轮打洞已结束", Round: round, Detail: diagnostic.Error})
 				}
 			}()
-			ctx, stopAttempt := context.WithTimeout(ctx, s.config.Timeout.Duration())
+			ctx, stopAttempt := context.WithDeadline(ctx, executionDeadline)
 			defer stopAttempt()
+			if extra {
+				if err := p.selectConePoolIP(ctx, a, s, round, poolOriginal, poolIPs); err != nil {
+					return nil, err
+				}
+				diagnostic.PoolIP = s.conePoolPlan.IP
+				diagnostic.RetainedSocket = natGroup(model) == "cone"
+			}
 			a.processStep("dns", "解析并选择本轮 IPv4 STUN 服务", round, 0)
-			servers, err := punchSTUNServers(ctx, platform, natURLs(cfg.ICE), lastServer)
-			if err != nil {
-				return nil, err
+			var servers []*net.UDPAddr
+			if !extra || natGroup(model) != "cone" {
+				var err error
+				servers, err = punchSTUNServers(ctx, platform, natURLs(cfg.ICE), lastServer)
+				if err != nil {
+					return nil, err
+				}
 			}
 			for _, server := range servers {
 				a.process.record(NATPunchProcessEvent{Kind: "stun_server", Title: "本轮可用 STUN 端点", Round: round, RemoteAddress: server.String()})
@@ -405,15 +442,25 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			var sockets []net.PacketConn
 			a.processStep("binding", "预绑定本轮业务 socket", round, 0)
 			for range count {
-				pc, e := open()
+				pc := poolSocket
+				var e error
+				if !extra || natGroup(model) != "cone" {
+					pc, e = open()
+				}
 				if e != nil {
 					return nil, e
+				}
+				if pc == nil {
+					return nil, errors.New("retained cone socket missing")
 				}
 				sockets = append(sockets, pc)
 			}
 			plans, e := p.calibrateNATPunch(ctx, a, s, round, servers, sockets, open, &lastServer, &diagnostic)
 			if e != nil {
 				return nil, e
+			}
+			if extra && natGroup(model) == "cone" {
+				diagnostic.MappedAddress = fmt.Sprintf("%s:%d", poolOriginal.IP, poolOriginal.Port)
 			}
 			diagnostic.LocalAddress = sockets[0].LocalAddr().String()
 			diagnostic.Sockets = len(sockets)
@@ -440,12 +487,30 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			if e != nil || peerPlan.Port < 1 || peerPlan.Port > 65535 {
 				return nil, errors.New("invalid peer calibration")
 			}
-			want, e := makeNATPunchPlan(netip.AddrPortFrom(remoteIP, uint16(peerPlan.Port)), s.remote, s.mode, peerPlan.Sockets, s.config.ScanWidth)
+			var want *natPunchPlan
+			if extra && natGroup(s.remote) == "cone" {
+				want = s.conePoolPlan
+			} else {
+				want, e = makeNATPunchPlan(netip.AddrPortFrom(remoteIP, uint16(peerPlan.Port)), s.remote, s.mode, peerPlan.Sockets, s.config.ScanWidth)
+			}
 			if e != nil {
 				return nil, e
 			}
 			if *want != *peerPlan {
 				return nil, errors.New("peer punch plan differs from model")
+			}
+			if round == 3 && poolEnabled && conePoolPair(s) {
+				copy := *peerPlan
+				if natGroup(model) == "cone" {
+					copy = *plan
+					bound, err := netip.ParseAddrPort(sockets[0].LocalAddr().String())
+					if err != nil || int(bound.Port()) != plan.Port {
+						poolUnreachable = false
+					} else {
+						poolSocket = sockets[0]
+					}
+				}
+				poolOriginal = &copy
 			}
 			a.process.plans(round, trial, plan, peerPlan)
 			controlling := a.ready.InitiatorID == p.coordinator.deviceID()
@@ -476,6 +541,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				dialer = natGroup(model) == "cone"
 			}
 			attempt := newNATPunchAttempt(sockets)
+			attempt.continueProbes = extra && dialer
 			attempt.process = a.process
 			for _, pc := range sockets {
 				a.process.socket(pc, "business", round, trial)
@@ -489,6 +555,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			connection, e := attempt.run(roundCtx, dialer, round, s.key, targets, p.punchTLS(a))
 			stopRound()
 			diagnostic = attempt.diagnostic
+			roundUnreachable = e != nil && diagnostic.ProbesSent > 0 && diagnostic.ACKsReceived == 0 && !diagnostic.QUICDialStarted && !diagnostic.QUICEstablished
 			if diagnostic.QUICDialStarted {
 				diagnostic.Stage = "quic"
 			}
@@ -540,8 +607,23 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			return nil, ctx.Err()
 		}
 		refresh = errors.Is(roundErr, errNATPunchModel)
-		if e := p.sendNATPunch(a, natPunchSignal{Kind: "failed", Round: round}); e != nil {
+		result := ""
+		if poolPair && roundUnreachable {
+			result = "unreachable"
+		}
+		if e := p.sendNATPunch(a, natPunchSignal{Kind: "failed", Round: round, Result: result}); e != nil {
 			return nil, e
+		}
+		if poolPair {
+			waitCtx, stop := context.WithDeadline(ctx, executionDeadline)
+			peer, e := p.waitNATPunch(waitCtx, a, "failed", round)
+			stop()
+			if e != nil {
+				return nil, e
+			}
+			poolUnreachable = poolUnreachable && roundUnreachable && peer.Result == "unreachable"
+		} else {
+			poolUnreachable = false
 		}
 	}
 	return nil, errors.New("prediction rounds exhausted")

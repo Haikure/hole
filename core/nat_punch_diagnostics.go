@@ -18,6 +18,8 @@ type NATPunchDiagnostic struct {
 	Stage               string `json:"stage"`
 	LocalAddress        string `json:"local_address,omitempty"`
 	MappedAddress       string `json:"mapped_address,omitempty"`
+	PoolIP              string `json:"pool_ip,omitempty"`
+	RetainedSocket      bool   `json:"retained_socket,omitempty"`
 	STUNServer          string `json:"stun_server,omitempty"`
 	CalibrationAttempts int    `json:"calibration_attempts,omitempty"`
 	TargetFirst         string `json:"target_first,omitempty"`

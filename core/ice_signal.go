@@ -24,6 +24,7 @@ type iceSignalMessage struct {
 	DirectStage      string            `json:"direct_stage,omitempty"`
 	PunchSchedule    string            `json:"punch_schedule,omitempty"`
 	PunchCalibration string            `json:"punch_calibration,omitempty"`
+	PunchConePool    string            `json:"punch_cone_pool,omitempty"`
 	PunchVersion     string            `json:"punch_version,omitempty"`
 	Punch            *natPunchSignal   `json:"punch,omitempty"`
 	NAT              *natPlan          `json:"nat,omitempty"`

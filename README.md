@@ -193,7 +193,7 @@ source scripts/build-env.sh
 go run ./tools/natprobe
 ```
 
-NAT 类型与端口可预测性用于策略选择和诊断，不保证直连成功。预测重试随机轮换 IPv4 STUN，Binding 失败时更换服务器与校准 socket；双方客户端和 Worker 均支持时，每次校准等待双方准备完成，单端失败也由双方重新校准。分类规则、No-PAT 判断和 JSON 字段见 [NAT 工具说明](tools/README.md)；预测打洞、重试预算与设备调度见 [协议说明](docs/PROTOCOL.md#ice-直连nat-状态与端口映射)。
+NAT 类型与端口可预测性用于策略选择和诊断，不保证直连成功。预测重试随机轮换 IPv4 STUN，Binding 失败时更换服务器与校准 socket；双方客户端和 Worker 均支持时，每次校准等待双方准备完成，单端失败也由双方重新校准。疑似 No-PAT 的多出口锥形端与可预测对称端打洞时，普通三轮均未收到有效 ACK，可保留第三轮 socket 和端口，随机尝试最多三个已观测的其他公网 IP；额外阶段仅对称端重新校准，耗尽后进入中继。该能力需要双方客户端与 Worker 更新。分类规则、No-PAT 判断和 JSON 字段见 [NAT 工具说明](tools/README.md)；预测打洞、重试预算与设备调度见 [协议说明](docs/PROTOCOL.md#ice-直连nat-状态与端口映射)。
 
 ## 固定入口与设备中继
 

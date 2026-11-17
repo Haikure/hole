@@ -502,6 +502,12 @@ func Classify(local netip.AddrPort, samples []Sample, extra *Sample, filteringBe
 			result.Status, result.Type = "complete", "address_pool"
 			result.Reason += "；组内证据不足以区分锥形或对称型"
 		}
+		// Stable ports across exits are compatible with Basic NAT, but also
+		// with port-preserving PAT. Require a classifiable cone group and
+		// port preservation across every base sample; this remains suspected.
+		if result.MappingBehavior == "endpoint_independent" && preserved && !translated && len(ports) == 1 {
+			result.NoPAT = "suspected"
+		}
 		if len(ports) == 1 {
 			result.Predictability = "stable"
 		} else if selected.Type == "symmetric" || result.Type == "address_pool" {

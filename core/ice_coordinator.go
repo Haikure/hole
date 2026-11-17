@@ -362,6 +362,7 @@ func (c *iceCoordinator) memberDeclaration(ctx context.Context, platform Platfor
 	join.DirectOrder = directOrderICEFirst
 	join.PunchSchedule = natPunchSchedule
 	join.PunchCalibration = natPunchCalibration
+	join.PunchConePool = natPunchConePool
 	join.HoleVersion = HoleRelayVersion
 	join.HoleDevice = r.Config.Relay.Device
 	// Keep the legacy relay-disabled wire contract unless Hole is requested.
@@ -529,6 +530,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			}
 			if m.PunchCalibration != "" && (m.PunchCalibration != natPunchCalibration || m.PunchSchedule != natPunchSchedule || m.DirectOrder != directOrderICEFirst) {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了无效的打洞校准能力"}
+			}
+			if m.PunchConePool != "" && (m.PunchConePool != natPunchConePool || m.PunchCalibration != natPunchCalibration) {
+				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了无效的锥形地址池能力"}
 			}
 			if m.RelayPolicy != "" && m.RelayPolicy != RelayPolicyUDPTCPTLS {
 				return &Fault{Code: "protocol_mismatch", Message: "协调服务返回了不受支持的中继策略"}
