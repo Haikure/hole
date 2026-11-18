@@ -52,7 +52,7 @@
 
 以 **设备 A 提供 SSH，设备 B 通过本地 `2222` 端口访问** 为例。
 
-准备 Go 1.27.3、Bash、Python 3，以及一个可用的 [Hole Worker](docs/WORKER.md)。图形客户端的操作入口见上方客户端说明。
+准备 Go 1.27.4、Bash、Python 3，以及一个可用的 [Hole Worker](docs/WORKER.md)。图形客户端的操作入口见上方客户端说明。
 
 ### 1. 构建并准备配置
 

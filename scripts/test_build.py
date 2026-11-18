@@ -20,7 +20,7 @@ with open(os.environ["BUILD_TEST_LOG"], "a") as log:
     log.write(json.dumps({"tool": name, "args": args, "env": {key: os.environ.get(key) for key in keys}}) + "\n")
 if name == "go":
     if args[:1] == ["env"]:
-        values = {"GOVERSION": "go1.27.3", "GOHOSTOS": "linux", "GOHOSTARCH": "amd64"}
+        values = {"GOVERSION": "go1.27.4", "GOHOSTOS": "linux", "GOHOSTARCH": "amd64"}
         print("\n".join(values[key] for key in args[1:]))
     elif args == ["tool", "dist", "list"]:
         print("linux/amd64\nlinux/arm64\nwindows/amd64\ndarwin/arm64")

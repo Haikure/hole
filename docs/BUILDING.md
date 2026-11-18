@@ -20,17 +20,17 @@ PenMods 使用 [插件构建入口](../penmods/README.md#构建)。
 
 | 目标 | 工具与依赖 |
 | --- | --- |
-| CLI / `core` | Bash、Python 3、Go 1.27.3；独立宿主无需图形库或 CGo |
+| CLI / `core` | Bash、Python 3、Go 1.27.4；独立宿主无需图形库或 CGo |
 | `desktop` | 额外需要 Rust stable / Cargo；支持 Linux / Windows AMD64、ARM64 |
 | Linux 桌面 | Yororen UI 0.4 / GPUI CE 0.3，Rust 1.95+；构建需 `pkg-config`、`libfontconfig1-dev`、`libasound2-dev`、`libwayland-dev`、`libxkbcommon-dev`、`libxkbcommon-x11-dev`、`libxcb1-dev`（Debian / Ubuntu）；运行需 Vulkan 驱动、X11 或 Wayland，语音另需系统 ALSA 库与默认音频设备 |
 | Windows 桌面 | 系统 WASAPI |
 
 交叉构建需提前安装对应 Rust target 和平台 linker / sysroot（Linux 含目标 ALSA 库），构建脚本不会自动安装 Rust 工具链或系统音频开发包。
-项目 Android 构建固定使用 Go 1.27.3。
+项目 Android 构建固定使用 Go 1.27.4。
 
 | Android 组件 | 版本 |
 | --- | --- |
-| Go | 1.27.3 |
+| Go | 1.27.4 |
 | JDK | 17；Robolectric / Miuix UI 测试宿主另需 21+ |
 | x/mobile（gomobile、gobind） | `v0.0.0-20261011034528-197770444867` |
 | Gradle Wrapper / AGP | 9.4.1 / 9.2.1 |
@@ -40,7 +40,7 @@ PenMods 使用 [插件构建入口](../penmods/README.md#构建)。
 | NDK | 28.2.13676358（r28c） |
 | minSdk / targetSdk | 26 / 36 |
 
-Android 自动化工具安装脚本面向 Linux x86_64。已有 Go 1.27.3、JDK 17 后，可主动执行：
+Android 自动化工具安装脚本面向 Linux x86_64。已有 Go 1.27.4、JDK 17 后，可主动执行：
 
 ```bash
 bash android/scripts/setup-toolchain.sh
