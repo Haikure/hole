@@ -55,6 +55,7 @@ type iceCoordinator struct {
 	online                   bool
 	serverV2                 bool
 	leaseRenewal             bool
+	signalResume             bool
 	legacy                   *Agent
 	turnMu                   sync.Mutex
 	turnServers              []ICEServer
@@ -243,19 +244,22 @@ func (c *iceCoordinator) run() error {
 		}
 		c.mu.Lock()
 		c.online = false
+		resume := c.signalResume
 		c.sink = nil
 		c.mu.Unlock()
 		c.fixedMu.Lock()
-		if c.fixed != nil && c.fixed.relay != nil {
+		if !resume && c.fixed != nil && c.fixed.relay != nil {
 			c.fixed.relay.revokeAll()
 		}
 		c.fixedMu.Unlock()
-		for _, peer := range c.peerList() {
-			peer.mu.Lock()
-			retire := peer.ready.Voice || peer.ready.HoleVersion == HoleRelayVersion
-			peer.mu.Unlock()
-			if retire {
-				peer.offline("signal_offline")
+		if !resume {
+			for _, peer := range c.peerList() {
+				peer.mu.Lock()
+				retire := peer.ready.Voice || peer.ready.HoleVersion == HoleRelayVersion
+				peer.mu.Unlock()
+				if retire {
+					peer.offline("signal_offline")
+				}
 			}
 		}
 		c.turnMu.Lock()
@@ -467,6 +471,7 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		c.online = true
 		c.serverV2 = m.SignalVersion >= 2
 		c.leaseRenewal = m.LeaseRenewal
+		c.signalResume = m.SignalResume
 		c.mu.Unlock()
 		c.emit(Event{Kind: "signal", State: "joined"})
 		if m.SignalVersion >= 2 {

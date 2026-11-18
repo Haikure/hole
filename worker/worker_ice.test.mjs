@@ -834,6 +834,28 @@ test('same-topology websocket replacement clears blocked transport and cached IC
  assert.equal(replacement.messages.some(m=>m.type==='ice_description'),false);
  assert.equal(a.closed,true);
 });
+test('same-runtime websocket replacement resumes a healthy generation',async()=>{
+ const {r,a,b,record,socket,state}=await pair();
+ record.ice.beta={description:{ufrag:'cached-beta',pwd:'b'.repeat(22)},candidates:['cached-beta-candidate'],candidate_bytes:21};
+ const previous=record.generation,replacement=socket();
+ await r.webSocketMessage(replacement,JSON.stringify(join('alpha',['one','two'])));
+ assert.equal(record.generation,previous);
+ assert.equal(record.online,true);
+ await r.webSocketMessage(replacement,JSON.stringify({type:'transport_sync'}));
+ assert.equal(replacement.messages.filter(m=>m.type==='transport_ready').at(-1).transport_generation,previous);
+ assert.equal(replacement.messages.some(m=>m.type==='ice_description'&&m.ufrag==='cached-beta'),true);
+ assert.equal(a.closed,true);
+ assert.equal(b.messages.filter(m=>m.type==='peer_state').length,0);
+ replacement.closed=true;
+ await r.webSocketClose(replacement,1006,'abnormal',false);
+ assert.equal(record.online,false);
+ const cold=new Room(state,{});
+ const resumed=socket();
+ await cold.webSocketMessage(resumed,JSON.stringify(join('alpha',['one','two'])));
+ assert.equal(record.generation,previous);
+ await cold.webSocketMessage(resumed,JSON.stringify({type:'transport_sync'}));
+ assert.equal(resumed.messages.filter(m=>m.type==='transport_ready').at(-1).transport_generation,previous);
+});
 test('same-topology reconnect after close callback clears blocked transport',async()=>{
  const {r,a,b,record,socket}=await pair();
  record.blocked='peer_identity_mismatch';

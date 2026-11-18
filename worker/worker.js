@@ -104,7 +104,12 @@ export class Room {
     this.loaded = true;
     // Reconcile persisted topology against the sockets that actually survived
     // hibernation, including closes whose attachment is already gone.
-    await this.reconcile();
+    const resumeNames = new Set();
+    for (const record of this.ice.records.values()) {
+      if (!this.members.has(record.a)) resumeNames.add(record.a);
+      if (!this.members.has(record.b)) resumeNames.add(record.b);
+    }
+    await this.reconcile(resumeNames);
   }
 
   async alarm() {
@@ -211,17 +216,19 @@ export class Room {
       detach(existing.ws);
       this.members.delete(member.device_name);
       // A same-runtime signal reconnect can replace its WebSocket before the
-      // close callback marks the ICE transport offline. Retire that transport
-      // state now so reconcile creates a fresh generation and ICE candidate
-      // cache for the replacement socket.
+      // close callback runs. Keep an unchanged authenticated ICE generation;
+      // the new socket will replay it through transport_sync. A changed
+      // declaration still takes the normal fresh-generation path.
       const sameMappings = JSON.stringify(existing.member.provide.map(item => item.id).sort()) === JSON.stringify(member.provide.map(item => item.id).sort()) &&
         JSON.stringify(existing.member.consume.map(item => item.id).sort()) === JSON.stringify(member.consume.map(item => item.id).sort());
-      if (sameMappings) await this.ice.markOfflineForReconnect(member.device_name);
+      const sameDeclaration = sameResumeDeclaration(existing.member, member);
+      const resumable = sameMappings && sameDeclaration && this.ice.hasOnlineTransport(member.device_name, member);
+      if (!resumable && sameMappings) await this.ice.markOfflineForReconnect(member.device_name);
       // 重连往往快于运行时对旧连接断开的感知（休眠恢复后尤其如此），
       // 对端可能还挂着这条"僵尸"成员记录，配对 key 一直被视为 active。
       // 主动清掉与该设备相关的已通知映射，让 reconcile 重新下发 ready，
       // 否则重连的一端会一直等不到 mapping_ready，隧道无法重建。
-      await this.dropActiveKeysFor(member.device_name);
+      if (!resumable) await this.dropActiveKeysFor(member.device_name);
     }
 
     if (this.roomToken === null) {
@@ -239,6 +246,7 @@ export class Room {
       auth_mode: "shared-secret",
       lease_renewal: true,
       live_config: true,
+      signal_resume: true,
       hole_version: HOLE_VERSION,
       relay_only_policy: RELAY_ONLY_POLICY,
       room_members: [...this.members.keys()],
@@ -296,12 +304,12 @@ export class Room {
 
   async webSocketClose(ws, code, reason, wasClean) {
     await this.loadState();
-    await this.removeMember(ws);
+    await this.removeMember(ws, !wasClean && code !== 1000);
   }
 
   async webSocketError(ws, error) {
     await this.loadState();
-    await this.removeMember(ws);
+    await this.removeMember(ws, true);
   }
 
   // removeMember 清掉断开连接对应的成员。attachment 在连接关闭后可能已经
@@ -309,7 +317,7 @@ export class Room {
   // 读不到再按 ws 对象在内存 members 里反查；两者都拿不到（休眠中连接静默
   // 死亡）时只能留下一个无害的 storage 残键，重建后该键永远不会被引用，
   // 下次同名设备加入时会覆盖，房间清空时会被 deleteAll 清走。
-  async removeMember(ws) {
+  async removeMember(ws, resumable = false) {
     const name = memberName(ws) ?? findBySocket(this.members, ws);
     detach(ws);
     if (name === null) return;
@@ -320,7 +328,8 @@ export class Room {
     await this.state.storage.delete(memberKey(name));
     await this.broadcastRoomState();
     // Online state may disappear; room authentication and transport generations remain.
-    await this.reconcile();
+    const canResume = resumable && this.ice.hasOnlineTransport(name, entry.member);
+    await this.reconcile(canResume ? new Set([name]) : new Set());
   }
 
   // 删除 activeMappings 里包含指定设备的 key，变化时持久化。
@@ -366,7 +375,7 @@ export class Room {
     }
   }
 
-  async reconcile() {
+  async reconcile(resumeNames = new Set()) {
     const nextActive = new Set();
     const icePairs = new Set();
     const entries = [...this.members.values()];
@@ -450,6 +459,11 @@ export class Room {
         const [leftName, rightName, mappingId] = key.split("\0");
         const left = this.members.get(leftName);
         const right = this.members.get(rightName);
+        const preserveForResume = (resumeNames.has(leftName) || resumeNames.has(rightName)) && (!left || !right);
+        if (preserveForResume) {
+          nextActive.add(key);
+          continue;
+        }
         for (const entry of [left, right]) {
           if (entry) {
             send(entry.ws, {
@@ -463,7 +477,7 @@ export class Room {
       }
     }
 
-    await this.ice.finish(icePairs);
+    await this.ice.finish(icePairs, resumeNames);
 
     if (!sameKeySet(this.activeMappings, nextActive)) {
       this.activeMappings = nextActive;
@@ -503,6 +517,17 @@ function detach(ws) {
   } catch {
     // The socket may already be closed.
   }
+}
+
+function sameResumeDeclaration(left, right) {
+  const normalize = value => {
+    const copy = { ...value };
+    delete copy.candidates;
+    copy.provide = [...(copy.provide ?? [])].sort((a, b) => a.id.localeCompare(b.id));
+    copy.consume = [...(copy.consume ?? [])].sort((a, b) => a.id.localeCompare(b.id));
+    return copy;
+  };
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
 function memberKey(name) {

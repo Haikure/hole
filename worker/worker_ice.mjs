@@ -85,6 +85,10 @@ export const LEGACY_PROFILE = "legacy-ipv6-quic-v2";
 // Renewals arrive every five minutes; keep a full five-minute grace window.
 const LEASE_MS = 10 * 60_000;
 const OFFLINE_RETENTION_MS = 24 * 60 * 60 * 1000;
+// Keep an authenticated transport generation resumable for one lease after a
+// signaling socket disappears. The data plane is independent from the
+// WebSocket, so a short-lived control-plane outage must not force ICE again.
+const SIGNAL_RESUME_GRACE_MS = LEASE_MS;
 const MAX_CANDIDATES = 64;
 export const VOICE_MEMBER_LIMIT = 8;
 const send = (ws, value) => { try { ws.send(JSON.stringify(value)); } catch {} };
@@ -274,6 +278,15 @@ export class RoomICE {
     await this.scheduleCleanup();
   }
   member(name) { return this.room.members.get(name); }
+  hasOnlineTransport(name, member) {
+    return [...this.records.values()].some(record => {
+      if (!record.online || record.blocked || (record.a !== name && record.b !== name)) return false;
+      const index = record.a === name ? 0 : 1;
+      return record.runtime?.[index] === member.runtime_id &&
+        record.fingerprints?.[index] === member.cert_fingerprint &&
+        record.epochs?.[index] === member.transport_epoch;
+    });
+  }
   async activate(left, right, matches, seen, voice = false) {
     const a = left.member.device_name < right.member.device_name ? left : right;
     const b = a === left ? right : left;
@@ -330,14 +343,21 @@ export class RoomICE {
       record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; record.voice = voice; changed = true;
       resetPath = true;
     } else if (!record.online) {
-      // A transport that went offline cannot reuse its generation: the
-      // reconnecting runtime may have new ICE credentials even when its
-      // authenticated runtime identity and certificate are unchanged.
-      record.generation = (BigInt(record.generation) + 1n).toString();
-      record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
-      record.blocked = null;
-      changed = true;
-      resetPath = true;
+      // A short signaling outage leaves the authenticated data path usable.
+      // Resume it only while the same runtime, certificate and network epoch
+      // are still declared, and never revive a generation that was blocked by
+      // an identity or protocol failure.
+      const resumable = !record.blocked && record.lease_until > Date.now() && Number.isFinite(record.resume_until) && record.resume_until > Date.now();
+      if (resumable) {
+        record.resume_until = 0;
+        changed = true;
+      } else {
+        record.generation = (BigInt(record.generation) + 1n).toString();
+        record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
+        record.blocked = null;
+        changed = true;
+        resetPath = true;
+      }
     }
     if (!same(record.mappings, mappings)) changed = true;
     if (record.peer_relay && !peerRelay) {
@@ -376,7 +396,7 @@ export class RoomICE {
       record.phase = relayRequired ? "relay_udp" : "direct";
       record.retry_after_ms = 0;
     }
-    record.mappings = mappings; record.voice = voice; record.online = true; record.lease_until = Date.now() + LEASE_MS;
+    record.mappings = mappings; record.voice = voice; record.online = true; record.resume_until = 0; record.lease_until = Date.now() + LEASE_MS;
     this.records.set(key, record);
     if (wantsHole && !record.peer_relay && (resetPath || !record.hole)) await this.prepareHole(record);
     if (changed) { record.expires_at = Date.now() + OFFLINE_RETENTION_MS; await this.persist(record); }
@@ -481,18 +501,29 @@ export class RoomICE {
       if (cached.nat_status) send(own.ws, {...common,type:'nat_status',nat:cached.nat_status});
     }
   }
-  async finish(seen) {
+  async finish(seen, resumeNames = new Set()) {
     for (const [key, record] of this.records) {
       if (seen.has(key)) continue;
       const a = this.member(record.a), b = this.member(record.b);
       const removed = !!(a && b);
-      if (record.online || removed) for (const [own, peer] of [[a, record.b], [b, record.a]]) if (own) send(own.ws, { type: "peer_state", peer_device: peer, transport_id: record.id, reason: removed ? "mapping_removed" : "peer_offline" });
-      await this.revokeHole(record);
-      this.revokePeerRelay(record);
       const wasOnline = record.online;
+      // If one signaling member vanished while the pair still has a valid
+      // transport identity, retain the generation briefly. A reconnect can
+      // then replay the ready message and keep the existing QUIC path.
+      const resumable = !removed && !record.blocked && record.lease_until > Date.now() &&
+        (resumeNames.has(record.a) || resumeNames.has(record.b)) &&
+        (wasOnline || record.resume_until > Date.now());
+      if (record.online || removed) for (const [own, peer] of [[a, record.b], [b, record.a]]) if (own && !resumable) send(own.ws, { type: "peer_state", peer_device: peer, transport_id: record.id, reason: removed ? "mapping_removed" : "peer_offline" });
+      if (!resumable) {
+        await this.revokeHole(record);
+        this.revokePeerRelay(record);
+      }
       record.online = false;
       // Retention starts when the peer goes offline, not when it first joined.
-      if (wasOnline) record.expires_at = Date.now() + OFFLINE_RETENTION_MS;
+      if (wasOnline) {
+        record.expires_at = Date.now() + OFFLINE_RETENTION_MS;
+        if (resumable) record.resume_until = Date.now() + SIGNAL_RESUME_GRACE_MS;
+      }
       if (removed || record.expires_at <= Date.now()) { this.records.delete(key); await this.state.storage.delete(`transport:${record.id}`); }
       else if (wasOnline) await this.persist(record);
     }

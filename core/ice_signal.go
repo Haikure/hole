@@ -37,6 +37,7 @@ type iceSignalMessage struct {
 	SignalMessage
 	SignalVersion       int                 `json:"signal_version,omitempty"`
 	LeaseRenewal        bool                `json:"lease_renewal,omitempty"`
+	SignalResume        bool                `json:"signal_resume,omitempty"`
 	LiveConfig          bool                `json:"live_config,omitempty"`
 	MemberRevision      uint64              `json:"member_revision,string,omitempty"`
 	VoiceRevision       uint64              `json:"voice_revision,string,omitempty"`
