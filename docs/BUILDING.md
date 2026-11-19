@@ -10,6 +10,7 @@
 | CLI | `./build.sh cli` | `dist/cli/` |
 | 独立核心宿主 | `./build.sh core` | `dist/core/` |
 | Linux / Windows 桌面 | `./build.sh desktop` | `dist/desktop/` |
+| 旧 Rust 桌面 | `./build.sh desktop-rust` | `dist/desktop-rust/` |
 | Android 手机 | `./build.sh android` | `dist/android/` |
 | Wear OS | `./build.sh wear` | `dist/wear/` |
 | CLI + 手机 + 手表 | `./build.sh all` | 各自目录；不含桌面或独立核心 |
@@ -21,11 +22,17 @@ PenMods 使用 [插件构建入口](../penmods/README.md#构建)。
 | 目标 | 工具与依赖 |
 | --- | --- |
 | CLI / `core` | Bash、Python 3、Go 1.27.4；独立宿主无需图形库或 CGo |
-| `desktop` | 额外需要 Rust stable / Cargo；支持 Linux / Windows AMD64、ARM64 |
-| Linux 桌面 | Yororen UI 0.4 / GPUI CE 0.3，Rust 1.95+；构建需 `pkg-config`、`libfontconfig1-dev`、`libasound2-dev`、`libwayland-dev`、`libxkbcommon-dev`、`libxkbcommon-x11-dev`、`libxcb1-dev`（Debian / Ubuntu）；运行需 Vulkan 驱动、X11 或 Wayland，语音另需系统 ALSA 库与默认音频设备 |
-| Windows 桌面 | 系统 WASAPI |
+| `desktop` | Kotlin 2.4.0 / Compose Multiplatform 1.12.2，完整 JDK 21+（支持 JDK 25）、Go 1.27.4、本机 C 编译器；仅在目标系统和架构上构建 |
+| Linux 桌面 | 系统 GCC、appimagetool、本架构本地 type2-runtime（`HOLE_APPIMAGE_RUNTIME`）；AppImage 自带裁剪 Java 运行时与 Go 原生库，运行需要兼容的图形、字体、音频环境 |
+| Windows 桌面 | Git Bash、MinGW-w64 GCC、WiX 3；官方 jpackage 每用户 exe 安装包，固定升级标识，自带 Java 运行时与 Go DLL |
+| `desktop-rust` | Rust 1.95+ / Cargo，Yororen UI 0.4 / GPUI CE 0.3；Linux 开发依赖与交叉工具链见旧桌面 README |
 
-交叉构建需提前安装对应 Rust target 和平台 linker / sysroot（Linux 含目标 ALSA 库），构建脚本不会自动安装 Rust 工具链或系统音频开发包。
+`./build.sh desktop` 直接执行原生桥接、Kotlin Release 与平台打包，并自动选择已安装的完整 JDK 21+。
+优先使用 `HOLE_DESKTOP_JAVA_HOME`，其次是合格的 `JAVA_HOME`、`JDK25_HOME` / `JDK21_HOME`，最后搜索 PATH 和系统常见目录。
+已有 JDK 25 无需再安装 JDK 21。桌面字节码目标为 JVM 21，构建、JNI 和随包运行时统一使用所选 JDK，ProGuard 7.8.0 支持 JDK 25。
+Kotlin 桌面不加载 Android JDK 17；与 Android 组合构建时先在子进程选择桌面 JDK，再加载 Android 的既有工具链。
+旧 Rust 交叉构建需提前安装对应 Rust target 和平台 linker / sysroot（Linux 含目标 ALSA 库）。
+普通构建不会安装 JDK、C 编译器、AppImage 工具、Rust 或系统开发包。
 项目 Android 构建固定使用 Go 1.27.4。
 
 | Android 组件 | 版本 |
@@ -64,8 +71,9 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 ./build.sh cli --os windows --arch amd64
 ./build.sh core                        # 独立 Go stdio 核心宿主；不构建 GUI
 ./build.sh core --os windows --arch amd64
-./build.sh desktop                    # 内嵌匹配架构 Go 核心的单文件 GUI
-./build.sh desktop --os windows --arch amd64
+./build.sh desktop                    # 本机：Windows exe 安装包 / Linux AppImage
+./build.sh desktop --os windows --arch amd64  # 在 Windows AMD64 上运行
+./build.sh desktop-rust --os windows --arch amd64  # 旧 Rust，可配置交叉工具链
 ./build.sh android                     # 手机 ARM64
 ./build.sh wear                        # 手表 ARM32 + ARM64
 ./build.sh android wear                # 一次 Gradle 调用构建两种 APK
@@ -79,9 +87,9 @@ Android 构建自动读取 `~/.local/share/hole-android/env.sh`；也可通过 `
 
 | 参数 | 含义 |
 | --- | --- |
-| `cli`、`core`、`desktop`、`android` / `phone`、`wear`、`all` | 位置参数，可组合；重复目标去重，`all` 不包含 `core` 或 `desktop` |
+| `cli`、`core`、`desktop`、`desktop-rust`、`android` / `phone`、`wear`、`all` | 位置参数，可组合；重复目标去重，`all` 不包含 `core` 或桌面目标 |
 | `-t NAME` / `--target NAME` | 等价的目标选项，可重复 |
-| `--os GOOS`、`--arch GOARCH` | 控制 CLI / `core` / `desktop` 目标；优先于 `GOOS` / `GOARCH` 环境变量，其次使用宿主值；交叉构建 GUI 还需对应 Rust target 与 linker |
+| `--os GOOS`、`--arch GOARCH` | 优先于 `GOOS` / `GOARCH` 环境变量，其次使用宿主值；Kotlin desktop 要求匹配宿主，CLI / core / desktop-rust 可交叉构建 |
 | `-o DIR` / `--output DIR` | 交付根目录，默认仓库 `dist/` |
 | `--signing-config FILE` | 签名环境文件，默认仓库 `signing.env` |
 | `--offline` | 只使用已缓存 Go / Cargo / Gradle 依赖；缓存缺项时报告错误 |
@@ -102,7 +110,7 @@ Release 不再上传 `.sha256` / `SHA256SUMS` 校验文件；GitHub Release 页�
 默认 `type=all` 会并行构建：
 
 - Android 手机 ARM64；
-- `desktop` 的 Linux / Windows AMD64 / ARM64；
+- `desktop` 的 Linux AMD64 / ARM64、Windows AMD64；Windows ARM64 需要本地原生工具链，尚未配置 CI runner；
 - `core` 的 Linux / Windows AMD64 / ARM64；
 - `cli` 的 Linux / Windows AMD64 / ARM64。
 
@@ -185,8 +193,9 @@ dist/
   cli/hole-<goos>-<goarch>[.exe].sha256
   core/hole-core-<goos>-<goarch>[.exe]
   core/hole-core-<goos>-<goarch>[.exe].sha256
-  desktop/<goos>-<goarch>/hole-desktop[.exe]
-  desktop/<goos>-<goarch>/hole-desktop[.exe].sha256
+  desktop/windows-<goarch>/Hole-<version>.exe
+  desktop/linux-<goarch>/Hole-<version>-<appimage-arch>.AppImage
+  desktop-rust/<goos>-<goarch>/hole-desktop[.exe]
   android/hole-<version>-release.apk
   android/hole-<version>-release-mapping.txt
   android/build-manifest.json
@@ -200,7 +209,11 @@ dist/
 ### 优化与自动检查
 
 CLI / 独立 Go 核心宿主使用 `CGO_ENABLED=0`、`-trimpath`、`-s -w`，不调用宿主 `strip` 处理其他架构二进制。
-桌面 GUI 使用 Cargo `release` profile 和 `embedded-core` feature；`desktop` 目录仅包含内嵌核心的 GUI
+Kotlin 桌面使用 Compose Release / ProGuard 与裁剪 Java 运行时，JNI 原生库使用 `-s -w`；
+Windows 使用官方 `packageReleaseExe`，Linux 使用 `createReleaseDistributable` 后封装 AppImage。
+命令与本地验证见 [Kotlin 桌面说明](../desktop/compose/README.md)。JNI 带 `desktopjni` 标记，不进入普通 CLI / Android 构建。
+
+旧 Rust GUI 使用 Cargo `release` profile 和 `embedded-core` feature；`desktop-rust` 目录包含内嵌核心的 GUI
 与 SHA-256 文件。构建时通过 `HOLE_EMBED_CORE` 传入刚生成的同架构宿主，校验 ELF / PE 后压缩嵌入；
 Cargo 跟踪该输入的变化。Linux 运行时使用可执行 memfd 和 `/proc/self/fd`，Windows 使用私有临时目录，
 加载和清理细节见 [桌面桥接](../desktop/README.md#内嵌核心的加载与回收)。
@@ -211,7 +224,7 @@ Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使�
 普通构建不运行单元测试或完整 lint，清单中的相应字段标为未检查，而不是复用旧报告声明通过。
 `SHA256SUMS` 仅引用同目录交付文件；用于追踪核心的 AAR 摘要保留在构建清单中。
 
-桌面桥接的 stdio 协议、GUI 构建和界面说明见 [desktop/README.md](../desktop/README.md)。
+旧桌面桥接的 stdio 协议、Rust 构建和界面说明见 [desktop/README.md](../desktop/README.md)。
 `desktop/`、`desktop/gui/` 和 `cmd/hole-core/` 不在共享核心
 源码摘要中，也不被 CLI / gomobile 导入；只修改桌面代码不会改变 AAR 的核心源码身份。
 
@@ -231,7 +244,9 @@ Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使�
 
 ### 桌面 CI
 
-桌面 Rust 编译与测试使用独立的 [test.yaml](../.github/workflows/test.yaml)，在 Linux / Windows amd64 runner 上构建内嵌核心的 Release，并运行 Rust、配置、快照和跨端契约测试。Linux 另外使用 Xvfb 与 Mesa Vulkan 驱动验证 Yororen UI 窗口和内嵌核心退出清理；本地使用相同入口，命令见 [桌面验证说明](../desktop/README.md#回归验证)。
+旧桌面 Rust 编译与测试使用独立的 [test.yaml](../.github/workflows/test.yaml)，通过 `desktop-rust` 构建。
+它不代表 Kotlin 已通过验证。Kotlin 本地 JNI、共享 UI、Release 包和实际连接的验证命令见
+[Kotlin 桌面验证](../desktop/compose/README.md#本地验证)。
 
 | 项目 | 说明 |
 | --- | --- |

@@ -43,7 +43,8 @@
 | [CLI](#快速开始) | Go 命令行；支持固定入口和运行 Hole 中继 | `./build.sh cli` |
 | [Android](android/README.md) | 原生应用，支持配置交换、语音与连接报告 | `./build.sh android` |
 | [Wear OS](android/wear/README.md) | 独立运行，共用手机源码与 Go 核心 | `./build.sh wear` |
-| [桌面](desktop/README.md) | Linux / Windows，Rust + Yororen UI，内嵌 Go 核心 | `./build.sh desktop` |
+| [桌面](desktop/compose/README.md) | Kotlin Compose，共用 Android 页面与动画，原生 Go 桥接；Windows 安装包 / Linux AppImage | `./build.sh desktop` |
+| [旧 Rust 桌面](desktop/README.md) | Rust + Yororen UI，内嵌 stdio 核心宿主 | `./build.sh desktop-rust` |
 | [PenMods](penmods/README.md) | 使用 `hole-core` 的插件 | [插件构建说明](penmods/README.md#构建) |
 
 构建产物放在 `dist/`。`./build.sh all` 构建 CLI、Android 手机和 Wear，不包含桌面或独立核心宿主。工具链、签名与验证方法见 [构建指南](docs/BUILDING.md)。

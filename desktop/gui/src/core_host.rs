@@ -59,7 +59,7 @@ pub fn unpack(data: &[u8], expected_size: usize, expected_hash: &[u8; 32], outpu
 }
 
 pub fn embedded() -> Result<PreparedCore, String> {
-    if CORE_GZIP.is_empty() { return Err("此开发构建未嵌入核心，请使用 ./build.sh desktop".into()); }
+    if CORE_GZIP.is_empty() { return Err("此开发构建未嵌入核心，请使用 ./build.sh desktop-rust".into()); }
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::{AsRawFd, FromRawFd};

@@ -18,5 +18,8 @@ __pycache__/
 /penmods/build/
 /penmods/.xmake/
 /desktop/gui/target/
+/desktop/compose/.gradle/
+/desktop/compose/.kotlin/
+/desktop/compose/build/
 /signing.env
 /signing.*.env

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hole
+Comment=TCP / UDP 端口映射与房间语音
+Exec=AppRun
+Icon=hole
+Terminal=false
+Categories=Network;

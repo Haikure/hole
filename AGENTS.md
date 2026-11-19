@@ -4,6 +4,7 @@
 
 - 根目录是 Go CLI，`core/` 是 CLI / Android 共用实现，`mobile/` 是 gomobile 窄接口。
 - `android/app` 为手机，`android/wear` 复用手机源码，`android/corebridge` 管理 AAR 和平台网络适配。
+- `desktop/compose` 为 Kotlin JVM 桌面端，直接编译共用的 Android UI / 配置 / 快照源码；`desktop/native` 是带 `desktopjni` 构建标记的薄 JNI / C ABI，复用 `mobile/`；桌面交付为 Windows exe 安装包和 Linux AppImage。旧 Rust 前端保留在 `desktop/gui`。
 - Worker 实现在 `worker/worker.js` / `worker/worker_ice.mjs`，部署配置参考 `worker/wrangler.example.toml`。
 - 发布入口是根目录 `build.sh`。技术说明集中于 `docs/` 和各模块 README，不新增会话流水式 Markdown。
 
@@ -17,6 +18,7 @@
 ## 构建与缓存
 
 - 使用 `./build.sh cli|android|wear|all`；客户端交付均为 Release，保留 Go `-s -w`、R8、资源收缩和 native strip。
+- Kotlin 桌面使用 `./build.sh desktop`，必须在目标系统和架构上构建；自动选择用户已安装的完整 JDK 21+（支持 JDK 25），可用 `HOLE_DESKTOP_JAVA_HOME` 指定，不加载 Android JDK 17；Linux 本机使用系统 GCC。旧 Rust 使用 `./build.sh desktop-rust`，产物进入 `dist/desktop-rust/`。
 - 所有构建缓存进入根 `.cache/`；直接执行工具前 `source scripts/build-env.sh`。
 - Android 环境由 `hole_load_android_toolchain` 加载，再强制采用项目缓存，避免旧 `env.sh` 重定向缓存。
 - SDK / NDK / JDK 不随普通构建自动安装；工具链版本见 `docs/BUILDING.md`。

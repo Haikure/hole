@@ -1,6 +1,5 @@
 package dev.hole.app.ui
 
-import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -44,10 +43,10 @@ fun ThemeSection(
             themeMode.value,
             { onModeChange(ThemeMode.fromValue(it)) },
         )
-        val supportsDynamic = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        val supportsDynamic = supportsWallpaperColors()
         HoleSwitchPreference(
             title = "动态配色",
-            summary = if (supportsDynamic) "跟随系统壁纸颜色" else "Android 12 及以上版本可用",
+            summary = if (supportsDynamic) "跟随系统壁纸颜色" else wallpaperColorsDescription(),
             checked = dynamicColor,
             enabled = supportsDynamic,
             label = "动态配色",

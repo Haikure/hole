@@ -2,6 +2,10 @@
 
 Kotlin / Jetpack Compose 原生客户端，采用 Material 3，与 CLI 共用 `core/` 中的传输和会话实现。
 
+[Kotlin 桌面端](../desktop/compose/README.md) 直接复用本模块的平台无关页面、主题、组件、动画和配置模型。
+Android 系统取色与系统栏、返回键处理、配置编解码分别由 `AndroidTheme.kt`、`PlatformUi.kt`、`AndroidConfigCodec.kt` 适配，
+桌面提供自己的实现；Android Service、网络绑定、音频和 Keystore 继续留在 Android。
+
 [使用](#使用) · [连接与诊断](#连接与诊断) · [界面与外观](#界面与外观) · [构建](#构建) · [平台边界](#生命周期和平台边界) · [项目首页](../README.md)
 
 | 功能 | 入口 |

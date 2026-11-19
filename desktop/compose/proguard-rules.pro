@@ -1,0 +1,5 @@
+-keep class dev.hole.desktop.bridge.NativeCore { *; }
+-keepclasseswithmembernames,includedescriptorclasses class * { native <methods>; }
+-keep class org.jetbrains.skia.** { *; }
+-keep class org.jetbrains.skiko.** { *; }
+-dontwarn org.slf4j.**

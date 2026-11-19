@@ -91,6 +91,10 @@ jobs:
                   continue
               for target_os in systems:
                   for target_arch in architectures:
+                      # JNI packages use the host JDK/C toolchain. Windows ARM64
+                      # delivery remains a local build until a native runner is configured.
+                      if target == "desktop" and target_os == "windows" and target_arch == "arm64":
+                          continue
                       if target_os == "linux" and target_arch == "arm64":
                           runner = "ubuntu-24.04-arm"
                       elif target_os == "linux":
@@ -110,18 +114,6 @@ jobs:
                           "os": target_os,
                           "arch": target_arch,
                           "runner": runner,
-                          "rust_target": (
-                              "aarch64-pc-windows-msvc"
-                              if target == "desktop" and target_os == "windows" and target_arch == "arm64"
-                              else ""
-                          ),
-                          "msvc_arch": (
-                              "x64_arm64"
-                              if target_os == "windows" and target_arch == "arm64"
-                              else "x64"
-                              if target_os == "windows"
-                              else ""
-                          ),
                           "artifact_path": artifact_path,
                       })
 
@@ -163,7 +155,8 @@ jobs:
             .cache/go/pkg/mod
             .cache/cargo-home
             .cache/cargo-target
-          key: hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('go.sum', 'desktop/gui/Cargo.lock', 'versions.json') }}
+            .cache/gradle
+          key: hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('go.sum', 'desktop/compose/build.gradle.kts', 'versions.json') }}
           restore-keys: |
             hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-
 
@@ -184,50 +177,46 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev libfontconfig1-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+          sudo apt-get install --yes --no-install-recommends gcc libasound2t64 libfontconfig1 libx11-6 libxext6 libxi6 libxrender1 libxtst6 libfuse2t64 desktop-file-utils
 
-      - name: Set up Rust
-        if: ${{ matrix.target == 'desktop' && matrix.rust_target == '' }}
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Rust target
-        if: ${{ matrix.target == 'desktop' && matrix.rust_target != '' }}
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up desktop JDK
+        if: ${{ matrix.target == 'desktop' }}
+        uses: actions/setup-java@v5
         with:
-          targets: ${{ matrix.rust_target }}
+          distribution: temurin
+          java-version: '25'
 
-      - name: Set up MSVC environment
+      - name: Set up Windows C compiler
         if: ${{ runner.os == 'Windows' && matrix.target == 'desktop' }}
-        uses: ilammy/msvc-dev-cmd@v1
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+        uses: msys2/setup-msys2@v2
         with:
-          arch: ${{ matrix.msvc_arch }}
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc
 
-      - name: Configure MSVC linkers for Cargo
+      - name: Configure Windows packaging tools
         if: ${{ runner.os == 'Windows' && matrix.target == 'desktop' }}
         shell: pwsh
-        env:
-          MSVC_ARCH: ${{ matrix.msvc_arch }}
         run: |
-          $tools = $env:VCToolsInstallDir
-          if ([string]::IsNullOrWhiteSpace($tools)) {
-            throw 'VCToolsInstallDir was not provided by the MSVC setup action.'
-          }
+          'C:\msys64\ucrt64\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'CC=C:/msys64/ucrt64/bin/gcc.exe' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          choco install wixtoolset --version=3.14.1 --yes --no-progress
+          'C:\Program Files (x86)\WiX Toolset v3.14\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-          $hostLinker = Join-Path $tools 'bin\Hostx64\x64\link.exe'
-          if (-not (Test-Path -LiteralPath $hostLinker)) {
-            throw "MSVC x64 linker was not found: $hostLinker"
-          }
-          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$hostLinker" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          if ($env:MSVC_ARCH -eq 'x64_arm64') {
-            $targetLinker = Join-Path $tools 'bin\Hostx64\arm64\link.exe'
-            if (-not (Test-Path -LiteralPath $targetLinker)) {
-              throw "MSVC ARM64 linker was not found: $targetLinker"
-            }
-            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$targetLinker" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          }
+      - name: Prepare Linux AppImage tools
+        if: ${{ runner.os == 'Linux' && matrix.target == 'desktop' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch=x86_64
+          if [[ '${{ matrix.arch }}' == arm64 ]]; then arch=aarch64; fi
+          mkdir -p .cache/appimage-tools
+          curl -fL "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-$arch.AppImage" -o .cache/appimage-tools/tool.AppImage
+          curl -fL "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-$arch" -o .cache/appimage-tools/runtime
+          chmod +x .cache/appimage-tools/tool.AppImage
+          (cd .cache/appimage-tools; ./tool.AppImage --appimage-extract)
+          ln -s "$PWD/.cache/appimage-tools/squashfs-root/AppRun" .cache/appimage-tools/appimagetool
+          echo "$PWD/.cache/appimage-tools" >> "$GITHUB_PATH"
+          echo "HOLE_APPIMAGE_RUNTIME=$PWD/.cache/appimage-tools/runtime" >> "$GITHUB_ENV"
 
       - name: Build target
         shell: bash
@@ -412,7 +401,7 @@ jobs:
                 asset_name="$filename"
                 ;;
               hole-desktop-*)
-                asset_name="${artifact_name}${filename#hole-desktop}"
+                asset_name="${artifact_name}-${filename}"
                 ;;
               *)
                 asset_name="$filename"
