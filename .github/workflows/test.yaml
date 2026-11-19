@@ -112,7 +112,7 @@ jobs:
           fi
 
       - name: Build embedded desktop Release
-        run: bash ./build.sh desktop --os '${{ matrix.os }}' --arch amd64
+        run: bash ./build.sh desktop-rust --os '${{ matrix.os }}' --arch amd64
 
       - name: Test Rust, platform contracts and Yororen UI data
         run: |
@@ -128,8 +128,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           source scripts/build-env.sh
-          xvfb-run -a -s '-screen 0 1600x1100x24' /usr/bin/python3 desktop/gui/tests/ui_x11.py dist/desktop/linux-amd64/hole-desktop
-          xvfb-run -a /usr/bin/python3 desktop/gui/tests/embedded_core_linux.py dist/desktop/linux-amd64/hole-desktop
+          xvfb-run -a -s '-screen 0 1600x1100x24' /usr/bin/python3 desktop/gui/tests/ui_x11.py dist/desktop-rust/linux-amd64/hole-desktop
+          xvfb-run -a /usr/bin/python3 desktop/gui/tests/embedded_core_linux.py dist/desktop-rust/linux-amd64/hole-desktop
 
       - name: Test NAT timestamps in UTC, Shanghai and New York
         run: |
@@ -145,7 +145,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: tested-desktop-${{ matrix.os }}-amd64
-          path: dist/desktop/${{ matrix.os }}-amd64/
+          path: dist/desktop-rust/${{ matrix.os }}-amd64/
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

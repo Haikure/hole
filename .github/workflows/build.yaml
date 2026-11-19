@@ -7,18 +7,19 @@ on:
   workflow_dispatch:
     inputs:
       type:
-        description: 构建类型；all 会构建 Android、desktop、core 和 cli
+        description: 构建类型；all 包含 Android 手机、Wear、desktop、core 和 cli
         required: true
         default: all
         type: choice
         options:
           - all
           - android
+          - wear
           - desktop
           - core
           - cli
       arch:
-        description: 非 Android 目标架构；Android 始终固定为 arm64
+        description: 非 Android 目标架构；手机固定 ARM64，Wear 固定 ARM32 + ARM64
         required: true
         default: all
         type: choice
@@ -27,7 +28,7 @@ on:
           - amd64
           - arm64
       os:
-        description: 非 Android 目标系统；选择 android 时忽略此项
+        description: 非 Android 目标系统；选择 android 或 wear 时忽略此项
         required: true
         default: all
         type: choice
@@ -57,6 +58,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       has_targets: ${{ steps.matrix.outputs.has_targets }}
       android: ${{ steps.matrix.outputs.android }}
+      android_matrix: ${{ steps.matrix.outputs.android_matrix }}
     steps:
       - name: Resolve requested targets
         id: matrix
@@ -74,7 +76,7 @@ jobs:
           build_arch = os.environ["BUILD_ARCH"]
           build_os = os.environ["BUILD_OS"]
 
-          if build_type not in {"all", "android", "desktop", "core", "cli"}:
+          if build_type not in {"all", "android", "wear", "desktop", "core", "cli"}:
               raise SystemExit(f"unsupported type: {build_type}")
           if build_arch not in {"all", "amd64", "arm64"}:
               raise SystemExit(f"unsupported arch: {build_arch}")
@@ -91,6 +93,10 @@ jobs:
                   continue
               for target_os in systems:
                   for target_arch in architectures:
+                      # JNI packages use the host JDK/C toolchain. Windows ARM64
+                      # delivery remains a local build until a native runner is configured.
+                      if target == "desktop" and target_os == "windows" and target_arch == "arm64":
+                          continue
                       if target_os == "linux" and target_arch == "arm64":
                           runner = "ubuntu-24.04-arm"
                       elif target_os == "linux":
@@ -110,26 +116,20 @@ jobs:
                           "os": target_os,
                           "arch": target_arch,
                           "runner": runner,
-                          "rust_target": (
-                              "aarch64-pc-windows-msvc"
-                              if target == "desktop" and target_os == "windows" and target_arch == "arm64"
-                              else ""
-                          ),
-                          "msvc_arch": (
-                              "x64_arm64"
-                              if target_os == "windows" and target_arch == "arm64"
-                              else "x64"
-                              if target_os == "windows"
-                              else ""
-                          ),
                           "artifact_path": artifact_path,
                       })
 
+          android_matrix = [
+              {"target": target, "abis": abis}
+              for target, abis in (("android", "arm64"), ("wear", "arm32-arm64"))
+              if build_type in {"all", target}
+          ]
           result = {"include": matrix}
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"matrix={json.dumps(result, separators=(',', ':'))}\n")
               output.write(f"has_targets={str(bool(matrix)).lower()}\n")
-              output.write(f"android={str(build_type in {'all', 'android'}).lower()}\n")
+              output.write(f"android={str(bool(android_matrix)).lower()}\n")
+              output.write(f"android_matrix={json.dumps({'include': android_matrix}, separators=(',', ':'))}\n")
           PY
 
   build:
@@ -163,7 +163,9 @@ jobs:
             .cache/go/pkg/mod
             .cache/cargo-home
             .cache/cargo-target
-          key: hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('go.sum', 'desktop/gui/Cargo.lock', 'versions.json') }}
+            .cache/gradle
+            .cache/desktop-tools/appimage
+          key: hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('go.sum', 'desktop/compose/build.gradle.kts', 'desktop/scripts/toolchain.sh', 'versions.json') }}
           restore-keys: |
             hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-
 
@@ -184,50 +186,46 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev libfontconfig1-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev
+          sudo apt-get install --yes --no-install-recommends gcc libasound2t64 libfontconfig1 libx11-6 libxext6 libxi6 libxrender1 libxtst6 libfuse2t64 desktop-file-utils
 
-      - name: Set up Rust
-        if: ${{ matrix.target == 'desktop' && matrix.rust_target == '' }}
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Rust target
-        if: ${{ matrix.target == 'desktop' && matrix.rust_target != '' }}
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up desktop JDK
+        if: ${{ matrix.target == 'desktop' }}
+        uses: actions/setup-java@v5
         with:
-          targets: ${{ matrix.rust_target }}
+          distribution: zulu
+          java-version: '25'
 
-      - name: Set up MSVC environment
+      - name: Set up Windows C compiler
+        id: desktop_msys2
         if: ${{ runner.os == 'Windows' && matrix.target == 'desktop' }}
-        uses: ilammy/msvc-dev-cmd@v1
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+        uses: msys2/setup-msys2@v2
         with:
-          arch: ${{ matrix.msvc_arch }}
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc
 
-      - name: Configure MSVC linkers for Cargo
+      - name: Configure Windows packaging tools
         if: ${{ runner.os == 'Windows' && matrix.target == 'desktop' }}
         shell: pwsh
         env:
-          MSVC_ARCH: ${{ matrix.msvc_arch }}
+          DESKTOP_MSYS2_LOCATION: ${{ steps.desktop_msys2.outputs.msys2-location }}
         run: |
-          $tools = $env:VCToolsInstallDir
-          if ([string]::IsNullOrWhiteSpace($tools)) {
-            throw 'VCToolsInstallDir was not provided by the MSVC setup action.'
+          $gccBin = Join-Path $env:DESKTOP_MSYS2_LOCATION 'ucrt64\bin'
+          $gcc = Join-Path $gccBin 'gcc.exe'
+          if (-not (Test-Path $gcc)) { throw "GCC is missing: $gcc" }
+          $gccBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          ('CC=' + $gcc.Replace('\', '/')) | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $wixBin = 'C:\Program Files (x86)\WiX Toolset v3.14\bin'
+          if (-not (Test-Path (Join-Path $wixBin 'candle.exe'))) {
+            choco install wixtoolset --version=3.14.1.20250415 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed' }
           }
+          if (-not (Test-Path (Join-Path $wixBin 'candle.exe'))) { throw 'WiX candle.exe is missing' }
+          $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-          $hostLinker = Join-Path $tools 'bin\Hostx64\x64\link.exe'
-          if (-not (Test-Path -LiteralPath $hostLinker)) {
-            throw "MSVC x64 linker was not found: $hostLinker"
-          }
-          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$hostLinker" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-          if ($env:MSVC_ARCH -eq 'x64_arm64') {
-            $targetLinker = Join-Path $tools 'bin\Hostx64\arm64\link.exe'
-            if (-not (Test-Path -LiteralPath $targetLinker)) {
-              throw "MSVC ARM64 linker was not found: $targetLinker"
-            }
-            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$targetLinker" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          }
+      - name: Prepare Linux AppImage tools
+        if: ${{ runner.os == 'Linux' && matrix.target == 'desktop' }}
+        shell: bash
+        run: bash desktop/scripts/setup-appimage.sh
 
       - name: Build target
         shell: bash
@@ -239,6 +237,17 @@ jobs:
             --output dist
           test -d "${{ matrix.artifact_path }}"
 
+      - name: Upload desktop packaging diagnostics
+        if: ${{ failure() && matrix.target == 'desktop' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: hole-desktop-diagnostics-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            desktop/compose/build/compose/logs/
+            desktop/compose/build/compose/tmp/*.args.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload target artifact
         uses: actions/upload-artifact@v6
         with:
@@ -249,9 +258,12 @@ jobs:
           retention-days: 30
 
   android:
-    name: android / arm64
+    name: ${{ matrix.target }} / ${{ matrix.abis }}
     needs: plan
     if: ${{ needs.plan.outputs.android == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.android_matrix) }}
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -297,9 +309,9 @@ jobs:
             .cache/gradle
             .cache/gradle-project
             .cache/kotlin
-          key: hole-android-arm64-${{ hashFiles('go.sum', 'android/corebridge/gobuild/go.sum', 'android/gradle/libs.versions.toml', 'android/gradle/wrapper/gradle-wrapper.properties', 'versions.json') }}
+          key: hole-${{ matrix.target }}-${{ matrix.abis }}-${{ hashFiles('go.sum', 'android/corebridge/gobuild/go.sum', 'android/gradle/libs.versions.toml', 'android/gradle/wrapper/gradle-wrapper.properties', 'versions.json') }}
           restore-keys: |
-            hole-android-arm64-
+            hole-${{ matrix.target }}-${{ matrix.abis }}-
 
       - name: Install gomobile and gobind
         shell: bash
@@ -342,7 +354,7 @@ jobs:
           test -s "$RUNNER_TEMP/hole-release.keystore"
           printf 'HOLE_SIGNING_STORE_FILE=%s\n' "$RUNNER_TEMP/hole-release.keystore" >> "$GITHUB_ENV"
 
-      - name: Build Android release
+      - name: Build ${{ matrix.target }} release
         shell: bash
         env:
           HOLE_SIGNING_STORE_PASSWORD: ${{ secrets.HOLE_SIGNING_STORE_PASSWORD }}
@@ -354,20 +366,21 @@ jobs:
           export PATH="$GOBIN:$PATH"
           test "$(command -v gomobile)" = "$GOBIN/gomobile"
           test "$(command -v gobind)" = "$GOBIN/gobind"
-          bash ./build.sh android --output dist
-          test -d dist/android
-          apk_count=$(find dist/android -maxdepth 1 -type f -name '*.apk' | wc -l)
+          destination="dist/${{ matrix.target }}"
+          bash ./build.sh "${{ matrix.target }}" --output dist
+          test -d "$destination"
+          apk_count=$(find "$destination" -maxdepth 1 -type f -name '*.apk' | wc -l)
           if [[ "$apk_count" -ne 1 ]]; then
-            echo "期望 dist/android 中恰好有一个 APK，实际为 $apk_count 个" >&2
-            find dist/android -maxdepth 1 -type f -printf '%f\n' | sort >&2
+            echo "期望 $destination 中恰好有一个 APK，实际为 $apk_count 个" >&2
+            find "$destination" -maxdepth 1 -type f -printf '%f\n' | sort >&2
             exit 1
           fi
 
-      - name: Upload Android artifact
+      - name: Upload ${{ matrix.target }} artifact
         uses: actions/upload-artifact@v6
         with:
-          name: hole-android-arm64
-          path: "dist/android/*.apk"
+          name: hole-${{ matrix.target }}-${{ matrix.abis }}
+          path: "dist/${{ matrix.target }}/*.apk"
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -412,7 +425,7 @@ jobs:
                 asset_name="$filename"
                 ;;
               hole-desktop-*)
-                asset_name="${artifact_name}${filename#hole-desktop}"
+                asset_name="${artifact_name}-${filename}"
                 ;;
               *)
                 asset_name="$filename"

@@ -1,6 +1,5 @@
 package dev.hole.app.config
 
-import dev.hole.core.mobile.Mobile
 import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -55,7 +54,7 @@ object ConfigExchange {
 
     fun readCLI(text: String, current: StoredConfig): ImportPreview {
         require(text.toByteArray().size <= MAX_DOCUMENT_BYTES) { "文件超过 128 KiB" }
-        return readCLIJSON(Mobile.decodeCLIConfig(text), current)
+        return readCLIJSON(CoreConfigCodec.decode(text), current)
     }
 
     /** Detect the portable Android envelope before falling back to the CLI exchange format. */
@@ -101,7 +100,7 @@ object ConfigExchange {
     }
 
     fun cli(config: StoredConfig, password: String, token: String, includeSecrets: Boolean, turnCredential: String = ""): String {
-        return Mobile.encodeCLIConfig(cliJSON(config, password, token, includeSecrets, turnCredential), includeSecrets)
+        return CoreConfigCodec.encode(cliJSON(config, password, token, includeSecrets, turnCredential), includeSecrets)
     }
 
     internal fun cliJSON(config: StoredConfig, password: String, token: String, includeSecrets: Boolean, turnCredential: String = ""): String {

@@ -185,3 +185,113 @@ func TestNATPunchReservationCancellationAndBackgroundProbe(t *testing.T) {
 		t.Fatal("background probe stayed blocked after release")
 	}
 }
+
+func TestNATPunchReconnectRefreshesBothModelsBeforeStrategy(t *testing.T) {
+	n, _, _ := simulatedNATs([2]int{1, 1}, [2]int{}, 0)
+	ca, pa := lifecycleCoordinator(t)
+	cb, pb := lifecycleCoordinator(t)
+	ca.desired.Config.DeviceName, cb.desired.Config.DeviceName = "alpha", "beta"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	coords, peers := []*iceCoordinator{ca, cb}, []*icePeer{pa, pb}
+	cfg := Config{ICE: ICEConfig{NATSTUNURLs: []string{"stun:192.0.2.1:3478", "stun:192.0.2.2:3478", "stun:192.0.2.3:3478"}}}
+	// Repeat quickly without another successful connection in between: the
+	// previous conclusive irregular result must never suppress reclassification.
+	for generation := uint64(2); generation <= 3; generation++ {
+		stale := time.Now().UTC().Format(time.RFC3339Nano)
+		attempts := make([]*iceAttempt, 2)
+		for side, c := range coords {
+			c.natMu.Lock()
+			c.natConnected = false
+			c.natSnapshot = NATSnapshot{Status: "complete", Type: "symmetric", MappingBehavior: "endpoint_dependent", Predictability: "irregular", Epoch: c.networkEpoch.Load(), ProbedAt: stale}
+			c.natMu.Unlock()
+			ready := peers[side].ready
+			ready.TransportGeneration, ready.PunchSchedule = generation, natPunchSchedule
+			attempts[side] = &iceAttempt{ctx: ctx, ready: ready, events: make(chan iceSignalMessage, 8), failed: make(chan error, 1)}
+		}
+		type result struct {
+			side    int
+			session *natPunchSession
+			err     error
+		}
+		out := make(chan result, 2)
+		for side, p := range peers {
+			go func() {
+				s, err := p.prepareNATPunch(attempts[side], &punchSimPlatform{nat: n.sides[side]}, cfg)
+				out <- result{side, s, err}
+			}()
+		}
+		// Hold both offers until each contains a fresh sample. Local allocator
+		// must already be free while waiting for the remote offer (mesh safety).
+		for side, c := range coords {
+			select {
+			case m := <-c.sink.messages:
+				if m.Punch == nil || m.Punch.Kind != "offer" || m.Punch.Snapshot.ProbedAt == stale || m.Punch.Snapshot.Predictability == "irregular" {
+					t.Fatalf("side %d reused cached model: %+v", side, m.Punch)
+				}
+				gateCtx, stop := context.WithTimeout(ctx, time.Second)
+				release, err := c.natAllocation.acquire(gateCtx)
+				stop()
+				if err != nil {
+					t.Fatal("offer wait held device allocator", err)
+				}
+				release()
+				attempts[1-side].events <- m
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		}
+		for range 2 {
+			got := <-out
+			if got.err != nil || got.session == nil || got.session.mode != "fixed" {
+				t.Fatalf("side %d: session=%+v err=%v", got.side, got.session, got.err)
+			}
+			if got.session.local.ProbedAt == stale || got.session.remote.ProbedAt == stale || coords[got.side].localNAT().ProbedAt != got.session.local.ProbedAt {
+				t.Fatal("fresh bilateral evidence was not published")
+			}
+		}
+	}
+}
+
+func TestNATPunchRoundWaitsForPeerBeforeNextModel(t *testing.T) {
+	c, p := lifecycleCoordinator(t)
+	ctx, cancel := context.WithTimeout(c.ctx, 2*time.Second)
+	defer cancel()
+	ready := p.ready
+	ready.InitiatorID, ready.PunchSchedule = c.deviceID(), natPunchSchedule
+	a := &iceAttempt{ctx: ctx, ready: ready, events: make(chan iceSignalMessage, 8), failed: make(chan error, 1)}
+	model := NATSnapshot{Status: "complete", Type: "symmetric", MappingBehavior: "endpoint_dependent", PublicIP: "198.51.100.1", PortStep: 1, AllocationScope: "cross_socket"}
+	config := NATPunchConfig{}
+	config.normalize()
+	done := make(chan error, 1)
+	go func() {
+		// No STUN servers: fail before calibration while the peer is still
+		// working on this round. No real socket or network is required.
+		_, err := p.predictNATPunch(a, DefaultPlatform{}, Config{ICE: ICEConfig{NATSTUNURLs: []string{}}}, &natPunchSession{local: model, remote: model, mode: "fixed", config: config})
+		done <- err
+	}()
+	defer func() { cancel(); <-done }()
+	next := func(kind string, round int) {
+		t.Helper()
+		select {
+		case m := <-c.sink.messages:
+			if m.Punch == nil || m.Punch.Kind != kind || m.Punch.Round != round {
+				t.Fatalf("want %s round %d, got %+v", kind, round, m.Punch)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	next("reserve", 0)
+	a.events <- iceSignalMessage{Punch: &natPunchSignal{Kind: "reserved"}}
+	next("model", 1)
+	a.events <- iceSignalMessage{Punch: &natPunchSignal{Kind: "model", Round: 1, Snapshot: &model}}
+	next("failed", 1)
+	select {
+	case m := <-c.sink.messages:
+		t.Fatalf("advanced before peer finished first round: %+v", m.Punch)
+	case <-time.After(30 * time.Millisecond):
+	}
+	a.events <- iceSignalMessage{Punch: &natPunchSignal{Kind: "failed", Round: 1}}
+	next("model", 2)
+}

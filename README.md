@@ -43,7 +43,8 @@
 | [CLI](#快速开始) | Go 命令行；支持固定入口和运行 Hole 中继 | `./build.sh cli` |
 | [Android](android/README.md) | 原生应用，支持配置交换、语音与连接报告 | `./build.sh android` |
 | [Wear OS](android/wear/README.md) | 独立运行，共用手机源码与 Go 核心 | `./build.sh wear` |
-| [桌面](desktop/README.md) | Linux / Windows，Rust + Yororen UI，内嵌 Go 核心 | `./build.sh desktop` |
+| [桌面](desktop/compose/README.md) | Kotlin Compose，共用 Android 页面与动画，原生 Go 桥接；Windows 安装包 / Linux AppImage | `./build.sh desktop` |
+| [旧 Rust 桌面](desktop/README.md) | Rust + Yororen UI，内嵌 stdio 核心宿主 | `./build.sh desktop-rust` |
 | [PenMods](penmods/README.md) | 使用 `hole-core` 的插件 | [插件构建说明](penmods/README.md#构建) |
 
 构建产物放在 `dist/`。`./build.sh all` 构建 CLI、Android 手机和 Wear，不包含桌面或独立核心宿主。工具链、签名与验证方法见 [构建指南](docs/BUILDING.md)。
@@ -180,6 +181,8 @@ Peer Relay 自动协商，无需固定公网入口或额外配置。它只复用
 ## NAT 探测与 UDP 端口映射
 
 允许直连时，Hole 可自动为隧道 UDP 端口申请临时路由器映射：先尝试 UPnP IGD，再尝试 NAT-PMP。映射不可用时，继续其他直连或中继路径。
+
+路由器映射续租失败或地址变化时更新映射状态，当前直连继续检查存活，实际失联后再重连。进入预测打洞阶段时，支持设备调度的双方先重新采样并交换 NAT 模型；短时间重连也会刷新，避免旧的不可预测分类持续跳过预测尝试。
 
 | 配置 | 默认值 | 作用 |
 | --- | --- | --- |

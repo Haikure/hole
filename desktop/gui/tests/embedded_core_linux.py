@@ -1,7 +1,7 @@
 """Run only a copied GUI, prove its child executes memfd, and check shutdown/EOF.
 
 source scripts/build-env.sh
-xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop/linux-amd64/hole-desktop
+xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop-rust/linux-amd64/hole-desktop
 """
 import os
 from pathlib import Path

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"strings"
@@ -9,9 +10,70 @@ import (
 	"time"
 )
 
+func TestNATPunchWaitReportsMissingConfirmation(t *testing.T) {
+	_, p := lifecycleCoordinator(t)
+	a := &iceAttempt{events: make(chan iceSignalMessage)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := p.waitNATPunchTrial(ctx, a, "calibrate", 2, 1)
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "calibrate") || !strings.Contains(err.Error(), "轮次 2") || !strings.Contains(err.Error(), "校准序号 1") {
+		t.Fatalf("confirmation failure lost its phase or cause: %v", err)
+	}
+}
+
+func TestNATPunchRejectedCalibrationKeepsEvidenceWithoutAbortingNextRound(t *testing.T) {
+	c, p := lifecycleCoordinator(t)
+	a := &iceAttempt{ready: p.ready, failed: make(chan error, 1), process: p.process.begin(p.ready)}
+	p.pending = a
+	m := signalMessage("error")
+	m.TransportID, m.TransportGeneration = p.ready.TransportID, p.ready.TransportGeneration
+	m.Code, m.Message = "punch_calibration_rejected", "第 1 轮校准 1 结果未转发：未收到双方同轮同序号的准备确认"
+	m.Punch = &natPunchSignal{Kind: "calibrated", Round: 1, Trial: 1}
+	if err := c.handle(m, c.request(), DefaultPlatform{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-a.failed:
+		t.Fatal("late refusal aborted another round", err)
+	default:
+	}
+	trace := p.process.snapshot(0)
+	last := trace.Events[len(trace.Events)-1]
+	if last.Kind != "signal_error" || last.Round != 1 || last.Trial != 1 || last.Detail != m.Message {
+		t.Fatalf("missing calibration refusal evidence: %+v", last)
+	}
+	m.TransportGeneration++
+	_ = c.handle(m, c.request(), DefaultPlatform{})
+	if len(p.process.snapshot(0).Events) != len(trace.Events) {
+		t.Fatal("stale generation contaminated the current trace")
+	}
+}
+
 type punchTimeoutPlatform struct {
 	DefaultPlatform
 	calls int
+}
+
+func TestNATPunchEarlyFailedResultReachesRoundBarrier(t *testing.T) {
+	for _, buffered := range []bool{false, true} {
+		_, p := lifecycleCoordinator(t)
+		a := &iceAttempt{events: make(chan iceSignalMessage, 1)}
+		failure := natPunchSignal{Kind: "failed", Round: 2, Result: "unreachable"}
+		if buffered {
+			a.punchBuffered = []natPunchSignal{failure}
+		} else {
+			a.events <- iceSignalMessage{Punch: &failure}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		if _, err := p.waitNATPunch(ctx, a, "ready", 2); err == nil {
+			t.Fatal("peer failure did not end coordination")
+		}
+		got, err := p.waitNATPunch(ctx, a, "failed", 2)
+		cancel()
+		if err != nil || got == nil || got.Result != "unreachable" || len(a.punchBuffered) != 0 {
+			t.Fatalf("buffered=%v: barrier lost failure: %+v %v", buffered, got, err)
+		}
+	}
 }
 
 func (p *punchTimeoutPlatform) ListenPacket(ctx context.Context, _, _ string) (net.PacketConn, error) {

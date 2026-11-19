@@ -47,6 +47,8 @@ fun VoiceScreen(
     onRequestMicrophone: () -> Unit,
     onBack: () -> Unit,
     onToggleRun: (Boolean) -> Unit = {},
+    inputOptions: List<Pair<String, String>> = microphoneSourceOptions,
+    inputSummary: String = "自动会在耳机有麦克风时优先使用耳机，否则使用手机麦克风。",
 ) {
     val voice = snapshot.voice
     val floatingInset = LocalFloatingInset.current
@@ -89,13 +91,13 @@ fun VoiceScreen(
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("麦克风来源", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
                                 HoleSingleChoice(
-                                    microphoneSourceOptions,
+                                    inputOptions,
                                     normalizeMicrophoneSource(configState.config.voice.microphoneSource),
                                     onMicrophoneSourceChange,
                                     Modifier.fillMaxWidth().testTag("microphone-source"),
                                 )
                                 Text(
-                                    "自动会在耳机有麦克风时优先使用耳机，否则使用手机麦克风。",
+                                    inputSummary,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )

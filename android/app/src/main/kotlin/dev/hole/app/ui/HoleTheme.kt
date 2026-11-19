@@ -1,31 +1,15 @@
 package dev.hole.app.ui
 
-import android.app.Activity
-import android.content.Context
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.LocalContentColor
-import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.core.view.WindowCompat
-import dev.hole.app.config.ThemeMode
 import dev.hole.app.config.ThemePalette
 
 private data class PaletteTones(
@@ -80,7 +64,7 @@ private val palettes = mapOf(
     ),
 )
 
-private val LightTypography = Typography().let { base ->
+internal val LightTypography = Typography().let { base ->
     base.copy(
         displaySmall = base.displaySmall.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.5).sp),
         headlineLarge = base.headlineLarge.copy(fontWeight = FontWeight.SemiBold, letterSpacing = (-0.35).sp),
@@ -91,7 +75,7 @@ private val LightTypography = Typography().let { base ->
     )
 }
 
-private val WearTypography = LightTypography.copy(
+internal val WearTypography = LightTypography.copy(
     displaySmall = LightTypography.displaySmall.copy(fontSize = 24.sp, lineHeight = 28.sp),
     labelLarge = LightTypography.labelLarge.copy(fontSize = 14.sp, lineHeight = 18.sp),
     labelMedium = LightTypography.labelMedium.copy(fontSize = 13.sp, lineHeight = 17.sp),
@@ -107,7 +91,7 @@ private val WearTypography = LightTypography.copy(
     bodySmall = LightTypography.bodySmall.copy(fontSize = 14.sp, lineHeight = 18.sp),
 )
 
-private val HoleShapes = Shapes(
+internal val HoleShapes = Shapes(
     extraSmall = RoundedCornerShape(4.dp),
     small = RoundedCornerShape(8.dp),
     medium = RoundedCornerShape(12.dp),
@@ -184,50 +168,5 @@ internal fun materialPalette(palette: ThemePalette, dark: Boolean): ColorScheme 
         onError = Color(0xFF690005),
         errorContainer = Color(0xFF93000A),
         onErrorContainer = Color(0xFFFFDAD6),
-    )
-}
-
-/** Shared by Compose and the service-owned floating window. */
-internal fun holeColorScheme(context: Context, dark: Boolean, dynamic: Boolean, palette: ThemePalette): ColorScheme =
-    if (dynamic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    } else materialPalette(palette, dark)
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-fun HoleTheme(
-    mode: ThemeMode,
-    dynamic: Boolean,
-    // Retained only so older saved appearance preferences continue to load.
-    @Suppress("UNUSED_PARAMETER") style: dev.hole.app.config.ThemeStyle = dev.hole.app.config.ThemeStyle.MATERIAL,
-    palette: ThemePalette = ThemePalette.BLUE,
-    content: @Composable () -> Unit,
-) {
-    val dark = when (mode) {
-        ThemeMode.SYSTEM -> isSystemInDarkTheme()
-        ThemeMode.LIGHT -> false
-        ThemeMode.DARK -> true
-    }
-    val colors = holeColorScheme(LocalContext.current, dark, dynamic, palette)
-    val wear = isWearUi()
-    val view = LocalView.current
-    val activity = view.context as? Activity
-    SideEffect {
-        if (activity != null && !view.isInEditMode) {
-            WindowCompat.getInsetsController(activity.window, view).apply {
-                isAppearanceLightStatusBars = !dark
-                isAppearanceLightNavigationBars = !dark
-            }
-        }
-    }
-    MaterialExpressiveTheme(
-        colorScheme = colors,
-        typography = if (wear) WearTypography else LightTypography,
-        shapes = HoleShapes,
-        content = {
-            if (wear) WearDisplayDensity {
-                CompositionLocalProvider(LocalContentColor provides colors.onBackground, content = content)
-            } else content()
-        },
     )
 }

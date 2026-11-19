@@ -30,6 +30,21 @@ class ReleaseUpdateTest {
         assertEquals("Release notes", release.notes)
         assertEquals("hole-0.4.0-release.apk", assertNotNull(release.appApk).name)
         assertEquals(200L, release.appApk?.size)
+        assertEquals("hole-0.4.0-wear-release.apk", assertNotNull(release.apkFor(ReleaseApkTarget.WEAR)).name)
+        assertEquals(release.appApk, release.apkFor(ReleaseApkTarget.PHONE))
+    }
+
+    @Test
+    fun wearSelectsUniversalReleaseRegardlessOfAssetOrderAndNeverUsesPhone() {
+        fun asset(name: String) = ReleaseAsset(name, "https://github.com/Haikure/hole/releases/download/v1.0.9/$name", 100)
+        val phone = asset("hole-1.0.9-release.apk")
+        val wear = asset("hole-1.0.9-wear-release.apk")
+        val irrelevant = listOf(phone, asset("hole-1.0.9-wear-debug.apk"), asset("hole-1.0.9-wear-arm64-release.apk"),
+            asset("hole-1.0.9-wear-release.apk.sha256"), asset("app-release.apk"))
+        assertEquals(wear, selectWearApk(irrelevant + wear))
+        assertEquals(wear, selectWearApk(listOf(wear) + irrelevant))
+        assertNull(selectWearApk(irrelevant))
+        assertNull(selectPhoneApk(listOf(wear)))
     }
 
     @Test

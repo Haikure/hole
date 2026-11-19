@@ -267,8 +267,8 @@ class BuildTests(unittest.TestCase):
     def test_desktop_build_embeds_matching_core_and_packages_one_executable(self):
         self.toolchain.write_text("exit 93\n")
         (self.root / "signing.env").write_text("exit 94\n")
-        self.invoke("desktop", "--offline")
-        package = self.root / "dist/desktop/linux-amd64"
+        self.invoke("desktop-rust", "--offline")
+        package = self.root / "dist/desktop-rust/linux-amd64"
         gui = package / "hole-desktop"
         core_binary = self.root / "dist/core/hole-core-linux-amd64"
         self.assertEqual("release-gui-fixture", gui.read_text())
@@ -288,9 +288,24 @@ class BuildTests(unittest.TestCase):
         self.assertIsNone(cargo["env"]["GOARCH"])
         self.assertFalse(self.calls("gradlew"))
 
+    def test_compose_desktop_dispatch_does_not_build_stdio_or_load_android(self):
+        self.toolchain.write_text("exit 93\n")
+        (self.root / "signing.env").write_text("exit 94\n")
+        script = self.root / "desktop/scripts/package.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text(TOOL)
+        self.invoke("desktop", "desktop", "--offline", "--os", "linux", "--arch", "amd64")
+        calls = self.calls("package.sh")
+        self.assertEqual(1, len(calls))
+        self.assertEqual([str(self.root / "dist"), "linux", "amd64"], calls[0]["args"])
+        self.assertEqual("off", calls[0]["env"]["GOPROXY"])
+        self.assertFalse([call for call in self.calls("go") if call["args"][0] == "build"])
+        self.assertFalse(self.calls("cargo"))
+        self.assertFalse(self.calls("gradlew"))
+
     def test_desktop_cross_target_and_combined_target_are_deduplicated(self):
-        self.invoke("desktop", "core", "--os", "windows", "--arch", "amd64")
-        package = self.root / "dist/desktop/windows-amd64"
+        self.invoke("desktop-rust", "core", "--os", "windows", "--arch", "amd64")
+        package = self.root / "dist/desktop-rust/windows-amd64"
         self.assertTrue((package / "hole-desktop.exe").is_file())
         self.assertFalse((package / "hole-core-windows-amd64.exe").exists())
         builds = [call for call in self.calls("go") if call["args"][0] == "build"]
@@ -301,10 +316,10 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(str(self.root / "dist/core/hole-core-windows-amd64.exe"), cargo["env"]["HOLE_EMBED_CORE"])
 
     def test_desktop_replaces_old_sidecar_package_and_scopes_embedded_input(self):
-        package = self.root / "dist/desktop/linux-amd64"
+        package = self.root / "dist/desktop-rust/linux-amd64"
         package.mkdir(parents=True)
         (package / "hole-core-linux-amd64").write_text("old sidecar")
-        self.invoke("desktop", "android", HOLE_EMBED_CORE="/wrong/old-core")
+        self.invoke("desktop-rust", "android", HOLE_EMBED_CORE="/wrong/old-core")
         self.assertEqual({"hole-desktop", "hole-desktop.sha256"}, {p.name for p in package.iterdir()})
         self.assertEqual(str(self.root / "dist/core/hole-core-linux-amd64"), self.calls("cargo")[0]["env"]["HOLE_EMBED_CORE"])
         # The build's chosen input is local to Cargo and doesn't overwrite the caller's environment.
@@ -312,20 +327,20 @@ class BuildTests(unittest.TestCase):
 
     def test_desktop_custom_output_embeds_absolute_path_with_spaces(self):
         output = self.root / "single file output"
-        self.invoke("desktop", "--output", str(output))
+        self.invoke("desktop-rust", "--output", str(output))
         self.assertEqual(str(output / "core/hole-core-linux-amd64"), self.calls("cargo")[0]["env"]["HOLE_EMBED_CORE"])
-        self.assertTrue((output / "desktop/linux-amd64/hole-desktop").is_file())
+        self.assertTrue((output / "desktop-rust/linux-amd64/hole-desktop").is_file())
 
     def test_desktop_rejects_unsupported_target_before_building(self):
-        self.invoke("desktop", "--os", "darwin", "--arch", "amd64", success=False)
+        self.invoke("desktop-rust", "--os", "darwin", "--arch", "amd64", success=False)
         self.assertFalse([call for call in self.calls("go") if call["args"][0] == "build"])
         self.assertFalse(self.calls("cargo"))
 
     def test_failed_desktop_gui_build_preserves_existing_package(self):
-        self.invoke("desktop")
-        package = self.root / "dist/desktop/linux-amd64"
+        self.invoke("desktop-rust")
+        package = self.root / "dist/desktop-rust/linux-amd64"
         previous = {path.name: path.read_bytes() for path in package.iterdir()}
-        self.invoke("desktop", success=False, FAIL_CARGO="1")
+        self.invoke("desktop-rust", success=False, FAIL_CARGO="1")
         self.assertEqual(previous, {path.name: path.read_bytes() for path in package.iterdir()})
 
     def test_cli_and_all_keep_the_existing_target_set(self):

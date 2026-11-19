@@ -5,12 +5,13 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 usage() {
   cat <<'EOF'
-用法：./build.sh <cli|core|desktop|android|wear|all> [更多目标] [选项]
+用法：./build.sh <cli|core|desktop|desktop-rust|android|wear|all> [更多目标] [选项]
 
 目标（可组合，重复目标只构建一次）：
   cli                Go CLI，CGO_ENABLED=0、trimpath、-s -w
   core               独立 Go stdio 核心宿主，Release；不需要 Qt
-  desktop            内嵌 Go 核心的单文件桌面 GUI，Release；需要 Rust stable / Cargo
+  desktop            Kotlin Compose，原生 Go 桥接；Windows exe 安装包 / Linux AppImage
+  desktop-rust       旧 Rust + Yororen UI 单文件 GUI，保留 stdio 宿主
   android / phone    Android 手机 Release，ARM64、R8、资源收缩、native strip
   wear               Wear OS Release，ARM32 + ARM64，同上
   all                cli + android + wear（不包含 core 或 desktop）
@@ -29,6 +30,9 @@ Android 签名使用四个环境变量；已设置的非空变量优先于签名
   HOLE_SIGNING_KEY_ALIAS、HOLE_SIGNING_KEY_PASSWORD
 密钥库相对路径以仓库根目录为基准。脚本不生成或替换签名密钥。
 所有构建缓存固定在仓库 .cache/；SDK、JDK 和签名密钥保留原位置。
+desktop 自动选择已安装的完整 JDK 21+（含 JDK 25）；可用 HOLE_DESKTOP_JAVA_HOME 指定。
+Linux 本机使用系统 GCC；可先运行 bash desktop/scripts/setup-appimage.sh 准备 AppImage 工具。
+也可自行提供 appimagetool 与 HOLE_APPIMAGE_RUNTIME；普通构建不自动下载安装工具。
 
 示例：
   ./build.sh cli --os linux --arch arm64
@@ -40,7 +44,7 @@ EOF
 
 die() { printf '构建失败：%s\n' "$*" >&2; exit 1; }
 need_value() { [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "$1 需要参数"; }
-BUILD_CLI=0 BUILD_CORE=0 BUILD_DESKTOP=0 BUILD_ANDROID=0 BUILD_WEAR=0
+BUILD_CLI=0 BUILD_CORE=0 BUILD_DESKTOP=0 BUILD_COMPOSE=0 BUILD_ANDROID=0 BUILD_WEAR=0
 TARGET_OS="${GOOS:-}" TARGET_ARCH="${GOARCH:-}"
 OUTPUT="$ROOT/dist"
 SIGNING_CONFIG="$ROOT/signing.env"
@@ -50,11 +54,12 @@ add_target() {
   case "$1" in
     cli) BUILD_CLI=1 ;;
     core) BUILD_CORE=1 ;;
-    desktop) BUILD_DESKTOP=1; BUILD_CORE=1 ;;
+    desktop) BUILD_COMPOSE=1 ;;
+    desktop-rust) BUILD_DESKTOP=1; BUILD_CORE=1 ;;
     android|phone) BUILD_ANDROID=1 ;;
     wear) BUILD_WEAR=1 ;;
     all) BUILD_CLI=1; BUILD_ANDROID=1; BUILD_WEAR=1 ;;
-    *) die "未知目标：$1（可选 cli、core、desktop、android、wear、all）" ;;
+    *) die "未知目标：$1（可选 cli、core、desktop、desktop-rust、android、wear、all）" ;;
   esac
 }
 
@@ -72,7 +77,7 @@ while [[ $# -gt 0 ]]; do
     *) add_target "$1"; shift ;;
   esac
 done
-(( BUILD_CLI || BUILD_CORE || BUILD_DESKTOP || BUILD_ANDROID || BUILD_WEAR )) || die '请选择至少一个构建目标'
+(( BUILD_CLI || BUILD_CORE || BUILD_DESKTOP || BUILD_COMPOSE || BUILD_ANDROID || BUILD_WEAR )) || die '请选择至少一个构建目标'
 command -v python3 >/dev/null || die '请安装 Python 3'
 OUTPUT=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$OUTPUT")
 if [[ -f "$SIGNING_CONFIG" ]]; then
@@ -111,6 +116,12 @@ load_signing() {
   [[ -f "$HOLE_SIGNING_STORE_FILE" ]] || die 'HOLE_SIGNING_STORE_FILE 指定的密钥库不存在'
 }
 
+# Compose selects an installed desktop JDK in a child process, before Android loads JDK 17.
+if (( BUILD_COMPOSE )); then
+  if (( OFFLINE )); then export HOLE_BUILD_OFFLINE=1 GOPROXY=off; fi
+  bash "$ROOT/desktop/scripts/package.sh" "$OUTPUT" "$TARGET_OS" "$TARGET_ARCH"
+fi
+
 if (( BUILD_ANDROID || BUILD_WEAR )); then
   hole_load_android_toolchain
   load_signing
@@ -136,6 +147,7 @@ if (( BUILD_DESKTOP )); then
   command -v rustc >/dev/null || die '构建 desktop 需要 rustc；参见 docs/BUILDING.md'
 fi
 if (( OFFLINE )); then export HOLE_BUILD_OFFLINE=1 GOPROXY=off; fi
+
 
 resolve_desktop_target() {
   DESKTOP_OS="${TARGET_OS:-$(go env GOHOSTOS)}"
@@ -221,7 +233,7 @@ build_desktop_gui() (
   gui_binary="$cargo_output/$gui_name"
   [[ -f "$gui_binary" ]] || die "Cargo 未生成桌面程序：$gui_binary"
 
-  package_parent="$OUTPUT/desktop"
+  package_parent="$OUTPUT/desktop-rust"
   package="$package_parent/$local_os-$local_arch"
   mkdir -p "$package_parent"
   stage=$(mktemp -d "$package_parent/.$local_os-$local_arch.XXXXXXXX")

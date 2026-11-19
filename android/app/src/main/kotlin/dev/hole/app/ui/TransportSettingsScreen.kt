@@ -2,7 +2,7 @@ package dev.hole.app.ui
 
 import androidx.compose.material.icons.filled.Check
 
-import androidx.activity.compose.BackHandler
+import dev.hole.app.ui.PlatformBackHandler as BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column

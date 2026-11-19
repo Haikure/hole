@@ -31,7 +31,7 @@ pub fn embed_core() -> Result<(), String> {
     let output = env::var_os("OUT_DIR").ok_or("缺少 OUT_DIR")?;
     let output = Path::new(&output);
     let generated = if env::var_os("CARGO_FEATURE_EMBEDDED_CORE").is_some() {
-        let source = env::var_os("HOLE_EMBED_CORE").ok_or("embedded-core 需要 HOLE_EMBED_CORE；请使用 ./build.sh desktop")?;
+        let source = env::var_os("HOLE_EMBED_CORE").ok_or("embedded-core 需要 HOLE_EMBED_CORE；请使用 ./build.sh desktop-rust")?;
         let source = Path::new(&source);
         if !source.is_absolute() { return Err("HOLE_EMBED_CORE 必须是绝对路径".into()); }
         println!("cargo:rerun-if-changed={}", source.display());

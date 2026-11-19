@@ -1,4 +1,7 @@
-# 桌面客户端与 Go 桥接
+# 旧 Rust 桌面客户端与 stdio 桥接
+
+默认桌面已切换到 [Kotlin Compose 客户端](compose/README.md)：`./build.sh desktop` 生成 Windows exe 安装包或 Linux AppImage，
+通过原生库调用 Go。下面描述保留的 Rust 前端和 PenMods 使用的 stdio 宿主；旧 Rust 入口为 `desktop-rust`，不使用新 JNI 库。
 
 `hole/desktop` 为 Windows / Linux GUI 提供独立的 stdio 宿主，入口为
 `cmd/hole-core`；Rust + Yororen UI GUI 源码位于 `desktop/gui/`。
@@ -25,19 +28,19 @@ TCP / UDP 映射业务字节不经过 GUI。桌面宿主不读取配置文件、
 ## 构建与启动
 
 ```bash
-./build.sh desktop
-./build.sh desktop --os linux --arch arm64
-./build.sh desktop --os windows --arch amd64
+./build.sh desktop-rust
+./build.sh desktop-rust --os linux --arch arm64
+./build.sh desktop-rust --os windows --arch amd64
 ```
 
-`desktop` 生成 `dist/desktop/<goos>-<goarch>/hole-desktop[.exe]` 单文件客户端及 `.sha256`，
+`desktop-rust` 生成 `dist/desktop-rust/<goos>-<goarch>/hole-desktop[.exe]` 单文件客户端及 `.sha256`，
 同平台 Go 核心以 gzip 压缩后内嵌，无需携带独立核心程序。构建完整 GUI 需要 Rust stable / Cargo；交叉构建需预装 Rust target
 及对应 linker / sysroot。缓存统一位于根 `.cache/`。
 
 只构建 Go stdio 核心宿主时使用 `./build.sh core --os linux --arch amd64`；产物为
 `dist/core/hole-core-<goos>-<goarch>[.exe]` 及同名 `.sha256`。
 核心宿主使用 `CGO_ENABLED=0`、`-mod=readonly`、`-trimpath`、`-s -w`，不依赖图形库或 CGo。
-`cli`、`android`、`wear` 和 `all` 不隐式包含 `core` 或 `desktop`；需要时可显式组合。
+`cli`、`android`、`wear` 和 `all` 不隐式包含 `core` 或桌面目标；需要时可显式组合。
 桌面源码不属于共享 AAR 的源码摘要输入。
 
 宿主无运行参数；`--help` 写到 stderr，版本通过 `hello` 查询。仅查询本地状态：
@@ -58,9 +61,9 @@ stdin 消息中，不放到启动参数。Rust `CoreClient` 分离 stdout / stde
 <details>
 <summary>平台加载方式、退出清理与开发覆盖</summary>
 
-`./build.sh desktop` 先构建同平台的 stripped Go 核心，再通过 Cargo 的 `embedded-core` feature
+`./build.sh desktop-rust` 先构建同平台的 stripped Go 核心，再通过 Cargo 的 `embedded-core` feature
 把它嵌入 GUI。构建脚本校验 ELF / PE 架构，记录未压缩大小和 SHA-256；核心文件变化会使 Cargo
-重新嵌入。`dist/core/` 保留独立构建产物，分发客户端时只需复制 `dist/desktop/` 下的 GUI 文件。
+重新嵌入。`dist/core/` 保留独立构建产物，分发客户端时只需复制 `dist/desktop-rust/` 下的 GUI 文件。
 
 - Linux：流式解压到 `memfd_create` 的匿名内存文件，校验大小和 SHA-256，再设置执行权限和写入封印，
   通过 `/proc/self/fd/…` 启动核心。不会创建普通核心临时文件；核心停止后关闭内存文件句柄。
@@ -87,7 +90,7 @@ HOLE_EMBED_CORE="$HOLE_ROOT/dist/core/hole-core-linux-amd64" \
 
 这条命令包含 Linux 真正从 memfd 启动核心、握手和释放句柄的测试。Windows 文件回收的共用逻辑可在
 Linux 测试中验证，Windows ACL / CreateProcess 仍需 Windows 系统运行验收。
-Linux 单文件运行验收可用 `xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop/linux-amd64/hole-desktop`：
+Linux 单文件运行验收可用 `xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop-rust/linux-amd64/hole-desktop`：
 测试只复制 GUI，检查子进程来自 memfd、确认关闭及强制结束 GUI 后核心沿 EOF 退出。
 
 </details>
@@ -393,7 +396,7 @@ Hole；没有本端设备名仍可参与对端指定的 Hole 路径。配置存�
 
 ```bash
 source scripts/build-env.sh
-./build.sh desktop --offline
+./build.sh desktop-rust --offline
 export HOLE_EMBED_CORE="$PWD/dist/core/hole-core-linux-amd64"
 cd desktop/gui
 cargo test --locked --release --offline --no-default-features --features embedded-core
@@ -407,8 +410,8 @@ Linux 窗口检查需要 Xvfb、X11 / Xtst、Python Pillow 和可用的 Vulkan �
 
 ```bash
 source scripts/build-env.sh
-xvfb-run -a -s "-screen 0 1600x1100x24" python3 desktop/gui/tests/ui_x11.py dist/desktop/linux-amd64/hole-desktop
-xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop/linux-amd64/hole-desktop
+xvfb-run -a -s "-screen 0 1600x1100x24" python3 desktop/gui/tests/ui_x11.py dist/desktop-rust/linux-amd64/hole-desktop
+xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop-rust/linux-amd64/hole-desktop
 go test ./desktop ./cmd/hole-core
 git diff --check
 ```

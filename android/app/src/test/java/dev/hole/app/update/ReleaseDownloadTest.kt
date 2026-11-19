@@ -3,6 +3,7 @@ package dev.hole.app.update
 import android.app.DownloadManager
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import dev.hole.app.BuildConfig
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -13,12 +14,58 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class ReleaseDownloadTest {
+    private fun release() = GitHubRelease("v1.0.6", "Hole", "", "https://github.com/Haikure/hole/releases/tag/v1.0.6", "",
+        listOf("hole-1.0.6-release.apk", "hole-1.0.6-wear-release.apk").map {
+            ReleaseAsset(it, "https://github.com/Haikure/hole/releases/download/v1.0.6/$it", 100)
+        })
+
+    @Test fun buildTargetDownloadsOnlyItsOwnApkAndRestoresIt() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val client = ReleaseUpdateClient(context)
+        assertEquals(if (BuildConfig.IS_WEAR) ReleaseApkTarget.WEAR else ReleaseApkTarget.PHONE, client.target)
+        val record = client.enqueueApkDownload(release(), ReleaseAccelerators.DIRECT, "")
+        val request = shadowOf(context.getSystemService(DownloadManager::class.java)).getRequest(record.id)
+        assertEquals(release().apkFor(client.target)?.downloadUrl, shadowOf(request).uri.toString())
+        assertEquals(record, ReleaseUpdateClient(context).savedDownload())
+    }
+
+    @Test fun wearRejectsPhoneOnlyReleaseWithoutEnqueueingDownload() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val client = ReleaseUpdateClient(context, ReleaseApkTarget.WEAR)
+        val phoneOnly = release().copy(assets = listOf(requireNotNull(release().appApk)))
+        val error = runCatching { client.enqueueApkDownload(phoneOnly, ReleaseAccelerators.DIRECT, "") }.exceptionOrNull()
+        assertTrue(error is IllegalStateException)
+        assertTrue(error?.message.orEmpty().contains("Wear 版"))
+        assertNull(client.savedDownload())
+    }
+
+    @Test fun wearRemovesLegacyPhoneDownloadBeforeOfferingInstallation() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val phone = ReleaseUpdateClient(context, ReleaseApkTarget.PHONE)
+        val record = phone.enqueueApkDownload(release(), ReleaseAccelerators.DIRECT, "")
+        // Model the unmarked record written by the old shared phone-only updater.
+        context.getSharedPreferences("release_updates", Context.MODE_PRIVATE).edit().remove("download_target").commit()
+        val wear = ReleaseUpdateClient(context, ReleaseApkTarget.WEAR)
+        assertNull(wear.savedDownload())
+        assertNull(wear.queryDownload(record.id))
+        assertNull(wear.downloadedUri(record.id))
+        val replacement = wear.enqueueApkDownload(release(), ReleaseAccelerators.DIRECT, "")
+        assertEquals(replacement, ReleaseUpdateClient(context, ReleaseApkTarget.WEAR).savedDownload())
+    }
+
+    @Test fun phonePreservesItsLegacyDownload() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val phone = ReleaseUpdateClient(context, ReleaseApkTarget.PHONE)
+        val record = phone.enqueueApkDownload(release(), ReleaseAccelerators.DIRECT, "")
+        context.getSharedPreferences("release_updates", Context.MODE_PRIVATE).edit().remove("download_target").commit()
+        assertEquals(record, ReleaseUpdateClient(context, ReleaseApkTarget.PHONE).savedDownload())
+    }
+
     @Test fun cancellationRemovesSystemTaskAndSurvivesPageRecreation() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val client = ReleaseUpdateClient(context)
         val manager = context.getSystemService(DownloadManager::class.java)
-        val release = GitHubRelease("v1.0.6", "Hole", "", "https://github.com/Haikure/hole/releases/tag/v1.0.6", "",
-            listOf(ReleaseAsset("hole-1.0.6-release.apk", "https://github.com/Haikure/hole/releases/download/v1.0.6/hole-1.0.6-release.apk", 100)))
+        val release = release()
         for (state in listOf(DownloadManager.STATUS_PENDING, DownloadManager.STATUS_RUNNING, DownloadManager.STATUS_PAUSED)) {
             val first = client.enqueueApkDownload(release, ReleaseAccelerators.DIRECT, "")
             shadowOf(shadowOf(manager).getRequest(first.id)).setStatus(state)
@@ -70,8 +117,7 @@ class ReleaseDownloadTest {
         val client = ReleaseUpdateClient(context)
         val manager = context.getSystemService(DownloadManager::class.java)
         val shadow = shadowOf(manager)
-        val release = GitHubRelease("v1.0.6", "Hole", "", "https://github.com/Haikure/hole/releases/tag/v1.0.6", "",
-            listOf(ReleaseAsset("hole-1.0.6-release.apk", "https://github.com/Haikure/hole/releases/download/v1.0.6/hole-1.0.6-release.apk", 100)))
+        val release = release()
         val first = client.enqueueApkDownload(release, ReleaseAccelerators.DIRECT, "")
         val firstRequest = shadow.getRequest(first.id)
         shadowOf(firstRequest).setStatus(DownloadManager.STATUS_RUNNING)

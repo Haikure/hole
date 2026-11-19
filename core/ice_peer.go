@@ -620,7 +620,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 	}
 	if a.ready.Phase == "direct" && a.ready.PunchVersion == natPunchVersion && a.ready.DirectOrder == directOrderICEFirst && a.ready.DirectStage == "punch" {
-		punch, err = p.prepareNATPunch(a, cfg)
+		punch, err = p.prepareNATPunch(a, platform, cfg)
 		if err != nil {
 			p.failed(a, err)
 			return
@@ -782,7 +782,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 				p.stats.PortMapping = snapshot
 			}
 			p.mu.Unlock()
-		}, func() { fail(errors.New("UDP port mapping changed")) })
+		}, func() { p.portMappingChanged(a) })
 		defer mapper.close()
 	}
 	publishCandidate := func(candidate ice.Candidate) {
@@ -804,11 +804,11 @@ func (p *icePeer) attempt(a *iceAttempt) {
 			}
 			m.ICECandidate = candidate.Marshal()
 			a.process.record(NATPunchProcessEvent{Kind: "candidate_local", Title: "发现本机候选",
-				SocketID: a.process.socketAddressID(candidateSocket(candidate)),
+				SocketID:     a.process.socketAddressID(candidateSocket(candidate)),
 				LocalAddress: net.JoinHostPort(candidate.Address(), fmt.Sprint(candidate.Port())), AddressSource: "ice_candidate", Detail: candidate.Type().String()})
 			if candidate.Type() == ice.CandidateTypeServerReflexive {
 				a.process.record(NATPunchProcessEvent{Kind: "mapped", Title: "ICE 收集到公网映射候选",
-					SocketID: a.process.socketAddressID(candidateSocket(candidate)),
+					SocketID:      a.process.socketAddressID(candidateSocket(candidate)),
 					MappedAddress: net.JoinHostPort(candidate.Address(), fmt.Sprint(candidate.Port())), AddressSource: "ice_candidate"})
 			}
 			p.mu.Lock()
@@ -831,7 +831,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 	})
 	_ = agent.OnSelectedCandidatePairChange(func(local, remote ice.Candidate) {
 		a.process.record(NATPunchProcessEvent{Kind: "ice_selected", Title: "ICE 选中候选对",
-			SocketID: a.process.socketAddressID(candidateSocket(local)),
+			SocketID:      a.process.socketAddressID(candidateSocket(local)),
 			LocalAddress:  net.JoinHostPort(local.Address(), fmt.Sprint(local.Port())),
 			RemoteAddress: net.JoinHostPort(remote.Address(), fmt.Sprint(remote.Port())), AddressSource: "ice_candidate"})
 		p.mu.Lock()

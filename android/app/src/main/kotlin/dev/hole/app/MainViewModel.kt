@@ -33,16 +33,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** 已保存配置的 UI 状态。明文密码只存在于本状态中，不落盘、不进快照。 */
-data class ConfigUiState(
-    val loaded: Boolean = false,
-    val config: StoredConfig = StoredConfig(),
-    val password: String = "",
-    val token: String = "",
-    val lastError: String? = null,
-    val turnCredential: String = "",
-)
-
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val mutableState = MutableStateFlow(CoreSnapshot())
     val state = mutableState.asStateFlow()

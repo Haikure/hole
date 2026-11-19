@@ -17,6 +17,7 @@ import (
 
 const natPunchCalibration = "barrier-v1"
 const maxPunchCalibrations = 3
+const natPunchSignalGrace = 5 * time.Second
 
 type punchCalibrationPlans struct {
 	local, remote *natPunchPlan

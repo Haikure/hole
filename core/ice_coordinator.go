@@ -707,6 +707,23 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if c.failTURNRequest(m) {
 			return nil
 		}
+		if m.Code == "punch_calibration_rejected" {
+			c.mu.Lock()
+			p := c.peers[m.TransportID]
+			c.mu.Unlock()
+			if p != nil {
+				p.mu.Lock()
+				a := p.pending
+				p.mu.Unlock()
+				if a != nil && a.ready.TransportGeneration == m.TransportGeneration && m.Punch != nil {
+					// Keep refusal evidence in the trace. A delayed error for an
+					// earlier round must not abort a newer calibration via a.failed.
+					a.process.record(NATPunchProcessEvent{Kind: "signal_error", Title: "Worker 未转发校准结果", Direction: "out", Packet: m.Punch.Kind,
+						Round: m.Punch.Round, Trial: m.Punch.Trial, Validation: "rejected", Detail: m.Message})
+				}
+			}
+			return nil
+		}
 		if m.TransportID != "" && m.Code != "stale_generation" {
 			c.mu.Lock()
 			p := c.peers[m.TransportID]

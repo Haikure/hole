@@ -678,42 +678,49 @@ export class RoomICE {
     if(message.type==='nat_punch') {
       const index=record.a===name?0:1, p=message.punch;
       const direct=record.round_mode?record.round===0:record.phase==='direct';
-      if(!record.punch_version || !direct || record.relay_required || record.lease_until<=Date.now() || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch || !validPunch(p)) return true;
+      if(!record.punch_version || !direct || record.relay_required || record.lease_until<=Date.now() || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch) return true;
+      const rejectCalibration=reason=>{
+        if(p?.kind==='calibrated') send(ws,{type:'error',code:'punch_calibration_rejected',
+          message:`第 ${p.round} 轮校准 ${p.trial} 结果未转发：${reason}`,request_id:message.request_id,
+          transport_id:record.id,transport_generation:record.generation,punch:{kind:p.kind,round:p.round,trial:p.trial}});
+        return true;
+      };
+      if(!validPunch(p)) return rejectCalibration('结果格式或端口计划无效');
       if(record.direct_order===DIRECT_ORDER && record.direct_stage!=='punch') return true;
       cached.punch??=[];
       const previous=cached.punch.find(v=>v.kind===p.kind && v.round===p.round && (!['calibrate','calibrated'].includes(p.kind) || v.trial===p.trial));
       if(previous) return true;
-      if(cached.punch.length>=(record.punch_cone_pool?80:record.punch_calibration?40:record.punch_schedule?20:12)) return true;
+      if(cached.punch.length>=(record.punch_cone_pool?80:record.punch_calibration?40:record.punch_schedule?20:12)) return rejectCalibration('本代次协调消息达到上限');
       const other=record.ice[peerName]?.punch??[];
       const both=[cached.punch,other];
       let pool;
       if (p.round>3) {
         if (record.punch_cone_pool!==PUNCH_CONE_POOL || !['pool_select','calibrate','calibrated','go','failed'].includes(p.kind)) return true;
         pool=conePoolState(both,p.round);
-        if (!pool || p.mode!==undefined && p.mode!==pool.mode) return true;
+        if (!pool || p.mode!==undefined && p.mode!==pool.mode) return rejectCalibration('换 IP 条件或双方模式不一致');
         if (p.kind==='pool_select') {
           if (pool.cone!==0 || p.plan.ip===pool.original.ip || !pool.model.ip_evidence.some(e=>e.ip===p.plan.ip) ||
               !samePunchPlan(p.plan,{...pool.original,ip:p.plan.ip}) || both[0].some(v=>v.kind==='pool_select' && v.plan.ip===p.plan.ip)) return true;
-        } else if (!pool.selection) return true;
-        if (p.kind==='calibrated' && p.result==='ok' && pool.cone===0 && !samePunchPlan(p.plan,pool.selection.plan)) return true;
+        } else if (!pool.selection) return rejectCalibration('锥形端尚未选择备用 IP');
+        if (p.kind==='calibrated' && p.result==='ok' && pool.cone===0 && !samePunchPlan(p.plan,pool.selection.plan)) return rejectCalibration('锥形端未沿用保留的端口计划');
       }
       if (p.kind==='pool_select' && !pool) return true;
-      if(['ready','calibrated'].includes(p.kind) && p.mode==='pool' && (!cached.punch.some(v=>v.kind==='offer' && v.pool_prediction===true) || !other.some(v=>v.kind==='offer' && v.pool_prediction===true))) return true;
+      if(['ready','calibrated'].includes(p.kind) && p.mode==='pool' && (!cached.punch.some(v=>v.kind==='offer' && v.pool_prediction===true) || !other.some(v=>v.kind==='offer' && v.pool_prediction===true))) return rejectCalibration('双方未声明地址池扫描能力');
       if(['reserve','reserved','model'].includes(p.kind) && record.punch_schedule!==PUNCH_SCHEDULE) return true;
       if(p.kind==='reserve' && name!==record.a) return true;
       if(p.kind==='reserved' && (name!==record.b || !other.some(v=>v.kind==='reserve'))) return true;
       if(record.punch_schedule && ['model','calibrate','calibrated','ready','go'].includes(p.kind)) {
         const first=name===record.a?cached.punch:other, second=name===record.b?cached.punch:other;
-        if(!first.some(v=>v.kind==='reserve') || !second.some(v=>v.kind==='reserved')) return true;
+        if(!first.some(v=>v.kind==='reserve') || !second.some(v=>v.kind==='reserved')) return rejectCalibration('双方打洞时段预约尚未完成');
       }
       if (['calibrate','calibrated'].includes(p.kind) || p.trial!==undefined) {
-        if (record.punch_calibration!==PUNCH_CALIBRATION) return true;
+        if (record.punch_calibration!==PUNCH_CALIBRATION) return rejectCalibration('双方未协商同步校准能力');
       }
       if (record.punch_calibration && ['calibrate','calibrated','ready','go'].includes(p.kind)) {
         if (p.kind==='ready') return true; // Successful calibrated messages carry the plans.
         if (!integer(p.trial,1,3)) return true;
         const at=(list,kind,trial=p.trial)=>list.find(v=>v.kind===kind && v.round===p.round && (kind==='model' || v.trial===trial));
-        if (both.some(list=>list.some(v=>v.kind==='abort' || v.kind==='failed' && v.round===p.round))) return true;
+        if (both.some(list=>list.some(v=>v.kind==='abort' || v.kind==='failed' && v.round===p.round))) return true; // Late results after a round ended are harmless.
         if (p.kind==='calibrate') {
           if (!pool && !both.every(list=>at(list,'model')) || both.some(list=>list.some(v=>v.kind==='go' && v.round===p.round))) return true;
           if (p.trial>1) {
@@ -721,7 +728,7 @@ export class RoomICE {
             if (!results.every(v=>v==='ok' || v==='retry') || !results.includes('retry')) return true;
           }
         } else if (p.kind==='calibrated') {
-          if (!both.every(list=>at(list,'calibrate'))) return true;
+          if (!both.every(list=>at(list,'calibrate'))) return rejectCalibration('未收到双方同轮同序号的准备确认');
         } else {
           if (!both.every(list=>at(list,'calibrated')?.result==='ok')) return true;
           if (both.some(list=>list.some(v=>v.round===p.round && v.trial>p.trial))) return true;

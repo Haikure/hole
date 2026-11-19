@@ -25,6 +25,14 @@ data class GitHubRelease(
     val assets: List<ReleaseAsset>,
 ) {
     val appApk: ReleaseAsset? get() = selectPhoneApk(assets)
+    fun apkFor(target: ReleaseApkTarget): ReleaseAsset? = when (target) {
+        ReleaseApkTarget.PHONE -> appApk
+        ReleaseApkTarget.WEAR -> selectWearApk(assets)
+    }
+}
+
+enum class ReleaseApkTarget(val label: String) {
+    PHONE("手机版"), WEAR("Wear 版"),
 }
 
 data class ResolvedAccelerator(val prefix: String, val proxyApi: Boolean)
@@ -112,6 +120,14 @@ fun selectPhoneApk(assets: List<ReleaseAsset>): ReleaseAsset? = assets
     ?.third
 
 private val PHONE_RELEASE_APK = Regex("""^hole[-_]v?\d+(?:\.\d+){1,3}[-_]release\.apk$""")
+
+// Wear delivery is one universal ARM32 + ARM64 APK. Never fall back to the
+// phone APK: both modules share the same package name and signing identity.
+fun selectWearApk(assets: List<ReleaseAsset>): ReleaseAsset? = assets.firstOrNull {
+    WEAR_RELEASE_APK.matches(it.name)
+}
+
+private val WEAR_RELEASE_APK = Regex("""^hole[-_]v?\d+(?:\.\d+){1,3}[-_]wear[-_]release\.apk$""", RegexOption.IGNORE_CASE)
 
 fun compareReleaseVersions(left: String, right: String): Int? {
     val a = parseVersion(left) ?: return null
