@@ -37,8 +37,8 @@ class DesktopScriptsTests(unittest.TestCase):
         return subprocess.run([BASH, str(self.root / "desktop/scripts" / name), *args],
                               cwd=self.root, env={**self.env, **env}, capture_output=True, text=True)
 
-    def cached_tools(self):
-        result = self.shell("hole_desktop_appimage_tools_dir amd64")
+    def cached_tools(self, arch="amd64"):
+        result = self.shell('hole_desktop_appimage_tools_dir "$DESKTOP_TEST_ARCH"', DESKTOP_TEST_ARCH=arch)
         self.assertEqual(0, result.returncode, result.stderr)
         directory = Path(result.stdout.strip())
         tool = directory / "squashfs-root/AppRun"
@@ -101,7 +101,7 @@ class DesktopScriptsTests(unittest.TestCase):
         self.assertIn("HOLE_APPIMAGE_RUNTIME", result.stderr)
 
     def test_setup_reuses_cache_in_offline_mode_without_jdk(self):
-        self.cached_tools()
+        self.cached_tools(arch=os.uname().machine)
         result = self.script("setup-appimage.sh", HOLE_BUILD_OFFLINE="1")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("已就绪", result.stdout)
