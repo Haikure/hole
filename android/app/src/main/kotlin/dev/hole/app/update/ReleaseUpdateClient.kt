@@ -53,7 +53,10 @@ internal class ReleaseDownloadSpeed {
     private companion object { const val WINDOW_MS = 2_000L }
 }
 
-class ReleaseUpdateClient(context: Context) {
+class ReleaseUpdateClient(
+    context: Context,
+    val target: ReleaseApkTarget = if (BuildConfig.IS_WEAR) ReleaseApkTarget.WEAR else ReleaseApkTarget.PHONE,
+) {
     private val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
@@ -81,7 +84,7 @@ class ReleaseUpdateClient(context: Context) {
         connection.readTimeout = READ_TIMEOUT_MS
         connection.requestMethod = "GET"
         connection.setRequestProperty("Accept", "application/vnd.github+json")
-        connection.setRequestProperty("User-Agent", "Hole-Android/${BuildConfig.VERSION_NAME}")
+        connection.setRequestProperty("User-Agent", "Hole-${target.name}/${BuildConfig.VERSION_NAME}")
         try {
             val status = connection.responseCode
             if (status !in 200..299) {
@@ -98,7 +101,7 @@ class ReleaseUpdateClient(context: Context) {
     }
 
     fun enqueueApkDownload(release: GitHubRelease, acceleratorId: String, customPrefix: String): ReleaseDownloadRecord = synchronized(downloadLock) {
-        val asset = release.appApk ?: throw IllegalStateException("最新发行版没有找到手机版 APK")
+        val asset = release.apkFor(target) ?: throw IllegalStateException("最新发行版没有找到${target.label} APK")
         val accelerator = ReleaseAccelerators.resolve(acceleratorId, customPrefix)
         val url = githubRequestUrl(asset.downloadUrl, accelerator.prefix)
         val filename = asset.name.replace(Regex("[^A-Za-z0-9._-]"), "_")
@@ -114,14 +117,15 @@ class ReleaseUpdateClient(context: Context) {
         // a completed APK left behind after reinstalling the same version.
         val destination = "${filename.removeSuffix(".apk")}-${UUID.randomUUID()}.apk"
         val request = DownloadManager.Request(Uri.parse(url)).apply {
-            setTitle("Hole ${release.tag}")
-            setDescription("正在下载 Android 安装包")
+            setTitle("Hole ${target.label} ${release.tag}")
+            setDescription("正在下载${target.label}安装包")
             setMimeType(APK_MIME_TYPE)
             setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             setDestinationInExternalFilesDir(appContext, Environment.DIRECTORY_DOWNLOADS, destination)
         }
         val record = ReleaseDownloadRecord(manager.enqueue(request), release.tag)
-        preferences.edit().putLong(KEY_DOWNLOAD_ID, record.id).putString(KEY_DOWNLOAD_TAG, record.tag).apply()
+        preferences.edit().putLong(KEY_DOWNLOAD_ID, record.id).putString(KEY_DOWNLOAD_TAG, record.tag)
+            .putString(KEY_DOWNLOAD_TARGET, target.name).apply()
         previous?.let { manager.remove(it.id) }
         record
     }
@@ -129,6 +133,14 @@ class ReleaseUpdateClient(context: Context) {
     fun savedDownload(): ReleaseDownloadRecord? = synchronized(downloadLock) {
         val id = preferences.getLong(KEY_DOWNLOAD_ID, INVALID_DOWNLOAD_ID)
         val tag = preferences.getString(KEY_DOWNLOAD_TAG, null)
+        // Older shared code downloaded the phone APK even on Wear. An unmarked
+        // legacy task is a phone download; never offer to install it on a watch.
+        val savedTarget = preferences.getString(KEY_DOWNLOAD_TARGET, ReleaseApkTarget.PHONE.name)
+        if (id != INVALID_DOWNLOAD_ID && savedTarget != target.name) {
+            appContext.getSystemService(DownloadManager::class.java)?.remove(id)
+            clearDownload()
+            return@synchronized null
+        }
         if (id == INVALID_DOWNLOAD_ID || tag.isNullOrBlank()) null else ReleaseDownloadRecord(id, tag)
     }
 
@@ -139,7 +151,7 @@ class ReleaseUpdateClient(context: Context) {
         // clear the persisted identity of a replacement download.
         manager.remove(record.id)
         if (savedDownload()?.id == record.id) {
-            preferences.edit().remove(KEY_DOWNLOAD_ID).remove(KEY_DOWNLOAD_TAG).apply()
+            clearDownload()
         }
     }
 
@@ -157,8 +169,14 @@ class ReleaseUpdateClient(context: Context) {
         }
     }
 
-    fun downloadedUri(id: Long): Uri? = appContext.getSystemService(DownloadManager::class.java)
-        ?.getUriForDownloadedFile(id)
+    fun downloadedUri(id: Long): Uri? = synchronized(downloadLock) {
+        if (savedDownload()?.id != id) return@synchronized null
+        appContext.getSystemService(DownloadManager::class.java)?.getUriForDownloadedFile(id)
+    }
+
+    private fun clearDownload() {
+        preferences.edit().remove(KEY_DOWNLOAD_ID).remove(KEY_DOWNLOAD_TAG).remove(KEY_DOWNLOAD_TARGET).apply()
+    }
 
     private companion object {
         val downloadLock = Any()
@@ -167,6 +185,7 @@ class ReleaseUpdateClient(context: Context) {
         const val KEY_CUSTOM_PREFIX = "custom_prefix"
         const val KEY_DOWNLOAD_ID = "download_id"
         const val KEY_DOWNLOAD_TAG = "download_tag"
+        const val KEY_DOWNLOAD_TARGET = "download_target"
         const val INVALID_DOWNLOAD_ID = -1L
         const val CONNECT_TIMEOUT_MS = 12_000
         const val READ_TIMEOUT_MS = 20_000

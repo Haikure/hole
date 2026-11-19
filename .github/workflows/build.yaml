@@ -7,18 +7,19 @@ on:
   workflow_dispatch:
     inputs:
       type:
-        description: 构建类型；all 会构建 Android、desktop、core 和 cli
+        description: 构建类型；all 包含 Android 手机、Wear、desktop、core 和 cli
         required: true
         default: all
         type: choice
         options:
           - all
           - android
+          - wear
           - desktop
           - core
           - cli
       arch:
-        description: 非 Android 目标架构；Android 始终固定为 arm64
+        description: 非 Android 目标架构；手机固定 ARM64，Wear 固定 ARM32 + ARM64
         required: true
         default: all
         type: choice
@@ -27,7 +28,7 @@ on:
           - amd64
           - arm64
       os:
-        description: 非 Android 目标系统；选择 android 时忽略此项
+        description: 非 Android 目标系统；选择 android 或 wear 时忽略此项
         required: true
         default: all
         type: choice
@@ -57,6 +58,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       has_targets: ${{ steps.matrix.outputs.has_targets }}
       android: ${{ steps.matrix.outputs.android }}
+      android_matrix: ${{ steps.matrix.outputs.android_matrix }}
     steps:
       - name: Resolve requested targets
         id: matrix
@@ -74,7 +76,7 @@ jobs:
           build_arch = os.environ["BUILD_ARCH"]
           build_os = os.environ["BUILD_OS"]
 
-          if build_type not in {"all", "android", "desktop", "core", "cli"}:
+          if build_type not in {"all", "android", "wear", "desktop", "core", "cli"}:
               raise SystemExit(f"unsupported type: {build_type}")
           if build_arch not in {"all", "amd64", "arm64"}:
               raise SystemExit(f"unsupported arch: {build_arch}")
@@ -117,11 +119,17 @@ jobs:
                           "artifact_path": artifact_path,
                       })
 
+          android_matrix = [
+              {"target": target, "abis": abis}
+              for target, abis in (("android", "arm64"), ("wear", "arm32-arm64"))
+              if build_type in {"all", target}
+          ]
           result = {"include": matrix}
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"matrix={json.dumps(result, separators=(',', ':'))}\n")
               output.write(f"has_targets={str(bool(matrix)).lower()}\n")
-              output.write(f"android={str(build_type in {'all', 'android'}).lower()}\n")
+              output.write(f"android={str(bool(android_matrix)).lower()}\n")
+              output.write(f"android_matrix={json.dumps({'include': android_matrix}, separators=(',', ':'))}\n")
           PY
 
   build:
@@ -250,9 +258,12 @@ jobs:
           retention-days: 30
 
   android:
-    name: android / arm64
+    name: ${{ matrix.target }} / ${{ matrix.abis }}
     needs: plan
     if: ${{ needs.plan.outputs.android == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.android_matrix) }}
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -298,9 +309,9 @@ jobs:
             .cache/gradle
             .cache/gradle-project
             .cache/kotlin
-          key: hole-android-arm64-${{ hashFiles('go.sum', 'android/corebridge/gobuild/go.sum', 'android/gradle/libs.versions.toml', 'android/gradle/wrapper/gradle-wrapper.properties', 'versions.json') }}
+          key: hole-${{ matrix.target }}-${{ matrix.abis }}-${{ hashFiles('go.sum', 'android/corebridge/gobuild/go.sum', 'android/gradle/libs.versions.toml', 'android/gradle/wrapper/gradle-wrapper.properties', 'versions.json') }}
           restore-keys: |
-            hole-android-arm64-
+            hole-${{ matrix.target }}-${{ matrix.abis }}-
 
       - name: Install gomobile and gobind
         shell: bash
@@ -343,7 +354,7 @@ jobs:
           test -s "$RUNNER_TEMP/hole-release.keystore"
           printf 'HOLE_SIGNING_STORE_FILE=%s\n' "$RUNNER_TEMP/hole-release.keystore" >> "$GITHUB_ENV"
 
-      - name: Build Android release
+      - name: Build ${{ matrix.target }} release
         shell: bash
         env:
           HOLE_SIGNING_STORE_PASSWORD: ${{ secrets.HOLE_SIGNING_STORE_PASSWORD }}
@@ -355,20 +366,21 @@ jobs:
           export PATH="$GOBIN:$PATH"
           test "$(command -v gomobile)" = "$GOBIN/gomobile"
           test "$(command -v gobind)" = "$GOBIN/gobind"
-          bash ./build.sh android --output dist
-          test -d dist/android
-          apk_count=$(find dist/android -maxdepth 1 -type f -name '*.apk' | wc -l)
+          destination="dist/${{ matrix.target }}"
+          bash ./build.sh "${{ matrix.target }}" --output dist
+          test -d "$destination"
+          apk_count=$(find "$destination" -maxdepth 1 -type f -name '*.apk' | wc -l)
           if [[ "$apk_count" -ne 1 ]]; then
-            echo "期望 dist/android 中恰好有一个 APK，实际为 $apk_count 个" >&2
-            find dist/android -maxdepth 1 -type f -printf '%f\n' | sort >&2
+            echo "期望 $destination 中恰好有一个 APK，实际为 $apk_count 个" >&2
+            find "$destination" -maxdepth 1 -type f -printf '%f\n' | sort >&2
             exit 1
           fi
 
-      - name: Upload Android artifact
+      - name: Upload ${{ matrix.target }} artifact
         uses: actions/upload-artifact@v6
         with:
-          name: hole-android-arm64
-          path: "dist/android/*.apk"
+          name: hole-${{ matrix.target }}-${{ matrix.abis }}
+          path: "dist/${{ matrix.target }}/*.apk"
           if-no-files-found: error
           compression-level: 0
           retention-days: 30

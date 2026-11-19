@@ -113,23 +113,27 @@ Release 不再上传 `.sha256` / `SHA256SUMS` 校验文件；GitHub Release 页�
 默认 `type=all` 会并行构建：
 
 - Android 手机 ARM64；
+- Wear OS 单个 APK，包含 ARM32 + ARM64；
 - `desktop` 的 Linux AMD64 / ARM64、Windows AMD64；Windows ARM64 需要本地原生工具链，尚未配置 CI runner；
 - `core` 的 Linux / Windows AMD64 / ARM64；
 - `cli` 的 Linux / Windows AMD64 / ARM64。
 
 | 工作流选项 / 产物 | 行为 |
 | --- | --- |
-| `type` | 可选单一目标；`android` 固定构建手机 ARM64，忽略 `arch` / `os` |
+| `type` | 可选 `all` / `android` / `wear` / `desktop` / `core` / `cli`；`android` 仅手机 ARM64，`wear` 仅手表双 ARM ABI，均忽略 `arch` / `os` |
 | `arch` / `os` | 筛选 CLI / `core` / `desktop` 矩阵 |
-| Artifact | 每个矩阵任务独立上传，名称含目标、系统、架构；Android 只含唯一 APK |
+| Artifact | 每个矩阵任务独立上传；手机 `hole-android-arm64`、手表 `hole-wear-arm32-arm64`，各只含一个 APK |
 | 压缩 | `compression-level: 0`；GitHub 下载接口仍提供归档容器 |
 
-Android Release 构建需要在仓库或组织中配置以下 Actions secrets：
+Android 手机与 Wear Release 共用以下仓库或组织 Actions secrets：
 
 - `HOLE_SIGNING_KEYSTORE_BASE64`：已有 Release keystore 的 Base64 内容；
 - `HOLE_SIGNING_STORE_PASSWORD`、`HOLE_SIGNING_KEY_ALIAS`、`HOLE_SIGNING_KEY_PASSWORD`：对应签名设置。
 
 工作流只在运行器临时目录解码 keystore，不生成或替换签名密钥。Linux ARM64 桌面任务使用 `ubuntu-24.04-arm` 运行器，Windows ARM64 Kotlin GUI 仅支持自备工具链的本机构建。工作流不调用 `penmods/build.sh`。
+手机与 Wear 使用同一套矩阵任务定义，分别调用 `build.sh android` / `build.sh wear`；每个 APK 都经过根入口的
+签名、版本、ABI、设备声明和 Release 优化检查。tag 发布保留 `hole-<版本>-release.apk` 与
+`hole-<版本>-wear-release.apk` 原名，应用内更新按各模块 `BuildConfig.IS_WEAR` 选择对应附件；Wear 不回退到手机包。
 
 ## 版本号
 
@@ -272,6 +276,7 @@ CI 通过 `scripts/test_desktop_timezones.py` 在 UTC、上海、纽约分别启
 # 仓库根目录；手工调用工具也采用项目缓存
 source scripts/build-env.sh
 python3 -m unittest discover -s scripts -p 'test_build.py'
+python3 -m unittest discover -s scripts -p 'test_release_workflow.py'
 python3 -m unittest discover -s android/scripts -p 'verify_apk_test.py'
 go test -race -count=1 ./...
 go vet ./...

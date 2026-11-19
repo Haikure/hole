@@ -1,6 +1,7 @@
 package dev.hole.app.ui
 
 import android.app.DownloadManager
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -42,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import dev.hole.app.BuildConfig
 import dev.hole.app.update.GitHubRelease
 import dev.hole.app.update.ReleaseAccelerators
+import dev.hole.app.update.ReleaseApkTarget
 import dev.hole.app.update.ReleaseDownloadRecord
 import dev.hole.app.update.ReleaseDownloadSnapshot
 import dev.hole.app.update.ReleaseDownloadSpeed
@@ -195,6 +197,11 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
 
     fun installApk(record: ReleaseDownloadRecord) {
         error = null
+        fun installationError(failure: Exception): String = when {
+            failure is ActivityNotFoundException && client.target == ReleaseApkTarget.WEAR ->
+                "手表系统未提供安装权限页或 APK 安装程序，请通过 ADB 安装 Wear APK。"
+            else -> failure.message ?: "无法打开 Android 安装程序"
+        }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
                 context.startActivity(
@@ -215,11 +222,11 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: Exception) {
-                    error = failure.message ?: "无法打开 Android 安装程序"
+                    error = installationError(failure)
                 }
             }
         } catch (failure: Exception) {
-            error = failure.message ?: "无法打开 Android 安装程序"
+            error = installationError(failure)
         }
     }
 
@@ -230,7 +237,7 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             HoleSettingsGroup("当前版本") {
-                Text("Hole ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
+                Text("Hole ${BuildConfig.VERSION_NAME} · ${client.target.label}", style = MaterialTheme.typography.titleMedium)
                 Text("检查最新正式发行版。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 HoleButton("检查更新", ::checkForUpdates, enabled = !checking)
                 if (checking) {
@@ -250,6 +257,7 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
                             onCancel = { cancelDownload(record) },
                             bytesPerSecond = bytesPerSecond,
                             busy = changingDownload,
+                            apkTarget = client.target,
                         )
                     }
                 }
@@ -297,6 +305,7 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
             }
 
             release?.let { item ->
+                val apk = item.apkFor(client.target)
                 val comparison = compareReleaseVersions(item.tag, BuildConfig.VERSION_NAME)
                 val hasUpdate = comparison != null && comparison > 0
                 HoleSettingsGroup("最新发行版") {
@@ -317,11 +326,11 @@ fun ReleaseUpdateScreen(onBack: () -> Unit) {
                     )
                     val matchingDownload = download?.takeIf { it.tag == item.tag }
                     if (matchingDownload == null) {
-                        ReleaseApkActions(comparison, item.appApk != null, false, false, null,
+                        ReleaseApkActions(comparison, apk != null, false, false, null,
                             onDownload = { downloadApk(item) }, onInstall = {},
-                            busy = changingDownload || !downloadLoaded)
+                            busy = changingDownload || !downloadLoaded, apkTarget = client.target)
                     }
-                    item.appApk?.let { Text("安装包：${it.name} · ${formatBytes(it.size)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    apk?.let { Text("安装包：${it.name} · ${formatBytes(it.size)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     HoleTextButton("查看 GitHub 发行页面", { openReleasePage(item) })
                 }
                 if (item.notes.isNotBlank()) {
@@ -341,6 +350,7 @@ internal fun ReleaseApkActions(
     querying: Boolean, status: ReleaseDownloadSnapshot?,
     onDownload: (() -> Unit)?, onInstall: () -> Unit,
     onCancel: () -> Unit = {}, bytesPerSecond: Long? = null, busy: Boolean = false,
+    apkTarget: ReleaseApkTarget = ReleaseApkTarget.PHONE,
 ) {
     when {
         querying -> {
@@ -349,7 +359,7 @@ internal fun ReleaseApkActions(
             HoleTextButton(if (busy) "正在取消…" else "取消下载", onCancel, enabled = !busy)
         }
         status?.active == true -> ReleaseDownloadProgress(status, bytesPerSecond, busy, onCancel)
-        !hasApk -> Text("发行版没有附带手机版 APK，可打开发行页面查看。", style = MaterialTheme.typography.bodyMedium)
+        !hasApk -> Text("发行版没有附带 ${apkTarget.label} APK，可打开发行页面查看。", style = MaterialTheme.typography.bodyMedium)
         comparison == null || comparison < 0 -> Unit
         else -> {
             if (status?.status == DownloadManager.STATUS_SUCCESSFUL) {

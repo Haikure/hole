@@ -18,6 +18,7 @@ import dev.hole.app.update.ReleaseUpdateClient
 import dev.hole.app.update.GitHubRelease
 import dev.hole.app.update.ReleaseAsset
 import dev.hole.app.update.ReleaseAccelerators
+import dev.hole.app.update.ReleaseApkTarget
 import io.noties.markwon.core.spans.HeadingSpan
 import io.noties.markwon.core.spans.LinkSpan
 import org.junit.Assert.*
@@ -39,7 +40,9 @@ class ReleaseUpdateUiTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val client = ReleaseUpdateClient(context)
         val release = GitHubRelease("v99.0.0", "Hole", "", "https://github.com/Haikure/hole/releases/tag/v99.0.0", "",
-            listOf(ReleaseAsset("hole-99.0.0-release.apk", "https://github.com/Haikure/hole/releases/download/v99.0.0/hole-99.0.0-release.apk", 100)))
+            listOf("hole-99.0.0-release.apk", "hole-99.0.0-wear-release.apk").map {
+                ReleaseAsset(it, "https://github.com/Haikure/hole/releases/download/v99.0.0/$it", 100)
+            })
         val record = client.enqueueApkDownload(release, ReleaseAccelerators.DIRECT, "")
         val manager = context.getSystemService(DownloadManager::class.java)
         shadowOf(shadowOf(manager).getRequest(record.id)).setStatus(DownloadManager.STATUS_RUNNING)
@@ -49,6 +52,14 @@ class ReleaseUpdateUiTest {
         compose.waitUntil(5_000) { client.savedDownload() == null }
         compose.onNodeWithText("取消下载").assertDoesNotExist()
         assertNull(client.queryDownload(record.id))
+    }
+
+    @Test fun missingWearApkDoesNotOfferPhoneDownload() {
+        compose.setContent { HoleTheme(ThemeMode.LIGHT, false) {
+            ReleaseApkActions(1, false, false, false, null, {}, {}, apkTarget = ReleaseApkTarget.WEAR)
+        } }
+        compose.onNodeWithText("发行版没有附带 Wear 版 APK，可打开发行页面查看。").assertExists()
+        compose.onNodeWithText("下载 APK").assertDoesNotExist()
     }
 
     @Test fun downloadProgressAnimatesAndSupportsCancellationWithoutKnownSize() {

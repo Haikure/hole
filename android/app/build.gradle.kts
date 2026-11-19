@@ -29,6 +29,7 @@ android {
         targetSdk = 36
         versionCode = (androidVersion["version_code"] as Number).toInt()
         versionName = androidVersion["version"] as String
+        buildConfigField("boolean", "IS_WEAR", "false")
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     buildFeatures { compose = true; buildConfig = true }

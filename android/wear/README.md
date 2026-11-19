@@ -3,7 +3,7 @@
 独立运行的 Wear OS 安装包，复用手机端 Kotlin 源码、资源、配置、前台服务及 Go 核心。
 Wear OS 与手机共用 [versions.json](../../versions.json) 中的 Android 前端版本和 `versionCode`。
 
-[与手机包的区别](#与手机包的区别) · [构建与安装](#构建与安装) · [手机端使用说明](../README.md#使用) · [项目首页](../../README.md)
+[与手机包的区别](#与手机包的区别) · [构建与安装](#构建与安装) · [应用内更新](#应用内更新) · [手机端使用说明](../README.md#使用) · [项目首页](../../README.md)
 
 | 共用能力 | 说明 |
 | --- | --- |
@@ -48,6 +48,10 @@ Wear OS 与手机共用 [versions.json](../../versions.json) 中的 Android 前�
 ```
 
 输出在 `dist/wear/`，不覆盖手机产物。包含已签名、R8 优化并 strip 的 Release APK、R8 mapping、构建清单和 SHA-256 校验和。
+GitHub Actions 可手动选择 `type=wear`，固定生成含 ARM32 + ARM64 的单个 APK，忽略非 Android 的 `arch` / `os` 筛选。
+`type=all` 或 tag 发布包含独立的 Wear 构建；Artifact 为 `hole-wear-arm32-arm64`，仅附带
+`hole-<版本>-wear-release.apk`。tag Release 使用同一 APK 文件名，与手机包同时发布，不重命名为手机包。
+签名复用现有 `HOLE_SIGNING_*` Actions secrets，不生成新的密钥。
 
 <details>
 <summary>通过 ADB 检查并安装到目标手表</summary>
@@ -65,5 +69,23 @@ adb -s SERIAL install -r "dist/wear/hole-${android_version}-wear-release.apk"
 安装后的圆屏可用性、网络切换和后台运行需要在目标手表上检查。
 
 </details>
+
+## 应用内更新
+
+打开“设置 → 检查更新”，从 `Haikure/hole` 的 GitHub 最新正式发行版获取信息。
+Wear APK 的 `BuildConfig.IS_WEAR=true`，更新页面、下载任务和恢复下载均按构建类型选择手表包；
+不依赖屏幕尺寸、运行设备或 Release 附件顺序判断，不会下载手机版或调试 APK。
+手机与手表的前端版本名和 `versionCode` 继续共用 `versions.json`。
+
+更新支持与手机相同的加速线路、进度、取消、恢复和重新下载；同版本可重新安装。
+升级到此实现后，旧更新器误下载的手机 APK 任务和记录会被清理，不会再显示为可安装的手表更新。
+最新发行版没有 Wear APK 时会明确提示，可查看发行页面，应用不会用手机 APK 代替。
+
+下载完成后由手表系统确认安装，首次可能需要允许 Hole 安装未知应用。
+若手表固件没有安装权限页或 APK 安装程序，应用会提示通过 ADB 安装 Wear APK，沿用上面的 `adb install -r`。
+系统限制、签名与版本规则继续由安装程序执行，应用不提供静默安装。
+
+人工验收应覆盖：发行版同时附带手机 / Wear 包时选择正确附件、缺少 Wear 包、旧手机包任务清理、
+下载中退出再进入、取消与重试、同签名的更高 `versionCode` 覆盖安装，以及配置保留。
 
 工具链与验证命令见 [构建指南](../../docs/BUILDING.md)，共享功能见 [Android README](../README.md)。

@@ -25,6 +25,7 @@ android {
         targetSdk = 36
         versionCode = (androidVersion["version_code"] as Number).toInt()
         versionName = androidVersion["version"] as String
+        buildConfigField("boolean", "IS_WEAR", "true")
         // 很多 Wear OS 设备是 64 位 SoC + 32 位 Android 用户空间。
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
     }
