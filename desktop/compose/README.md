@@ -24,14 +24,14 @@
 Windows 固定 `upgradeUuid`，版本号来自根 `versions.json` 的 `frontends.desktop_gui.version`。
 新版本安装包支持升级已安装的同一应用；不提供自动下载更新。包中启动程序不能脱离应用目录单独复制使用。
 Linux AppImage 仍依赖宿主图形、字体、音频和兼容的 libc，首次运行可能需赋予执行权限。
-当前发布工作流使用 JDK 25，配置 Linux AMD64 / ARM64、Windows AMD64；Windows ARM64 的本机构建需要自行提供匹配 JDK / C 编译器，未配置 CI runner。
+当前发布工作流使用带 `jmods` 的 Zulu JDK 25，配置 Linux AMD64 / ARM64、Windows AMD64；Windows ARM64 的本机构建需要自行提供匹配 JDK / C 编译器，未配置 CI runner。
 
 新桌面默认入口为 `./build.sh desktop`，旧 Rust 入口为 `./build.sh desktop-rust`，旧产物保存在 `dist/desktop-rust/`。
 普通 `all` 继续只包含 CLI、Android 和 Wear。`desktop` 不再隐式构建独立 stdio 宿主；PenMods 仍使用原有 `core` 目标。
 
 ## 工具链与构建
 
-本机提前安装：Go 1.27.4、完整 JDK 21+（支持已有 JDK 25，含 JNI 头文件、javac、jlink、jpackage）、Bash、Python 3、平台 C 编译器。
+本机提前安装：Go 1.27.4、完整 JDK 21+（支持已有 JDK 25，含 JNI 头文件、javac、jlink、jpackage、`jmods/java.base.jmod`）、Bash、Python 3、平台 C 编译器。
 Gradle Wrapper 复用 `android/gradlew`，桌面 Gradle 项目独立，不要求 Android SDK / NDK / 签名。
 Kotlin 2.4.0、Compose Multiplatform 1.12.2、Material 3 1.12.0-alpha03。
 桌面 Material 3 与 Android 发布节奏不同；共享组件和动画源码一致，依赖组合仍需本机构建验证。
@@ -40,7 +40,9 @@ Kotlin 2.4.0、Compose Multiplatform 1.12.2、Material 3 1.12.0-alpha03。
 JDK 选择顺序：`HOLE_DESKTOP_JAVA_HOME` → 合格的 `JAVA_HOME` → `JDK25_HOME` / `JDK21_HOME` → PATH 和系统常见安装目录。
 显式桌面路径无效时报错；当前 `JAVA_HOME` 为 Android JDK 17 时会继续寻找已安装的桌面 JDK。
 JNI 编译、Gradle 与安装包运行时使用同一 JDK；不再要求系统精确安装 JDK 21，字节码目标保留为 JVM 21。
-Release ProGuard 固定为支持 JDK 25 的 7.8.0。桌面 JDK 的切换仅在子进程内，不改变 Android 的 JDK 17 配置。
+Release ProGuard 固定为支持 Kotlin 2.4 的 7.10.0。裁剪需要 `jmods`；部分 JDK 25 发行包（如 Temurin）默认不包含它，
+需自行补齐同版本、同平台的 JMODs 或选择包含它的 JDK（如 Zulu）。选择器会跳过缺少模块文件的 JDK，显式指定时直接报错。
+桌面 JDK 的切换仅在子进程内，不改变 Android 的 JDK 17 配置。
 
 - Windows：Git Bash、MinGW-w64 GCC（`CC` 可显式指定），以及 jpackage 所需 WiX 3 工具。
 - Linux：本机架构的系统 GCC 即可，无需 Android NDK 编译器；`CC` 未指定时由 Go 使用默认 C 编译器。

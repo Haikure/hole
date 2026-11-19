@@ -24,6 +24,9 @@ val desktopJavaVersion = JavaVersion.current()
 require(desktopJavaVersion.isCompatibleWith(JavaVersion.VERSION_21)) {
     "桌面构建使用完整 JDK 21+（支持 JDK 25）；请使用 ./build.sh desktop 自动选择，或设置 JAVA_HOME。"
 }
+require(File(desktopJavaHome, "jmods/java.base.jmod").isFile) {
+    "桌面 Release 裁剪需要 JDK 的 jmods/java.base.jmod；请指定带 jmods 的完整 JDK 21+。当前 JDK：$desktopJavaHome"
+}
 
 kotlin {
     // Use the JDK running Gradle, including JDK 25. Do not require an installed JDK 21.
@@ -108,7 +111,7 @@ compose.desktop {
             linux { iconFile.set(repositoryRoot.resolve("desktop/gui/ui/assets/app-icon.png")) }
         }
         buildTypes.release.proguard {
-            version.set("7.8.0")
+            version.set("7.10.0")
             configurationFiles.from(project.file("proguard-rules.pro"))
         }
     }

@@ -21,8 +21,10 @@ class DesktopToolchainTests(unittest.TestCase):
         path = self.root / (name or f"jdk-{version}")
         (path / "bin").mkdir(parents=True)
         (path / "include").mkdir()
+        (path / "jmods").mkdir()
         (path / "release").write_text(f'JAVA_VERSION="{version}.0.1"\n', encoding="utf-8")
         (path / "include/jni.h").touch()
+        (path / "jmods/java.base.jmod").touch()
         suffix = ".exe" if os.name == "nt" else ""
         for tool in ("java", "javac", "jlink", "jpackage"):
             binary = path / "bin" / (tool + suffix)
@@ -59,6 +61,13 @@ class DesktopToolchainTests(unittest.TestCase):
         (path / "bin" / ("jpackage.exe" if os.name == "nt" else "jpackage")).unlink()
         with self.assertRaisesRegex(ValueError, "未找到完整桌面 JDK"):
             TOOLCHAIN.select_jdk({"JAVA_HOME": str(path)}, [path])
+
+    def test_jdk25_without_jmods_is_skipped_or_rejected_when_explicit(self):
+        jdk21, jdk25 = self.jdk(21), self.jdk(25)
+        (jdk25 / "jmods/java.base.jmod").unlink()
+        self.assertEqual(jdk21, TOOLCHAIN.select_jdk({"JAVA_HOME": str(jdk25)}, [jdk21]))
+        with self.assertRaisesRegex(ValueError, "jmods/java.base.jmod"):
+            TOOLCHAIN.select_jdk({"HOLE_DESKTOP_JAVA_HOME": str(jdk25)}, [jdk21])
 
 
 if __name__ == "__main__":

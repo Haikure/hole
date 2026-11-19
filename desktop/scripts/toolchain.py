@@ -28,6 +28,10 @@ def jdk_version(path):
             return None
     if not (path / "include" / "jni.h").is_file():
         return None
+    # Compose ProGuard reads JDK classes from jmods; some JDK 25 distributions
+    # omit these even though javac, jlink and jpackage are present.
+    if not (path / "jmods" / "java.base.jmod").is_file():
+        return None
     return int(match[1])
 
 
@@ -53,7 +57,7 @@ def select_jdk(environ, discovered):
     if explicit:
         path = jdk_path(explicit)
         if jdk_version(path) is None:
-            raise ValueError("HOLE_DESKTOP_JAVA_HOME 需要完整 JDK 21+（含 javac、jlink、jpackage、JNI 头文件）：" + str(path))
+            raise ValueError("HOLE_DESKTOP_JAVA_HOME 需要完整 JDK 21+（含 javac、jlink、jpackage、JNI 头文件与 jmods/java.base.jmod）：" + str(path))
         return path
     for name in ("JAVA_HOME", "JDK25_HOME", "JDK21_HOME"):
         if environ.get(name):
@@ -68,7 +72,7 @@ def select_jdk(environ, discovered):
             candidates[path] = version
     if candidates:
         return max(candidates, key=lambda path: (candidates[path], str(path)))
-    raise ValueError("未找到完整桌面 JDK 21+；可使用已有 JDK 25，通过 HOLE_DESKTOP_JAVA_HOME 指定目录。不会自动安装 JDK。")
+    raise ValueError("未找到完整桌面 JDK 21+（需含 jmods/java.base.jmod）；可使用带 jmods 的 JDK 25，通过 HOLE_DESKTOP_JAVA_HOME 指定目录。不会自动安装 JDK。")
 
 
 if __name__ == "__main__":

@@ -211,6 +211,7 @@ dist/
 CLI / 独立 Go 核心宿主使用 `CGO_ENABLED=0`、`-trimpath`、`-s -w`，不调用宿主 `strip` 处理其他架构二进制。
 Kotlin 桌面使用 Compose Release / ProGuard 与裁剪 Java 运行时，JNI 原生库使用 `-s -w`；
 Windows 使用官方 `packageReleaseExe`，Linux 使用 `createReleaseDistributable` 后封装 AppImage。
+桌面 JDK 21+ 必须包含 `jmods/java.base.jmod`；CI 使用 Zulu JDK 25，缺少 JMODs 的发行包需先自行补齐匹配模块。
 命令与本地验证见 [Kotlin 桌面说明](../desktop/compose/README.md)。JNI 带 `desktopjni` 标记，不进入普通 CLI / Android 构建。
 
 旧 Rust GUI 使用 Cargo `release` profile 和 `embedded-core` feature；`desktop-rust` 目录包含内嵌核心的 GUI
