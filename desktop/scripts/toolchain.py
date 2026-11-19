@@ -44,7 +44,7 @@ def installed_jdks():
         for name in ("ProgramFiles", "ProgramW6432"):
             if os.environ.get(name):
                 base = Path(os.environ[name])
-                roots.extend(base / vendor for vendor in ("Java", "Eclipse Adoptium", "Microsoft"))
+                roots.extend(base / vendor for vendor in ("Java", "Eclipse Adoptium", "Microsoft", "Zulu"))
     for root in roots:
         try:
             yield from root.iterdir()

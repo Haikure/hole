@@ -4,6 +4,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$ROOT/scripts/build-env.sh"
 cd "$ROOT"
 source "$ROOT/desktop/scripts/toolchain.sh"
+hole_require_desktop_go
 hole_load_desktop_toolchain
 host_os=$(go env GOHOSTOS)
 host_arch=$(go env GOHOSTARCH)
@@ -16,7 +17,6 @@ esac
   echo 'Compose 桌面需要在目标系统和架构上构建。' >&2; exit 1;
 }
 [[ -f "$JAVA_HOME/include/jni.h" ]] || { echo 'JAVA_HOME 中缺少 JNI 头文件' >&2; exit 1; }
-[[ "$(go env GOVERSION)" == go1.27.4 ]] || { echo '需要 Go 1.27.4' >&2; exit 1; }
 output="$ROOT/desktop/compose/build/native"
 mkdir -p "$output"
 # Go invokes the C compiler directly; use Windows paths rather than Git Bash /c paths.

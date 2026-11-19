@@ -23,7 +23,7 @@ PenMods 使用 [插件构建入口](../penmods/README.md#构建)。
 | --- | --- |
 | CLI / `core` | Bash、Python 3、Go 1.27.4；独立宿主无需图形库或 CGo |
 | `desktop` | Kotlin 2.4.0 / Compose Multiplatform 1.12.2，完整 JDK 21+（支持 JDK 25）、Go 1.27.4、本机 C 编译器；仅在目标系统和架构上构建 |
-| Linux 桌面 | 系统 GCC、appimagetool、本架构本地 type2-runtime（`HOLE_APPIMAGE_RUNTIME`）；AppImage 自带裁剪 Java 运行时与 Go 原生库，运行需要兼容的图形、字体、音频环境 |
+| Linux 桌面 | 系统 GCC、appimagetool、本架构 type2-runtime；可显式运行 `bash desktop/scripts/setup-appimage.sh` 准备工具，或自行提供 `HOLE_APPIMAGETOOL` / `HOLE_APPIMAGE_RUNTIME`；AppImage 自带裁剪 Java 运行时与 Go 原生库 |
 | Windows 桌面 | Git Bash、MinGW-w64 GCC、WiX 3；官方 jpackage 每用户 exe 安装包，固定升级标识，自带 Java 运行时与 Go DLL |
 | `desktop-rust` | Rust 1.95+ / Cargo，Yororen UI 0.4 / GPUI CE 0.3；Linux 开发依赖与交叉工具链见旧桌面 README |
 
@@ -33,6 +33,9 @@ PenMods 使用 [插件构建入口](../penmods/README.md#构建)。
 Kotlin 桌面不加载 Android JDK 17；与 Android 组合构建时先在子进程选择桌面 JDK，再加载 Android 的既有工具链。
 旧 Rust 交叉构建需提前安装对应 Rust target 和平台 linker / sysroot（Linux 含目标 ALSA 库）。
 普通构建不会安装 JDK、C 编译器、AppImage 工具、Rust 或系统开发包。
+Linux 可先执行 `bash desktop/scripts/setup-appimage.sh`，显式下载固定版本 AppImage 工具到根 `.cache/`；
+本机与 Actions 复用同一脚本，后续 `./build.sh desktop` 自动发现已有缓存。
+开发 / 验证使用 `bash desktop/scripts/gradle.sh <任务>`，统一选择桌面 JDK、项目缓存和离线选项，无需准备安装包工具。
 项目 Android 构建固定使用 Go 1.27.4。
 
 | Android 组件 | 版本 |
@@ -126,7 +129,7 @@ Android Release 构建需要在仓库或组织中配置以下 Actions secrets：
 - `HOLE_SIGNING_KEYSTORE_BASE64`：已有 Release keystore 的 Base64 内容；
 - `HOLE_SIGNING_STORE_PASSWORD`、`HOLE_SIGNING_KEY_ALIAS`、`HOLE_SIGNING_KEY_PASSWORD`：对应签名设置。
 
-工作流只在运行器临时目录解码 keystore，不生成或替换签名密钥。Linux ARM64 桌面任务使用 `ubuntu-24.04-arm` 运行器，Windows ARM64 GUI 使用 Windows 运行器上的 `aarch64-pc-windows-msvc` Rust target。工作流不调用 `penmods/build.sh`。
+工作流只在运行器临时目录解码 keystore，不生成或替换签名密钥。Linux ARM64 桌面任务使用 `ubuntu-24.04-arm` 运行器，Windows ARM64 Kotlin GUI 仅支持自备工具链的本机构建。工作流不调用 `penmods/build.sh`。
 
 ## 版本号
 

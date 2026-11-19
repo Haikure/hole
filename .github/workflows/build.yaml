@@ -156,7 +156,8 @@ jobs:
             .cache/cargo-home
             .cache/cargo-target
             .cache/gradle
-          key: hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('go.sum', 'desktop/compose/build.gradle.kts', 'versions.json') }}
+            .cache/desktop-tools/appimage
+          key: hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('go.sum', 'desktop/compose/build.gradle.kts', 'desktop/scripts/toolchain.sh', 'versions.json') }}
           restore-keys: |
             hole-${{ matrix.target }}-${{ matrix.os }}-${{ matrix.arch }}-
 
@@ -216,18 +217,7 @@ jobs:
       - name: Prepare Linux AppImage tools
         if: ${{ runner.os == 'Linux' && matrix.target == 'desktop' }}
         shell: bash
-        run: |
-          set -euo pipefail
-          arch=x86_64
-          if [[ '${{ matrix.arch }}' == arm64 ]]; then arch=aarch64; fi
-          mkdir -p .cache/appimage-tools
-          curl -fL "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-$arch.AppImage" -o .cache/appimage-tools/tool.AppImage
-          curl -fL "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-$arch" -o .cache/appimage-tools/runtime
-          chmod +x .cache/appimage-tools/tool.AppImage
-          (cd .cache/appimage-tools; ./tool.AppImage --appimage-extract)
-          ln -s "$PWD/.cache/appimage-tools/squashfs-root/AppRun" .cache/appimage-tools/appimagetool
-          echo "$PWD/.cache/appimage-tools" >> "$GITHUB_PATH"
-          echo "HOLE_APPIMAGE_RUNTIME=$PWD/.cache/appimage-tools/runtime" >> "$GITHUB_ENV"
+        run: bash desktop/scripts/setup-appimage.sh
 
       - name: Build target
         shell: bash

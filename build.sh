@@ -31,7 +31,8 @@ Android 签名使用四个环境变量；已设置的非空变量优先于签名
 密钥库相对路径以仓库根目录为基准。脚本不生成或替换签名密钥。
 所有构建缓存固定在仓库 .cache/；SDK、JDK 和签名密钥保留原位置。
 desktop 自动选择已安装的完整 JDK 21+（含 JDK 25）；可用 HOLE_DESKTOP_JAVA_HOME 指定。
-Linux 本机使用系统 GCC；AppImage 打包还需 appimagetool 与 HOLE_APPIMAGE_RUNTIME。
+Linux 本机使用系统 GCC；可先运行 bash desktop/scripts/setup-appimage.sh 准备 AppImage 工具。
+也可自行提供 appimagetool 与 HOLE_APPIMAGE_RUNTIME；普通构建不自动下载安装工具。
 
 示例：
   ./build.sh cli --os linux --arch arm64

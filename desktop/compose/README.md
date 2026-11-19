@@ -47,19 +47,26 @@ Release ProGuard 固定为支持 Kotlin 2.4 的 7.10.0。裁剪需要 `jmods`；
 
 - Windows：Git Bash、MinGW-w64 GCC（`CC` 可显式指定），以及 jpackage 所需 WiX 3 工具。
 - Linux：本机架构的系统 GCC 即可，无需 Android NDK 编译器；`CC` 未指定时由 Go 使用默认 C 编译器。
-  运行需要 X11 / Wayland 桌面、字体与 Java Sound 可用的系统音频设备；安装 `appimagetool`，
-  并通过 `HOLE_APPIMAGE_RUNTIME` 指定匹配架构的本地 type2-runtime。
+  运行需要 X11 / Wayland 桌面、字体与 Java Sound 可用的系统音频设备。
+  AppImage 工具可使用下面的准备脚本，或自行安装 `appimagetool` 并通过 `HOLE_APPIMAGE_RUNTIME` 指定匹配架构的本地 type2-runtime。
 - 安装包仅在对应系统、架构上生成，`--os` / `--arch` 与宿主不符会报错；不安装或下载 SDK、NDK、JDK、C 编译器及 AppImage 工具。
 - 依赖和构建缓存使用根 `.cache/`，项目生成物位于已忽略的 `desktop/compose/build/`，交付进入 `dist/desktop/<os>-<arch>/`。
 
-Linux 示例，路径替换为已安装工具；JDK 25 位于系统常见目录时无需设置 `JAVA_HOME`：
+Linux 首次准备与构建；JDK 25 位于系统常见目录时无需设置 `JAVA_HOME`：
 
 ```bash
-export HOLE_APPIMAGE_RUNTIME=/path/to/runtime-x86_64
+bash desktop/scripts/setup-appimage.sh   # 显式下载一次，后续复用本地缓存
 ./build.sh desktop
 chmod +x dist/desktop/linux-amd64/*.AppImage
 ./dist/desktop/linux-amd64/Hole-0.1.6-x86_64.AppImage
 ```
+
+准备脚本需要 `curl`，根据本机架构下载固定版本 appimagetool 1.9.1 和 type2-runtime 20251108，
+解开工具自身后存入 `.cache/desktop-tools/appimage/`，无需为准备过程配置 FUSE。
+工具版本统一声明于 `desktop/scripts/toolchain.sh`；按架构与版本分目录，下载成功后才替换对应缓存。
+普通构建只查找现有工具，不调用准备脚本；`HOLE_BUILD_OFFLINE=1` 时准备脚本也只接受已有缓存。
+手动管理工具时，`HOLE_APPIMAGETOOL` 显式路径优先，其次 PATH 中的 `appimagetool`，最后是上述缓存；
+`HOLE_APPIMAGE_RUNTIME` 显式绝对路径优先，否则使用缓存中本架构的 runtime。无效显式路径会直接报错。
 
 Windows 在 Git Bash 中：
 
@@ -73,6 +80,20 @@ export PATH='/c/msys64/ucrt64/bin:/c/Program Files (x86)/WiX Toolset v3.14/bin':
 Windows exe 安装包在 `dist/desktop/windows-amd64/`。安装后从开始菜单或桌面快捷方式打开。
 Release 使用 ProGuard 裁剪，Go 库保留 `-s -w`；不生成签名密钥，不更改 Android 签名。
 `jpackage` 失败时构建入口会输出其详细日志；Actions 同时保留打包诊断文件供下载。
+
+### 脚本职责
+
+| 入口 / 文件 | 职责 |
+| --- | --- |
+| 根 `build.sh desktop` | 对外发布入口，目标 / 输出 / 离线参数与其他模块一致 |
+| `desktop/scripts/package.sh` | 检查宿主目标与平台打包工具，调用 Release 任务，整理安装包和校验文件 |
+| `desktop/scripts/gradle.sh` | 本机与 CI 共用的 Gradle 入口，统一 JDK、缓存、离线参数、Git Bash 路径和失败日志 |
+| `desktop/scripts/build-native.sh` | Gradle 调用的 Go JNI 编译步骤 |
+| `desktop/scripts/toolchain.sh` / `toolchain.py` | 已安装工具的选择、校验与环境加载 |
+| `desktop/scripts/setup-appimage.sh` | 显式准备 AppImage 工具，独立于普通构建 |
+
+Actions 负责矩阵、系统依赖安装、缓存和上传，调用同一准备脚本及 `build.sh desktop`；
+仓库构建脚本不读取 `GITHUB_ENV`、`GITHUB_PATH` 或 runner 路径。本机不需要模拟 Actions 环境。
 
 ## 界面与数据
 
@@ -100,31 +121,29 @@ Release 使用 ProGuard 裁剪，Go 库保留 `-s -w`；不生成签名密钥，
 ## 本地验证
 
 以下是由维护者执行的命令；新增实现没有因现有 AAR、APK、Rust 或旧报告而被判定通过。
-先加载项目缓存，并使用桌面 JDK 21+，已有 JDK 25 可直接使用。直接执行 Gradle 前加载桌面工具链选择器，
-同样需要 JNI 库的本机 C 编译器。
+Gradle 公共入口自动加载项目缓存并选择完整桌面 JDK 21+，已有带 `jmods` 的 JDK 25 可直接使用。
+下列 Gradle 命令均不需要 AppImage 工具或 WiX；涉及 JNI 时仍需要本机 C 编译器。
 
 ```bash
-source scripts/build-env.sh
-source desktop/scripts/toolchain.sh
-hole_load_desktop_toolchain
-
 # 先编译 Kotlin，再运行真实 JNI 回归，无需准备 AppImage 工具或 WiX。
-bash android/gradlew -p desktop/compose --project-cache-dir "$HOLE_CACHE_ROOT/gradle-project-desktop" compileKotlin
-bash android/gradlew -p desktop/compose --project-cache-dir "$HOLE_CACHE_ROOT/gradle-project-desktop" test
+bash desktop/scripts/gradle.sh compileKotlin
+bash desktop/scripts/gradle.sh test
 
 # 开发运行；自动先构建当前源码的 JNI 库。
-bash android/gradlew -p desktop/compose --project-cache-dir "$HOLE_CACHE_ROOT/gradle-project-desktop" run
+bash desktop/scripts/gradle.sh run
 
 # 使用裁剪后的 Release 验证，检查 ProGuard / Java 模块 / 原生资源。
-bash android/gradlew -p desktop/compose --project-cache-dir "$HOLE_CACHE_ROOT/gradle-project-desktop" runReleaseDistributable
+bash desktop/scripts/gradle.sh runReleaseDistributable
 
 # Go facade 的两套依赖图与并发回归。
+source scripts/build-env.sh
 go test -race ./mobile ./core
 (cd android/corebridge/gobuild && go test hole/core hole/mobile)
 
 # 发布入口的离线回归（使用编译器替身，不是安装包运行验收）。
 python3 -m unittest discover -s scripts -p 'test_build.py'
 python3 -m unittest discover -s scripts -p 'test_desktop_toolchain.py'
+python3 -m unittest discover -s scripts -p 'test_desktop_scripts.py'
 
 # Android 共用源码回归需要 Android 工具链，另开终端配置其 JDK。
 # JDK 21：JVM 测试与 lint；正式 APK 构建继续由根入口加载既有 JDK 17 与签名。
