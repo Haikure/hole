@@ -299,6 +299,7 @@ Peer Relay 是同房间单跳中继：A 与 B 无法直连时，复用 A↔R、R
 两条直连 transport ID / generation、端到端 transport ID / generation 和租约截止时间。
 客户端再次确认对应连接仍是当前已认证直连，禁止跨代次、跨运行实例或中继链转发。
 授权随 `transport_sync` / `transport_renew` 更新，Worker 休眠恢复可重放；离开路径时发送 `peer_relay_revoke`。
+恢复及在线配置更新触发重放前，Worker 将路由租约与设备对租约同步，并先向中继节点重发授权。
 
 外层 DATAGRAM 使用 `HPR\x01` 前缀，后接现有 UDP 分片格式：其中 session ID 为 route。
 每帧不超过 1100 字节；内部 QUIC 包固定为最多 1200 字节，按需分片并在终端有界重组。
@@ -306,6 +307,7 @@ R 不重组或解密内部包，只在两条授权直连之间转发。每条外
 由端到端 QUIC 恢复；不将数据报装进可靠流。每节点最多 8 条转发授权，每端最多 8 条 Peer Relay 路径，沿用共享核心的会话和重组限额。
 
 内部 QUIC 使用信令中的终端证书指纹和原有 mux 身份检查，业务通道、TCP 重放、UDP 和语音协议复用共享实现。
+证书指纹不匹配或协议能力不符时，保留 `peer_identity_mismatch` / `protocol_mismatch` 错误，停止该设备对并上报 `transport_failed`，等待配置或运行实例更新。
 握手限时 8 秒；本地直连失效、授权到期或中继报告目标直连不可用后，双方递增代次并进入暂存的普通中继轮次，
 不会跳过第一条 Hole / TURN 路径，也不会在本轮反复尝试同一 Peer Relay。若普通中继也不可用，继续原有重试退避。
 快照以 `path_type: peer_relay` 和 `relay_device` 标识此路径，RTT 来自内部 QUIC；不公布虚拟 PacketConn 地址。

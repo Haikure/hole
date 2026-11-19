@@ -44,6 +44,45 @@ test('Peer Relay requires two current direct legs and holds the ordinary fallbac
  }
 });
 
+test('Peer Relay refreshes the persisted route before replaying a live mapping update',async t=>{
+ let now=Date.now();
+ t.mock.method(Date,'now',()=>now);
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket(),relay=f.socket();
+ const caps={voice:true,live_config:true,peer_relay_version:'peer-relay-v1',relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'};
+ const left={...join('alpha',['one','two']),...caps},right={...join('beta',[],['one','two']),...caps};
+ for (const [ws,declaration] of [[a,left],[b,right],[relay,{...join('relay'),...caps}]]) {
+  await r.webSocketMessage(ws,JSON.stringify(declaration));
+ }
+ const record=[...r.ice.records.values()].find(r=>r.a==='alpha' && r.b==='beta');
+ for (const leg of [...r.ice.records.values()].filter(r=>r!==record)) {
+  for (const [ws,name] of [[a,'alpha'],[b,'beta'],[relay,'relay']]) {
+   if (name===leg.a || name===leg.b) await r.webSocketMessage(ws,JSON.stringify({type:'transport_established',
+    transport_id:leg.id,transport_generation:leg.generation,path_type:'direct'}));
+  }
+ }
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,
+  expected_generation:record.generation,relay_round:1,reason:'direct_exhausted'}));
+ const {route}=record.peer_relay,generation=record.generation;
+ const storedLease=Number(f.values.get(`transport:${record.id}`).peer_relay.lease_until);
+ now+=5*60_000;
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_renew'}));
+ assert.equal(Number(f.values.get(`transport:${record.id}`).peer_relay.lease_until),storedLease);
+ now+=6*60_000;
+ assert.ok(storedLease<now && record.lease_until>now);
+ const resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(b,JSON.stringify(memberUpdate({...right,consume:right.consume.slice(0,1)},1)));
+ const ready=a.messages.filter(m=>m.type==='transport_ready' && m.transport_id===record.id).at(-1);
+ const grant=relay.messages.filter(m=>m.type==='peer_relay_grant' && m.transport_id===record.id).at(-1);
+ assert.equal(ready.phase,'peer_relay');
+ assert.equal(ready.transport_generation,generation);
+ assert.equal(ready.peer_relay.route,route);
+ assert.deepEqual(ready.mappings.map(m=>m.mapping_id),['one']);
+ assert.ok(Number(ready.peer_relay.lease_until)>now);
+ assert.equal(ready.peer_relay.lease_until,ready.lease_until);
+ assert.deepEqual(grant.peer_relay,ready.peer_relay);
+ assert.equal(f.values.get(`transport:${record.id}`).peer_relay.lease_until,ready.lease_until);
+});
+
 test('address pool evidence stays bounded and does not assert a global model',()=>{
  const snapshot={status:'complete',type:'address_pool',predictability:'unverified',samples:2,ip_evidence:[
   {ip:'198.51.100.1',targets:1,ports:1,trend:'unknown'},

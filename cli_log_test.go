@@ -60,6 +60,21 @@ func TestCLILogFormatAndCauseRules(t *testing.T) {
 	}
 }
 
+func TestCLIPeerRelayPathShowsTheNode(t *testing.T) {
+	r, output := testReporter(t)
+	p := core.PeerTransportSnapshot{PeerID: "peer", TransportID: "peer-relay-1", Profile: core.ProfileICE, Phase: "peer_relay", State: "connecting"}
+	r.peer(p)
+	if !strings.Contains(output.String(), "节点中继") {
+		t.Fatal(output)
+	}
+	output.Reset()
+	p.State, p.PathType, p.RelayDevice = "active", "peer_relay", "relay"
+	r.peer(p)
+	if !strings.Contains(output.String(), "已连接 节点中继") || !strings.Contains(output.String(), "relay") {
+		t.Fatal(output)
+	}
+}
+
 func TestCLIFixedPathShowsEndpointActualAddressAndFailure(t *testing.T) {
 	r, output := testReporter(t)
 	p := core.PeerTransportSnapshot{PeerID: "public", TransportID: "fixed-1", Profile: core.ProfileFixed, Phase: "fixed", FixedEndpoint: "gateway.example:50000", State: "connecting"}

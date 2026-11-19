@@ -577,6 +577,7 @@ pub fn configuration_text(s: &Snapshot) -> &'static str {
 
 pub fn phase_label(phase: &str) -> &'static str {
     match phase {
+        "peer_relay" => "连接节点中继",
         "hole" => "连接 Hole 中继",
         "fixed" => "连接固定入口",
         "direct" => "探测直连路径",
@@ -613,6 +614,9 @@ pub fn is_fixed_peer(p: &Peer) -> bool {
 }
 
 pub fn peer_path_label(p: &Peer) -> String {
+    if p.path_type == "peer_relay" {
+        return format!("节点中继 · {}", p.relay_device);
+    }
     if p.path_type == "hole" {
         return format!("Hole 中继 · {}", p.relay_device);
     }
@@ -659,6 +663,7 @@ pub fn relay_access_label(protocol: &str, side: &str) -> String {
 }
 
 pub fn relay_path_label(p: &Peer) -> String {
+    if p.path_type == "peer_relay" { return "节点中继 · QUIC DATAGRAM".into(); }
     let local = &p.local_relay_protocol;
     match p.relay_side.as_str() {
         "remote" => relay_access_label(&p.remote_relay_protocol, "remote"),
@@ -674,6 +679,7 @@ pub fn relay_path_label(p: &Peer) -> String {
 }
 
 pub fn selected_connection_label(kind: &str, address: &str) -> String {
+    if kind == "peer_relay" { return "节点中继".into(); }
     let path = match kind {
         "hole" => "Hole 中继 UDP 接入",
         "fixed" => "固定入口直连",
@@ -718,7 +724,7 @@ pub fn profile_label(profile: &str) -> &'static str {
 }
 
 pub fn voice_path_label(path: &str) -> &str {
-    match path { "fixed" => "固定入口直连", "" => "路径待确认", _ => path }
+    match path { "fixed" => "固定入口直连", "peer_relay" => "节点中继", "" => "路径待确认", _ => path }
 }
 
 pub fn connection_issue(code: &str) -> &'static str {
@@ -997,6 +1003,17 @@ mod tests {
         assert!(fixed_peer_details(&s.peers[3]).is_empty());
         assert!(connection_issue("fixed_path_failed").contains("仅重试固定入口"));
         assert!(connection_issue("fixed_relay_conflict").contains("仅中继"));
+    }
+
+    #[test]
+    fn peer_relay_labels_identify_the_node_without_an_entrance_address() {
+        let p = Peer { state: "active".into(), phase: "peer_relay".into(), path_type: "peer_relay".into(), relay_device: "relay".into(), ..Default::default() };
+        assert_eq!(peer_path_label(&p), "节点中继 · relay");
+        assert_eq!(phase_label(&p.phase), "连接节点中继");
+        assert_eq!(relay_path_label(&p), "节点中继 · QUIC DATAGRAM");
+        assert_eq!(selected_connection_label("peer_relay", ""), "节点中继");
+        assert_eq!(voice_path_label("peer_relay"), "节点中继");
+        assert!(!is_fixed_peer(&p));
     }
 
     #[test]

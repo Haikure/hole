@@ -838,6 +838,7 @@ Item {
             fixed: "连接固定入口",
             direct: "探测直连路径",
             hole: "连接 Hole 中继",
+            peer_relay: "连接节点中继",
             relay_udp: "尝试 UDP 中继",
             relay_tls_443: "尝试 TLS 中继 · 443 端口",
             relay_tls: "尝试 TLS 中继 · 5349 / 自定义端口",
@@ -869,6 +870,7 @@ Item {
     function candidateAccessText(candidateType, protocol, side) {
         var type = asString(candidateType).toLowerCase()
         if (type === "fixed") return "固定入口直连"
+        if (type === "peer_relay") return "节点中继"
         if (asString(protocol).length > 0) return relayAccessText(protocol, side)
         if (type === "relay") return relayAccessText(protocol, side)
         if (type === "host" || type === "srflx" || type === "prflx") return "直连"
@@ -896,6 +898,7 @@ Item {
         var family = asString(peer.address_family)
         if (page.isFixedPeer(peer)) return "固定入口直连" + (family.length > 0 ? " · " + family : "")
         if (path === "hole") return "Hole 中继 · " + asString(peer.relay_device)
+        if (path === "peer_relay") return "节点中继 · " + asString(peer.relay_device)
         if (path === "relay") return "TURN 中继" + (family.length > 0 ? " · " + family : "")
         if (path === "direct") return "设备直连" + (family.length > 0 ? " · " + family : "")
         return "路径未选定"
@@ -938,9 +941,11 @@ Item {
         var path = asString(peer.path_type)
         var fixed = page.isFixedPeer(peer)
         if (asString(peer.relay_device).length > 0) {
-            appendSnapshotLine(lines, "  Hole 中继设备", peer.relay_device)
-            appendSnapshotLine(lines, "  公布入口", peer.relay_endpoint)
-            appendSnapshotLine(lines, "  实际接入地址", peer.relay_access_address)
+            appendSnapshotLine(lines, path === "peer_relay" ? "  节点中继设备" : "  Hole 中继设备", peer.relay_device)
+            if (path !== "peer_relay") {
+                appendSnapshotLine(lines, "  公布入口", peer.relay_endpoint)
+                appendSnapshotLine(lines, "  实际接入地址", peer.relay_access_address)
+            }
         }
         if (fixed) {
             appendSnapshotLine(lines, "  公布入口", peer.fixed_endpoint)

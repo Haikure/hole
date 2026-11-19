@@ -2,12 +2,65 @@ package core
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestPeerRelayHandshakePreservesSignalFailure(t *testing.T) {
+	for _, code := range []string{"peer_identity_mismatch", "protocol_mismatch", "peer_upgrade_required", "network_error"} {
+		t.Run(code, func(t *testing.T) {
+			c, p := lifecycleCoordinator(t)
+			legReady := iceSignalMessage{SignalMessage: SignalMessage{PeerDevice: "relay"},
+				TransportID: "leg", TransportGeneration: 3, PeerRuntimeID: "relay-runtime", LeaseUntil: p.ready.LeaseUntil}
+			outer := &muxPeer{ctx: c.ctx, peerRelay: true}
+			c.peers["leg"] = &icePeer{online: true, ready: legReady, stats: PeerTransportSnapshot{PathType: "direct"},
+				active: &liveICETransport{ready: legReady, mux: outer}}
+			round := 1
+			ready := p.ready
+			ready.Profile, ready.Phase, ready.RelayPairing, ready.RelayRound = ProfileICE, "peer_relay", relayPairingAll, &round
+			// Accept without a remote packet: only the signaling failure should
+			// terminate the handshake, preserving its cause through cancellation.
+			ready.InitiatorID = "peer"
+			ready.PeerRelay = &peerRelayGrant{Route: strings.Repeat("1", 32), Device: "relay", Runtime: "relay-runtime",
+				Devices: [2]string{c.deviceID(), "peer"}, Links: [2]peerRelayLink{{ID: "leg", Generation: 3}, {ID: "other-leg", Generation: 4}}}
+			ctx, cancel := context.WithCancel(c.ctx)
+			defer cancel()
+			a := &iceAttempt{ctx: ctx, cancel: cancel, ready: ready, failed: make(chan error, 1)}
+			p.ready, p.pending = ready, a
+			failure := &Fault{Code: code, Message: "fixture signaling failure"}
+			a.failed <- failure
+			p.attemptPeerRelay(a)
+			fatal := code != "network_error"
+			if p.pending != nil || p.terminal != fatal || p.stats.Error == nil {
+				t.Fatalf("pending=%v terminal=%v error=%v", p.pending, p.terminal, p.stats.Error)
+			}
+			if fatal && (p.stats.State != "error" || p.stats.Error.Code != code || p.stats.Error.Message != failure.Message) {
+				t.Fatalf("lost signaling fault: state=%s error=%v", p.stats.State, p.stats.Error)
+			}
+			select {
+			case report := <-c.sink.messages:
+				if fatal {
+					if report.Type != "transport_failed" || report.Code != code {
+						t.Fatalf("unexpected report: %+v", report)
+					}
+				} else if report.Type != "transport_restart" || report.RelayRound == nil || *report.RelayRound != round || report.Reason != "peer_relay_failed" {
+					t.Fatalf("fallback skipped held round: %+v", report)
+				}
+			default:
+				t.Fatal("missing failure report or fallback")
+			}
+			if len(c.peerRelayPaths) != 0 || !errors.Is(a.ctx.Err(), context.Canceled) {
+				t.Fatal("handshake did not release its route")
+			}
+		})
+	}
+}
 
 // One local three-device scenario covers the real Worker, both QUIC layers,
 // fragmented datagrams and fallback without depending on Internet NAT behavior.

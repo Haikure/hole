@@ -101,7 +101,7 @@ fun RuntimeDetailsScreen(
             }
             item {
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    val filters = if (tab == "devices") listOf("all" to "全部", "direct" to "直连", "hole" to "Hole", "relay" to "TURN", "fixed" to "固定入口")
+                    val filters = if (tab == "devices") listOf("all" to "全部", "direct" to "直连", "peer_relay" to "节点中继", "hole" to "Hole", "relay" to "TURN", "fixed" to "固定入口")
                         else listOf("all" to "全部", "tcp" to "TCP", "udp" to "UDP")
                     filters.forEach { (value, label) ->
                         FilterChip(selected = filter == value, onClick = { filter = value }, label = { Text(label) }, shape = CircleShape)

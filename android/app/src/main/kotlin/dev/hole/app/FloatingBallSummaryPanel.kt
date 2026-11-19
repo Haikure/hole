@@ -278,6 +278,7 @@ internal fun floatingBallActivePeers(snapshot: CoreSnapshot): List<PeerSnapshot>
     snapshot.peers.filter { it.state in FLOATING_BALL_ACTIVE_STATES }.take(2)
 
 internal fun floatingBallPathLabel(peer: PeerSnapshot): String = when {
+    peer.pathType == "peer_relay" -> "节点中继"
     peer.pathType == "hole" -> "Hole 中继"
     peer.pathType == "relay" -> "TURN 中继"
     peer.pathType == "direct" || isFixedPeer(peer) -> {

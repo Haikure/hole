@@ -63,8 +63,12 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
                 appendLine("  本机 NAT ${peer.localNAT.description()} · 对端 NAT ${peer.peerNAT.description()}")
                 appendLine("  探测时间 ${peer.localNAT.probedAtDisplay} / ${peer.peerNAT.probedAtDisplay} · 端口映射 ${peer.portMapping.description()}")
                 if (peer.portMapping.reason.isNotBlank()) appendLine("  映射说明 ${peer.portMapping.reason}")
-                if (peer.relayDevice.isNotBlank()) appendLine("  Hole 中继设备 ${peer.relayDevice} · 公布入口 ${peer.relayEndpoint} · 实际接入 ${peer.relayAccessAddress}")
-                appendLine("  本机接入 ${peer.localRelayProtocol.ifBlank { peer.relayProtocol }.ifBlank { "非本机中继" }} · 对端接入 ${peer.remoteRelayProtocol.ifBlank { "未上报" }} · 中继使用方 ${peer.relaySide}")
+                if (peer.pathType == "peer_relay") {
+                    appendLine("  节点中继设备 ${peer.relayDevice} · 已有直连 QUIC DATAGRAM")
+                } else {
+                    if (peer.relayDevice.isNotBlank()) appendLine("  Hole 中继设备 ${peer.relayDevice} · 公布入口 ${peer.relayEndpoint} · 实际接入 ${peer.relayAccessAddress}")
+                    appendLine("  本机接入 ${peer.localRelayProtocol.ifBlank { peer.relayProtocol }.ifBlank { "非本机中继" }} · 对端接入 ${peer.remoteRelayProtocol.ifBlank { "未上报" }} · 中继使用方 ${peer.relaySide}")
+                }
                 appendLine("  本机中继顺序 ${relayOrderLabel(peer.relayOrder)} · 对端中继顺序 ${relayOrderLabel(peer.peerRelayOrder)} · 轮次 ${peer.relayRound}${if (peer.relayOrderFallback) " · 已回退默认顺序" else ""}")
                 appendLine("  本地 ${peer.localAddress} (${peer.localType}) · 对端 ${peer.remoteAddress} (${peer.remoteType})")
             }
@@ -77,7 +81,10 @@ fun diagnosticReport(snapshot: CoreSnapshot, config: ConfigUiState, background: 
             appendLine("  QUIC 平均带宽 ${peer.bandwidth?.description(peak = false) ?: "未上报或采样中"}")
             appendLine("  ${peer.transportId} / generation ${peer.generation} / phase ${peer.phase}（${peerPhaseLabel(peer)}） / retries ${peer.retryCount}")
             peer.punchDiagnostics.forEach { appendLine("  IPv4 打洞轮次 $it") }
-            if (!isFixedPeer(peer)) appendLine("  中继状态 ${peer.relayState} · 凭据到期 ${peer.turnExpiresAt}")
+            if (!isFixedPeer(peer)) {
+                if (peer.pathType == "peer_relay") appendLine("  中继状态 ${peer.relayState}")
+                else appendLine("  中继状态 ${peer.relayState} · 凭据到期 ${peer.turnExpiresAt}")
+            }
             appendLine("  授权到期 ${peer.leaseUntil}")
             peer.errorCode?.let { appendLine("  当前问题 $it: ${peer.errorMessage.orEmpty()}") }
             fixedConnectionIssue(peer.errorCode)?.let { appendLine("  $it") }

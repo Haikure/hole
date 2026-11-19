@@ -505,6 +505,10 @@ func (p *icePeer) stateChanged() {
 	p.mu.Unlock()
 	p.coordinator.emit(Event{Kind: "transport", State: "changed", Peer: peer, Profile: profile})
 }
+func terminalTransportFault(fault *Fault) bool {
+	return fault.Code == "protocol_mismatch" || fault.Code == "peer_identity_mismatch" || fault.Code == "peer_upgrade_required"
+}
+
 func (p *icePeer) failed(a *iceAttempt, err error) {
 	detail := redact(err.Error(), p.coordinator.request().Config)
 	if a.diagnostics != nil {
@@ -529,7 +533,7 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 	p.pending = nil
 	p.stats.State = "reconnecting"
 	p.stats.Error = fault
-	p.terminal = fault.Code == "protocol_mismatch" || fault.Code == "peer_identity_mismatch" || fault.Code == "peer_upgrade_required"
+	p.terminal = terminalTransportFault(fault)
 	fatal := p.terminal
 	if fatal {
 		p.stats.State = "error"
@@ -1192,11 +1196,24 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	status.TransportGeneration = a.ready.TransportGeneration
 	status.PathType = p.snapshot().PathType
 	_ = p.coordinator.send(status)
+	var failure error
 	select {
 	case <-mux.ctx.Done():
+		failure = context.Cause(mux.ctx)
 	case <-a.ctx.Done():
-	case <-a.failed:
+		failure = context.Cause(a.ctx)
+	case failure = <-a.failed:
 	}
+	// Peer Relay's watcher cancels the inner mux with the original signaling
+	// fault. Preserve it even when cancellation wins the select above.
+	if cause := context.Cause(mux.ctx); a.ready.Phase == "peer_relay" && cause != nil && !errors.Is(cause, context.Canceled) {
+		failure = cause
+	}
+	var fault *Fault
+	if failure != nil {
+		fault = classifyError(failure)
+	}
+	fatal := a.ready.Phase == "peer_relay" && fault != nil && terminalTransportFault(fault)
 	live.close()
 	if a.ready.Voice {
 		if voice := p.coordinator.voiceRuntimePtr(); voice != nil {
@@ -1205,15 +1222,26 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	}
 	p.mu.Lock()
 	current := p.active == live
+	fatal = fatal && p.ready.TransportGeneration == a.ready.TransportGeneration
 	if current {
 		p.active = nil
 		p.stats.State = "reconnecting"
 		p.stats.RTTMS = 0
+		if fatal {
+			p.terminal = true
+			p.stats.State, p.stats.Error = "error", fault
+		}
 	}
 	p.mu.Unlock()
 	if current && p.ctx.Err() == nil {
 		p.stateChanged()
-		if a.ready.Phase == "peer_relay" {
+		if fatal {
+			p.transportEvent(a, "error", fault)
+			report := signalMessage("transport_failed")
+			report.TransportID, report.TransportGeneration = a.ready.TransportID, a.ready.TransportGeneration
+			report.Code = fault.Code
+			_ = p.coordinator.send(report)
+		} else if a.ready.Phase == "peer_relay" {
 			p.restartWithRound(a.ready.RelayRound, "", "peer_relay_failed")
 		} else {
 			p.restart("direct", "path_lost")

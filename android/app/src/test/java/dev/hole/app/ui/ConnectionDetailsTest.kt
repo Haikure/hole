@@ -23,6 +23,36 @@ import kotlin.test.assertFalse
 @LooperMode(LooperMode.Mode.PAUSED)
 class ConnectionDetailsTest {
     @get:Rule val compose = createComposeRule()
+    @Test fun peerRelayLabelsIdentifyTheNodeWithoutAnEntranceAddress() {
+        val peer = PeerSnapshot(state="active", phase="peer_relay", pathType="peer_relay", relayDevice="relay")
+        assertEquals("节点中继 · relay", peerPathLabel(peer))
+        assertEquals("连接节点中继", peerPhaseLabel(peer))
+        assertEquals("节点中继 · QUIC DATAGRAM", relayPathLabel(peer))
+        assertEquals("节点中继", selectedConnectionLabel("peer_relay", ""))
+        assertEquals("节点中继", voicePathLabel("peer_relay"))
+        assertFalse(isFixedPeer(peer))
+    }
+
+    @Test fun peerRelayFilterAndDetailsKeepNodeRelaySeparateFromHole() {
+        val peers = listOf(
+            PeerSnapshot(peerId="node-peer", transportId="node-peer", state="active", phase="peer_relay", pathType="peer_relay", relayDevice="relay"),
+            PeerSnapshot(peerId="direct-peer", transportId="direct-peer", state="active", phase="direct", pathType="direct"),
+        )
+        compose.setContent { HoleTheme(ThemeMode.LIGHT, false) {
+            RuntimeDetailsScreen(CoreSnapshot(peers=peers), ConfigUiState(loaded=true), null,
+                onBack={}, onReconnect={}, onExport={}, onBackground={})
+        } }
+        compose.onNodeWithText("节点中继").performClick()
+        compose.onNodeWithText("node-peer").assertExists()
+        compose.onNodeWithText("direct-peer").assertDoesNotExist()
+        compose.onNodeWithText("node-peer").performClick()
+        compose.onNodeWithText("节点中继设备").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Hole 中继设备").assertDoesNotExist()
+        compose.onNodeWithText("公布入口").assertDoesNotExist()
+        compose.onNodeWithText("实际接入地址").assertDoesNotExist()
+        compose.onNodeWithText("凭据有效期").assertDoesNotExist()
+    }
+
     @Test fun fixedLabelsKeepStateAndOmitMissingAddresses() {
         for ((state, label) in listOf("connecting" to "连接中", "active" to "已连接", "reconnecting" to "正在重试", "error" to "连接需要处理")) {
             val peer = PeerSnapshot(profile="fixed-quic-mux-v1", state=state)

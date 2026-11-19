@@ -398,6 +398,9 @@ export class RoomICE {
     }
     record.mappings = mappings; record.voice = voice; record.online = true; record.resume_until = 0; record.lease_until = Date.now() + LEASE_MS;
     this.records.set(key, record);
+    // Reconcile also runs after hibernation and before live mapping updates.
+    // Refresh the route before persisting or replaying it to either endpoint.
+    this.grantPeerRelay(record);
     if (wantsHole && !record.peer_relay && (resetPath || !record.hole)) await this.prepareHole(record);
     if (changed) { record.expires_at = Date.now() + OFFLINE_RETENTION_MS; await this.persist(record); }
     if (changed) { this.notify(record, a.member.device_name, true); this.notify(record, b.member.device_name, true); }
@@ -444,8 +447,9 @@ export class RoomICE {
   }
   grantPeerRelay(record) {
     const g=record.peer_relay, relay=g&&this.member(g.device);
-    if (!g || !record.online || record.lease_until<=Date.now() || relay?.member.runtime_id!==g.runtime) return;
+    if (!g || !record.online || record.lease_until<=Date.now()) return;
     g.lease_until=String(record.lease_until);
+    if (relay?.member.runtime_id!==g.runtime) return;
     send(relay.ws,{type:'peer_relay_grant',peer_relay_version:PEER_RELAY_VERSION,transport_id:record.id,
       transport_generation:record.generation,peer_relay:g});
   }

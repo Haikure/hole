@@ -317,7 +317,8 @@ func (p *icePeer) attemptPeerRelay(a *iceAttempt) {
 		return
 	}
 	id, _ := parseSessionID(g.Route)
-	ctx, cancel := context.WithCancel(a.ctx)
+	ctx, cancelCause := context.WithCancelCause(a.ctx)
+	cancel := func() { cancelCause(context.Canceled) }
 	packet := &peerRelayPath{ctx: ctx, cancel: cancel, owner: p, grant: g, id: id, link: g.Links[i], mux: mux, packets: make(chan []byte, 64), changed: make(chan struct{})}
 	c.peerRelayMu.Lock()
 	if c.peerRelayPaths == nil {
@@ -344,8 +345,8 @@ func (p *icePeer) attemptPeerRelay(a *iceAttempt) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-a.failed:
-				cancel()
+			case err := <-a.failed:
+				cancelCause(err)
 				return
 			case <-mux.ctx.Done():
 				cancel()
@@ -370,7 +371,9 @@ func (p *icePeer) attemptPeerRelay(a *iceAttempt) {
 				return nil
 			}
 		}
-		return errors.New("peer relay endpoint certificate mismatch")
+		fault := &Fault{Code: "peer_identity_mismatch", Message: "节点中继端到端证书校验失败"}
+		cancelCause(fault)
+		return fault
 	}
 	hs, stop := context.WithTimeout(ctx, 8*time.Second)
 	defer stop()
@@ -387,17 +390,23 @@ func (p *icePeer) attemptPeerRelay(a *iceAttempt) {
 		}
 	}
 	if err != nil {
+		if cause := context.Cause(ctx); cause != nil {
+			err = cause
+		}
 		p.failed(a, err)
 		return
 	}
 	defer conn.CloseWithError(0, "peer relay ended")
 	datagrams := conn.ConnectionState().SupportsDatagrams
 	if !datagrams.Local || !datagrams.Remote {
-		p.failed(a, errors.New("peer relay requires QUIC DATAGRAM"))
+		p.failed(a, &Fault{Code: "protocol_mismatch", Message: "节点中继需要 QUIC DATAGRAM"})
 		return
 	}
 	inner, err := newMuxPeer(ctx, p, conn, a.ready)
 	if err != nil {
+		if cause := context.Cause(ctx); cause != nil {
+			err = cause
+		}
 		p.failed(a, err)
 		return
 	}

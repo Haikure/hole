@@ -797,10 +797,14 @@ impl Desktop {
                         )),
                 );
             if !peer.relay_device.is_empty() {
-                addresses = addresses
-                    .child(fact("Hole 中继设备", &peer.relay_device, p))
-                    .child(fact("公布入口", &peer.relay_endpoint, p))
-                    .child(fact("实际接入", &peer.relay_access_address, p));
+                if peer.path_type == "peer_relay" {
+                    addresses = addresses.child(fact("节点中继设备", &peer.relay_device, p));
+                } else {
+                    addresses = addresses
+                        .child(fact("Hole 中继设备", &peer.relay_device, p))
+                        .child(fact("公布入口", &peer.relay_endpoint, p))
+                        .child(fact("实际接入", &peer.relay_access_address, p));
+                }
             }
         }
         let rate = |loss: Option<&snapshot::SendLoss>| {

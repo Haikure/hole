@@ -125,7 +125,9 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
     line(&mut out, "设备线路（结构化状态，不含原始日志或候选凭据）".into());
     for p in &s.peers {
         line(&mut out, format!("设备 {}：{} / {}", p.peer_id, p.state, peer_path_label(p)));
-        if !p.relay_device.is_empty() {
+        if p.path_type == "peer_relay" {
+            line(&mut out, format!("  节点中继设备 {} · 已有直连 QUIC DATAGRAM", p.relay_device));
+        } else if !p.relay_device.is_empty() {
             line(
                 &mut out,
                 format!(
@@ -138,10 +140,12 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
             for (key, value) in fixed_peer_details(p) { line(&mut out, format!("  {key} {value}")); }
         } else {
             line(&mut out, format!("  本机 NAT {} · 对端 NAT {}",p.local_nat,p.peer_nat));
-            let local = if p.local_relay_protocol.is_empty() { "非本机中继" } else { &p.local_relay_protocol };
-            let remote = if p.remote_relay_protocol.is_empty() { "未上报" } else { &p.remote_relay_protocol };
-            let policy = if p.relay_policy.is_empty() { "兼容阶段" } else { &p.relay_policy };
-            line(&mut out, format!("  本机接入 {local} · 对端接入 {remote} · 中继使用方 {} · 策略 {policy}", p.relay_side));
+            if p.path_type != "peer_relay" {
+                let local = if p.local_relay_protocol.is_empty() { "非本机中继" } else { &p.local_relay_protocol };
+                let remote = if p.remote_relay_protocol.is_empty() { "未上报" } else { &p.remote_relay_protocol };
+                let policy = if p.relay_policy.is_empty() { "兼容阶段" } else { &p.relay_policy };
+                line(&mut out, format!("  本机接入 {local} · 对端接入 {remote} · 中继使用方 {} · 策略 {policy}", p.relay_side));
+            }
             line(&mut out, format!(
                     "  本机中继顺序 {} · 对端中继顺序 {} · 轮次 {}{}", super::snapshot::relay_order_label(&p.relay_order), super::snapshot::relay_order_label(&p.peer_relay_order), p.relay_round, if p.relay_order_fallback { " · 已回退默认顺序" } else { "" }));
             line(&mut out, format!("  本地 {} ({}) · 对端 {} ({})", p.local_address, p.local_type, p.remote_address, p.remote_type));
@@ -154,7 +158,8 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
         line(&mut out, format!("  QUIC 峰值带宽 {}", super::snapshot::bandwidth_label(p.bandwidth.as_ref(), true)));
         line(&mut out, format!("  QUIC 平均带宽 {}", super::snapshot::bandwidth_label(p.bandwidth.as_ref(), false)));
         line(&mut out, format!("  {} / generation {} / phase {}（{}） / retries {}", p.transport_id, p.generation, p.phase, peer_phase_label(p), p.retry_count));
-        if !is_fixed_peer(p) && p.phase != "hole" { line(&mut out, format!("  中继状态 {} · 凭据到期 {}", p.relay_state, p.turn_expires_at)); }
+        if p.path_type == "peer_relay" { line(&mut out, format!("  中继状态 {}", p.relay_state)); }
+        else if !is_fixed_peer(p) && p.phase != "hole" { line(&mut out, format!("  中继状态 {} · 凭据到期 {}", p.relay_state, p.turn_expires_at)); }
         line(&mut out, format!("  授权到期 {}", p.lease_until));
         if let Some(e) = &p.error {
             line(&mut out, format!("  当前问题 {}: {}", e.code, e.message));
@@ -171,8 +176,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn peer_relay_report_omits_hole_entrances_and_turn_credentials() {
+        let snapshot = crate::snapshot::parse_snapshot(&serde_json::json!({"api_version":1,"peer_transports":[
+            {"state":"active","phase":"peer_relay","path_type":"peer_relay","relay_device":"relay","relay_state":"active"}
+        ]})).unwrap();
+        let report = diagnostic_report(&ReportContext {
+            snapshot: &snapshot, config: &StoredConfig::default(), secrets: &Secrets::default(),
+            gui_version: "fixture", bridge_version: 1, os_label: "fixture", resume_at_login: false,
+            last_resume_error: "", now_rfc3339: "fixture",
+        });
+        assert!(report.contains("节点中继 · relay"));
+        assert!(report.contains("节点中继设备 relay · 已有直连 QUIC DATAGRAM"));
+        let peers = report.split("设备线路（").nth(1).unwrap();
+        for text in ["Hole 中继设备", "公布入口", "实际接入", "凭据到期"] { assert!(!peers.contains(text)); }
+    }
+
+    #[test]
     fn quic_loss_report_includes_scope_samples_and_unavailable_states() {
-        for path in ["direct", "relay", "hole", "fixed"] {
+        for path in ["direct", "relay", "hole", "peer_relay", "fixed"] {
             let snapshot = crate::snapshot::parse_snapshot(&serde_json::json!({"api_version":1,"peer_transports":[
                 {"path_type":path,"dropped_datagrams":"999","send_loss":{"scope":"connection","samples":"80","lost_packets":"1","rate_percent":1.25},
                     "quic_loss":{"scope":"connection","samples":"1000","lost_packets":"19","rate_percent":1.9},

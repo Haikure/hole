@@ -100,12 +100,14 @@ internal fun PeerDetailsContent(peer: PeerSnapshot) {
         Text("丢包率本次连接\n平均按有效使用时长", style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    if (!isFixedPeer(peer) && (peer.pathType in setOf("relay", "hole") || peer.relayDevice.isNotBlank())) {
+    if (!isFixedPeer(peer) && (peer.pathType in setOf("relay", "hole", "peer_relay") || peer.relayDevice.isNotBlank())) {
         PeerDetailSection("中继信息", Icons.Default.Dns) {
             if (peer.relayDevice.isNotBlank()) {
-                DetailRow("Hole 中继设备", peer.relayDevice)
-                DetailRow("公布入口", peer.relayEndpoint)
-                DetailRow("实际接入地址", peer.relayAccessAddress)
+                DetailRow(if (peer.pathType == "peer_relay") "节点中继设备" else "Hole 中继设备", peer.relayDevice)
+                if (peer.pathType != "peer_relay") {
+                    DetailRow("公布入口", peer.relayEndpoint)
+                    DetailRow("实际接入地址", peer.relayAccessAddress)
+                }
             }
             DetailRow("中继接入", if (peer.pathType == "hole") "Hole · UDP" else relayPathLabel(peer))
             DetailRow("本机顺序", relayOrderLabel(peer.relayOrder))

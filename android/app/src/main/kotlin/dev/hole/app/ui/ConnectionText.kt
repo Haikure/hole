@@ -36,6 +36,7 @@ fun configurationText(s: CoreSnapshot, config: ConfigUiState): String = when {
     else -> "正在应用设置并加入房间"
 }
 fun phaseLabel(phase: String): String = when (phase) {
+    "peer_relay" -> "连接节点中继"
     "hole" -> "连接 Hole 中继"
     "fixed" -> "连接固定入口"
     "direct" -> "探测直连路径"
@@ -54,6 +55,7 @@ fun peerPhaseLabel(p: PeerSnapshot): String = when {
     else -> phaseLabel(p.phase)
 }
 fun peerPathLabel(p: PeerSnapshot): String = when {
+    p.pathType == "peer_relay" -> "节点中继 · ${p.relayDevice}"
     p.pathType == "hole" -> "Hole 中继 · ${p.relayDevice}"
     isFixedPeer(p) -> "固定入口直连${p.addressFamily.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}"
     p.state == "waiting_credentials" -> peerPhaseLabel(p)
@@ -67,7 +69,7 @@ fun relayAccessLabel(protocol: String, side: String = ""): String = when (protoc
     "tcp" -> "TCP 中继"
     else -> if (side == "remote") "对端中继 · 接入协议未上报" else "中继连接 · 接入协议待确认"
 }
-fun relayPathLabel(p: PeerSnapshot): String = when (p.relaySide) {
+fun relayPathLabel(p: PeerSnapshot): String = if (p.pathType == "peer_relay") "节点中继 · QUIC DATAGRAM" else when (p.relaySide) {
     "remote" -> relayAccessLabel(p.remoteRelayProtocol, "remote")
     "both" -> if (p.localRelayProtocol.ifBlank { p.relayProtocol }.isNotBlank() && p.remoteRelayProtocol.isNotBlank() && p.localRelayProtocol.ifBlank { p.relayProtocol } != p.remoteRelayProtocol)
         "${relayAccessLabel(p.localRelayProtocol.ifBlank { p.relayProtocol })} / ${relayAccessLabel(p.remoteRelayProtocol)}"
@@ -75,6 +77,7 @@ fun relayPathLabel(p: PeerSnapshot): String = when (p.relaySide) {
     else -> relayAccessLabel(p.localRelayProtocol.ifBlank { p.relayProtocol }, p.relaySide)
 }
 fun selectedConnectionLabel(type: String, address: String): String {
+    if (type == "peer_relay") return "节点中继"
     val path = when (type) {
         "hole" -> "Hole 中继 UDP 接入"
         "fixed" -> "固定入口直连"
@@ -91,7 +94,11 @@ fun fixedPeerDetails(p: PeerSnapshot): List<Pair<String, String>> = buildList {
     if (p.localAddress.isNotBlank()) add("本机连接" to selectedConnectionLabel(p.localType, p.localAddress))
     if (p.remoteAddress.isNotBlank()) add("对端连接" to selectedConnectionLabel(p.remoteType, p.remoteAddress))
 }
-fun voicePathLabel(path: String): String = if (path == "fixed") "固定入口直连" else path.ifBlank { "路径待确认" }
+fun voicePathLabel(path: String): String = when (path) {
+    "fixed" -> "固定入口直连"
+    "peer_relay" -> "节点中继"
+    else -> path.ifBlank { "路径待确认" }
+}
 fun fixedConnectionIssue(code: String?): String? = code?.takeIf { it in setOf("fixed_path_failed", "fixed_relay_conflict") }?.let { connectionIssue(it) }
 fun peerStateLabel(p: PeerSnapshot): String = when (p.state) {
     "waiting_credentials" -> "等待中继凭据"

@@ -15,6 +15,14 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26])
 class DiagnosticsTest {
+    @Test fun peerRelayReportIdentifiesTheNodeWithoutTurnCredentials() {
+        val peer = PeerSnapshot(state="active", phase="peer_relay", pathType="peer_relay", relayDevice="relay", relayState="active")
+        val report = diagnosticReport(CoreSnapshot(peers=listOf(peer)), ConfigUiState(), BackgroundInfo())
+        assertTrue(report.contains("节点中继 · relay"))
+        assertTrue(report.contains("节点中继设备 relay · 已有直连 QUIC DATAGRAM"))
+        for (text in listOf("Hole 中继设备", "公布入口", "实际接入", "凭据到期")) assertFalse(report.contains(text), text)
+    }
+
     @Test fun failedPunchEvidenceIsExportedAfterRelayFallbackAndRedacted() {
         val round = """{"generation":"3","round":1,"probes_sent":80,"packets_received":0,"error":"fixture-secret"}"""
         val peer = PeerSnapshot(phase = "relay_tcp", pathType = "relay", punchDiagnostics = listOf(round))
@@ -25,7 +33,7 @@ class DiagnosticsTest {
         assertFalse(report.contains("fixture-secret"))
     }
     @Test fun quicLossIsReportedForEveryPathWithoutUsingLocalDrops() {
-        for (path in listOf("direct", "relay", "hole", "fixed")) {
+        for (path in listOf("direct", "relay", "hole", "peer_relay", "fixed")) {
             val peer = PeerSnapshot(pathType = path, retryCount = "99", droppedDatagrams = "999", sendLoss = SendLossSnapshot("本连接", "80", "1", 1.25))
             val report = diagnosticReport(CoreSnapshot(peers = listOf(peer, peer.copy(sendLoss = null),
                 peer.copy(sendLoss = SendLossSnapshot("本连接", "0", "0", null)))), ConfigUiState(), BackgroundInfo())
