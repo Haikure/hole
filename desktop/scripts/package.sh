@@ -18,6 +18,10 @@ case "$target_os/$target_arch" in
 esac
 source "$ROOT/desktop/scripts/toolchain.sh"
 hole_load_desktop_toolchain
+if [[ "$target_os" == windows ]]; then
+  # A Java ProcessBuilder lookup of "bash" can select Windows' WSL launcher.
+  export HOLE_DESKTOP_BASH=$(cygpath -m "$BASH")
+fi
 printf '[Desktop] JDK: %s\n' "$JAVA_HOME"
 args=(--no-daemon --console=plain -p "$ROOT/desktop/compose"
   --project-cache-dir "$HOLE_CACHE_ROOT/gradle-project-desktop"

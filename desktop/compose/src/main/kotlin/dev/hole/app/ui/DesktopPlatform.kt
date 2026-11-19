@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import dev.hole.app.config.*
+import dev.hole.corebridge.CoreSnapshot
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -64,3 +65,8 @@ internal val LocalWearPageChrome = staticCompositionLocalOf<WearPageChrome?> { n
 @Composable internal fun WearDialog(onDismissRequest: () -> Unit, content: @Composable () -> Unit) = Dialog(onDismissRequest, content = content)
 @Composable internal fun HoleDialog(onDismissRequest: () -> Unit, content: @Composable () -> Unit) = Dialog(onDismissRequest, content = content)
 @Composable internal fun Modifier.phoneDialogScroll() = verticalScroll(rememberScrollState())
+
+// Shared FloatingAppFrame references the Wear branch even though desktop never selects it.
+@Composable internal fun WearAppFrame(route: String, onNavigate: (String) -> Unit, snapshot: CoreSnapshot,
+    enabled: Boolean, onToggleRun: (Boolean) -> Unit, snackbarHostState: SnackbarHostState?,
+    content: @Composable () -> Unit) = content()

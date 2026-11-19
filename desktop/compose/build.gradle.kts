@@ -16,6 +16,9 @@ val repositoryRoot = rootDir.resolve("../..").canonicalFile
 val releaseVersions = groovy.json.JsonSlurper().parse(repositoryRoot.resolve("versions.json")) as Map<*, *>
 version = (((releaseVersions["frontends"] as Map<*, *>)["desktop_gui"] as Map<*, *>)["version"] as String)
 val nativeName = if (System.getProperty("os.name").startsWith("Windows")) "holecore.dll" else "libholecore.so"
+val desktopBash = providers.environmentVariable("HOLE_DESKTOP_BASH").orNull ?: if (nativeName.endsWith(".dll")) {
+    File(System.getenv("ProgramFiles") ?: "C:/Program Files", "Git/bin/bash.exe").absolutePath
+} else "bash"
 val desktopJavaHome = System.getProperty("java.home")
 val desktopJavaVersion = JavaVersion.current()
 require(desktopJavaVersion.isCompatibleWith(JavaVersion.VERSION_21)) {
@@ -54,7 +57,7 @@ dependencies {
 
 val buildNative by tasks.registering(Exec::class) {
     workingDir(repositoryRoot)
-    commandLine("bash", "desktop/scripts/build-native.sh")
+    commandLine(desktopBash, "desktop/scripts/build-native.sh")
     inputs.files(fileTree(repositoryRoot.resolve("core")) { include("**/*.go"); exclude("**/*_test.go") })
     inputs.files(fileTree(repositoryRoot.resolve("mobile")) { include("**/*.go"); exclude("**/*_test.go") })
     inputs.files(fileTree(repositoryRoot.resolve("desktop/native")))
@@ -68,6 +71,7 @@ val buildNative by tasks.registering(Exec::class) {
         commandLine("python3", "scripts/build_meta.py", "build-id")
     }.standardOutput.asText.map { it.trim() })
     inputs.property("javaHome", desktopJavaHome)
+    inputs.property("desktopBash", desktopBash)
     // JNI, Kotlin, the runtime image and packaging must use the same JDK.
     environment("HOLE_DESKTOP_JAVA_HOME", desktopJavaHome)
     outputs.file(layout.buildDirectory.file("native/$nativeName"))
