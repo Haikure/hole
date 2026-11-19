@@ -95,7 +95,8 @@ compose.desktop {
             targetFormats(TargetFormat.Exe)
             packageName = "Hole"
             packageVersion = project.version.toString()
-            description = "Hole 桌面客户端"
+            // WiX's en-US MSI database uses codepage 1252 for this metadata.
+            description = "Hole desktop client"
             vendor = "Hole"
             licenseFile.set(repositoryRoot.resolve("LICENSE"))
             modules("java.desktop", "java.net.http", "jdk.unsupported", "jdk.crypto.ec")

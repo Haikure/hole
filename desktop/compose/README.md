@@ -22,6 +22,7 @@
 | Linux | AppImage | 封装 Release 应用目录、裁剪 Java 运行时与 Go `.so`；正常由 AppImage 挂载后运行，不额外使用 memfd 加载核心 |
 
 Windows 固定 `upgradeUuid`，版本号来自根 `versions.json` 的 `frontends.desktop_gui.version`。
+安装包描述使用英文，以兼容 WiX 默认的 en-US 数据库代码页；应用界面与 Linux 桌面入口保持简体中文。
 新版本安装包支持升级已安装的同一应用；不提供自动下载更新。包中启动程序不能脱离应用目录单独复制使用。
 Linux AppImage 仍依赖宿主图形、字体、音频和兼容的 libc，首次运行可能需赋予执行权限。
 当前发布工作流使用带 `jmods` 的 Zulu JDK 25，配置 Linux AMD64 / ARM64、Windows AMD64；Windows ARM64 的本机构建需要自行提供匹配 JDK / C 编译器，未配置 CI runner。
