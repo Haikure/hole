@@ -199,8 +199,13 @@ jobs:
         run: |
           'C:\msys64\ucrt64\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           'CC=C:/msys64/ucrt64/bin/gcc.exe' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          choco install wixtoolset --version=3.14.1 --yes --no-progress
-          'C:\Program Files (x86)\WiX Toolset v3.14\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $wixBin = 'C:\Program Files (x86)\WiX Toolset v3.14\bin'
+          if (-not (Test-Path (Join-Path $wixBin 'candle.exe'))) {
+            choco install wixtoolset --version=3.14.1.20250415 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed' }
+          }
+          if (-not (Test-Path (Join-Path $wixBin 'candle.exe'))) { throw 'WiX candle.exe is missing' }
+          $wixBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Prepare Linux AppImage tools
         if: ${{ runner.os == 'Linux' && matrix.target == 'desktop' }}

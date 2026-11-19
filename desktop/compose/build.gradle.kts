@@ -142,6 +142,6 @@ tasks.register<Sync>("prepareDesktopResources") {
         layout.buildDirectory.file("app-resources/hole.ico").get().asFile.writeBytes(ico.array())
     }
 }
-tasks.matching { it.name.contains("Distributable") || it.name.startsWith("package") || it.name.startsWith("validate") }.configureEach {
+tasks.matching { it.name == "prepareAppResources" || it.name.contains("Distributable") || it.name.startsWith("package") || it.name.startsWith("validate") }.configureEach {
     dependsOn("prepareDesktopResources")
 }

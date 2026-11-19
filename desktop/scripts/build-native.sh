@@ -22,7 +22,8 @@ mkdir -p "$output"
 # Go invokes the C compiler directly; use Windows paths rather than Git Bash /c paths.
 jni_home="$JAVA_HOME"
 if [[ "$host_os" == windows ]]; then jni_home=$(cygpath -m "$JAVA_HOME"); fi
-export CGO_CFLAGS="${CGO_CFLAGS:-} -I\"$jni_home/include\" -I\"$jni_home/include/$jni_platform\""
+# Go's quoted.Split recognizes quotes only around a whole argument, not after -I.
+export CGO_CFLAGS="${CGO_CFLAGS:-} \"-I$jni_home/include\" \"-I$jni_home/include/$jni_platform\""
 version=$(python3 scripts/build_meta.py version)
 build_id=$(python3 scripts/build_meta.py build-id)
 CGO_ENABLED=1 go build -tags desktopjni -mod=readonly -trimpath -buildvcs=false -buildmode=c-shared \
