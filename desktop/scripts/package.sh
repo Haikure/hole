@@ -27,10 +27,25 @@ args=(--no-daemon --console=plain -p "$ROOT/desktop/compose"
   --project-cache-dir "$HOLE_CACHE_ROOT/gradle-project-desktop"
   "-Pkotlin.project.persistent.dir=$HOLE_CACHE_ROOT/kotlin-desktop" "-Djava.io.tmpdir=$TMPDIR")
 if [[ "${HOLE_BUILD_OFFLINE:-0}" == 1 ]]; then args+=(--offline); fi
+run_desktop_gradle() {
+  local status log
+  if bash "$ROOT/android/gradlew" "${args[@]}" "$@"; then
+    return 0
+  else
+    status=$?
+  fi
+  # Compose redirects jpackage diagnostics to files; expose the actual error in CI.
+  for log in "$ROOT"/desktop/compose/build/compose/logs/*/jpackage-*.txt; do
+    [[ -f "$log" ]] || continue
+    printf '\n[Desktop] %s\n' "$log" >&2
+    tail -n 160 "$log" >&2
+  done
+  return "$status"
+}
 destination="$output/desktop/$target_os-$target_arch"
 mkdir -p "$destination"
 if [[ "$target_os" == windows ]]; then
-  bash "$ROOT/android/gradlew" "${args[@]}" packageReleaseExe
+  run_desktop_gradle packageReleaseExe
   version=$(python3 -c 'import json; print(json.load(open("versions.json"))["frontends"]["desktop_gui"]["version"])')
   installer="$ROOT/desktop/compose/build/compose/binaries/main-release/exe/Hole-$version.exe"
   [[ -f "$installer" ]] || { echo "未找到 Windows Release 安装包：$installer" >&2; exit 1; }
@@ -40,7 +55,7 @@ else
   command -v appimagetool >/dev/null || { echo '请先安装 appimagetool；构建不会自动下载安装。' >&2; exit 1; }
   : "${HOLE_APPIMAGE_RUNTIME:?请设置本架构本地 type2-runtime 的绝对路径}"
   [[ "$HOLE_APPIMAGE_RUNTIME" == /* && -f "$HOLE_APPIMAGE_RUNTIME" ]] || { echo 'HOLE_APPIMAGE_RUNTIME 需要现有文件的绝对路径' >&2; exit 1; }
-  bash "$ROOT/android/gradlew" "${args[@]}" createReleaseDistributable
+  run_desktop_gradle createReleaseDistributable
   appdir="$HOLE_CACHE_ROOT/desktop-appimage/$target_arch/Hole.AppDir"
   mkdir -p "$(dirname "$appdir")"
   # Only replace this dedicated generated directory, never a published package.

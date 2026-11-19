@@ -71,6 +71,7 @@ export PATH='/c/msys64/ucrt64/bin:/c/Program Files (x86)/WiX Toolset v3.14/bin':
 
 Windows exe 安装包在 `dist/desktop/windows-amd64/`。安装后从开始菜单或桌面快捷方式打开。
 Release 使用 ProGuard 裁剪，Go 库保留 `-s -w`；不生成签名密钥，不更改 Android 签名。
+`jpackage` 失败时构建入口会输出其详细日志；Actions 同时保留打包诊断文件供下载。
 
 ## 界面与数据
 

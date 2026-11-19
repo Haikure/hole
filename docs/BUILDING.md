@@ -29,7 +29,7 @@ PenMods 使用 [插件构建入口](../penmods/README.md#构建)。
 
 `./build.sh desktop` 直接执行原生桥接、Kotlin Release 与平台打包，并自动选择已安装的完整 JDK 21+。
 优先使用 `HOLE_DESKTOP_JAVA_HOME`，其次是合格的 `JAVA_HOME`、`JDK25_HOME` / `JDK21_HOME`，最后搜索 PATH 和系统常见目录。
-已有 JDK 25 无需再安装 JDK 21。桌面字节码目标为 JVM 21，构建、JNI 和随包运行时统一使用所选 JDK，ProGuard 7.8.0 支持 JDK 25。
+已有带 `jmods` 的 JDK 25 无需再安装 JDK 21。桌面字节码目标为 JVM 21，构建、JNI 和随包运行时统一使用所选 JDK，ProGuard 7.10.0 支持 Kotlin 2.4。
 Kotlin 桌面不加载 Android JDK 17；与 Android 组合构建时先在子进程选择桌面 JDK，再加载 Android 的既有工具链。
 旧 Rust 交叉构建需提前安装对应 Rust target 和平台 linker / sysroot（Linux 含目标 ALSA 库）。
 普通构建不会安装 JDK、C 编译器、AppImage 工具、Rust 或系统开发包。

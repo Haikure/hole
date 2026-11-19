@@ -239,6 +239,17 @@ jobs:
             --output dist
           test -d "${{ matrix.artifact_path }}"
 
+      - name: Upload desktop packaging diagnostics
+        if: ${{ failure() && matrix.target == 'desktop' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: hole-desktop-diagnostics-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            desktop/compose/build/compose/logs/
+            desktop/compose/build/compose/tmp/*.args.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload target artifact
         uses: actions/upload-artifact@v6
         with:
