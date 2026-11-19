@@ -224,6 +224,13 @@ test('calibration barriers gate bilateral retries and GO and survive complete re
   const receiver=ws===a?b:a,before=punches(receiver).length;
   await send(ws,to,punch);
   assert.equal(punches(receiver).length,before,JSON.stringify(punch));
+  if(punch.kind==='calibrated') {
+   const error=ws.messages.at(-1);
+   assert.equal(error.code,'punch_calibration_rejected');
+   assert.match(error.message,/结果未转发/);
+   assert.equal(error.transport_generation,record.generation);
+   assert.deepEqual(error.punch,{kind:'calibrated',round:punch.round,trial:punch.trial});
+  }
  };
  const snapshot={status:'complete',type:'symmetric',mapping_behavior:'endpoint_dependent',predictability:'incremental',samples:9,port_step:1,public_ip:'198.51.100.1',last_mapping_port:40000,allocation_scope:'cross_socket'};
  const plan={ip:'198.51.100.1',port:40001,target:40017,width:1,sockets:32};

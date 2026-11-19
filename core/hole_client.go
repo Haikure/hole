@@ -145,6 +145,7 @@ func openHolePath(ctx context.Context, platform Platform, g *holeGrant, side int
 
 func (p *icePeer) attemptHole(a *iceAttempt) {
 	defer a.cancel()
+	defer a.process.finish("cancelled", "Hole 中继连接尝试已取消")
 	if a.ready.RetryAfterMS > 0 {
 		timer := time.NewTimer(time.Duration(a.ready.RetryAfterMS) * time.Millisecond)
 		defer timer.Stop()
@@ -187,6 +188,7 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	}
 	handshakeCtx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
 	defer cancel()
+	a.processStep("coordination", "注册并确认 Hole 中继路径", 0, 0)
 	side := 0
 	if p.coordinator.deviceID() == g.Devices[1] {
 		side = 1
@@ -232,6 +234,7 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 		return &Fault{Code: "peer_identity_mismatch", Message: "Hole 路径端到端证书校验失败"}
 	}
 	var conn *quic.Conn
+	a.processStep("quic", "通过 Hole 中继执行 QUIC 握手", 0, 0)
 	if p.coordinator.deviceID() == a.ready.InitiatorID {
 		conn, err = transport.Dial(handshakeCtx, packet.PeerAddr(), tlsConfig, iceQUICConfig("hole"))
 	} else {
@@ -255,6 +258,7 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 		p.failed(a, &Fault{Code: "protocol_mismatch", Message: "Hole 路径需要 QUIC DATAGRAM"})
 		return
 	}
+	a.processStep("mux", "通过 Hole 中继协商身份与业务通道", 0, 0)
 	mux, err := newMuxPeer(a.ctx, p, conn, a.ready)
 	if err != nil {
 		p.failed(a, err)
@@ -283,6 +287,8 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	p.stats.ConnectMS = time.Since(started).Milliseconds()
 	p.stats.RelayState = "active"
 	p.mu.Unlock()
+	a.processStep("connected", "Hole 中继业务通道已就绪", 0, 0)
+	a.process.finish("connected", "Hole 中继已连接")
 	mux.syncMappings()
 	if old != nil {
 		old.close()

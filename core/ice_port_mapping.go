@@ -31,6 +31,23 @@ func newICEPortMapper(ctx context.Context, platform Platform, status func(nat.Ma
 	return &icePortMapper{ctx: ctx, cancel: cancel, platform: platform, status: status, changed: changed}
 }
 
+// A renewal failure only invalidates the advertised mapping. ICE may have
+// selected another candidate, and an authenticated QUIC path can still work
+// even when a gateway control request times out. Let transport liveness decide
+// when to reconnect instead of tearing down that path at every lease renewal.
+func (p *icePeer) portMappingChanged(a *iceAttempt) {
+	p.mu.Lock()
+	if p.closed || p.ready.TransportGeneration != a.ready.TransportGeneration {
+		p.mu.Unlock()
+		return
+	}
+	p.stats.PortMapping.Status = "unavailable"
+	p.stats.PortMapping.Reason = "端口映射续租失败或外部地址变化"
+	p.mu.Unlock()
+	a.process.record(NATPunchProcessEvent{Kind: "mapping_changed", Title: "端口映射续租失败或外部地址变化，继续检查当前路径"})
+	p.stateChanged()
+}
+
 func (m *icePortMapper) candidate(host ice.Candidate) ice.Candidate {
 	if host == nil || host.Type() != ice.CandidateTypeHost || host.NetworkType() != ice.NetworkTypeUDP4 {
 		return nil

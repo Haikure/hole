@@ -158,10 +158,14 @@ func (p *icePeer) waitNATPunch(ctx context.Context, a *iceAttempt, kind string, 
 	return p.waitNATPunchTrial(ctx, a, kind, round, 0)
 }
 
-func (p *icePeer) waitNATPunchTrial(ctx context.Context, a *iceAttempt, kind string, round, trial int) (*natPunchSignal, error) {
+func (p *icePeer) waitNATPunchTrial(ctx context.Context, a *iceAttempt, kind string, round, trial int) (_ *natPunchSignal, err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("等待对端 %s 确认（轮次 %d，校准序号 %d）：%w", kind, round, trial, err)
+		}
+	}()
 	for i, m := range a.punchBuffered {
 		if m.Kind == "failed" && m.Round == round && kind != "failed" {
-			a.punchBuffered = append(a.punchBuffered[:i], a.punchBuffered[i+1:]...)
 			return nil, errors.New("peer round failed")
 		}
 		if m.Kind == kind && m.Round == round && m.Trial == trial {
@@ -188,6 +192,9 @@ func (p *icePeer) waitNATPunchTrial(ctx context.Context, a *iceAttempt, kind str
 				return nil, errors.New("peer stopped prediction")
 			}
 			if m.Punch.Kind == "failed" && m.Punch.Round == round && kind != "failed" {
+				// The round owner still needs this result for the failure barrier,
+				// including the unreachable evidence required by cone-pool fallback.
+				a.punchBuffered = append(a.punchBuffered, *m.Punch)
 				return nil, errors.New("peer round failed")
 			}
 			if m.Punch.Kind == kind && m.Punch.Round == round && m.Punch.Trial == trial {
@@ -200,17 +207,42 @@ func (p *icePeer) waitNATPunchTrial(ctx context.Context, a *iceAttempt, kind str
 	}
 }
 
-func (p *icePeer) prepareNATPunch(a *iceAttempt, cfg Config) (*natPunchSession, error) {
+func (p *icePeer) prepareNATPunch(a *iceAttempt, platform Platform, cfg Config) (_ *natPunchSession, err error) {
 	a.processStep("waiting_nat", "等待本机 NAT 采样结果", 0, 0)
 	a.process.sampling(p.coordinator.localNATProcess())
+	urls := natURLs(cfg.ICE)
+	var release func()
+	if a.ready.PunchSchedule == natPunchSchedule && len(urls) > 0 {
+		// Do not hold one device's allocator while waiting for the peer's
+		// offer. Ordered dual-device reservation happens after both offers.
+		queueCtx, stopQueue := context.WithDeadline(a.ctx, time.UnixMilli(a.ready.LeaseUntil))
+		release, err = p.coordinator.natAllocation.acquire(queueCtx)
+		stopQueue()
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer func() {
+		if release != nil {
+			release()
+		}
+		if err != nil {
+			_ = p.sendNATPunch(a, natPunchSignal{Kind: "abort"})
+		}
+	}()
+	// Queueing has its own lease bound. Start the discovery budget afterwards.
 	ctx, cancel := context.WithTimeout(a.ctx, 3*natprobe.DefaultTimeout+2*time.Second)
 	defer cancel()
-	urls := natURLs(cfg.ICE)
-	if len(urls) > 0 {
-		p.coordinator.requestNATProbeForConnection()
-	}
 	local := p.coordinator.localNAT()
-	if len(urls) > 0 {
+	if release != nil {
+		// Refresh before selecting a strategy, including a recent conclusive
+		// irregular classification. Every peer in this generation does the same.
+		local = p.probeNATPunchModel(ctx, a, platform, cfg, 0)
+		release()
+		release = nil
+	} else if len(urls) > 0 {
+		p.coordinator.requestNATProbeForConnection()
+		local = p.coordinator.localNAT()
 		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
 		for local.ProbedAt == "" {
@@ -352,6 +384,15 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 		extra := round > 3
 		if extra {
 			if !poolEnabled || !poolUnreachable || poolOriginal == nil || !conePoolPair(s) {
+				reason := "前三轮未全部完成无有效 ACK 的探测"
+				if !poolEnabled {
+					reason = "双方或 Worker 未协商保留端口换 IP 能力"
+				} else if !conePoolPair(s) {
+					reason = "双端证据不满足疑似 No-PAT 多出口锥形与对称型配对"
+				} else if poolOriginal == nil {
+					reason = "第三轮未取得可保留的锥形映射计划"
+				}
+				a.process.record(NATPunchProcessEvent{Kind: "pool_skipped", Title: "未进入保留端口换 IP 阶段", Round: round, Detail: reason})
 				break
 			}
 			if round == 4 {
@@ -362,6 +403,7 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				poolIPs = conePoolCandidates(cone, poolOriginal.IP)
 			}
 			if round-4 >= len(poolIPs) {
+				a.process.record(NATPunchProcessEvent{Kind: "pool_exhausted", Title: "没有尚未尝试的已观测备用公网 IP", Round: round})
 				break
 			}
 		}
@@ -376,6 +418,12 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 		a.process.models(round, s.mode, s.local, s.remote)
 		roundUnreachable := false
 		executionDeadline := time.Now().Add(s.config.Timeout.Duration())
+		if a.ready.PunchCalibration == natPunchCalibration {
+			// DNS, Binding retries and bilateral calibrated/GO exchanges share
+			// this deadline. Leave bounded room for signaling after a slow STUN
+			// result; UDP/QUIC still has its own shorter RoundTimeout below.
+			executionDeadline = executionDeadline.Add(natPunchSignalGrace)
+		}
 		live, roundErr := func() (_ *liveICETransport, roundError error) {
 			diagnostic := NATPunchDiagnostic{Generation: a.ready.TransportGeneration, Round: round, Mode: s.mode,
 				StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Stage: "calibration"}
@@ -506,6 +554,8 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 					bound, err := netip.ParseAddrPort(sockets[0].LocalAddr().String())
 					if err != nil || int(bound.Port()) != plan.Port {
 						poolUnreachable = false
+						a.process.record(NATPunchProcessEvent{Kind: "pool_skipped", Title: "本轮未保持本地端口，无法保留端口换 IP", Round: round,
+							Detail: fmt.Sprintf("绑定 %s，校准公网端口 %d", sockets[0].LocalAddr(), plan.Port)})
 					} else {
 						poolSocket = sockets[0]
 					}
@@ -614,15 +664,20 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 		if e := p.sendNATPunch(a, natPunchSignal{Kind: "failed", Round: round, Result: result}); e != nil {
 			return nil, e
 		}
-		if poolPair {
-			waitCtx, stop := context.WithDeadline(ctx, executionDeadline)
+		if scheduled || poolPair {
+			// A fast local failure must not move on while the peer is still
+			// executing this round. Its full budget plus signaling grace is
+			// independent of our expired DNS/calibration/UDP deadline.
+			a.processStep("coordination", "等待双方本轮结束，准备下一轮", round, 0)
+			waitCtx, stop := context.WithTimeout(ctx, s.config.Timeout.Duration()+2*natPunchSignalGrace)
 			peer, e := p.waitNATPunch(waitCtx, a, "failed", round)
 			stop()
 			if e != nil {
 				return nil, e
 			}
 			poolUnreachable = poolUnreachable && roundUnreachable && peer.Result == "unreachable"
-		} else {
+		}
+		if !poolPair {
 			poolUnreachable = false
 		}
 	}

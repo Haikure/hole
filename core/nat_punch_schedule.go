@@ -74,20 +74,7 @@ func (p *icePeer) refreshNATPunchModel(a *iceAttempt, platform Platform, cfg Con
 	ctx, cancel := context.WithTimeout(a.ctx, natprobe.DefaultTimeout+5*time.Second)
 	defer cancel()
 	if refresh || s.local.Current().Status != "complete" {
-		epoch := p.coordinator.networkEpoch.Load()
-		probeCtx, stop := context.WithTimeout(ctx, natprobe.DefaultTimeout)
-		a.processStep("model_refresh", "刷新本轮 NAT 分配模型", round, 0)
-		s.local = probeNATWithRetriesObserved(probeCtx, platform, natURLs(cfg.ICE), a.process, round)
-		stop()
-		s.local.Epoch = epoch
-		if source, ok := platform.(interface{ NATNetworkIdentity() string }); ok {
-			s.local.Network = source.NATNetworkIdentity()
-		}
-		p.coordinator.natMu.Lock()
-		if epoch == p.coordinator.networkEpoch.Load() && a.ctx.Err() == nil {
-			p.coordinator.natSnapshot = s.local
-		}
-		p.coordinator.natMu.Unlock()
+		s.local = p.probeNATPunchModel(ctx, a, platform, cfg, round)
 	}
 	if err := p.sendNATPunch(a, natPunchSignal{Kind: "model", Round: round, Snapshot: &s.local}); err != nil {
 		return err
@@ -112,4 +99,28 @@ func (p *icePeer) refreshNATPunchModel(a *iceAttempt, platform Platform, cfg Con
 		return errors.New("refreshed NAT model does not support prediction")
 	}
 	return nil
+}
+
+// Caller holds the device allocator, shared with background discovery.
+func (p *icePeer) probeNATPunchModel(ctx context.Context, a *iceAttempt, platform Platform, cfg Config, round int) NATSnapshot {
+	epoch := p.coordinator.networkEpoch.Load()
+	probeCtx, stop := context.WithTimeout(ctx, natprobe.DefaultTimeout)
+	defer stop()
+	a.processStep("model_refresh", "刷新本轮 NAT 分配模型", round, 0)
+	var s NATSnapshot
+	if source, ok := platform.(interface{ NATIPv4Available() bool }); ok && !source.NATIPv4Available() {
+		s = NATSnapshot{Status: "not_applicable", Type: "unknown", Predictability: "unknown", ProbedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	} else {
+		s = probeNATWithRetriesObserved(probeCtx, platform, natURLs(cfg.ICE), a.process, round)
+	}
+	s.Epoch = epoch
+	if source, ok := platform.(interface{ NATNetworkIdentity() string }); ok {
+		s.Network = source.NATNetworkIdentity()
+	}
+	p.coordinator.natMu.Lock()
+	if epoch == p.coordinator.networkEpoch.Load() && a.ctx.Err() == nil {
+		p.coordinator.natSnapshot = s
+	}
+	p.coordinator.natMu.Unlock()
+	return s
 }

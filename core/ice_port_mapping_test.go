@@ -213,3 +213,35 @@ func TestICEFailureImmediatelyRequestsRelay(t *testing.T) {
 		t.Fatal("failed ICE attempt was retained")
 	}
 }
+
+func TestICEPortMappingRenewalDoesNotRetireHealthyPath(t *testing.T) {
+	c, p := lifecycleCoordinator(t)
+	ctx, cancel := context.WithCancel(c.ctx)
+	defer cancel()
+	a := &iceAttempt{ctx: ctx, cancel: cancel, ready: p.ready, failed: make(chan error, 1)}
+	live := &liveICETransport{ready: p.ready}
+	p.active = live
+	p.stats.State, p.stats.PathType = "active", "direct"
+	p.stats.PortMapping = nat.MappingSnapshot{Status: "mapped", Protocol: "nat-pmp", Address: "198.51.100.1:40000", LeaseSeconds: 300}
+	p.portMappingChanged(a)
+	if p.active != live || ctx.Err() != nil || p.stats.State != "active" || p.stats.PortMapping.Status != "unavailable" {
+		t.Fatalf("gateway renewal retired the transport: %+v", p.stats)
+	}
+	select {
+	case err := <-a.failed:
+		t.Fatal("gateway renewal failed the healthy transport", err)
+	default:
+	}
+	select {
+	case m := <-c.sink.messages:
+		t.Fatalf("gateway renewal requested a new path: %+v", m)
+	default:
+	}
+	// A late callback from the retired generation cannot invalidate the new map.
+	p.ready.TransportGeneration++
+	p.stats.PortMapping.Status = "mapped"
+	p.portMappingChanged(a)
+	if p.stats.PortMapping.Status != "mapped" {
+		t.Fatal("retired generation overwrote current mapping status")
+	}
+}

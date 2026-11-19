@@ -157,6 +157,27 @@ func TestPoolPunchEstablishesQUICWithCalibration(t *testing.T) {
 						case <-ctx.Done():
 							return
 						case m := <-c.sink.messages:
+							if tc.fallback && side == 0 && m.Punch != nil && m.Punch.Kind == "calibrated" && m.Punch.Round == 2 {
+								// Delayed confirmation can outlive the base execution
+								// budget without ending prediction before round four.
+								timer := time.NewTimer(1700 * time.Millisecond)
+								select {
+								case <-timer.C:
+								case <-ctx.Done():
+									timer.Stop()
+									return
+								}
+							}
+							if tc.fallback && m.Punch != nil && m.Punch.Kind == "failed" {
+								// Signaling can arrive after the UDP execution deadline.
+								timer := time.NewTimer(30 * time.Millisecond)
+								select {
+								case <-timer.C:
+								case <-ctx.Done():
+									timer.Stop()
+									return
+								}
+							}
 							select {
 							case attempts[1-side].events <- m:
 							case <-ctx.Done():
@@ -193,7 +214,8 @@ func TestPoolPunchEstablishesQUICWithCalibration(t *testing.T) {
 					{IP: n.sides[1].ip.String(), Targets: 2, Ports: 1, Trend: "stable"},
 					{IP: n.sides[1].conePoolIP.String(), Targets: 2, Ports: 1, Trend: "stable"},
 				}
-				config.RoundTimeout = ConfigDuration(1500 * time.Millisecond)
+				config.Timeout = ConfigDuration(1500 * time.Millisecond)
+				config.RoundTimeout = config.Timeout
 			}
 			type outcome struct {
 				live *liveICETransport

@@ -104,6 +104,21 @@ func TestHoleThreeDevices(t *testing.T) {
 			if !active(left) || right.PeerTransports[0].RelayDevice != "relay-node" {
 				t.Fatalf("wrong path: %+v %+v", left, right)
 			}
+			for _, engine := range []*Engine{a, b} {
+				for _, peer := range engine.Snapshot().PeerTransports {
+					if peer.PathType != "hole" || peer.State != "active" {
+						continue
+					}
+					process := engine.NATPunchProcess(peer.TransportID, 0)
+					if len(process.Attempts) == 0 {
+						t.Fatal("connected Hole path has no process record")
+					}
+					last := process.Attempts[len(process.Attempts)-1]
+					if last.Phase != "hole" || last.State != "connected" || last.Stage != "connected" || last.FinishedAt == "" {
+						t.Fatalf("connected Hole path still appears to be connecting: %+v", last)
+					}
+				}
+			}
 			c, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", tcpPort), time.Second)
 			if err != nil {
 				t.Fatal(err)
