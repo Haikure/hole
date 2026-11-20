@@ -20,11 +20,20 @@ func TestNATOldNetworkCannotPublish(t *testing.T) {
 	}
 }
 
-func TestNATConfigProbeConsentAndRoundTrip(t *testing.T) {
+func TestNATConfigDefaultsAndRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		raw  string
 		want int
-	}{{"ice: {stun_urls: []}", 0}, {"ice: {stun_urls: [], nat_stun_urls: ['stun:127.0.0.1:3478']}", 1}, {"ice: {nat_stun_urls: []}", 0}, {"ice: {}", 6}} {
+	}{
+		{"ice: {stun_urls: []}", len(natprobe.DefaultServers())},
+		{"ice: {stun_urls: [], nat_stun_urls: []}", len(natprobe.DefaultServers())},
+		{"ice: {stun_urls: [], nat_stun_urls: null}", len(natprobe.DefaultServers())},
+		{"ice: {stun_urls: [], nat_stun_urls: ['stun:127.0.0.1:3478']}", 1},
+		{"ice: {stun_urls: ['stun:127.0.0.1:3478'], nat_stun_urls: []}", len(natprobe.DefaultServers()) + 1},
+		{"ice: {nat_stun_urls: []}", len(natprobe.DefaultServers())},
+		{"ice: {nat_stun_urls: null}", len(natprobe.DefaultServers())},
+		{"ice: {}", len(natprobe.DefaultServers())},
+	} {
 		cfg, e := ParseConfig([]byte(tc.raw))
 		if e != nil {
 			t.Fatal(e)
@@ -69,13 +78,11 @@ func TestNATPunchConfigRoundTimeout(t *testing.T) {
 }
 
 func TestNATProbeDefaultServersMatchNatprobe(t *testing.T) {
-	cfg, err := ParseConfig([]byte("ice: {}"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	want := natprobe.DefaultServers()
-	if got := natURLs(cfg.Normalized().ICE); !reflect.DeepEqual(got, want) {
-		t.Fatalf("default NAT STUN servers: %v, want %v", got, want)
+	for _, cfg := range []ICEConfig{{}, {NATSTUNURLs: []string{}}, {STUNURLs: []string{}}, {STUNURLs: []string{}, NATSTUNURLs: []string{}}} {
+		if got := natURLs(cfg); !reflect.DeepEqual(got, want) {
+			t.Fatalf("default NAT STUN servers: %v, want %v", got, want)
+		}
 	}
 }
 

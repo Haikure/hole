@@ -264,10 +264,13 @@ func TestNATPunchRoundWaitsForPeerBeforeNextModel(t *testing.T) {
 	config := NATPunchConfig{}
 	config.normalize()
 	done := make(chan error, 1)
+	platform := calibrationDNSPlatform{resolve: func(context.Context, string) (*net.UDPAddr, error) {
+		return nil, fmt.Errorf("fixture: no IPv4 STUN endpoints")
+	}}
 	go func() {
-		// No STUN servers: fail before calibration while the peer is still
+		// Failed STUN resolution stops calibration while the peer is still
 		// working on this round. No real socket or network is required.
-		_, err := p.predictNATPunch(a, DefaultPlatform{}, Config{ICE: ICEConfig{NATSTUNURLs: []string{}}}, &natPunchSession{local: model, remote: model, mode: "fixed", config: config})
+		_, err := p.predictNATPunch(a, platform, Config{ICE: ICEConfig{NATSTUNURLs: []string{}}}, &natPunchSession{local: model, remote: model, mode: "fixed", config: config})
 		done <- err
 	}()
 	defer func() { cancel(); <-done }()

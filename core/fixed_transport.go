@@ -417,7 +417,7 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 		return
 	}
 	cleanup = sync.OnceFunc(cleanup)
-	live := &liveICETransport{ready: a.ready, mux: mux, session: conn, cancel: a.cancel, fixedCleanup: cleanup}
+	live := &liveICETransport{ready: a.ready, pathType: "fixed", mux: mux, session: conn, cancel: a.cancel, fixedCleanup: cleanup}
 	p.mu.Lock()
 	if p.pending != a || p.closed || a.ctx.Err() != nil {
 		p.mu.Unlock()
@@ -458,6 +458,7 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 	}
 	p.mu.Lock()
 	current := p.active == live
+	currentReady := p.ready
 	if current {
 		p.active = nil
 		p.stats.State = "reconnecting"
@@ -467,6 +468,6 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 	p.mu.Unlock()
 	if current && p.ctx.Err() == nil {
 		p.stateChanged()
-		p.restart("fixed", "path_lost")
+		p.restartFrom(currentReady, "fixed", "path_lost")
 	}
 }

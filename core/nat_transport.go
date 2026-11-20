@@ -241,13 +241,10 @@ func probeNATWithRetriesObserved(ctx context.Context, network nat.Network, urls 
 	return s
 }
 
-// Explicitly disabling ordinary STUN also disables implicit external probes.
+// An empty classification list uses built-ins, supplementing ordinary STUN.
 func natURLs(cfg ICEConfig) []string {
-	if cfg.NATSTUNURLs != nil {
+	if len(cfg.NATSTUNURLs) > 0 {
 		return append([]string{}, cfg.NATSTUNURLs...)
-	}
-	if len(cfg.STUNURLs) == 0 {
-		return nil
 	}
 	out := append([]string{}, cfg.STUNURLs...)
 	seen := make(map[string]bool, len(out))
@@ -255,6 +252,9 @@ func natURLs(cfg ICEConfig) []string {
 		seen[raw] = true
 	}
 	for _, raw := range natprobe.DefaultServers() {
+		if len(out) >= natprobe.MaxServers {
+			break
+		}
 		if !seen[raw] {
 			out = append(out, raw)
 			seen[raw] = true

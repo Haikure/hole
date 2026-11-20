@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"time"
@@ -79,10 +80,13 @@ type NATDiagnostic struct {
 func (e *Engine) StartNATProbe(options NATProbeOptions) error {
 	cfg := Config{ICE: ICEConfig{STUNURLs: options.STUNURLs, NATSTUNURLs: options.NATSTUNURLs}}
 	cfg.normalizeTransport()
+	if len(options.STUNURLs) > 8 {
+		return errors.New("NAT 检测的 ice.stun_urls 最多接受 8 个 STUN 服务")
+	}
+	if len(options.NATSTUNURLs) > natprobe.MaxServers {
+		return fmt.Errorf("NAT 检测最多接受 %d 个分类 STUN 服务", natprobe.MaxServers)
+	}
 	for _, list := range [][]string{options.STUNURLs, options.NATSTUNURLs} {
-		if len(list) > 8 {
-			return errors.New("NAT 检测最多接受 8 个 STUN 服务")
-		}
 		for _, raw := range list {
 			u, err := stun.ParseURI(raw)
 			if err != nil || u.Scheme != stun.SchemeTypeSTUN || u.Proto != stun.ProtoTypeUDP {
@@ -91,11 +95,8 @@ func (e *Engine) StartNATProbe(options NATProbeOptions) error {
 		}
 	}
 	urls := natURLs(cfg.ICE)
-	if len(urls) == 0 {
-		return errors.New("NAT 检测服务已关闭，请在连接方式中配置 STUN 地址")
-	}
-	if len(urls) > 8 {
-		urls = urls[:8]
+	if len(urls) > natprobe.MaxServers {
+		urls = urls[:natprobe.MaxServers]
 	}
 	e.operations.Lock()
 	defer e.operations.Unlock()

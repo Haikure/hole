@@ -523,6 +523,8 @@ function sameResumeDeclaration(left, right) {
   const normalize = value => {
     const copy = { ...value };
     delete copy.candidates;
+    delete copy.member_revision;
+    delete copy.update_request_id;
     copy.provide = [...(copy.provide ?? [])].sort((a, b) => a.id.localeCompare(b.id));
     copy.consume = [...(copy.consume ?? [])].sort((a, b) => a.id.localeCompare(b.id));
     return copy;

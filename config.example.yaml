@@ -16,7 +16,7 @@ transport:
   #   advertise: gateway.example.com:50000
 ice:
   port_mapping: auto # auto / off；仅映射隧道 UDP 端口
-  nat_stun_urls: null # null 复用 STUN 并补充静态 UDP 服务；[] 不使用分类服务
+  nat_stun_urls: null # 省略、null 或 [] 均复用 STUN 并补充内置默认服务；非空列表使用自定义服务
   stun_urls:
     - stun:stun.cloudflare.com:3478
   direct_probe_timeout: 3s  # 优先直连时间

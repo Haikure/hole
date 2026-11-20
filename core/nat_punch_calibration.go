@@ -32,7 +32,7 @@ func punchSTUNServers(ctx context.Context, platform Platform, urls []string, pre
 	}); ok {
 		resolve = ipv4.ResolveUDP4
 	}
-	urls = urls[:min(len(urls), 8)]
+	urls = urls[:min(len(urls), natprobe.MaxServers)]
 	addresses := make([]*net.UDPAddr, len(urls))
 	var wg sync.WaitGroup
 	for i, raw := range urls {

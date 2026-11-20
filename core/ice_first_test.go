@@ -109,13 +109,13 @@ func TestOldWorkerOrdinaryICEOfferDoesNotWaitForNAT(t *testing.T) {
 	}
 }
 
-func TestNATFallbackSkipsUnsupportedOrDisabledPunching(t *testing.T) {
-	for _, disabled := range []bool{false, true} {
-		t.Run(map[bool]string{false: "unpredictable", true: "disabled"}[disabled], func(t *testing.T) {
+func TestNATFallbackSkipsUnsupportedPunching(t *testing.T) {
+	for _, defaults := range []bool{false, true} {
+		t.Run(map[bool]string{false: "custom-services", true: "default-services"}[defaults], func(t *testing.T) {
 			c, p := lifecycleCoordinator(t)
 			c.desired.Config = c.desired.Config.normalized()
 			c.desired.Config.ICE.NATSTUNURLs = []string{"stun:192.0.2.1:3478"}
-			if disabled {
+			if defaults {
 				c.desired.Config.ICE.NATSTUNURLs = []string{}
 			}
 			c.natSnapshot = NATSnapshot{Status: "complete", Type: "symmetric", MappingBehavior: "endpoint_dependent", Predictability: "irregular", Epoch: c.networkEpoch.Load(), ProbedAt: time.Now().UTC().Format(time.RFC3339Nano)}
@@ -130,6 +130,8 @@ func TestNATFallbackSkipsUnsupportedOrDisabledPunching(t *testing.T) {
 			p.attempt(a)
 			if m := <-c.sink.messages; m.Type != "nat_punch" || m.Punch.Kind != "offer" {
 				t.Fatalf("fallback did not negotiate NAT: %+v", m)
+			} else if m.Punch.Mode == "disabled" {
+				t.Fatal("empty classification list disabled NAT negotiation")
 			}
 			select {
 			case m := <-c.sink.messages:

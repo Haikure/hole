@@ -55,7 +55,7 @@ function validIPEvidence(entries) {
   return entries.every(e=>{
     if (!e || !ipv4(e.ip) || seen.has(e.ip)) return false;
     seen.add(e.ip);
-    return integer(e.targets,1,8) && integer(e.ports,1,24) && ['unknown','stable','incremental','decremental','irregular'].includes(e.trend) &&
+    return integer(e.targets,1,16) && integer(e.ports,1,48) && ['unknown','stable','incremental','decremental','irregular'].includes(e.trend) &&
       (e.step===undefined || integer(e.step,1,1024)) &&
       (!['incremental','decremental'].includes(e.trend) || e.targets>=3 && e.ports>=3) &&
       (e.step===undefined || ['incremental','decremental'].includes(e.trend));
@@ -325,6 +325,10 @@ export class RoomICE {
       const m=this.member(p.device)?.member;
       return [p.device,m?.runtime_id??'',m?.transport_epoch??'',m?.fixed_endpoint??'',m?.hole_serve??null];
     })??null;
+    // Backup relay availability does not invalidate an authenticated direct
+    // path (or a path through another relay). Only the selected Hole matters.
+    const holeIdentity = values => values?.find(([device])=>device===record?.hole?.device) ?? null;
+    const selectedHoleChanged = record?.hole && !same(holeIdentity(record.hole_identities),holeIdentity(identities));
     const fixedEndpoints = [a.member.fixed_endpoint || "", b.member.fixed_endpoint || ""];
     const liveConfig = a.member.live_config === true && b.member.live_config === true;
     const peerRelay = profile===ICE_PROFILE && !relayRequired && pairing===ALL_PAIRS &&
@@ -338,7 +342,7 @@ export class RoomICE {
       record = { id: crypto.randomUUID(), pair_key: key, a: a.member.device_name, b: b.member.device_name, generation: "1", phase: "direct", round: 0, round_mode: roundMode, relay_orders: relayOrders, runtime, fingerprints, epochs, mappings, voice, ice: {}, retry: 0 };
       changed = true;
       resetPath = true;
-    } else if ((record.punch_cone_pool??"")!==punchConePool || (record.live_config ?? false) !== liveConfig || (record.punch_calibration??"")!==punchCalibration || (record.direct_order??"")!==directOrder || (record.punch_schedule??"")!==punchSchedule || (record.punch_version??"")!==punchVersion || (record.hole && record.lease_until<=Date.now()) || !same(record.hole_devices??null,holeDevices) || !same(record.hole_identities??null,identities) || (record.profile ?? ICE_PROFILE) !== profile || !same(record.fixed_endpoints ?? ["", ""], fixedEndpoints) || (voiceChanged && !liveConfig) || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
+    } else if ((record.punch_cone_pool??"")!==punchConePool || (record.live_config ?? false) !== liveConfig || (record.punch_calibration??"")!==punchCalibration || (record.direct_order??"")!==directOrder || (record.punch_schedule??"")!==punchSchedule || (record.punch_version??"")!==punchVersion || (record.hole && record.lease_until<=Date.now()) || !same(record.hole_devices??null,holeDevices) || selectedHoleChanged || (record.profile ?? ICE_PROFILE) !== profile || !same(record.fixed_endpoints ?? ["", ""], fixedEndpoints) || (voiceChanged && !liveConfig) || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
       record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
       record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; record.voice = voice; changed = true;
       resetPath = true;
@@ -360,6 +364,7 @@ export class RoomICE {
       }
     }
     if (!same(record.mappings, mappings)) changed = true;
+    if (!same(record.hole_identities??null,identities)) changed = true;
     if (record.peer_relay && !peerRelay) {
       this.revokePeerRelay(record);
       record.generation=(BigInt(record.generation)+1n).toString();
@@ -389,6 +394,7 @@ export class RoomICE {
     record.punch_cone_pool = punchConePool;
     record.fixed_endpoints = fixedEndpoints;
     if (resetPath) {
+      record.manual_probe = false;
       record.direct_stage = 'ice';
       record.direct_failures = 0;
       record.fixed_direction = 0;
@@ -483,6 +489,7 @@ export class RoomICE {
     const phase = record.peer_relay ? 'peer_relay' : fixed ? "fixed" : record.round_mode ? recordPhase(record, record.round ?? 0, index) : record.phase;
     const ready = { type: "transport_ready", transport_id: record.id, transport_generation: record.generation, profile: record.profile ?? ICE_PROFILE, session_version: 2, phase, relay_policy: fixed ? "" : record.relay_policy ?? "", peer_device: peerName, peer_runtime_id: record.runtime[1-index], peer_fingerprint: record.fingerprints[1-index], runtime_id: record.runtime[index], initiator_id: fixed ? direction.dialer_id : record.a, ...direction, mappings: record.mappings, voice: record.voice === true, live_config: record.live_config === true, voice_revision: record.voice_revision ?? "1", lease_until: String(record.lease_until), retry_after_ms: record.retry_after_ms ?? 0 };
     if (record.punch_version) ready.punch_version = record.punch_version;
+    if (record.manual_probe) ready.manual_probe = true;
     if (record.peer_relay) Object.assign(ready,{peer_relay_version:PEER_RELAY_VERSION,peer_relay:record.peer_relay});
     if (record.direct_order) Object.assign(ready,{direct_order:record.direct_order,direct_stage:record.direct_stage??'ice'});
     if (record.punch_schedule) ready.punch_schedule = record.punch_schedule;
@@ -609,17 +616,27 @@ export class RoomICE {
       if (record.blocked) { fault(ws,record.blocked,"传输校验失败，等待配置或运行实例更新",message); return true; }
       if (!decimal(message.expected_generation)) { fault(ws, "invalid_generation", "传输代次格式无效", message); return true; }
       if (message.expected_generation !== record.generation) { this.notify(record, name, true); return true; }
+      // A successful endpoint can only lose its path explicitly. Delayed
+      // discovery failures must not restart an already-established generation.
+      if (record.established?.[name]?.generation===record.generation &&
+          ['ice_failed','path_failed','direct_exhausted'].includes(message.reason)) {
+        this.notify(record,name,true); return true;
+      }
+      const manual = message.reason==='manual_renomination';
       if (record.profile === FIXED_PROFILE) {
         if (message.phase !== 'fixed') { fault(ws, 'invalid_phase', '固定入口连接只能重试固定路径', message); return true; }
         record.generation = (BigInt(record.generation) + 1n).toString();
         record.fixed_direction = (record.fixed_direction ?? 0) + 1;
-        record.retry = (record.retry ?? 0) + 1;
-        record.retry_after_ms = Math.min(15_000, 1000 * 2 ** Math.min(record.retry - 1, 4));
+        record.retry = manual ? 1 : (record.retry ?? 0) + 1;
+        record.retry_after_ms = manual ? 0 : Math.min(15_000, 1000 * 2 ** Math.min(record.retry - 1, 4));
         record.ice = {}; record.lease_until = Date.now() + LEASE_MS;
         await this.persist(record); this.notify(record, record.a); this.notify(record, record.b); return true;
       }
       let wrapped = false;
       const direct = !record.peer_relay && (record.round_mode ? record.round===0 : record.phase==='direct');
+      if (record.direct_order===DIRECT_ORDER && direct && record.direct_stage==='punch' && message.reason==='ice_failed') {
+        this.notify(record,name,true); return true;
+      }
       const startPunch = record.direct_order===DIRECT_ORDER && direct && record.direct_stage!=='punch' && message.reason==='ice_failed';
       const retryDirect = record.punch_version && direct && message.reason==='path_failed' && (record.direct_failures??0)<2;
       if (record.round_mode) {
@@ -627,10 +644,10 @@ export class RoomICE {
         const peerOrder = record.relay_orders[record.a === name ? 1 : 0];
         const allPairs = record.relay_pairing === ALL_PAIRS;
         const maxRound = maxRelayRound(record);
-        const requested = message.relay_round;
+        const requested = manual ? 0 : message.relay_round;
         const expectedPhase = allPairs ? recordPhase(record, requested, record.a === name ? 0 : 1) : relayPhase(requested, ownOrder);
         if (!Number.isSafeInteger(requested) || requested < 0 || requested > maxRound + 1 ||
-            (allPairs ? (message.phase !== undefined && message.phase !== expectedPhase) : message.phase !== expectedPhase)) { fault(ws, "invalid_phase", "路径轮次或本机阶段无效", message); return true; }
+            (!manual && (allPairs ? (message.phase !== undefined && message.phase !== expectedPhase) : message.phase !== expectedPhase))) { fault(ws, "invalid_phase", "路径轮次或本机阶段无效", message); return true; }
         const current = record.round ?? 0;
         if (requested !== 0 && requested !== current && requested !== current + 1) { fault(ws, "invalid_phase", "路径轮次应按顺序推进", message); return true; }
         let next = requested > maxRound ? 0 : requested;
@@ -642,21 +659,25 @@ export class RoomICE {
         record.round = next;
       } else {
         const phaseOrder = record.relay_policy === RELAY_POLICY ? orderedPhases : compatiblePhases;
-        if (!phaseOrder.includes(message.phase)) { fault(ws, "invalid_phase", "路径阶段无效", message); return true; }
-        const current = phaseOrder.indexOf(record.phase), requested = phaseOrder.indexOf(message.phase);
+        const phase = manual ? 'direct' : message.phase;
+        if (!phaseOrder.includes(phase)) { fault(ws, "invalid_phase", "路径阶段无效", message); return true; }
+        const current = phaseOrder.indexOf(record.phase), requested = phaseOrder.indexOf(phase);
         if (requested !== 0 && requested !== current && requested !== current + 1) { fault(ws, "invalid_phase", "路径阶段应按顺序推进", message); return true; }
-        wrapped = message.phase === "direct";
-        record.phase = wrapped && record.relay_required ? phaseOrder[1] : message.phase;
+        wrapped = phase === "direct";
+        record.phase = wrapped && record.relay_required ? phaseOrder[1] : phase;
       }
       if (record.punch_version && direct && message.reason==='path_failed') record.direct_failures=(record.direct_failures??0)+1;
       if (startPunch || retryDirect) { record.round=0; record.phase='direct'; wrapped=false; }
       else if (!direct) record.direct_failures=0;
       record.direct_stage = startPunch || (retryDirect && record.direct_stage==='punch') ? 'punch' : 'ice';
       if (startPunch) record.direct_failures=0;
+      if (manual) { record.direct_failures=0; record.retry=0; }
+      record.manual_probe = manual || (record.manual_probe===true && !wrapped &&
+        ['ice_failed','path_failed','direct_exhausted','peer_relay_failed'].includes(message.reason));
       record.generation = (BigInt(record.generation) + 1n).toString(); record.ice = {};
       record.retry = (record.retry ?? 0) + 1;
       record.relay_only ??= [false,false];
-      record.retry_after_ms = wrapped && message.reason !== "turn_refresh" ? Math.min(15_000, 1000 * 2 ** Math.min(record.retry, 4)) : 0;
+      record.retry_after_ms = wrapped && !manual && message.reason !== "turn_refresh" ? Math.min(15_000, 1000 * 2 ** Math.min(record.retry, 4)) : 0;
       record.lease_until = Date.now() + LEASE_MS;
       this.revokePeerRelay(record);
       const tryPeer=direct && !startPunch && !retryDirect && ['ice_failed','path_failed','direct_exhausted'].includes(message.reason);
@@ -666,6 +687,7 @@ export class RoomICE {
     }
     if (!decimal(message.transport_generation) || message.transport_generation !== record.generation) return true;
     if (message.type === "transport_established") {
+      if (record.manual_probe) { record.manual_probe=false; await this.persist(record); }
       if (['direct','fixed'].includes(message.path_type)) {
         record.established??={};
         record.established[name]={generation:record.generation,path_type:message.path_type};

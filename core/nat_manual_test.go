@@ -2,9 +2,12 @@ package core
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"hole/core/natprobe"
 )
 
 func TestManualNATProbeWithoutRoom(t *testing.T) {
@@ -83,6 +86,37 @@ func TestManualNATProbeCancellationAndAllocationExclusion(t *testing.T) {
 	}
 }
 
+func TestManualNATProbeEmptyListsUseDefaults(t *testing.T) {
+	e := NewEngine(Options{})
+	defer e.Close()
+	release, err := e.natAllocation.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = e.CancelNATProbe()
+		release()
+	}()
+	for _, options := range []NATProbeOptions{{}, {NATSTUNURLs: []string{}}, {STUNURLs: []string{}}, {STUNURLs: []string{}, NATSTUNURLs: []string{}}} {
+		if err := e.StartNATProbe(options); err != nil {
+			t.Fatal(err)
+		}
+		servers := e.Snapshot().NATDiagnostic.Servers
+		want := natprobe.DefaultServers()
+		if len(servers) != len(want) {
+			t.Fatalf("default server count: %v, want %v", servers, want)
+		}
+		for _, server := range want {
+			if !slices.Contains(servers, server) {
+				t.Fatalf("missing default server %q: %v", server, servers)
+			}
+		}
+		if err := e.CancelNATProbe(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestManualNATOptionsAndEvidence(t *testing.T) {
 	for _, text := range []string{"null", "[]", "{}{}", `{"password":"secret"}`} {
 		if _, err := ParseNATProbeOptions([]byte(text)); err == nil {
@@ -91,9 +125,9 @@ func TestManualNATOptionsAndEvidence(t *testing.T) {
 	}
 	e := NewEngine(Options{})
 	defer e.Close()
-	for _, options := range []NATProbeOptions{{NATSTUNURLs: []string{}}, {NATSTUNURLs: []string{"turn:localhost:3478"}}, {STUNURLs: []string{}}} {
+	for _, options := range []NATProbeOptions{{NATSTUNURLs: []string{"turn:localhost:3478"}}, {STUNURLs: []string{"turn:localhost:3478"}}} {
 		if err := e.StartNATProbe(options); err == nil {
-			t.Fatal("disabled/invalid servers accepted")
+			t.Fatal("invalid servers accepted")
 		}
 	}
 	d := NATDiagnostic{State: "complete", Result: NATSnapshot{Status: "complete", Type: "symmetric", FilteringBehavior: "address_port_dependent", Predictability: "incremental", PortPreservation: "mixed", NoPAT: "suspected", ProbedAt: time.Now().UTC().Format(time.RFC3339Nano)}}.view()

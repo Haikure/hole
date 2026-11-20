@@ -21,7 +21,7 @@ import (
 
 const (
 	defaultTimeout = natprobe.DefaultTimeout
-	maxServers     = 8
+	maxServers     = natprobe.MaxServers
 )
 
 var defaultSTUNServers = natprobe.DefaultServers()

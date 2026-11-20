@@ -252,14 +252,15 @@ func (c *iceCoordinator) run() error {
 			c.fixed.relay.revokeAll()
 		}
 		c.fixedMu.Unlock()
-		if !resume {
-			for _, peer := range c.peerList() {
-				peer.mu.Lock()
-				retire := peer.ready.Voice || peer.ready.HoleVersion == HoleRelayVersion
-				peer.mu.Unlock()
-				if retire {
-					peer.offline("signal_offline")
-				}
+		for _, peer := range c.peerList() {
+			peer.mu.Lock()
+			// A queued restart may have been lost with the old WebSocket.
+			// Keep healthy media paths, but let the next replay request recovery.
+			peer.requestedGeneration = 0
+			retire := !resume && (peer.ready.Voice || peer.ready.HoleVersion == HoleRelayVersion)
+			peer.mu.Unlock()
+			if retire {
+				peer.offline("signal_offline")
 			}
 		}
 		c.turnMu.Lock()

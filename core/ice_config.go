@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/pion/stun/v4"
 	"gopkg.in/yaml.v3"
+	"hole/core/natprobe"
 	"net"
 	"slices"
 	"strings"
@@ -162,8 +163,8 @@ func (c Config) validateTransport() error {
 	if c.ICE.PortMapping != "auto" && c.ICE.PortMapping != "off" {
 		return fmt.Errorf("ice.port_mapping 只接受 auto 或 off")
 	}
-	if len(c.ICE.NATSTUNURLs) > 8 {
-		return fmt.Errorf("ice.nat_stun_urls 最多 8 条")
+	if len(c.ICE.NATSTUNURLs) > natprobe.MaxServers {
+		return fmt.Errorf("ice.nat_stun_urls 最多 %d 条", natprobe.MaxServers)
 	}
 	for _, raw := range c.ICE.NATSTUNURLs {
 		u, e := stun.ParseURI(raw)

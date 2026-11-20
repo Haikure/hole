@@ -255,6 +255,8 @@ func (p *icePeer) prepareNATPunch(a *iceAttempt, platform Platform, cfg Config) 
 			}
 		}
 	}
+	// Local discovery is useful even if the peer's offer never arrives.
+	a.process.models(0, "", local, NATSnapshot{})
 	var nonce [32]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, err

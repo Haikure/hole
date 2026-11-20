@@ -33,6 +33,7 @@ type iceAttempt struct {
 }
 type liveICETransport struct {
 	ready        iceSignalMessage
+	pathType     string
 	mux          *muxPeer
 	agent        *ice.Agent
 	connection   *ice.Conn
@@ -263,13 +264,10 @@ func (p *icePeer) update(m iceSignalMessage) {
 	}
 	if same {
 		p.mu.Lock()
-		retry := p.active == nil && p.pending == nil && !p.terminal
-		if retry {
-			p.requestedGeneration = 0
-		}
+		retry := p.ready.TransportGeneration == m.TransportGeneration && p.active == nil && p.pending == nil && !p.terminal && p.requestedGeneration != m.TransportGeneration
 		p.mu.Unlock()
 		if retry {
-			p.restart("direct", "retry")
+			p.restartFrom(m, "direct", "retry")
 		}
 	}
 }
@@ -392,6 +390,10 @@ func (p *icePeer) restart(phase, reason string) {
 	p.mu.Lock()
 	current := p.ready
 	p.mu.Unlock()
+	p.restartFrom(current, phase, reason)
+}
+
+func (p *icePeer) restartFrom(current iceSignalMessage, phase, reason string) {
 	if current.RelayRound != nil {
 		round := 0
 		if current.RelayPairing == relayPairingAll {
@@ -408,10 +410,10 @@ func (p *icePeer) restart(phase, reason string) {
 				}
 			}
 		}
-		p.restartRound(round, phase, reason)
+		p.restartWithRoundFrom(current, &round, phase, reason, nil)
 		return
 	}
-	p.restartWithRound(nil, phase, reason)
+	p.restartWithRoundFrom(current, nil, phase, reason, nil)
 }
 
 func (p *icePeer) restartRound(round int, phase, reason string) {
@@ -419,21 +421,61 @@ func (p *icePeer) restartRound(round int, phase, reason string) {
 }
 
 func (p *icePeer) restartWithRound(round *int, phase, reason string) {
+	p.mu.Lock()
+	current := p.ready
+	p.mu.Unlock()
+	p.restartWithRoundFrom(current, round, phase, reason, nil)
+}
+
+// A failed attempt keeps its pending slot until its restart is reserved. Neither
+// maintain nor a delayed failure may turn that request into a newer generation.
+func (p *icePeer) restartWithRoundFrom(m iceSignalMessage, round *int, phase, reason string, failed *iceAttempt) {
+	defer func() {
+		if failed != nil {
+			p.mu.Lock()
+			if p.pending == failed {
+				p.pending = nil
+			}
+			p.mu.Unlock()
+			p.stateChanged()
+		}
+	}()
 	if !p.coordinator.signalOnline() {
 		return
 	}
 	p.mu.Lock()
-	if p.closed || !p.online || p.pending != nil || p.ready.TransportGeneration == 0 || p.requestedGeneration == p.ready.TransportGeneration {
+	if p.closed || !p.online || m.TransportGeneration == 0 || p.ready.TransportID != m.TransportID || p.ready.TransportGeneration != m.TransportGeneration || p.requestedGeneration == m.TransportGeneration ||
+		(failed == nil && p.pending != nil) || (failed != nil && p.pending != failed) {
 		p.mu.Unlock()
 		return
 	}
-	m := p.ready
+	retained := p.active != nil && p.active.mux != nil && p.active.mux.ctx.Err() == nil
+	if retained {
+		if failed == nil && reason != "turn_refresh" {
+			p.mu.Unlock()
+			return
+		}
+		if failed != nil {
+			// A manual search may move from ICE to prediction while retaining a
+			// direct path, but must not downgrade that path after prediction fails.
+			iceToPunch := m.Phase == "direct" && m.DirectOrder == directOrderICEFirst && m.DirectStage == "ice" && reason == "ice_failed"
+			wrapped := (round != nil && *round == 0) || (round == nil && phase == "direct")
+			if !m.ManualProbe || (p.active.pathType == "direct" && !iceToPunch) || (wrapped && !iceToPunch) {
+				p.stats.State = "active"
+				p.mu.Unlock()
+				return
+			}
+		}
+	}
 	if m.Profile == ProfileFixed {
 		phase = "fixed"
 		round = nil
 	}
 	p.requestedGeneration = m.TransportGeneration
 	p.stats.RetryCount++
+	if failed != nil {
+		p.pending = nil
+	}
 	p.mu.Unlock()
 	request := signalMessage("transport_restart")
 	request.TransportID = m.TransportID
@@ -459,23 +501,29 @@ func (p *icePeer) renominate() {
 	}
 
 	p.mu.Lock()
-	if p.closed || !p.online || p.terminal || p.pending != nil || p.active == nil || p.ready.TransportGeneration == 0 || p.requestedGeneration == p.ready.TransportGeneration {
+	if p.closed || !p.online || p.terminal || (p.active == nil && p.pending == nil) || p.ready.TransportGeneration == 0 || p.requestedGeneration == p.ready.TransportGeneration {
 		p.mu.Unlock()
 		return
 	}
 	m := p.ready
-	phase := p.active.ready.Phase
+	if p.pending != nil {
+		p.pending.cancel()
+		p.pending = nil
+	}
 	p.requestedGeneration = m.TransportGeneration
 	p.stats.RetryCount++
 	request := signalMessage("transport_restart")
 	request.TransportID = m.TransportID
 	request.ExpectedGeneration = m.TransportGeneration
-	request.Phase = phase
+	request.Phase = "direct"
+	if m.Profile == ProfileFixed {
+		request.Phase = "fixed"
+	}
 	if m.RelayPairing == relayPairingAll {
 		request.Phase = ""
 	}
 	if m.RelayRound != nil {
-		round := *m.RelayRound
+		round := 0
 		request.RelayRound = &round
 	}
 	request.Reason = "manual_renomination"
@@ -530,12 +578,12 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 		p.mu.Unlock()
 		return
 	}
-	p.pending = nil
 	p.stats.State = "reconnecting"
 	p.stats.Error = fault
 	p.terminal = terminalTransportFault(fault)
 	fatal := p.terminal
 	if fatal {
+		p.pending = nil
 		p.stats.State = "error"
 	}
 	p.mu.Unlock()
@@ -565,20 +613,22 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 			reason = "direct_exhausted"
 		}
 		if a.ready.Profile == ProfileFixed {
-			p.restart("fixed", "path_failed")
+			p.restartWithRoundFrom(a.ready, nil, "fixed", "path_failed", a)
 		} else if a.ready.Phase == "peer_relay" {
-			p.restartWithRound(a.ready.RelayRound, "", "peer_relay_failed")
+			p.restartWithRoundFrom(a.ready, a.ready.RelayRound, "", "peer_relay_failed", a)
 		} else if a.ready.HoleVersion == HoleRelayVersion && a.ready.RelayRound != nil {
-			p.restartRound(nextICERound(*a.ready.RelayRound, len(a.ready.RelayPlan)), "", reason)
+			round := nextICERound(*a.ready.RelayRound, len(a.ready.RelayPlan))
+			p.restartWithRoundFrom(a.ready, &round, "", reason, a)
 		} else if a.ready.RelayPairing == relayPairingAll && a.ready.RelayRound != nil {
 			limit := len(relayPairs(a.ready.RelayOrder, a.ready.PeerRelayOrder, true))
-			p.restartRound(nextICERound(*a.ready.RelayRound, limit), "", reason)
+			round := nextICERound(*a.ready.RelayRound, limit)
+			p.restartWithRoundFrom(a.ready, &round, "", reason, a)
 		} else if a.ready.RelayRound != nil {
 			nextRound, nextPhase := nextRelayRound(*a.ready.RelayRound, a.ready.RelayOrder, a.ready.PeerRelayOrder)
-			p.restartRound(nextRound, nextPhase, reason)
+			p.restartWithRoundFrom(a.ready, &nextRound, nextPhase, reason, a)
 		} else {
 			next := nextICEPhase(a.ready.Phase, a.ready.RelayPolicy)
-			p.restart(next, reason)
+			p.restartWithRoundFrom(a.ready, nil, next, reason, a)
 		}
 	}
 }
@@ -631,7 +681,9 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 		if punch != nil && (punch.mode == "ice" || punch.mode == "ordinary") {
 			a.directExhausted = true
-			p.failed(a, errors.New("NAT evidence insufficient or prediction unsupported"))
+			p.failed(a, fmt.Errorf("NAT evidence insufficient or prediction unsupported: local=%s/%s samples=%d (%s); peer=%s/%s samples=%d (%s)",
+				punch.local.Status, punch.local.Type, punch.local.Samples, punch.local.Reason,
+				punch.remote.Status, punch.remote.Type, punch.remote.Samples, punch.remote.Reason))
 			return
 		}
 		if punch != nil && punch.mode != "ice" && punch.mode != "cone" && punch.mode != "ordinary" {
@@ -1177,6 +1229,7 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 		return
 	}
 	old := p.active
+	live.pathType = p.stats.PathType
 	p.active = live
 	p.pending = nil
 	p.stats.State = "active"
@@ -1194,7 +1247,7 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	status := signalMessage("transport_established")
 	status.TransportID = a.ready.TransportID
 	status.TransportGeneration = a.ready.TransportGeneration
-	status.PathType = p.snapshot().PathType
+	status.PathType = live.pathType
 	_ = p.coordinator.send(status)
 	var failure error
 	select {
@@ -1222,6 +1275,7 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	}
 	p.mu.Lock()
 	current := p.active == live
+	currentReady := p.ready
 	fatal = fatal && p.ready.TransportGeneration == a.ready.TransportGeneration
 	if current {
 		p.active = nil
@@ -1241,10 +1295,10 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 			report.TransportID, report.TransportGeneration = a.ready.TransportID, a.ready.TransportGeneration
 			report.Code = fault.Code
 			_ = p.coordinator.send(report)
-		} else if a.ready.Phase == "peer_relay" {
-			p.restartWithRound(a.ready.RelayRound, "", "peer_relay_failed")
+		} else if currentReady.Phase == "peer_relay" {
+			p.restartWithRoundFrom(currentReady, currentReady.RelayRound, "", "peer_relay_failed", nil)
 		} else {
-			p.restart("direct", "path_lost")
+			p.restartFrom(currentReady, "direct", "path_lost")
 		}
 	}
 }
@@ -1262,6 +1316,7 @@ func (p *icePeer) maintain() {
 			lease := p.ready.LeaseUntil
 			pending := p.pending
 			terminal := p.terminal
+			ready := p.ready
 			p.mu.Unlock()
 			if active != nil {
 				if lease <= time.Now().UnixMilli() {
@@ -1271,14 +1326,10 @@ func (p *icePeer) maintain() {
 				active.mux.syncMappings()
 				_, expires, _ := p.coordinator.servers()
 				if active.expires > 0 && expires > active.expires && pending == nil {
-					if active.ready.RelayRound != nil {
-						p.restartRound(*active.ready.RelayRound, active.ready.Phase, "turn_refresh")
-					} else {
-						p.restart(active.ready.Phase, "turn_refresh")
-					}
+					p.restartFrom(ready, ready.Phase, "turn_refresh")
 				}
 			} else if pending == nil && !terminal {
-				p.restart("direct", "retry")
+				p.restartFrom(ready, "direct", "retry")
 			}
 		}
 	}
@@ -1304,6 +1355,9 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 		}
 		if pending != nil {
 			s.State = "switching"
+		}
+		if active.pathType != "" {
+			s.PathType = active.pathType
 		}
 		s.Generation = active.ready.TransportGeneration
 		s.Phase = active.ready.Phase

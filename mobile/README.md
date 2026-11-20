@@ -37,7 +37,7 @@ Android 使用带 `NetworkBinding` 的构造方法；旧 `newEngine` 和 `newEng
 ### 手动 NAT 检测
 
 手动 NAT 检测无需房间配置。`startNATProbe` 异步接受 `stun_urls`、`nat_stun_urls`、
-`interface_allowlist` 三个可选字段的 JSON 对象（最多 16 KiB）；服务列表的 null / 空数组语义与 ICE 一致。
+`interface_allowlist` 三个可选字段的 JSON 对象（最多 16 KiB）；`nat_stun_urls` 省略、为 null 或空数组时，均复用普通 STUN 并补充内置默认服务，普通 STUN 也为空时仍使用内置默认服务。
 结果在 `snapshot.nat_diagnostic`，包括状态、起止时间、原始分类、网络信息和带字段说明的分组。
 事件 `nat_diagnostic` 在停止转发时也能唤醒宿主；显式 `stop` 取消检测并抑制旧回调，之后可再次手动检测。
 Android 检测的 DNS 和 UDP 均绑定当前物理 Network，切网使旧结果失效。
@@ -123,7 +123,7 @@ Network handle 使用十进制字符串。失效网络返回明确错误，不�
 | 配置 | 交换与兼容行为 |
 | --- | --- |
 | `ice.port_mapping` | 默认 `auto`，可设为 `off` |
-| `ice.nat_stun_urls` | 保留 null / 空数组语义；CLI 交换与备份共用核心字段 |
+| `ice.nat_stun_urls` | 省略、null 或空数组均使用默认分类服务；CLI 交换与备份共用核心字段 |
 | `relay.device` / `relay.order` | 原样进入核心和 CLI 交换，区分省略与显式空顺序 |
 | `relay.serve.enabled: true` | 导入和启动均明确返回“仅 CLI 支持”，不会静默删除 |
 

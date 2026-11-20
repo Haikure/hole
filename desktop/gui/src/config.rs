@@ -419,7 +419,7 @@ pub fn find_id_conflict(provide: &[ProvideEntry], consume: &[ConsumeEntry]) -> O
 
 pub fn find_connection_error(c: &ConnectionSettings, secrets: &Secrets) -> Option<String> {
     if !["auto","off"].contains(&c.ice.port_mapping.as_str()) { return Some("端口映射只接受 auto 或 off".into()); }
-    if c.ice.nat_stun_urls.as_ref().is_some_and(|urls|urls.len()>8 || urls.iter().any(|u|!u.starts_with("stun:"))) {return Some("NAT 探测最多接受 8 条 UDP STUN 地址".into());}
+    if c.ice.nat_stun_urls.as_ref().is_some_and(|urls|urls.len()>16 || urls.iter().any(|u|!u.starts_with("stun:"))) {return Some("NAT 探测最多接受 16 条 UDP STUN 地址".into());}
     if let Some(e) = validate_server_url(&c.server_url) {
         return Some(e);
     }

@@ -61,6 +61,8 @@ function modelLines(model) {
     if (model.port_step) rows.push(line("端口步长", model.port_step))
     if (model.last_mapping_port) rows.push(line("基准端口", model.last_mapping_port))
     rows.push(line("有效基础样本", model.samples === undefined ? "待观测" : model.samples))
+    if (model.status) rows.push(line("采样状态", {probing: "探测中", complete: "采样完成", insufficient: "证据不足", expired: "已过期", not_applicable: "IPv4 不适用"}[model.status] || model.status))
+    if (model.reason) rows.push(line("分类说明", model.reason))
     ;(model.ip_evidence || []).forEach(function(ip) { rows.push(line("地址池 " + ip.ip, "目标 " + ip.targets + " · 端口 " + ip.ports + " · " + (trend[ip.trend] || ip.trend) + " · 步长 " + (ip.step || "—"))) })
     return rows
 }

@@ -221,12 +221,10 @@ impl Desktop {
                     "自动：ICE 优先，兼容 IPv6；仅 ICE：不回退 IPv6；仅 IPv6：不使用 ICE。",
                 ));
         let mut nat_modes = row().flex_wrap();
-        for (mode, label) in [(0, "默认分类服务"), (1, "自定义"), (2, "不使用分类 STUN")]
-        {
+        for (mode, label) in [(0, "默认分类服务"), (1, "自定义")] {
             let selected = match mode {
-                0 => c.ice.nat_stun_urls.is_none(),
-                1 => c.ice.nat_stun_urls.as_ref().is_some_and(|v| !v.is_empty()),
-                _ => c.ice.nat_stun_urls.as_ref().is_some_and(|v| v.is_empty()),
+                0 => c.ice.nat_stun_urls.as_ref().map_or(true, |v| v.is_empty()),
+                _ => c.ice.nat_stun_urls.as_ref().is_some_and(|v| !v.is_empty()),
             };
             nat_modes = nat_modes.child(self.action(
                 format!("nat-stun-mode-{mode}"),
@@ -237,8 +235,7 @@ impl Desktop {
                 move |a, _, _| {
                     a.draft.connection.ice.nat_stun_urls = match mode {
                         0 => None,
-                        1 => Some(vec![config::DEFAULT_STUN_URL.into()]),
-                        _ => Some(vec![]),
+                        _ => Some(vec![config::DEFAULT_STUN_URL.into()]),
                     };
                     a.form_epoch += 1;
                 },
@@ -270,7 +267,7 @@ impl Desktop {
         if c.ice.nat_stun_urls.as_ref().is_some_and(|v| !v.is_empty()) {
             ice = ice.child(self.field(
                 "nat-stun-custom",
-                "分类 STUN 地址（最多 8 个）",
+                "分类 STUN 地址（最多 16 个）",
                 c.ice.nat_stun_urls.clone().unwrap_or_default().join("\n"),
                 2,
                 |a, v| a.draft.connection.ice.nat_stun_urls = Some(config::split_list(&v)),

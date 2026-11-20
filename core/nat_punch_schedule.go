@@ -76,6 +76,7 @@ func (p *icePeer) refreshNATPunchModel(a *iceAttempt, platform Platform, cfg Con
 	if refresh || s.local.Current().Status != "complete" {
 		s.local = p.probeNATPunchModel(ctx, a, platform, cfg, round)
 	}
+	a.process.models(round, "", s.local, NATSnapshot{})
 	if err := p.sendNATPunch(a, natPunchSignal{Kind: "model", Round: round, Snapshot: &s.local}); err != nil {
 		return err
 	}

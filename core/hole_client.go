@@ -265,7 +265,7 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 		return
 	}
 	cleanup := sync.OnceFunc(func() { _ = transport.Close(); _ = packet.Close() })
-	live := &liveICETransport{ready: a.ready, mux: mux, session: conn, cancel: a.cancel, fixedCleanup: cleanup}
+	live := &liveICETransport{ready: a.ready, pathType: "hole", mux: mux, session: conn, cancel: a.cancel, fixedCleanup: cleanup}
 	p.mu.Lock()
 	if p.pending != a || p.closed || a.ctx.Err() != nil {
 		p.mu.Unlock()
@@ -295,6 +295,7 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	}
 	p.stateChanged()
 	status := signalMessage("transport_established")
+	status.PathType = live.pathType
 	status.TransportID, status.TransportGeneration = a.ready.TransportID, a.ready.TransportGeneration
 	_ = p.coordinator.send(status)
 	select {
@@ -309,6 +310,7 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	}
 	p.mu.Lock()
 	current := p.active == live
+	currentReady := p.ready
 	if current {
 		p.active = nil
 		p.stats.State = "reconnecting"
@@ -317,6 +319,6 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	p.mu.Unlock()
 	if current && p.ctx.Err() == nil {
 		p.stateChanged()
-		p.restart("direct", "path_lost")
+		p.restartFrom(currentReady, "direct", "path_lost")
 	}
 }

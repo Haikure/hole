@@ -31,8 +31,8 @@ func poolEvidence(groups map[netip.Addr][]Sample) []IPEvidence {
 		ips = append(ips, ip)
 	}
 	sort.Slice(ips, func(i, j int) bool { return ips[i].Less(ips[j]) })
-	// The normal probe has at most eight destinations and three responses per
-	// destination. Bound exported evidence even for callers with longer input.
+	// Bound exported exit-IP groups independently of the number of destinations.
+	// This limit is shared with the signaling validator.
 	if len(ips) > 24 {
 		ips = ips[:24]
 	}

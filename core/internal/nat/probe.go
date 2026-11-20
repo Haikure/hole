@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/pion/stun/v4"
@@ -17,8 +18,6 @@ type Network interface {
 	ListenPacket(context.Context, string, string) (net.PacketConn, error)
 	ResolveUDP(context.Context, string) (*net.UDPAddr, error)
 }
-
-const maxProbeServers = 8
 
 func addrPort(address net.Addr) netip.AddrPort {
 	if address == nil {
@@ -47,8 +46,9 @@ type ProbeTarget struct {
 
 // ProbeDetailed retains resolution failures and per-target base samples for hosts.
 func ProbeDetailed(ctx context.Context, network Network, pc net.PacketConn, urls []string) (Snapshot, []netip.AddrPort, []ProbeTarget) {
-	capacity := min(len(urls), maxProbeServers)
+	capacity := min(len(urls), natprobe.MaxServers)
 	endpoints := make([]*net.UDPAddr, 0, capacity)
+	resolved := make([]*net.UDPAddr, capacity)
 	seen := make(map[string]int, capacity)
 	targets := make([]ProbeTarget, capacity)
 	resolve := network.ResolveUDP
@@ -57,6 +57,7 @@ func ProbeDetailed(ctx context.Context, network Network, pc net.PacketConn, urls
 	}); ok {
 		resolve = ipv4.ResolveUDP4
 	}
+	var lookups sync.WaitGroup
 	for i, raw := range urls[:capacity] {
 		target := &targets[i]
 		target.URL, target.Mappings = raw, []string{}
@@ -69,18 +70,29 @@ func ProbeDetailed(ctx context.Context, network Network, pc net.PacketConn, urls
 			target.Reason = "无效的 UDP STUN 地址"
 			continue
 		}
-		// A stalled Android Network lookup must not consume the entire probe.
-		resolveCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
-		address, err := resolve(resolveCtx, net.JoinHostPort(uri.Host, strconv.Itoa(uri.Port)))
-		cancel()
-		if err != nil {
-			target.Reason = "IPv4 解析失败：" + err.Error()
+		// Resolve together so slow lookups share one bounded DNS window.
+		// Keep the configured order for the subsequent allocation samples.
+		lookups.Go(func() {
+			resolveCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+			defer cancel()
+			address, err := resolve(resolveCtx, net.JoinHostPort(uri.Host, strconv.Itoa(uri.Port)))
+			if err != nil {
+				target.Reason = "IPv4 解析失败：" + err.Error()
+				return
+			}
+			if address == nil || address.IP.To4() == nil || address.IP.IsUnspecified() || address.IP.IsMulticast() || address.Port < 1 || address.Port > 65535 {
+				target.Reason = "DNS 未返回可用的 IPv4 STUN 端点"
+				return
+			}
+			resolved[i] = address
+		})
+	}
+	lookups.Wait()
+	for i, address := range resolved {
+		if address == nil {
 			continue
 		}
-		if address == nil || address.IP.To4() == nil {
-			target.Reason = "DNS 未返回可用的 IPv4 地址"
-			continue
-		}
+		target := &targets[i]
 		key := address.String()
 		target.Endpoint = key
 		if previous, ok := seen[key]; ok {

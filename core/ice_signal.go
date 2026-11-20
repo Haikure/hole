@@ -17,6 +17,7 @@ type peerMappingRecord struct {
 	Expose   HostPort        `json:"expose"`
 }
 type iceSignalMessage struct {
+	ManualProbe      bool              `json:"manual_probe,omitempty"`
 	PeerRelayVersion string            `json:"peer_relay_version,omitempty"`
 	PeerRelay        *peerRelayGrant   `json:"peer_relay,omitempty"`
 	PathType         string            `json:"path_type,omitempty"`

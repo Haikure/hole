@@ -102,11 +102,12 @@ func TestPeerRelayThreeDevicesAndFallback(t *testing.T) {
 	defer b.Close()
 	defer relay.Close()
 	ra, rb, rr := iceFixtureRequest(server, "alpha"), iceFixtureRequest(server, "beta"), iceFixtureRequest(server, "relay")
+	stunURLs := natFixtureSTUNURLs(t)
 	for _, r := range []*Request{&ra, &rb, &rr} {
 		// Voice relationships provide the two already-established relay legs.
 		r.Config.Voice.Enabled = true
 		r.Config.ICE.PortMapping = "off"
-		r.Config.ICE.NATSTUNURLs = []string{}
+		r.Config.ICE.NATSTUNURLs = stunURLs
 		r.Config.TURN = TURNConfig{Mode: "manual", URLs: []string{turnURL}, Username: "user", Credential: "secret", Order: []string{"udp"}}
 	}
 	tcpPort, udpPort := unusedTCPPort(t), unusedTCPPort(t)

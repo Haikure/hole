@@ -133,7 +133,7 @@ fun TransportSettingsScreen(
                     HoleTextField(interfaces, { interfaces = it }, "允许使用的网卡", supportingText = { Text("留空自动选择；Android 跟随系统网络。") }, modifier = Modifier.fillMaxWidth())
                     HoleSwitchPreference("仅用中继", "跳过直连，使用 Hole 或 TURN。", checked = relayOnly, onCheckedChange = { relayOnly = it })
                     HoleSwitchPreference("自动映射 UDP 端口", "向当前网络网关申请临时端口映射。", checked = portMapping, onCheckedChange = { portMapping = it })
-                    HoleTextField(natStun, { natStun = it }, "NAT 探测 STUN 地址", supportingText = { Text("默认复用 STUN 并补充静态服务；每行一条。") }, modifier = Modifier.fillMaxWidth())
+                    HoleTextField(natStun, { natStun = it }, "NAT 探测 STUN 地址", supportingText = { Text("留空复用 STUN 并补充内置默认服务；每行一条。") }, modifier = Modifier.fillMaxWidth())
                     HoleSwitchPreference("允许本地 ws 测试", "仅本地测试使用 ws://；生产环境请用 wss://。", checked = insecure, onCheckedChange = { insecure = it })
                 }
             }
