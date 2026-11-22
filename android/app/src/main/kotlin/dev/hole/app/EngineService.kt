@@ -128,7 +128,7 @@ open class EngineService : Service() {
                 loaded.snapshots.collect { snapshot ->
                     withContext(Dispatchers.Main.immediate) {
                         publishState(snapshot.copy(runRequested = requested))
-                        recoveryLock.update(requested && snapshot.signalState != "joined")
+                        recoveryLock.update(requested, snapshot.signalState)
                         runCatching { updateNotification(mutableState.value) }
                     }
                 }

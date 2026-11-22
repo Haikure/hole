@@ -213,7 +213,7 @@ func dualTLS(t *testing.T) [2]*tls.Config {
 	a, b := mustTLS(t), mustTLS(t)
 	configs := [2]*tls.Config{a, b}
 	for side, c := range configs {
-		c.NextProtos = []string{iceALPN}
+		c.NextProtos = []string{holeALPN}
 		c.InsecureSkipVerify = true
 		c.ClientAuth = tls.RequireAnyClientCert
 		fingerprint := certFingerprint(configs[1-side].Certificates[0])
@@ -354,7 +354,7 @@ func TestNATPunchDualSymmetricEstablishesRealQUICOnOriginalSocket(t *testing.T) 
 			for range 2 {
 				r := <-done
 				if r.err != nil {
-					t.Fatalf("side %d: %v", r.side, r.err)
+					t.Fatalf("side %d: %v; punch: %+v", r.side, r.err, attempts[r.side].diagnostic)
 				}
 				conns[r.side] = r.conn
 				defer r.conn.CloseWithError(0, "test done")

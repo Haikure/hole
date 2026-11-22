@@ -22,8 +22,6 @@ Item {
     property string token: ""
     property string deviceName: "pen"
     property string sessionTimeout: "10m"
-    property string preferred: "ice"
-    property bool allowLegacy: true
     property bool allowInsecureSignal: false
     property string stunUrls: ""
     property string portMapping: "auto"
@@ -43,7 +41,6 @@ Item {
     property string retryMaxDelay: "15s"
     property string turnTtl: "6h"
     property string interfaceAllowlist: ""
-    property string candidateAddresses: ""
     property bool includeLoopback: false
     property bool relayOnly: false
 
@@ -268,7 +265,6 @@ Item {
         if (deviceName.trim().length === 0) return "请填写设备名"
         if (!isDuration(sessionTimeout) || durationMilliseconds(sessionTimeout) <= 0)
             return "会话保留期限格式应类似 10m、30s 或 2h"
-        if (preferred !== "ice" && preferred !== "ipv6") return "连接方式无效"
         if (turnMode !== "worker" && turnMode !== "manual" && turnMode !== "off") return "TURN 模式无效"
         if (relayServeUnsupported) return "中继服务仅 CLI 支持"
         if (relayDevice.length > 0 && (!/^[a-zA-Z0-9._-]{1,128}$/.test(relayDevice) || relayDevice === deviceName)) return "中继设备名无效或指向本机"
@@ -276,24 +272,22 @@ Item {
         for (var hi=0;hi<holeOrder.length;++hi) {
             if (["hole","udp","tcp","tls"].indexOf(holeOrder[hi])<0 || holeOrder.indexOf(holeOrder[hi])!==hi) return "中继顺序只接受不重复的 Hole、UDP、TCP、TLS"
         }
-        if (preferred === "ice") {
-            if (!isDurationBetween(directProbeTimeout, 100, 120000)) return "直连探测时间需在 100ms 到 2m 之间"
-            if (!isDurationBetween(gatherTimeout, 100, 120000)) return "候选收集时间需在 100ms 到 2m 之间"
-            if (!isDurationBetween(connectivityTimeout, 100, 120000)) return "连通性检查时间需在 100ms 到 2m 之间"
-            if (!isDurationBetween(retryMaxDelay, 100, 120000)) return "最大重试间隔需在 100ms 到 2m 之间"
-            if (turnMode !== "off" && !isDurationBetween(turnTtl, 60000, 21600000)) return "TURN 凭据期限需在 1m 到 6h 之间"
-            var order = parseRelayOrder(turnOrder)
-            var allowedOrder = ["udp", "tcp", "tls"]
-            if (order.length > 3) return "TURN 类型顺序最多 3 项"
-            for (var oi = 0; oi < order.length; ++oi) {
-                if (allowedOrder.indexOf(order[oi]) < 0) return "TURN 类型仅接受 udp、tcp、tls"
-                if (order.indexOf(order[oi]) !== oi) return "TURN 类型顺序不能重复"
-            }
-            if (turnMode === "manual") {
-                if (parseList(turnUrls).length === 0) return "TURN 模式为手动时需要填写 TURN 地址"
-                if (turnUsername.trim().length === 0) return "手动 TURN 需要填写用户名"
-                if (turnCredential.trim().length === 0) return "手动 TURN 需要填写凭据"
-            }
+        if (!isDurationBetween(directProbeTimeout, 100, 120000)) return "直连探测时间需在 100ms 到 2m 之间"
+        if (!isDurationBetween(gatherTimeout, 100, 120000)) return "候选收集时间需在 100ms 到 2m 之间"
+        if (!isDurationBetween(connectivityTimeout, 100, 120000)) return "连通性检查时间需在 100ms 到 2m 之间"
+        if (!isDurationBetween(retryMaxDelay, 100, 120000)) return "最大重试间隔需在 100ms 到 2m 之间"
+        if (turnMode !== "off" && !isDurationBetween(turnTtl, 60000, 21600000)) return "TURN 凭据期限需在 1m 到 6h 之间"
+        var order = parseRelayOrder(turnOrder)
+        var allowedOrder = ["udp", "tcp", "tls"]
+        if (order.length > 3) return "TURN 类型顺序最多 3 项"
+        for (var oi = 0; oi < order.length; ++oi) {
+            if (allowedOrder.indexOf(order[oi]) < 0) return "TURN 类型仅接受 udp、tcp、tls"
+            if (order.indexOf(order[oi]) !== oi) return "TURN 类型顺序不能重复"
+        }
+        if (turnMode === "manual") {
+            if (parseList(turnUrls).length === 0) return "TURN 模式为手动时需要填写 TURN 地址"
+            if (turnUsername.trim().length === 0) return "手动 TURN 需要填写用户名"
+            if (turnCredential.trim().length === 0) return "手动 TURN 需要填写凭据"
         }
         var problem = mappingIssue(provides, "提供映射", false)
         if (problem.length > 0) return problem
@@ -396,8 +390,6 @@ Item {
         sessionTimeout = asString(config.session_timeout) || "10m"
 
         var transport = config.transport && typeof config.transport === "object" ? config.transport : {}
-        preferred = asString(transport.preferred) || "ice"
-        allowLegacy = asBool(transport.allow_legacy, true)
         allowInsecureSignal = asBool(transport.allow_insecure_signal, false)
 
         var ice = config.ice && typeof config.ice === "object" ? config.ice : null
@@ -434,7 +426,6 @@ Item {
         turnUsername = asString(turn.username)
         turnCredential = asString(turn.credential)
 
-        candidateAddresses = formatList(config.candidate_addresses)
 
         // mapping_state keeps disabled and partially edited rows out of the
         // runtime config without losing them when the page is reopened.
@@ -482,8 +473,7 @@ Item {
         if (!initialized) return
         localError = ""
         saveState = ""
-        var iceActive = preferred === "ice"
-        var turnActive = iceActive && turnMode !== "off"
+        var turnActive = turnMode !== "off"
         var manualTurn = turnActive && turnMode === "manual"
         holePlugin.mappingStateJson = JSON.stringify(page.mappingState())
         var turnState = {
@@ -501,34 +491,28 @@ Item {
             token: token,
             device_name: deviceName,
             session_timeout: sessionTimeout,
-            candidate_addresses: preferred === "ipv6" ? parseList(candidateAddresses) : [],
             transport: {
-                preferred: preferred,
-                allow_legacy: allowLegacy,
                 allow_insecure_signal: allowInsecureSignal
             },
             ice: {
                 port_mapping: portMapping,
                 nat_stun_urls: natStunUrls,
-                // The core validates the complete transport object even when
-                // IPv6 is selected. Do not carry hidden, stale ICE values into
-                // that mode.
-                stun_urls: iceActive ? parseList(stunUrls) : [page.defaultStun],
-                direct_probe_timeout: iceActive ? directProbeTimeout : "3s",
-                gather_timeout: iceActive ? gatherTimeout : "6s",
-                connectivity_timeout: iceActive ? connectivityTimeout : "10s",
-                retry_max_delay: iceActive ? retryMaxDelay : "15s",
-                interface_allowlist: iceActive ? parseList(interfaceAllowlist) : [],
-                include_loopback: iceActive && includeLoopback,
-                relay_only: iceActive && relayOnly
+                stun_urls: parseList(stunUrls),
+                direct_probe_timeout: directProbeTimeout,
+                gather_timeout: gatherTimeout,
+                connectivity_timeout: connectivityTimeout,
+                retry_max_delay: retryMaxDelay,
+                interface_allowlist: parseList(interfaceAllowlist),
+                include_loopback: includeLoopback,
+                relay_only: relayOnly
             },
             turn: {
-                mode: iceActive ? turnMode : "off",
+                mode: turnMode,
                 ttl: turnActive ? turnTtl : "6h",
                 urls: manualTurn ? turnState.urls : [],
                 username: manualTurn ? turnState.username : "",
                 credential: manualTurn ? turnState.credential : "",
-                order: iceActive ? turnState.order : []
+                order: turnState.order
             },
             provide: page.collectMappings(provides, false),
             consume: page.collectMappings(consumes, true)
@@ -737,6 +721,7 @@ Item {
             connecting: "连接中",
             joining: "加入房间",
             joined: "已加入房间",
+            delegated: "通过房间设备接收信令",
             reconnecting: "重新连接中",
             disconnected: "未连接",
             waiting_peer: "等待对端",
@@ -1019,6 +1004,7 @@ Item {
         appendSnapshotLine(lines, "配置", data.configured ? "已配置" : "未配置")
         appendSnapshotLine(lines, "运行请求", data.run_requested ? "运行中" : "已停止")
         appendSnapshotLine(lines, "核心版本", asString(data.core_version))
+        appendSnapshotLine(lines, "Worker 版本", asString(data.worker_version))
         appendSnapshotLine(lines, "核心构建", asString(data.core_build_id))
         appendSnapshotLine(lines, "启动时间", asString(data.started_at))
         appendSnapshotLine(lines, "连接代次", asString(data.generation))

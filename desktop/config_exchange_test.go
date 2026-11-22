@@ -21,14 +21,14 @@ func jsonObject(t *testing.T, data []byte) any {
 
 func TestPortableConfigurationMatchesAndroidExchange(t *testing.T) {
 	fixtures := []string{
-		"transport:\n  preferred: ice\ndevice_name: desktop\nrelay:\n  device: relay-node\n",
-		"transport:\n  preferred: ice\ndevice_name: desktop\nrelay:\n  device: relay-node\n  order: []\n",
-		"transport:\n  preferred: ice\ndevice_name: desktop\nrelay:\n  device: relay-node\n  order: [hole, tls]\n",
+		"device_name: desktop\nrelay:\n  device: relay-node\n",
+		"device_name: desktop\nrelay:\n  device: relay-node\n  order: []\n",
+		"device_name: desktop\nrelay:\n  device: relay-node\n  order: [hole, tls]\n",
 		`{}`,
 		"room: ROOM\nprovide: []\nconsume: []\n",
-		"server_url: wss://HOST/ws\ntransport:\n  preferred: ice\n  allow_legacy: true\nice:\n  stun_urls: []\nturn:\n  mode: off\n",
-		`{"server_url":"wss://HOST/ws","room":"ROOM","password":"PRIVATE_PASSWORD","token":"PRIVATE_TOKEN","device_name":"desktop","transport":{"preferred":"ice"},"ice":{"stun_urls":[],"relay_only":true,"include_loopback":true,"interface_allowlist":["lo"],"direct_probe_timeout":"4s"},"turn":{"mode":"manual","ttl":"2h","urls":["turn:HOST:3478?transport=udp"],"username":"TURN_USER","credential":"PRIVATE_TURN"},"provide":[{"id":"tcp","service":"tcp://[::1]:22"},{"id":"udp","service":"udp://HOST:53"}],"consume":[{"id":"other","expose":"127.0.0.1:8022"}]}`,
-		`{"transport":{"preferred":"ipv6"},"candidate_interfaces":["eth0"],"session_timeout":"30m","turn":{"mode":"manual","urls":["turn:HOST:3478"]}}`,
+		"server_url: wss://HOST/ws\nice:\n  stun_urls: []\nturn:\n  mode: off\n",
+		`{"server_url":"wss://HOST/ws","room":"ROOM","password":"PRIVATE_PASSWORD","token":"PRIVATE_TOKEN","device_name":"desktop","transport":{},"ice":{"stun_urls":[],"relay_only":true,"include_loopback":true,"interface_allowlist":["lo"],"direct_probe_timeout":"4s"},"turn":{"mode":"manual","ttl":"2h","urls":["turn:HOST:3478?transport=udp"],"username":"TURN_USER","credential":"PRIVATE_TURN"},"provide":[{"id":"tcp","service":"tcp://[::1]:22"},{"id":"udp","service":"udp://HOST:53"}],"consume":[{"id":"other","expose":"127.0.0.1:8022"}]}`,
+		`{"transport":{},"candidate_interfaces":["eth0"],"session_timeout":"30m","turn":{"mode":"manual","urls":["turn:HOST:3478"]}}`,
 	}
 	for i, text := range fixtures {
 		doc, fault := portableDocument([]byte(text))
@@ -69,7 +69,7 @@ func TestPortableConfigurationMatchesAndroidExchange(t *testing.T) {
 }
 
 func TestConfigExchangeRPCIsReadOnlyAndCredentialsAreOptInOnExport(t *testing.T) {
-	document := `{"server_url":"wss://HOST/ws","room":"ROOM","password":"PRIVATE_PASSWORD","token":"PRIVATE_TOKEN","transport":{"preferred":"ice"},"turn":{"mode":"manual","urls":["turn:HOST:3478"],"username":"USER","credential":"PRIVATE_TURN"}}`
+	document := `{"server_url":"wss://HOST/ws","room":"ROOM","password":"PRIVATE_PASSWORD","token":"PRIVATE_TOKEN","transport":{},"turn":{"mode":"manual","urls":["turn:HOST:3478"],"username":"USER","credential":"PRIVATE_TURN"}}`
 	decode, _ := json.Marshal(map[string]any{"text": document})
 	encode, _ := json.Marshal(map[string]any{"config": json.RawMessage(document)})
 	withSecrets, _ := json.Marshal(map[string]any{"config": json.RawMessage(document), "include_secrets": true})

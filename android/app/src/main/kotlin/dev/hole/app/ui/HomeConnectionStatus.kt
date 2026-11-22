@@ -42,7 +42,7 @@ internal fun homeConnectionPhase(snapshot: CoreSnapshot): HomeConnectionPhase = 
     !snapshot.runRequested -> HomeConnectionPhase.OFFLINE
     snapshot.signalState == "error" -> HomeConnectionPhase.ERROR
     snapshot.engineState == "recovering" -> HomeConnectionPhase.WAITING_NETWORK
-    snapshot.signalState == "joined" -> HomeConnectionPhase.CONNECTED
+    snapshot.signalState in setOf("joined", "delegated") -> HomeConnectionPhase.CONNECTED
     snapshot.signalState == "joining" -> HomeConnectionPhase.JOINING
     snapshot.signalState == "reconnecting" -> HomeConnectionPhase.RECONNECTING
     else -> HomeConnectionPhase.SIGNAL

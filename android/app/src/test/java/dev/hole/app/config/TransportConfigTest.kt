@@ -26,8 +26,8 @@ class TransportConfigTest {
     @Test fun cloudflareIsTheDefaultAndTheWireUsesIce() {
         val request = toStartRequest(configured, "password", "token")
         assertEquals(listOf("stun:stun.cloudflare.com:3478"), request.config.ice.stunUrls)
-        assertEquals(PREFERRED_ICE, request.config.transport.preferred)
-        assertTrue(request.config.transport.allowLegacy)
+        assertFalse(wireJson.encodeToString(request).contains("preferred"))
+        assertFalse(wireJson.encodeToString(request).contains("allow_legacy"))
         assertTrue(wireJson.encodeToString(request).contains("stun.cloudflare.com"))
         assertEquals(CoreTurn(mode = "worker", ttl = "6h", urls = emptyList(), username = "", credential = ""), request.config.turn)
     }
@@ -38,14 +38,12 @@ class TransportConfigTest {
         val duplicate = custom.copy(connection = custom.connection.copy(turn = TurnSettings(order = listOf("udp", "udp"))))
         assertFailsWith<IllegalArgumentException> { toStartRequest(duplicate, "password", "token") }
     }
-    @Test fun migrationPreservesExplicitLegacySemanticsAndCredentials() {
+    @Test fun migrationRemovesIpv6TransportAndPreservesCredentials() {
         val pinned = configured.copy(schemaVersion = 1, connection = configured.connection.copy(candidateAddresses = listOf("2001:db8::1"), passwordCipher = "encrypted"))
         val migrated = migrateStoredConfig(pinned, 1)
         assertEquals(2, migrated.schemaVersion)
-        assertEquals("legacy", migrated.connection.connectionMode)
+        assertTrue(migrated.connection.candidateAddresses.isEmpty())
         assertEquals("encrypted", migrated.connection.passwordCipher)
-        assertEquals("auto", migrateStoredConfig(configured.copy(schemaVersion = 1), 1).connection.connectionMode)
-        assertEquals("legacy", migrateStoredConfig(configured.copy(connection = configured.connection.copy(serverUrl = "ws://fixture/ws")), 1).connection.connectionMode)
     }
     @Test fun turnCredentialsAreNotPersistedOrExportedByDefault() {
         val source = configured.copy(connection = configured.connection.copy(turn = TurnSettings("manual", "6h", listOf("turn:fixture.invalid:3478?transport=udp"), "user"), turnCredentialCipher = "PRIVATE_CIPHER"))
@@ -61,9 +59,29 @@ class TransportConfigTest {
         assertFailsWith<IllegalArgumentException> { toStartRequest(configured.copy(connection = configured.connection.copy(candidateAddresses = listOf("2001:db8::1"))), "p", "t") }
         assertFailsWith<IllegalArgumentException> { toStartRequest(configured.copy(connection = configured.connection.copy(serverUrl = "ws://fixture/ws")), "p", "t") }
     }
-    @Test fun ipv6OnlyKeepsItsPersistedValueAndWireProtocol() {
-        val connection = configured.connection.copy(connectionMode = "legacy")
-        assertEquals(PREFERRED_IPV6, connection.coreTransport().preferred)
-        assertFalse(connection.coreTransport().allowLegacy)
+    @Test fun backupDropsConnectionModesAndPreservesOtherSettings() {
+        for (version in listOf(1, 2)) {
+            for (mode in listOf("legacy", "auto", "ice")) {
+                val text = """
+                    {"format":"hole-android-backup","version":$version,"config":{"schemaVersion":$version,
+                    "connection":{"connectionMode":"$mode","room":"room","deviceName":"phone",
+                    "turn":{"mode":"manual","urls":["turn:relay.example:3478"],"username":"user"}},
+                    "provide":[{"entryId":"service","id":"ssh","host":"127.0.0.1","port":22}]},
+                    "password":"password","token":"token","turnCredential":"turn-secret"}
+                """.trimIndent()
+                val restored = ConfigExchange.readBackup(text)
+                assertEquals("phone", restored.config.connection.deviceName)
+                assertEquals("user", restored.config.connection.turn.username)
+                assertEquals("ssh", restored.config.provide.single().id)
+                assertEquals("password", restored.password)
+                assertEquals("token", restored.token)
+                assertEquals("turn-secret", restored.turnCredential)
+                assertFalse(wireJson.encodeToString(restored.config).contains("connectionMode"))
+                assertFalse(ConfigExchange.backup(restored.config, "", "", false, false).contains("connectionMode"))
+                assertFailsWith<IllegalArgumentException> {
+                    ConfigExchange.readBackup(text.replace("\"connectionMode\"", "\"unknownSetting\""))
+                }
+            }
+        }
     }
 }

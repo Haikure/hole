@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +20,7 @@ type offlinePlatform struct {
 	once    sync.Once
 }
 
-func (p *offlinePlatform) Candidates(ctx context.Context, _ Config, _ int) ([]Candidate, error) {
+func (p *offlinePlatform) DialSignal(ctx context.Context, _, _ string) (net.Conn, error) {
 	p.calls.Add(1)
 	if p.entered != nil {
 		p.once.Do(func() { close(p.entered) })
@@ -28,12 +29,18 @@ func (p *offlinePlatform) Candidates(ctx context.Context, _ Config, _ int) ([]Ca
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	return nil, nil
+	return nil, &Fault{Code: "no_network", Message: "fixture network unavailable"}
 }
 
 func engineRequest() Request {
 	cfg := validConfig()
 	cfg.Password, cfg.Token = "PRIVATE_PASSWORD", "PRIVATE_ROOM_TOKEN"
+	cfg.Transport = TransportConfig{AllowInsecureSignal: true}
+	cfg.ICE.STUNURLs = []string{}
+	cfg.ICE.IncludeLoopback = true
+	cfg.ICE.InterfaceAllowlist = []string{"lo"}
+	cfg.ICE.PortMapping = "off"
+	cfg.TURN.Mode = "off"
 	return Request{ServerURL: "wss://example.invalid/ws", Config: cfg}
 }
 
@@ -175,7 +182,11 @@ func TestEngineStartCancellationAndLiveConfig(t *testing.T) {
 	if err := e.Start(r); err != nil {
 		t.Fatal(err)
 	}
-	<-p.entered
+	select {
+	case <-p.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("startup did not enter platform dialing")
+	}
 	if err := e.Start(r); err != nil {
 		t.Fatal("identical Start is not idempotent:", err)
 	}
@@ -206,12 +217,9 @@ func TestEngineNetworkFailureIsNotConnected(t *testing.T) {
 	if err := e.Start(engineRequest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Wait(context.Background()); err == nil {
-		t.Fatal("missing IPv6 not reported")
-	}
-	s := e.Snapshot()
-	if s.EngineState != "error" || s.SignalState != "disconnected" || s.Error == nil || s.Error.Code != "no_ipv6" {
-		t.Fatalf("wrong failure snapshot: %+v", s)
+	s := waitSnapshot(t, e, func(s Snapshot) bool { return s.Error != nil && s.Error.Code == "no_network" })
+	if s.SignalState == "joined" || s.EngineState == "running" || !s.RunRequested {
+		t.Fatalf("network failure reported as connected: %+v", s)
 	}
 	if err := e.Close(); err != nil {
 		t.Fatal(err)
@@ -229,7 +237,11 @@ func TestEngineBoundedEventsAndRedaction(t *testing.T) {
 	if err := e.Start(r); err != nil {
 		t.Fatal(err)
 	}
-	<-p.entered
+	select {
+	case <-p.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("startup did not enter platform dialing")
+	}
 	for i := 0; i < 100; i++ {
 		e.agentEvent(e.run, Event{Kind: "log", Message: r.Config.Password + " " + r.Config.Token})
 	}

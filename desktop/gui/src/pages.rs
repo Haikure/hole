@@ -35,7 +35,7 @@ impl Desktop {
         let wide = window.bounds().size.width >= px(1150.);
         let kind = if !running {
             "idle"
-        } else if s.signal_state == "joined" {
+        } else if matches!(s.signal_state.as_str(), "joined" | "delegated") {
             "good"
         } else if s.engine_state == "error" || s.signal_state == "error" {
             "bad"
@@ -61,11 +61,7 @@ impl Desktop {
             "正在连接信令"
         };
         let subtitle = if configured {
-            format!(
-                "{} · {}",
-                self.config.connection.room,
-                snapshot::connection_policy_label(&self.config.connection.connection_mode)
-            )
+            self.config.connection.room.clone()
         } else {
             "请先在设置中填写服务器、房间和凭据。".into()
         };
@@ -920,13 +916,9 @@ impl Desktop {
                 .child(self.toggle(
                     "voice-enable",
                     "启用房间语音",
-                    "需要自动或 ICE 连接方式",
+                    "通过已认证的设备连接传输语音",
                     self.config.voice.enabled,
                     |app, value| {
-                        if value && app.config.connection.connection_mode == "legacy" {
-                            app.notice("仅 IPv6 模式不支持房间语音");
-                            return;
-                        }
                         let mut cfg = app.config.clone();
                         cfg.voice.enabled = value;
                         app.controller

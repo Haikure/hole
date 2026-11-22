@@ -20,7 +20,10 @@ const state = {storage,id:{toString:()=> 'fixture-room'},getWebSockets:()=>[...s
 const env = process.env.HOLE_FIXTURE_TURN ? {TURN_BROKER:{idFromName:()=> 'fixture',get:()=>({fetch:async()=>Response.json({ice_servers:JSON.parse(process.env.HOLE_FIXTURE_TURN),expire_at:Date.now()+3600000,refresh_at:Date.now()+3000000})})}} : {};
 let room = new Room(state,env);
 let chain = Promise.resolve();
-for await (const line of readline.createInterface({input:process.stdin,crlfDelay:Infinity})) {
+// The streaming harness is driven by Go integration tests. node --test loads
+// this file with a protocol pipe on stdin, which must not be consumed here.
+const inputLines = process.env.NODE_TEST_CONTEXT ? [] : readline.createInterface({input:process.stdin,crlfDelay:Infinity});
+for await (const line of inputLines) {
  chain = chain.then(async()=>{
   const input=JSON.parse(line);
   if(input.kind==='open') {

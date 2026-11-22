@@ -12,10 +12,13 @@ func TestConfigAppliedPublishesEngineState(t *testing.T) {
 		wantRunning         bool
 	}{
 		{"online", "reconfiguring", "joined", false, true},
+		{"delegated", "reconfiguring", "delegated", false, true},
 		{"already_running", "running", "joined", false, false},
+		{"delegated_running", "running", "delegated", false, false},
 		{"recovering", "recovering", "reconnecting", false, false},
 		{"rejoining", "reconfiguring", "connecting", false, false},
 		{"superseded", "reconfiguring", "joined", true, false},
+		{"delegated_superseded", "reconfiguring", "delegated", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := NewEngine(Options{})
@@ -43,8 +46,8 @@ func TestConfigAppliedPublishesEngineState(t *testing.T) {
 				if len(events) != 2 || events[0].Kind != "engine" || events[0].State != "running" {
 					t.Fatalf("missing running notification: %+v", events)
 				}
-				if e.Snapshot().EngineState != "running" || e.Snapshot().SignalState != "joined" {
-					t.Fatal("online completion did not retain joined state")
+				if e.Snapshot().EngineState != "running" || e.Snapshot().SignalState != tc.signal {
+					t.Fatal("completion did not retain the healthy signaling state")
 				}
 			} else if len(events) != 1 || e.Snapshot().EngineState != tc.state {
 				t.Fatalf("unexpected readiness transition: %+v", events)

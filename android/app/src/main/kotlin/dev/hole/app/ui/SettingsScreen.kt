@@ -74,7 +74,6 @@ fun SettingsScreen(
     var deviceName by rememberSaveable { mutableStateOf(connection.deviceName) }
     var sessionTimeout by rememberSaveable { mutableStateOf(connection.sessionTimeout) }
     var candidateInterfaces by rememberSaveable { mutableStateOf(joinListField(connection.candidateInterfaces)) }
-    var candidateAddresses by rememberSaveable { mutableStateOf(joinListField(connection.candidateAddresses)) }
     var showPassword by rememberSaveable { mutableStateOf(false) }
     var showToken by rememberSaveable { mutableStateOf(false) }
     var saveError by rememberSaveable { mutableStateOf<String?>(null) }
@@ -85,15 +84,12 @@ fun SettingsScreen(
     val keyboard = LocalSoftwareKeyboardController.current
     val scrollState = rememberScrollState()
     val serverUrlError = validateServerUrl(serverUrl)
-    val addressError = candidateAddresses.split(',', '，').map { it.trim() }
-        .filter { it.isNotEmpty() }.firstOrNull { !isPublicIpv6(it) }
     val validTimeout = sessionTimeout.isNotBlank() && isValidDuration(sessionTimeout)
 
     val dirty = serverUrl != connection.serverUrl || password != configState.password ||
         room != connection.room || token != configState.token ||
         deviceName != connection.deviceName || sessionTimeout != connection.sessionTimeout ||
-        candidateInterfaces != joinListField(connection.candidateInterfaces) ||
-        candidateAddresses != joinListField(connection.candidateAddresses)
+        candidateInterfaces != joinListField(connection.candidateInterfaces)
 
     fun leave(target: String) {
         destination = target
@@ -110,7 +106,7 @@ fun SettingsScreen(
         scope.launch {
             val error = onSave(
                 serverUrl, password, room, token, deviceName,
-                sessionTimeout, candidateInterfaces, candidateAddresses,
+                sessionTimeout, candidateInterfaces, "",
             )
             if (error == null) onBack() else saveError = error
         }
@@ -124,7 +120,7 @@ fun SettingsScreen(
         navigationIcon = { HoleBackButton(onClick = { leave("back") }) },
         floatingActions = {
             FloatingIconAction(androidx.compose.material.icons.Icons.Default.Check, "保存", ::saveConnection,
-                enabled = dirty && serverUrlError == null && addressError == null && validTimeout && configState.loaded)
+                enabled = dirty && serverUrlError == null && validTimeout && configState.loaded)
         },
     ) { insets ->
         HoleScrollColumn(
@@ -190,7 +186,7 @@ fun SettingsScreen(
             }
 
             HoleSettingsGroup("网络高级选项") {
-                HoleHelp("网络选项", "可限制探测使用的网卡或指定公网 IPv6 地址；通常保持默认即可。")
+                HoleHelp("网络选项", "可限制 ICE 探测使用的网卡；通常保持默认即可。")
                 HoleTextButton(if (showAdvanced) "收起网络选项" else "编辑网络选项", { showAdvanced = !showAdvanced })
                 AnimatedVisibility(showAdvanced) {
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -199,17 +195,6 @@ fun SettingsScreen(
                             onValueChange = { candidateInterfaces = it; saveError = null },
                             label = "候选网卡",
                             supportingText = { Text("网卡名以逗号分隔；留空表示不限制") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        HoleTextField(
-                            value = candidateAddresses,
-                            onValueChange = { candidateAddresses = it; saveError = null },
-                            label = "候选地址",
-                            supportingText = {
-                                Text(if (addressError == null) "公网 IPv6 地址以逗号分隔；留空表示自动探测" else "“$addressError”不是公网 IPv6 地址")
-                            },
-                            isError = addressError != null,
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )

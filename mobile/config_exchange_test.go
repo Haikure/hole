@@ -9,7 +9,7 @@ import (
 
 func TestHoleCLIExchangePreservesOrderPresenceAndRejectsServer(t *testing.T) {
 	for _, order := range []string{"", "  order: []\n", "  order: [hole, tls]\n"} {
-		source := "transport:\n  preferred: ice\ndevice_name: phone\nrelay:\n  device: relay-node\n" + order
+		source := "device_name: phone\nrelay:\n  device: relay-node\n" + order
 		text, err := DecodeCLIConfig(source)
 		if err != nil {
 			t.Fatal(err)
@@ -36,7 +36,7 @@ func TestHoleCLIExchangePreservesOrderPresenceAndRejectsServer(t *testing.T) {
 }
 
 func TestHoleGUIDefaultServerSettings(t *testing.T) {
-	if _, err := DecodeCLIConfig(`{"transport":{"preferred":"ice"},"relay":{"device":"relay-node","order":null,"serve":{"enabled":false,"max_pairs":64,"bandwidth_mbps":0}}}`); err != nil {
+	if _, err := DecodeCLIConfig(`{"transport":{},"relay":{"device":"relay-node","order":null,"serve":{"enabled":false,"max_pairs":64,"bandwidth_mbps":0}}}`); err != nil {
 		t.Fatal("GUI default relay settings rejected", err)
 	}
 }
@@ -64,21 +64,22 @@ func TestCLIExchangeValidatesConfiguredServer(t *testing.T) {
 	}
 }
 
-func TestCLIExchangeRejectsOldPreferredAndExportsShortNames(t *testing.T) {
-	for _, name := range []string{"ice-quic-mux-v1", "legacy-ipv6-quic-v2", "fixed-quic-mux-v1", "legacy"} {
+func TestCLIExchangeRejectsRemovedPreferred(t *testing.T) {
+	for _, name := range []string{"auto", "ice", "ice-quic-mux-v1", "legacy-ipv6-quic-v2", "fixed-quic-mux-v1", "legacy", "ipv6"} {
 		if _, err := DecodeCLIConfig("transport:\n  preferred: " + name + "\n"); err == nil {
-			t.Fatal("old preferred accepted", name)
+			t.Fatal("removed preferred accepted on import", name)
+		}
+		if _, err := EncodeCLIConfig(`{"transport":{"preferred":"`+name+`"},"provide":[],"consume":[]}`, false); err == nil {
+			t.Fatal("removed preferred accepted on export", name)
 		}
 	}
-	text, err := DecodeCLIConfig("transport:\n  preferred: auto\n")
+	text, err := DecodeCLIConfig("provide: []\nconsume: []\n")
 	var doc exchangeConfig
-	if err != nil || json.Unmarshal([]byte(text), &doc) != nil || doc.Transport.Preferred != "ice" || !doc.Transport.AllowLegacy {
-		t.Fatal("auto did not normalize to ICE with legacy support", text, err)
+	if err != nil || json.Unmarshal([]byte(text), &doc) != nil || strings.Contains(text, "preferred") {
+		t.Fatal("default import retained strategy field", text, err)
 	}
-	for _, name := range []string{"ice", "ipv6"} {
-		text, err := EncodeCLIConfig(`{"transport":{"preferred":"`+name+`"},"provide":[],"consume":[]}`, false)
-		if err != nil || !strings.Contains(text, "preferred: "+name) {
-			t.Fatal(name, text, err)
-		}
+	text, err = EncodeCLIConfig(text, false)
+	if err != nil || strings.Contains(text, "preferred") {
+		t.Fatal("default export retained strategy field", text, err)
 	}
 }

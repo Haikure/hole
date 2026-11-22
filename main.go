@@ -18,9 +18,9 @@ func main() {
 	log.SetFlags(log.Ltime)
 	log.SetPrefix("")
 	configPath := flag.String("config", "config.yaml", "配置文件")
-	transport := flag.String("transport", "", "连接方式 auto、ice 或 ipv6, 覆盖配置文件")
 	allowLocalWS := flag.Bool("allow-insecure-signal", false, "允许 ws:// 信令, 仅本地测试")
 	debug := flag.Bool("debug", false, "输出调试日志")
+	logFormat := flag.String("log-format", "text", "日志格式: text 或 json，均写入 stdout")
 	version := flag.Bool("version", false, "显示共享核心版本")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "用法：%s [-config config.yaml] [选项]\n", os.Args[0])
@@ -31,30 +31,44 @@ func main() {
 		fmt.Println(core.CoreVersion)
 		return
 	}
-	if err := run(*configPath, cliOptions{transport: *transport, allowLocalWS: *allowLocalWS, debug: *debug}); err != nil && !errors.Is(err, context.Canceled) {
+	options := cliOptions{allowLocalWS: *allowLocalWS, debug: *debug, logFormat: *logFormat}
+	if err := run(*configPath, options); err != nil && !errors.Is(err, context.Canceled) {
 		var reported *cliReportedError
 		if !errors.As(err, &reported) {
-			log.Printf("ERROR %s", logText(err.Error()))
+			reporter := newCLIReporter(log.New(log.Writer(), log.Prefix(), log.Flags()), core.Request{})
+			reporter.format = options.logFormat
+			reporter.context = cliLogContext{Component: "startup", State: "error"}
+			reporter.errorf("%s", logText(err.Error()))
 		}
 		os.Exit(1)
 	}
 }
 
-// Runtime failures are rendered by the reporter, including redaction and debug
-// details. Keep the exit status without printing the raw error a second time.
+// Runtime failures are rendered by the reporter, including diagnostic details.
+// Keep the exit status without printing the raw error a second time.
 type cliReportedError struct{ err error }
 
 func (e *cliReportedError) Error() string { return e.err.Error() }
 func (e *cliReportedError) Unwrap() error { return e.err }
 
 type cliOptions struct {
-	transport    string
 	allowLocalWS bool
 	debug        bool
+	logFormat    string
+}
+
+func (o cliOptions) validate() error {
+	if o.logFormat != "" && o.logFormat != "text" && o.logFormat != "json" {
+		return fmt.Errorf("不支持的日志格式 %q，-log-format 仅支持 text 或 json", o.logFormat)
+	}
+	return nil
 }
 
 // Prepare and validate everything before constructing an engine or opening a socket.
 func cliRequest(data []byte, options cliOptions) (core.Request, error) {
+	if err := options.validate(); err != nil {
+		return core.Request{}, err
+	}
 	cfg, err := core.ParseConfig(data)
 	if err != nil {
 		return core.Request{}, err
@@ -65,20 +79,6 @@ func cliRequest(data []byte, options cliOptions) (core.Request, error) {
 	}
 	// The request envelope is the single authority inside the shared engine.
 	cfg.ServerURL = ""
-	switch options.transport {
-	case "":
-	case "auto":
-		cfg.Transport.Preferred = core.PreferredICE
-		cfg.Transport.AllowLegacy = true
-	case "ice":
-		cfg.Transport.Preferred = core.PreferredICE
-		cfg.Transport.AllowLegacy = false
-	case "ipv6":
-		cfg.Transport.Preferred = core.PreferredIPv6
-		cfg.Transport.AllowLegacy = false
-	default:
-		return core.Request{}, fmt.Errorf("transport 需要 auto、ice 或 ipv6")
-	}
 	if options.allowLocalWS {
 		cfg.Transport.AllowInsecureSignal = true
 	}
@@ -87,6 +87,9 @@ func cliRequest(data []byte, options cliOptions) (core.Request, error) {
 }
 
 func run(configPath string, options cliOptions) error {
+	if err := options.validate(); err != nil {
+		return err
+	}
 	// Subscribe before reading so a save during startup cannot be missed.
 	watcher, err := newCLIConfigWatcher(configPath)
 	if err != nil {
@@ -103,6 +106,7 @@ func run(configPath string, options cliOptions) error {
 	}
 	reporter := newCLIReporter(log.New(log.Writer(), log.Prefix(), log.Flags()), request)
 	reporter.debug = options.debug
+	reporter.format = options.logFormat
 	restoreLibraryLogs := reporter.captureLibraryLogs()
 	defer restoreLibraryLogs()
 	reporter.startup()
@@ -125,6 +129,7 @@ func run(configPath string, options cliOptions) error {
 			watcher.run(watchCtx, reloader.reload, func(err error) {
 				reporter.mu.Lock()
 				defer reporter.mu.Unlock()
+				defer reporter.logScope(cliLogContext{Component: "config", State: "error"})()
 				reporter.warn("配置监听异常: %s", logText(err.Error()))
 			})
 		}()

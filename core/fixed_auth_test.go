@@ -61,7 +61,7 @@ func TestFixedSharedListenerAuthenticatesBeforeRouting(t *testing.T) {
 			hsCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
 			tlsConfig := tc.identity.Clone()
-			tlsConfig.NextProtos = []string{fixedALPN}
+			tlsConfig.NextProtos = []string{holeALPN}
 			tlsConfig.InsecureSkipVerify = true
 			conn, err := quic.DialAddr(hsCtx, r.Config.Transport.FixedEndpoint.Advertise, tlsConfig, iceQUICConfig("direct"))
 			if err != nil {

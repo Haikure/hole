@@ -49,8 +49,6 @@ fun HomeScreen(
                     DashboardLine("房间", configState.config.connection.room.ifBlank { "未设置" })
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
                     DashboardLine("设备", configState.config.connection.deviceName.ifBlank { "未设置" })
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
-                    DashboardLine("连接方式", connectionModeLabel(configState.config.connection.connectionMode))
                 }
             }
             item {
@@ -123,6 +121,7 @@ fun signalLabel(state: String): String = when (state) {
     "connecting" -> "连接中"
     "joining" -> "加入房间中"
     "joined" -> "已加入"
+    "delegated" -> "通过房间设备接收信令"
     "reconnecting" -> "等待重连"
     "error" -> "连接异常"
     else -> state

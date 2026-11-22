@@ -150,6 +150,9 @@ func TestICEFailedKeepsRawDiagnosticAndFriendlySnapshot(t *testing.T) {
 	if transport.Kind != "transport" || transport.State != "retrying" || transport.Error.Code != "ice_path_failed" {
 		t.Fatal(transport)
 	}
+	if changed := <-events; changed.Kind != "transport" || changed.State != "changed" || changed.Error != nil {
+		t.Fatal("clearing the pending attempt did not notify snapshot consumers", changed)
+	}
 	p.failed(a, errors.New("过期尝试"))
 	a.diagnostics.NewLogger("ice").Warn("Failed to read from candidate: use of closed network connection")
 	if len(events) != 0 {

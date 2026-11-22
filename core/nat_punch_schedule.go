@@ -41,7 +41,7 @@ func (g *natAllocationGate) acquire(ctx context.Context) (func(), error) {
 // device never holds the higher allocator while waiting for the lower one.
 func (p *icePeer) reserveNATPunch(a *iceAttempt) (func(), error) {
 	a.processStep("reservation", "等待并预约双方打洞时段", 0, 0)
-	ctx, cancel := context.WithDeadline(a.ctx, time.UnixMilli(a.ready.LeaseUntil))
+	ctx, cancel := authorizationContext(a.ctx, a.ready)
 	defer cancel()
 	initiator := a.ready.InitiatorID == p.coordinator.deviceID()
 	if !initiator {

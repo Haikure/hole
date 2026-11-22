@@ -1,3 +1,5 @@
+import { WORKER_VERSION, modernMember, versionAtLeast } from './software_version.mjs';
+
 // ICE signaling is scoped by an authenticated socket and a persisted device pair.
 export const ICE_PROFILE = "ice-quic-mux-v1";
 export const FIXED_PROFILE = "fixed-quic-mux-v1";
@@ -81,7 +83,6 @@ export function validNATPlan(plan) {
     (s.reason===undefined || typeof s.reason==='string' && s.reason.length<=256) &&
     plan.addresses.every(a=>typeof a==='string' && /^(?:\d{1,3}\.){3}\d{1,3}:[1-9]\d{0,4}$/.test(a) && a.split(':')[0].split('.').every(p=>Number(p)<=255) && Number(a.split(':')[1])<=65535);
 }
-export const LEGACY_PROFILE = "legacy-ipv6-quic-v2";
 // Renewals arrive every five minutes; keep a full five-minute grace window.
 const LEASE_MS = 10 * 60_000;
 const OFFLINE_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -93,6 +94,7 @@ const MAX_CANDIDATES = 64;
 export const VOICE_MEMBER_LIMIT = 8;
 const send = (ws, value) => { try { ws.send(JSON.stringify(value)); } catch {} };
 const fault = (ws, code, message, request = {}) => send(ws, { type: "error", code, message, request_id: request.request_id, transport_id: request.transport_id });
+const liveRecord = record => !!record?.online && (record.local_management || record.lease_until > Date.now());
 const decimal = value => typeof value === "string" && /^(0|[1-9][0-9]{0,19})$/.test(value) && BigInt(value) <= 18446744073709551615n;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const pairKey = (a, b) => JSON.stringify([a, b].sort());
@@ -150,7 +152,7 @@ export function relayPairs(a, b) {
   }
   return pairs;
 }
-function recordPhase(record, round, index) {
+export function recordPhase(record, round, index) {
   if (!round) return "direct";
   if (record.hole_version) return record.relay_plan[round-1]?.[index===0?'a':'b'] ?? '';
   if (record.relay_pairing !== ALL_PAIRS) return relayPhase(round,record.relay_orders[index]);
@@ -183,10 +185,18 @@ function relayPhase(round, order) {
 }
 
 export function iceJoinFields(message) {
-  if (message.signal_version === undefined) return { signal_version: 1, transport_profiles: [LEGACY_PROFILE], session_versions: [2], runtime_id: message.cert_fingerprint || "legacy", transport_epoch: "0" };
+  if (message.core_version !== undefined && !versionAtLeast(message.core_version, '0.0.0')) return null;
+  if (message.worker_version !== undefined && message.worker_version !== '' && !versionAtLeast(message.worker_version, '0.0.0')) return null;
+  if (modernMember(message)) {
+    if (typeof message.certificate !== 'string' || message.certificate.length > 4096) return null;
+    // Versions define support. The remaining fields are selected wire plans.
+    message = { ...message, hole_version: HOLE_VERSION, peer_relay_version: PEER_RELAY_VERSION, live_config: true,
+      punch_version: PUNCH_VERSION, direct_order: DIRECT_ORDER, punch_schedule: PUNCH_SCHEDULE,
+      punch_calibration: PUNCH_CALIBRATION, punch_cone_pool: PUNCH_CONE_POOL };
+  }
   if (message.signal_version !== 2 || message.auth_mode !== "shared-secret") return null;
   if (!/^[a-f0-9]{32}$/.test(message.runtime_id ?? "") || !decimal(message.transport_epoch)) return null;
-  if (!Array.isArray(message.transport_profiles) || message.transport_profiles.length > 3 || !message.transport_profiles.every(p => [ICE_PROFILE, LEGACY_PROFILE, FIXED_PROFILE].includes(p))) return null;
+  if (!Array.isArray(message.transport_profiles) || message.transport_profiles.length > 2 || !message.transport_profiles.every(p => [ICE_PROFILE, FIXED_PROFILE].includes(p))) return null;
   if (message.fixed_endpoint !== undefined && (!validFixedEndpoint(message.fixed_endpoint) || message.relay_only === true || !message.transport_profiles.includes(FIXED_PROFILE))) return null;
   if (!Array.isArray(message.session_versions) || message.session_versions.length > 4 || !message.session_versions.includes(2)) return null;
   if (!/^[a-f0-9]{64}$/.test(message.cert_fingerprint ?? "")) return null;
@@ -210,17 +220,17 @@ export function iceJoinFields(message) {
   if (message.voice !== undefined && typeof message.voice !== "boolean") return null;
   if (message.live_config !== undefined && typeof message.live_config !== "boolean") return null;
   if (message.peer_relay_version !== undefined && message.peer_relay_version !== PEER_RELAY_VERSION) return null;
-  return { peer_relay_version: message.peer_relay_version ?? "", live_config: message.live_config === true, ...(message.punch_cone_pool?{punch_cone_pool:PUNCH_CONE_POOL}:{}), ...(message.punch_calibration?{punch_calibration:PUNCH_CALIBRATION}:{}), ...(message.direct_order?{direct_order:DIRECT_ORDER}:{}), ...(message.punch_schedule?{punch_schedule:PUNCH_SCHEDULE}:{}), ...(message.punch_version?{punch_version:PUNCH_VERSION}:{}), ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
+  return { ...(message.core_version ? { core_version: message.core_version, certificate: message.certificate, worker_version: message.worker_version ?? '' } : {}), peer_relay_version: message.peer_relay_version ?? "", live_config: message.live_config === true, ...(message.punch_cone_pool?{punch_cone_pool:PUNCH_CONE_POOL}:{}), ...(message.punch_calibration?{punch_calibration:PUNCH_CALIBRATION}:{}), ...(message.direct_order?{direct_order:DIRECT_ORDER}:{}), ...(message.punch_schedule?{punch_schedule:PUNCH_SCHEDULE}:{}), ...(message.punch_version?{punch_version:PUNCH_VERSION}:{}), ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
 }
 export function negotiateProfile(left, right) {
-  const a = left.transport_profiles ?? [LEGACY_PROFILE];
-  const b = right.transport_profiles ?? [LEGACY_PROFILE];
+  if (modernMember(left) !== modernMember(right)) return null;
+  const a = left.transport_profiles ?? [];
+  const b = right.transport_profiles ?? [];
   if (left.fixed_endpoint || right.fixed_endpoint) {
     return !left.relay_only && !right.relay_only && a.includes(FIXED_PROFILE) && b.includes(FIXED_PROFILE) ? FIXED_PROFILE : null;
   }
   if (a.includes(ICE_PROFILE) && b.includes(ICE_PROFILE)) return ICE_PROFILE;
   if (left.relay_only || right.relay_only) return null;
-  if (a.includes(LEGACY_PROFILE) && b.includes(LEGACY_PROFILE)) return LEGACY_PROFILE;
   return null;
 }
 
@@ -237,7 +247,7 @@ export class RoomICE {
     for (const [key, value] of stored) {
       // An online record is not a TTL cache. Its last topology update may be
       // days old while both hibernating sockets are still healthy.
-      if (value.online || value.expires_at > now) this.records.set(value.pair_key, value);
+      if ([ICE_PROFILE, FIXED_PROFILE].includes(value.profile ?? ICE_PROFILE) && (value.online || value.expires_at > now)) this.records.set(value.pair_key, value);
       else await this.state.storage.delete(key);
     }
     this.loaded = true;
@@ -291,6 +301,7 @@ export class RoomICE {
     const a = left.member.device_name < right.member.device_name ? left : right;
     const b = a === left ? right : left;
     const key = pairKey(a.member.device_name, b.member.device_name);
+    const localManagement = modernMember(a.member) && modernMember(b.member);
     seen.add(key);
     const mappings = matches.map(m => ({ map_key: JSON.stringify([this.roomName, m.provider_device, m.consumer_device, m.id]), mapping_id: m.id, provider_id: m.provider_device, consumer_id: m.consumer_device, service: m.service, expose: m.consumer_expose })).sort((x, y) => x.map_key.localeCompare(y.map_key));
     let record = this.records.get(key);
@@ -342,7 +353,7 @@ export class RoomICE {
       record = { id: crypto.randomUUID(), pair_key: key, a: a.member.device_name, b: b.member.device_name, generation: "1", phase: "direct", round: 0, round_mode: roundMode, relay_orders: relayOrders, runtime, fingerprints, epochs, mappings, voice, ice: {}, retry: 0 };
       changed = true;
       resetPath = true;
-    } else if ((record.punch_cone_pool??"")!==punchConePool || (record.live_config ?? false) !== liveConfig || (record.punch_calibration??"")!==punchCalibration || (record.direct_order??"")!==directOrder || (record.punch_schedule??"")!==punchSchedule || (record.punch_version??"")!==punchVersion || (record.hole && record.lease_until<=Date.now()) || !same(record.hole_devices??null,holeDevices) || selectedHoleChanged || (record.profile ?? ICE_PROFILE) !== profile || !same(record.fixed_endpoints ?? ["", ""], fixedEndpoints) || (voiceChanged && !liveConfig) || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
+    } else if ((record.punch_cone_pool??"")!==punchConePool || (record.live_config ?? false) !== liveConfig || (record.punch_calibration??"")!==punchCalibration || (record.direct_order??"")!==directOrder || (record.punch_schedule??"")!==punchSchedule || (record.punch_version??"")!==punchVersion || (record.hole && !localManagement && record.lease_until<=Date.now()) || !same(record.hole_devices??null,holeDevices) || selectedHoleChanged || (record.profile ?? ICE_PROFILE) !== profile || !same(record.fixed_endpoints ?? ["", ""], fixedEndpoints) || (voiceChanged && !liveConfig) || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
       record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
       record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; record.voice = voice; changed = true;
       resetPath = true;
@@ -351,7 +362,7 @@ export class RoomICE {
       // Resume it only while the same runtime, certificate and network epoch
       // are still declared, and never revive a generation that was blocked by
       // an identity or protocol failure.
-      const resumable = !record.blocked && record.lease_until > Date.now() && Number.isFinite(record.resume_until) && record.resume_until > Date.now();
+      const resumable = !record.blocked && (localManagement || (record.lease_until > Date.now() && Number.isFinite(record.resume_until) && record.resume_until > Date.now()));
       if (resumable) {
         record.resume_until = 0;
         changed = true;
@@ -371,6 +382,9 @@ export class RoomICE {
       record.round=0;record.phase='direct';record.ice={};resetPath=true;changed=true;
     }
     if (voiceChanged) changed = true;
+    record.local_management = localManagement;
+    record.core_versions = [a.member.core_version ?? '', b.member.core_version ?? ''];
+    record.room_control = false;
     record.live_config = liveConfig;
     record.voice_revision = voiceRevision;
     if (!record.online) changed = true;
@@ -402,7 +416,7 @@ export class RoomICE {
       record.phase = relayRequired ? "relay_udp" : "direct";
       record.retry_after_ms = 0;
     }
-    record.mappings = mappings; record.voice = voice; record.online = true; record.resume_until = 0; record.lease_until = Date.now() + LEASE_MS;
+    record.mappings = mappings; record.voice = voice; record.online = true; record.resume_until = 0; record.lease_until = record.local_management ? 0 : Date.now() + LEASE_MS;
     this.records.set(key, record);
     // Reconcile also runs after hibernation and before live mapping updates.
     // Refresh the route before persisting or replaying it to either endpoint.
@@ -414,7 +428,7 @@ export class RoomICE {
   async revokeHole(record) {
     if (!record.hole) return;
     const relay=this.member(record.hole.device);
-    if (relay) send(relay.ws,{type:'hole_revoke',transport_id:record.id,transport_generation:record.hole.generation});
+    if (relay) send(relay.ws,{type:'hole_revoke',...(record.local_management?{worker_version:WORKER_VERSION}:{}),transport_id:record.id,transport_generation:record.hole.generation});
     record.hole=null;
   }
   revokePeerRelay(record) {
@@ -427,7 +441,7 @@ export class RoomICE {
   }
   directLink(a,b) {
     const r=this.records.get(pairKey(a,b));
-    if (!r?.online || r.lease_until<=Date.now() || r.peer_relay || r.hole) return null;
+    if (!liveRecord(r) || r.peer_relay || r.hole) return null;
     for (const [i,name] of [r.a,r.b].entries()) {
       const m=this.member(name)?.member, proof=r.established?.[name];
       if (!m || m.peer_relay_version!==PEER_RELAY_VERSION || m.runtime_id!==r.runtime[i] || m.transport_epoch!==r.epochs[i] ||
@@ -440,12 +454,13 @@ export class RoomICE {
     for (const device of [...this.room.members.keys()].sort()) {
       if (device===record.a || device===record.b) continue;
       const relay=this.member(device)?.member;
+      if (record.local_management && !modernMember(relay)) continue;
       if (relay?.peer_relay_version!==PEER_RELAY_VERSION || relay.relay_only) continue;
-      if ([...this.records.values()].filter(r=>r.online && r.lease_until>Date.now() && r.peer_relay?.device===device).length>=8) continue;
+      if (!record.local_management && [...this.records.values()].filter(r=>liveRecord(r) && r.peer_relay?.device===device).length>=8) continue;
       const links=[this.directLink(record.a,device),this.directLink(record.b,device)];
       if (links.some(link=>!link)) continue;
       record.peer_relay={route:randomHex(16),device,runtime:relay.runtime_id,devices:[record.a,record.b],runtimes:record.runtime,
-        links,transport_id:record.id,generation:record.generation,lease_until:String(record.lease_until)};
+        links,transport_id:record.id,generation:record.generation,lease_until:String(record.lease_until),local_management:record.local_management===true};
       this.grantPeerRelay(record);
       return true;
     }
@@ -453,10 +468,10 @@ export class RoomICE {
   }
   grantPeerRelay(record) {
     const g=record.peer_relay, relay=g&&this.member(g.device);
-    if (!g || !record.online || record.lease_until<=Date.now()) return;
+    if (!g || !liveRecord(record)) return;
     g.lease_until=String(record.lease_until);
     if (relay?.member.runtime_id!==g.runtime) return;
-    send(relay.ws,{type:'peer_relay_grant',peer_relay_version:PEER_RELAY_VERSION,transport_id:record.id,
+    send(relay.ws,{type:'peer_relay_grant',...(record.local_management?{worker_version:WORKER_VERSION}:{}),peer_relay_version:PEER_RELAY_VERSION,transport_id:record.id,
       transport_generation:record.generation,peer_relay:g});
   }
   async prepareHole(record) {
@@ -466,21 +481,29 @@ export class RoomICE {
     const relay=this.member(device)?.member;
     const unavailable=(reason,code='hole_unavailable')=>{record.hole={device,error:reason,error_code:code,generation:record.generation};};
     if (relay && relay.hole_version!==HOLE_VERSION) {unavailable('中继设备需要升级客户端','peer_upgrade_required');return;}
+    if (record.local_management && relay && !modernMember(relay)) {unavailable('中继软件版本不兼容','peer_upgrade_required');return;}
     if (!relay?.hole_serve?.enabled || !relay.fixed_endpoint) {unavailable('中继设备暂未在线或未开启服务');return;}
-    const count=[...this.records.values()].filter(r=>r!==record && r.online && r.lease_until>Date.now() && r.hole?.device===device && !r.hole.error).length;
-    if (count>=relay.hole_serve.max_pairs) {unavailable('中继设备容量已满');return;}
+    const count=[...this.records.values()].filter(r=>r!==record && liveRecord(r) && r.hole?.device===device && !r.hole.error).length;
+    if (!record.local_management && count>=relay.hole_serve.max_pairs) {unavailable('中继设备容量已满');return;}
     record.hole={device,endpoint:relay.fixed_endpoint,relay_runtime:relay.runtime_id,relay_epoch:relay.transport_epoch,
       route:randomHex(16),keys:[randomHex(32),randomHex(32)],generation:record.generation,
-      devices:[record.a,record.b],runtimes:record.runtime,epochs:record.epochs};
+      devices:[record.a,record.b],runtimes:record.runtime,epochs:record.epochs,local_management:record.local_management===true};
     this.grantHole(record);
   }
   grantHole(record) {
     const h=record.hole,relay=h&&this.member(h.device);
-    if (!record.online || record.lease_until<=Date.now() || !h || h.error || !relay || !relay.member.hole_serve?.enabled || relay.member.runtime_id!==h.relay_runtime || relay.member.transport_epoch!==h.relay_epoch || relay.member.fixed_endpoint!==h.endpoint) return;
-    send(relay.ws,{type:'hole_grant',hole_version:HOLE_VERSION,transport_id:record.id,transport_generation:record.generation,
+    if (!liveRecord(record) || !h || h.error || !relay || !relay.member.hole_serve?.enabled || relay.member.runtime_id!==h.relay_runtime || relay.member.transport_epoch!==h.relay_epoch || relay.member.fixed_endpoint!==h.endpoint) return;
+    send(relay.ws,{type:'hole_grant',...(record.local_management?{worker_version:WORKER_VERSION}:{}),hole_version:HOLE_VERSION,transport_id:record.id,transport_generation:record.generation,
       runtime_id:h.relay_runtime,transport_epoch:h.relay_epoch,lease_until:String(record.lease_until),hole:h});
   }
   notify(record, name, replay = false) {
+    if (record.local_management && !record.room_control && !this.established(record) && !this.bothDirect(record)) {
+      for (const device of [record.a, record.b]) {
+        const entry = this.member(device);
+        if (entry) send(entry.ws, {type:'room_wake', transport_id:record.id, transport_generation:record.generation});
+      }
+      return;
+    }
     const own = this.member(name); if (!own) return;
     const index = name === record.a ? 0 : 1;
     const peerName = index === 0 ? record.b : record.a;
@@ -488,6 +511,7 @@ export class RoomICE {
     const direction = fixed ? fixedDirection(record) : {};
     const phase = record.peer_relay ? 'peer_relay' : fixed ? "fixed" : record.round_mode ? recordPhase(record, record.round ?? 0, index) : record.phase;
     const ready = { type: "transport_ready", transport_id: record.id, transport_generation: record.generation, profile: record.profile ?? ICE_PROFILE, session_version: 2, phase, relay_policy: fixed ? "" : record.relay_policy ?? "", peer_device: peerName, peer_runtime_id: record.runtime[1-index], peer_fingerprint: record.fingerprints[1-index], runtime_id: record.runtime[index], initiator_id: fixed ? direction.dialer_id : record.a, ...direction, mappings: record.mappings, voice: record.voice === true, live_config: record.live_config === true, voice_revision: record.voice_revision ?? "1", lease_until: String(record.lease_until), retry_after_ms: record.retry_after_ms ?? 0 };
+    if (record.local_management) Object.assign(ready, {core_version:record.core_versions[index],peer_core_version:record.core_versions[1-index],worker_version:WORKER_VERSION,room_control:record.room_control===true});
     if (record.punch_version) ready.punch_version = record.punch_version;
     if (record.manual_probe) ready.manual_probe = true;
     if (record.peer_relay) Object.assign(ready,{peer_relay_version:PEER_RELAY_VERSION,peer_relay:record.peer_relay});
@@ -521,6 +545,34 @@ export class RoomICE {
       // If one signaling member vanished while the pair still has a valid
       // transport identity, retain the generation briefly. A reconnect can
       // then replay the ready message and keep the existing QUIC path.
+      if (record.local_management) {
+        const declaredA = this.room.registered.get(record.a)?.member, declaredB = this.room.registered.get(record.b)?.member;
+        if (!declaredA || !declaredB) {
+          await this.revokeHole(record);
+          this.revokePeerRelay(record);
+          for (const [own, peer] of [[a, record.b], [b, record.a]]) if (own) send(own.ws, {type:'peer_state',peer_device:peer,transport_id:record.id,reason:'revoked'});
+          this.records.delete(key);
+          await this.state.storage.delete(`transport:${record.id}`);
+          continue;
+        }
+        const sameIdentity = a && b && a.member.runtime_id === record.runtime[0] && b.member.runtime_id === record.runtime[1] && a.member.cert_fingerprint === record.fingerprints[0] && b.member.cert_fingerprint === record.fingerprints[1];
+        const connected = record.room_control ? this.controlEdge(record) : this.established(record);
+        if (removed && sameIdentity && connected) {
+          const changed = record.mappings.length || record.voice || !record.room_control;
+          if (record.voice) record.voice_revision = String(BigInt(record.voice_revision ?? '1') + 1n);
+          record.online = true; record.room_control = true; record.mappings = []; record.voice = false;
+          if (changed) {await this.persist(record);this.notify(record,record.a);this.notify(record,record.b);}
+          continue;
+        }
+        if (!removed) {
+          record.online = false;
+          if (wasOnline) {
+            record.expires_at = Date.now() + OFFLINE_RETENTION_MS;
+            await this.persist(record);
+          }
+          continue;
+        }
+      }
       const resumable = !removed && !record.blocked && record.lease_until > Date.now() &&
         (resumeNames.has(record.a) || resumeNames.has(record.b)) &&
         (wasOnline || record.resume_until > Date.now());
@@ -550,6 +602,21 @@ export class RoomICE {
       }
     }
     return false;
+  }
+  established(record) {
+    return [record.a,record.b].every(name=>record.established?.[name]?.generation===record.generation);
+  }
+  bothDirect(record) {
+    return [record.a,record.b].every(name=>{const ws=this.member(name)?.ws;return ws && !ws.proxy && !ws.closed && (ws.readyState === undefined || ws.readyState === 1);});
+  }
+  controlEdge(record) {
+    const node=this.room.control?.nodes.get(record.a)?.node;
+    return node?.neighbours.some(link=>link.peer_id===record.b && link.transport_id===record.id && link.generation===record.generation) && this.room.control.neighbours(record.a).includes(record.b);
+  }
+  resumePending() {
+    for (const record of this.records.values()) if (record.online && record.local_management && !record.room_control && !record.blocked && this.bothDirect(record) && !this.established(record)) {
+      this.notify(record,record.a,true);this.notify(record,record.b,true);
+    }
   }
   takeRate(ws) {
     const attachment = ws.deserializeAttachment() ?? {};
@@ -587,23 +654,24 @@ export class RoomICE {
       for (const record of this.records.values()) if ((record.a === name || record.b === name) && record.online) {
         // A lease is a fresh authorization reply, not persistent topology.
         // Reconstructing this value after hibernation requires no storage write.
-        if (record.lease_until<=Date.now() && record.hole && !record.hole.error) {
+        if (!record.local_management && record.lease_until<=Date.now() && record.hole && !record.hole.error) {
           record.generation=(BigInt(record.generation)+1n).toString();record.ice={};
-          record.lease_until=Date.now()+LEASE_MS;await this.prepareHole(record);await this.persist(record);
+          record.lease_until=record.local_management?0:Date.now()+LEASE_MS;await this.prepareHole(record);await this.persist(record);
           this.notify(record,record.a);this.notify(record,record.b);
         }
-        record.lease_until = Date.now() + LEASE_MS;
+        record.lease_until = record.local_management ? 0 : Date.now() + LEASE_MS;
         this.grantHole(record);
         this.grantPeerRelay(record);
         if (message.type === "transport_sync") this.notify(record, name, true);
         else leases.push({ transport_id: record.id, transport_generation: record.generation, lease_until: String(record.lease_until) });
       }
       if (message.type === "transport_renew") send(ws, { type: "transport_lease", request_id: message.request_id, leases });
+      if (message.type === 'transport_sync' && modernMember(member)) {this.resumePending();send(ws,{type:'transport_synced',request_id:message.request_id});}
       return true;
     }
     if (message.type === "turn_request") { await this.turn(ws, member, message); return true; }
     const record = [...this.records.values()].find(r => r.id === message.transport_id && (r.a === name || r.b === name));
-    if (!record || !record.online || (record.mappings.length === 0 && record.voice !== true)) { fault(ws, "transport_not_authorized", "当前设备没有该对端传输关系", message); return true; }
+    if (!record || !record.online || (record.mappings.length === 0 && record.voice !== true && !record.room_control)) { fault(ws, "transport_not_authorized", "当前设备没有该对端传输关系", message); return true; }
     const peerName = record.a === name ? record.b : record.a;
     if (message.type === "transport_failed") {
       if (message.transport_generation === record.generation && ["peer_identity_mismatch", "protocol_mismatch"].includes(message.code)) {
@@ -618,7 +686,7 @@ export class RoomICE {
       if (message.expected_generation !== record.generation) { this.notify(record, name, true); return true; }
       // A successful endpoint can only lose its path explicitly. Delayed
       // discovery failures must not restart an already-established generation.
-      if (record.established?.[name]?.generation===record.generation &&
+      if (record.established?.[name]?.generation===record.generation && ['direct','fixed'].includes(record.established[name].path_type) &&
           ['ice_failed','path_failed','direct_exhausted'].includes(message.reason)) {
         this.notify(record,name,true); return true;
       }
@@ -629,7 +697,7 @@ export class RoomICE {
         record.fixed_direction = (record.fixed_direction ?? 0) + 1;
         record.retry = manual ? 1 : (record.retry ?? 0) + 1;
         record.retry_after_ms = manual ? 0 : Math.min(15_000, 1000 * 2 ** Math.min(record.retry - 1, 4));
-        record.ice = {}; record.lease_until = Date.now() + LEASE_MS;
+        record.ice = {}; record.lease_until = record.local_management ? 0 : Date.now() + LEASE_MS;
         await this.persist(record); this.notify(record, record.a); this.notify(record, record.b); return true;
       }
       let wrapped = false;
@@ -678,7 +746,7 @@ export class RoomICE {
       record.retry = (record.retry ?? 0) + 1;
       record.relay_only ??= [false,false];
       record.retry_after_ms = wrapped && !manual && message.reason !== "turn_refresh" ? Math.min(15_000, 1000 * 2 ** Math.min(record.retry, 4)) : 0;
-      record.lease_until = Date.now() + LEASE_MS;
+      record.lease_until = record.local_management ? 0 : Date.now() + LEASE_MS;
       this.revokePeerRelay(record);
       const tryPeer=direct && !startPunch && !retryDirect && ['ice_failed','path_failed','direct_exhausted'].includes(message.reason);
       if (tryPeer) this.preparePeerRelay(record);
@@ -688,7 +756,7 @@ export class RoomICE {
     if (!decimal(message.transport_generation) || message.transport_generation !== record.generation) return true;
     if (message.type === "transport_established") {
       if (record.manual_probe) { record.manual_probe=false; await this.persist(record); }
-      if (['direct','fixed'].includes(message.path_type)) {
+      if (['direct','fixed','relay','hole','peer_relay'].includes(message.path_type)) {
         record.established??={};
         record.established[name]={generation:record.generation,path_type:message.path_type};
         await this.persist(record);
@@ -704,7 +772,7 @@ export class RoomICE {
     if(message.type==='nat_punch') {
       const index=record.a===name?0:1, p=message.punch;
       const direct=record.round_mode?record.round===0:record.phase==='direct';
-      if(!record.punch_version || !direct || record.relay_required || record.lease_until<=Date.now() || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch) return true;
+      if(!record.punch_version || !direct || record.relay_required || (!record.local_management && record.lease_until<=Date.now()) || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch) return true;
       const rejectCalibration=reason=>{
         if(p?.kind==='calibrated') send(ws,{type:'error',code:'punch_calibration_rejected',
           message:`第 ${p.round} 轮校准 ${p.trial} 结果未转发：${reason}`,request_id:message.request_id,
@@ -765,7 +833,7 @@ export class RoomICE {
       cached.punch.push(p); outgoing={type:'nat_punch',punch:p};
     } else if(message.type==='nat_status') {
       const index=record.a===name?0:1;
-      if(record.relay_required || record.lease_until<=Date.now() || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch || !validNATPlan(message.nat) || (cached.nat_status_at && Date.now()-cached.nat_status_at<30_000))return true;
+      if(record.relay_required || (!record.local_management && record.lease_until<=Date.now()) || record.runtime[index]!==member.runtime_id || record.epochs[index]!==member.transport_epoch || !validNATPlan(message.nat) || (cached.nat_status_at && Date.now()-cached.nat_status_at<30_000))return true;
       cached.nat_status=message.nat;cached.nat_status_at=Date.now();outgoing={type:'nat_status',nat:message.nat};
     } else if (message.type === "ice_description") {
       if (typeof message.ufrag !== "string" || !/^[A-Za-z0-9+/_=-]{4,256}$/.test(message.ufrag) || typeof message.pwd !== "string" || message.pwd.length < 22 || message.pwd.length > 256) { fault(ws,"invalid_ice_description","ICE 描述格式无效",message); return true; }

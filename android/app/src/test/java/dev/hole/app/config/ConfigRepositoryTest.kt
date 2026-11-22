@@ -122,6 +122,25 @@ class ConfigRepositoryTest {
     }
 
     @Test
+    fun removedIpv6ModeMigrationIsPersistedForBothSchemas() = runBlocking {
+        configDir.mkdirs()
+        val file = File(configDir, "config.json")
+        for ((version, mode) in listOf(1, 2).flatMap { version -> listOf("legacy", "auto", "ice").map { version to it } }) {
+            file.writeText(
+                """{"schemaVersion":$version,"connection":{"connectionMode":"$mode","candidateAddresses":[],"deviceName":"saved-device","passwordCipher":"saved-cipher"},"provide":[{"entryId":"service","id":"service","host":"127.0.0.1","port":2222}]}""",
+            )
+            val loaded = ConfigRepository(context).load()
+            assertTrue(loaded.connection.candidateAddresses.isEmpty())
+            assertEquals("saved-device", loaded.connection.deviceName)
+            assertEquals("saved-cipher", loaded.connection.passwordCipher)
+            assertEquals("service", loaded.provide.single().id)
+            assertTrue(!file.readText().contains("connectionMode"))
+            assertTrue(!file.readText().contains("2001:db8::1"))
+            assertEquals(loaded, ConfigRepository(context).load())
+        }
+    }
+
+    @Test
     fun themeSelectionPersistsAndPreservesLegacyConnection() = runBlocking {
         configDir.mkdirs()
         File(configDir, "config.json").writeText(

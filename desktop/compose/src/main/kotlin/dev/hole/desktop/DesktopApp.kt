@@ -107,10 +107,10 @@ internal fun DesktopApp(model: DesktopModel) {
                                     } catch (failure: Exception) { failure.message ?: "保存失败" }
                                 }, onThemeStyleChange = {}, onThemeModeChange = {}, onDynamicColorChange = {}, onBack = ::goBack,
                                 onOpenBackground = { navigate("desktop-behavior") }, onOpenTransfer = { navigate("transfer") }, onOpenTransport = { navigate("transport") })
-                            "transport" -> TransportSettingsScreen(config, onSave = { mode, ice, turn, credential, insecure, relay ->
+                            "transport" -> TransportSettingsScreen(config, onSave = { ice, turn, credential, insecure, relay ->
                                 try {
                                     model.update { it.copy(turnCredential = credential, config = it.config.copy(connection = it.config.connection.copy(
-                                        connectionMode = mode, ice = ice, turn = turn, allowInsecureSignal = insecure, relay = relay))) }; null
+                                        ice = ice, turn = turn, allowInsecureSignal = insecure, relay = relay))) }; null
                                 } catch (failure: Exception) { failure.message ?: "保存失败" }
                             }, onBack = ::goBack)
                             "appearance" -> DesktopSettingsPage("外观", ::goBack) {

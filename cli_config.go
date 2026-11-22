@@ -107,11 +107,13 @@ func (r *cliConfigReloader) reload() {
 	defer r.reporter.mu.Unlock()
 	r.reporter.request = next
 	delete(r.reporter.messages, "config")
+	defer r.reporter.logScope(cliLogContext{Component: "config", State: "reloading"})()
 	r.reporter.info("配置已重载，正在应用")
 }
 
 func (r *cliConfigReloader) warn(message string) {
 	r.reporter.mu.Lock()
 	defer r.reporter.mu.Unlock()
+	defer r.reporter.logScope(cliLogContext{Component: "config", State: "error"})()
 	r.reporter.warn("%s", message)
 }

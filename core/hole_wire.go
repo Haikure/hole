@@ -25,18 +25,19 @@ const (
 var holeMagic = [4]byte{'H', 'O', 'L', 1}
 
 type holeGrant struct {
-	Device       string    `json:"device"`
-	Endpoint     string    `json:"endpoint"`
-	RelayRuntime string    `json:"relay_runtime"`
-	RelayEpoch   uint64    `json:"relay_epoch,string"`
-	Route        string    `json:"route"`
-	Keys         [2]string `json:"keys"`
-	Generation   uint64    `json:"generation,string"`
-	Devices      [2]string `json:"devices"`
-	Runtimes     [2]string `json:"runtimes"`
-	Epochs       [2]string `json:"epochs"`
-	Error        string    `json:"error,omitempty"`
-	ErrorCode    string    `json:"error_code,omitempty"`
+	LocalManagement bool      `json:"local_management,omitempty"`
+	Device          string    `json:"device"`
+	Endpoint        string    `json:"endpoint"`
+	RelayRuntime    string    `json:"relay_runtime"`
+	RelayEpoch      uint64    `json:"relay_epoch,string"`
+	Route           string    `json:"route"`
+	Keys            [2]string `json:"keys"`
+	Generation      uint64    `json:"generation,string"`
+	Devices         [2]string `json:"devices"`
+	Runtimes        [2]string `json:"runtimes"`
+	Epochs          [2]string `json:"epochs"`
+	Error           string    `json:"error,omitempty"`
+	ErrorCode       string    `json:"error_code,omitempty"`
 }
 
 type holeAuth struct {

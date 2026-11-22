@@ -24,6 +24,7 @@
 | **双向端口映射** | 同时提供和访问多条 TCP / UDP 服务。 |
 | **加密数据通道** | 每对设备共用一条 QUIC，承载映射与语音；默认使用 BBR 拥塞控制。 |
 | **直连与中继** | 优先尝试 IPv4 / IPv6 UDP 直连，失败后复用已有直连节点进行 Peer Relay，再按配置使用 Hole / TURN 中继。 |
+| **房间信令委托** | 同组设备可同时保持多个 Worker 连接；连接意外中断时，可经仍在线的组员转发通知。 |
 | **TCP 会话恢复** | 同一进程内切网或传输重连时，可恢复仍存活的 TCP 会话。 |
 | **可选语音房** | 同一房间最多 8 台启用语音的设备参与。 |
 | **网络诊断** | 查看 NAT 类型、端口可预测性、端口映射与连接状态。 |
@@ -32,7 +33,7 @@
 <summary>语音开关与 BBR 说明</summary>
 
 - **语音**：设置 `voice.enabled: true`，同一房间最多 8 台语音设备参与。音频设备与操作方式见各客户端说明。
-- **BBR**：共享核心的设备 QUIC 连接默认使用标准 BBR，覆盖 ICE、预测打洞、固定入口、设备中继和旧 IPv6；无需修改系统 TCP 参数，不保证任意网络都提速。实现和依赖来源见 [QUIC BBR 说明](core/internal/congestion/README.md)。
+- **BBR**：共享核心的设备 QUIC 连接默认使用标准 BBR，覆盖 ICE、预测打洞、固定入口和设备中继；无需修改系统 TCP 参数，不保证任意网络都提速。实现和依赖来源见 [QUIC BBR 说明](core/internal/congestion/README.md)。
 
 </details>
 
@@ -74,8 +75,6 @@ room: my-room
 password: SIGNAL_PASSWORD  # Worker 信令密钥
 token: ROOM_PASSWORD       # 房间口令
 device_name: device-a      # 设备 B 改为 device-b
-transport:
-  preferred: ice
 ```
 
 ### 3. 配对服务
@@ -112,7 +111,7 @@ consume:
 ssh -p 2222 USER@127.0.0.1
 ```
 
-`service` 和 `expose` 支持 TCP 与 UDP。完整字段见 [配置示例](config.example.yaml)。
+`service` 和 `expose` 支持 TCP 与 UDP。完整字段见 [配置示例](config.example.yaml)。普通连接统一使用 ICE，无需选择自动或 ICE；旧 CLI 配置中的 `transport.preferred` 字段需删除，`-transport` 参数已移除。
 
 <details>
 <summary>常用 CLI 参数</summary>
@@ -120,17 +119,35 @@ ssh -p 2222 USER@127.0.0.1
 | 参数 | 作用 |
 | --- | --- |
 | `-config FILE` | 指定配置文件；默认读取当前目录的 `config.yaml`。 |
-| `-transport VALUE` | 可选 `auto`、`ice` 或 `ipv6`；`auto` 使用 ICE 并兼容旧 IPv6 对端。 |
 | `-debug` | 输出连接协商和底层网络错误，日志可能包含服务器及候选地址。 |
+| `-log-format text\|json` | 默认 `text`；`json` 每行输出一条结构化日志，可与 `-debug` 组合。 |
 | `-version` | 显示共享核心版本。 |
 
 </details>
 
-CLI 默认使用 [fsnotify](https://github.com/fsnotify/fsnotify) 监听 `-config` 指定的文件（默认 `config.yaml`）。保存后等待约 200 毫秒合并连续写入，校验通过后在当前引擎中热重载，无需重启进程；支持直接写入、原子替换保存以及文件删除后重新创建。命令行的 `-transport`、`-allow-insecure-signal` 覆盖规则在每次重载时仍然有效。仅修改注释或保存相同的有效配置不会触发连接更新；文件暂时不可读或配置无效时会输出警告并继续使用旧配置，修正后再次保存即可。
+CLI 在房间状态可用时结合控制连接和 Worker 的房间分组显示设备状态：确认设备离线后显示“设备名: 离线”；状态尚未确认时显示状态未知，对端仍在线时显示连接恢复进度。
 
-热重载保留未受影响的 TCP / UDP 应用会话。新版 Worker 支持 ICE 在线更新映射声明：增删映射、修改服务目标／协议或本地监听地址，只重建受影响的映射通道和应用连接，保留已有设备间的共享 QUIC 和信令连接；新增设备关系仍需建连，删除最后一条映射且不再使用语音时释放设备连接。双方均支持在线配置协议时，语音开关也复用现有 QUIC。
+CLI 日志保留 `HH:MM:SS` 本地时间，统一写入 stdout。连接成功、恢复和切换时显示实际使用的远端 `地址:端口`、耗时及已测得的 RTT；中继地址明确标注为中继，离线时不沿用旧地址。信令断开先显示错误原因，同组内仍有可达设备连接着信令时显示 `WARN 信令连接断开 [信令委托]`；本机是最后的信令入口且连接断开时显示 `ERROR 信令连接断开`，已有数据连接本身不代表仍有信令可用。相同原因的连续重试合并计数，原因和结果始终相邻输出。
 
-`session_timeout` 在本地更新；STUN／NAT STUN、打洞预算及探测、收集、连通性检查和重试等待参数用于后续尝试，不主动打断已连通路径。中继策略、网卡限制、固定入口等传输选项变化仍会按需更新路径，启用仅中继会立即撤销不符合要求的直连。更改 `server_url`、房间、密码、令牌、设备名或有效传输模式会重新认证并关闭原有会话。旧 Worker 或正在使用旧 IPv6 映射时，声明更新回退到重新加入房间；旧对端的语音开关会重建该设备对的传输。
+默认日志按状态变化输出，并用“设备”“映射”“服务”区分连接层次。启动显示设备、房间、信令地址、连接策略及配置中的共享目标和本地入口；“本地入口”是配置声明，完成映射协商并成功绑定端口后才显示“已监听”。监听失败显示端口和原始原因，恢复、配置移除导致的关闭也会显示；设备重连时保留的监听不会误报关闭。首次实际访问目标服务成功显示一次“目标服务已连通”，连接拒绝、超时及后续恢复另行报告，映射就绪不代表目标服务可用。例如：
+
+```text
+09:18:01 INFO  设备 laptop: 已连接 直连/IPv4，耗时 180ms，RTT 25ms，对端 203.0.113.8:42117
+09:18:01 INFO  映射 SSH: 已监听 tcp://127.0.0.1:2222
+09:18:01 INFO  映射 SSH: 映射已就绪，对端 laptop (tcp)
+09:18:03 INFO  服务 SSH: 目标服务已连通，对端 laptop
+09:20:00 WARN  设备 laptop: 离线
+```
+
+默认不输出 NAT 明细、ICE 候选对、底层网络库原文或中继流量计数；`-debug` 保留这些诊断及设备、阶段、代次、会话上下文，重复诊断按首次及每五次汇总。`-log-format json` 使用相同的事件筛选和级别，每行包含 `time`、`level`、`component`、`message`，按上下文附带 `mapping_id`、`peer`、`target`、`remote_address`、`path`、`elapsed_ms`、`rtt_ms`、`error_code`、`error_message` 和重复次数 `count` 等字段。JSON 的 `time` 仍为本地 `HH:MM:SS`，毫秒和次数为数值，两种格式都转义控制字符。
+
+CLI 输出层对普通 INFO / WARN / ERROR 日志不做凭据字符串替换，程序名、设备和房间名、地址及收到的错误内容按原内容显示，避免名称与密码相同而被误改成 `[redacted]`；开启 `-debug` 时普通行同样如此。DEBUG 诊断继续处理已知凭据，信令服务器的概览只显示协议、主机、端口和路径。共享核心已经处理过的底层诊断和错误内容由 CLI 直接展示。
+
+CLI 默认使用 [fsnotify](https://github.com/fsnotify/fsnotify) 监听 `-config` 指定的文件（默认 `config.yaml`）。保存后等待约 200 毫秒合并连续写入，校验通过后在当前引擎中热重载，无需重启进程；支持直接写入、原子替换保存以及文件删除后重新创建。命令行的 `-allow-insecure-signal` 覆盖规则在每次重载时仍然有效。仅修改注释或保存相同的有效配置不会触发连接更新；文件暂时不可读或配置无效时会输出警告并继续使用旧配置，修正后再次保存即可。
+
+热重载保留未受影响的 TCP / UDP 应用会话。新版 Worker 支持 ICE 在线更新映射声明：增删映射、修改服务目标／协议或本地监听地址，只重建受影响的映射通道和应用连接，保留已有设备间的共享 QUIC 和信令连接；新增设备关系仍需建连。启用房间控制后，删除最后一条映射且不再使用语音时仍保留已有控制连接；兼容路径则释放设备连接。双方均支持在线配置协议时，语音开关也复用现有 QUIC。
+
+`session_timeout` 在本地更新；STUN／NAT STUN、打洞预算及探测、收集、连通性检查和重试等待参数用于后续尝试，不主动打断已连通路径。中继策略、网卡限制、固定入口等传输选项变化仍会按需更新路径，启用仅中继会立即撤销不符合要求的直连。更改 `server_url`、房间、密码、令牌或设备名会重新认证并关闭原有会话。旧 Worker 不支持在线更新时，声明更新回退到重新加入房间；旧对端的语音开关会重建该设备对的传输。
 
 ## 连接路径
 
@@ -143,7 +160,11 @@ flowchart LR
     worker -.-> remote
 ```
 
-Hole 以端口为单位转发，不创建 VPN / TUN。Worker 负责房间信令和按需签发 TURN 凭据，**不转发业务数据**。
+Hole 以端口为单位转发，不创建 VPN / TUN。Worker 负责房间发现、建连协调和按需签发 TURN 凭据，**不转发业务数据**。
+同一房间按现有设备连接图分组，各组独立保留信令入口；通知沿已有 QUIC 多跳转发，不为组间通知额外建连。
+最后一台信令设备恢复失败一次后，组内其他成员也会尝试接入 Worker，允许多台保留为备用。
+健康连接不依赖 Worker 周期续租；Hole / Peer Relay 路由由中继本地管理，第三方 TURN 保留自己的有效期。
+Worker 自带只读房间面板，默认访问 `https://HOST/panel`，依次输入信令密码、房间号和房间口令后查看成员、信令和连接状态；路径可配置，见 [Worker 部署](docs/WORKER.md#房间面板)。行为与状态字段见 [房间控制与按需信令](docs/PROTOCOL.md#房间控制与按需信令)。
 
 普通 ICE 连接按顺序尝试，成功后即使用该路径：
 
@@ -166,17 +187,14 @@ Peer Relay 自动协商，无需固定公网入口或额外配置。它只复用
 关闭本机 TURN 申请不会关闭 Peer Relay。每个节点最多承载 8 条中继设备对，详见 [节点中继协议](docs/PROTOCOL.md#peer-relay-节点中继)。
 
 <details>
-<summary>传输模式、仅中继与旧端兼容</summary>
+<summary>ICE 连接与仅中继</summary>
 
-| `transport.preferred` | 行为 |
-| --- | --- |
-| `ice` | 使用 ICE。 |
-| `auto` | 使用 ICE，并兼容旧 IPv6 对端。 |
-| `ipv6` 或省略设置 | 只使用旧 IPv6 路径。 |
+普通连接统一使用共享 ICE / QUIC 传输，无需配置连接策略。
+旧 `ipv6` 模式和 `allow_legacy` 已移除；IPv6 地址仍由 ICE 正常探测和直连。
+本次核心更新统一使用 ALPN `hole`，需要同步更新参与连接的核心；软件能力依据共享核心与 Worker 版本判断。
 
-- `allow_legacy` 用于协商旧对端，不是 ICE 失败后的自动回退开关。
-- `ice.relay_only: true` 跳过直连，仅使用可用的 Hole 或 TURN；Worker 和客户端均需支持该策略。
-- ICE 失败后的分类打洞需要同时更新 Worker 和两端客户端，协商 `nat-punch-v1` 与 `ice-first-v1`。未协商时仍先尝试普通 ICE，失败后进入中继。
+- `ice.relay_only: true` 跳过直连，仅使用可用的 Hole 或 TURN。
+- ICE 失败后的分类打洞需要两端核心与 Worker 满足相应版本门槛，未协商时仍先尝试普通 ICE，失败后进入中继。
 - IPv4 不适用时，保留首次普通 ICE（包括 IPv6），失败后跳过分类打洞。
 
 详见 [传输选择](docs/PROTOCOL.md#传输选择) 与 [ICE 协商](docs/PROTOCOL.md#ice-直连nat-状态与端口映射)。
@@ -216,7 +234,6 @@ NAT 类型与端口可预测性用于策略选择和诊断，不保证直连成�
 
 ```yaml
 transport:
-  preferred: ice
   fixed_endpoint:
     listen: 0.0.0.0:40000
     advertise: relay.example.com:50000
@@ -242,7 +259,6 @@ transport:
 # 中继设备
 device_name: relay-node
 transport:
-  preferred: ice
   fixed_endpoint:
     listen: 0.0.0.0:40000
     advertise: relay.example.com:40000

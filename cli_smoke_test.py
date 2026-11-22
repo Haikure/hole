@@ -16,11 +16,12 @@ from websockets.exceptions import ConnectionClosed
 ROOT = Path(__file__).resolve().parent
 BINARY = Path(os.environ.get("HOLE_CLI_BINARY", str(ROOT / "hole")))
 DEBUG = os.environ.get("HOLE_CLI_DEBUG") == "1"
+FIXED = os.environ.get("HOLE_CLI_FIXED_SMOKE") == "1"
 
 
 async def main():
     node = await asyncio.create_subprocess_exec("node", str(ROOT / "worker" / "worker_fixture.test.mjs"), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    peers, clients, readers, logs, turn_requests = {}, [], [], {}, []
+    peers, clients, readers, logs, turn_requests, signal_peers = {}, [], [], {}, [], {}
     lock = asyncio.Lock()
 
     async def send(value):
@@ -34,7 +35,10 @@ async def main():
         await send(dict(kind="open", id=ident, room=parse_qs(urlparse(ws.request.path).query).get("room", ["fixture"])[0]))
         try:
             async for message in ws:
-                if json.loads(message).get("type") == "turn_request":
+                value = json.loads(message)
+                if value.get("type") == "join":
+                    signal_peers[value["device_name"]] = ws
+                if value.get("type") == "turn_request":
                     turn_requests.append(ident)
                 await send(dict(kind="message", id=ident, data=message))
         except ConnectionClosed:
@@ -73,10 +77,13 @@ async def main():
     server = await serve(handler, "127.0.0.1", 0)
     worker = asyncio.create_task(pump())
     try:
-        base = dict(server_url=f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/ws", room="fixture", password="PRIVATE_PASSWORD", token="PRIVATE_ROOM_TOKEN", session_timeout="10m", transport=dict(preferred="ice", allow_legacy=True, allow_insecure_signal=True), ice=dict(stun_urls=[], include_loopback=True, interface_allowlist=["lo"], direct_probe_timeout="5s"))
+        base = dict(server_url=f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/ws", room="fixture", password="PRIVATE_PASSWORD", token="PRIVATE_ROOM_TOKEN", session_timeout="10m", transport=dict(allow_insecure_signal=True), ice=dict(stun_urls=[], include_loopback=True, interface_allowlist=["lo"], direct_probe_timeout="5s"))
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             local_port = sock.getsockname()[1]
+        with socket.socket(type=socket.SOCK_DGRAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            fixed_port = sock.getsockname()[1]
         with tempfile.TemporaryDirectory(prefix="hole-cli-smoke-") as tmp:
             missing = Path(tmp) / "missing-server.json"
             missing.write_text("{}")
@@ -87,6 +94,9 @@ async def main():
                 config = dict(base, device_name=name, provide=[], consume=[])
                 if name == "alpha":
                     config["provide"] = [dict(id="echo", service=f"tcp://127.0.0.1:{service_port}")]
+                    if FIXED:
+                        endpoint = f"127.0.0.1:{fixed_port}"
+                        config["transport"] = dict(base["transport"], fixed_endpoint=dict(listen=endpoint, advertise=endpoint))
                 else:
                     config["consume"] = [dict(id="echo", expose=f"127.0.0.1:{local_port}")]
                 path = Path(tmp) / f"{name}.json"
@@ -104,7 +114,23 @@ async def main():
                     assert all(p.returncode is None for p in clients), logs
                     await asyncio.sleep(0.1)
 
-            await asyncio.wait_for(ready(), 18)
+            try:
+                await asyncio.wait_for(ready(), 18)
+            except asyncio.TimeoutError as error:
+                raise AssertionError(f"clients did not become ready: {logs}") from error
+
+            async def wait_peer_log(name, expected, start, process, timeout):
+                async def poll():
+                    while not any(expected in line for line in logs[name][start:]):
+                        assert process.returncode is None, logs
+                        await asyncio.sleep(0.05)
+                try:
+                    await asyncio.wait_for(poll(), timeout)
+                except asyncio.TimeoutError as error:
+                    raise AssertionError(f"{name}: missing {expected}: {logs}") from error
+
+            await signal_peers["beta"].close(1011, "fixture signaling interruption")
+            await wait_peer_log("beta", "信令连接断开 [信令委托]", 0, clients[1], 20)
             reader, writer = await asyncio.open_connection("127.0.0.1", local_port)
             payload = b"CLI_CONFIGURED_SIGNAL_AND_DEFAULT_WORKER_TURN" * 256
             writer.write(payload)
@@ -152,6 +178,35 @@ async def main():
             await asyncio.wait_for(wait_log("目标服务已恢复"), 5)
             writer.close()
             await writer.wait_closed()
+
+            # Beta has no Worker socket: losing its QUIC path makes it offline.
+            alpha_start = len(logs["alpha"])
+            clients[1].send_signal(signal.SIGINT)
+            await asyncio.wait_for(clients[1].wait(), 5)
+            await readers[1]
+            await wait_peer_log("alpha", "beta: 离线", alpha_start, clients[0], 20)
+            await asyncio.sleep(1)
+            offline_logs = logs["alpha"][alpha_start:]
+            assert sum("beta: 离线" in line for line in offline_logs) == 1, offline_logs
+            assert not any("beta: 连接中断，重连中" in line or "beta: 重试中" in line for line in offline_logs), offline_logs
+            assert not any("WARN  设备 beta:" in line and "正在重试" in line for line in offline_logs), offline_logs
+
+            alpha_resume_start = len(logs["alpha"])
+            beta_start = len(logs["beta"])
+            args = [str(BINARY), "-config", str(Path(tmp) / "beta.json")]
+            if DEBUG:
+                args.append("-debug")
+            proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            clients.append(proc)
+            readers.append(asyncio.create_task(collect("beta", proc)))
+            await wait_peer_log("alpha", "beta: 已恢复", alpha_resume_start, clients[0], 20)
+            await wait_peer_log("beta", "映射已就绪", beta_start, proc, 20)
+            reader, writer = await asyncio.open_connection("127.0.0.1", local_port)
+            writer.write(payload)
+            await writer.drain()
+            assert await asyncio.wait_for(reader.readexactly(len(payload)), 5) == payload
+            writer.close()
+            await writer.wait_closed()
     finally:
         for proc in clients:
             if proc.returncode is None:
@@ -172,29 +227,36 @@ async def main():
         await worker
     stderr = (await node.stderr.read()).decode()
     assert not stderr, stderr
-    output = ROOT / "android/dist" / ("cli-smoke-debug" if DEBUG else "cli-smoke")
+    output_name = "cli-smoke" + ("-debug" if DEBUG else "") + ("-fixed" if FIXED else "")
+    output = Path(os.environ.get("HOLE_CLI_SMOKE_OUTPUT", str(ROOT / "android/dist" / output_name)))
     output.mkdir(parents=True, exist_ok=True)
+    path = "固定入口直连/IPv4" if FIXED else "直连/IPv4"
     for name, lines in logs.items():
         text = "\n".join(lines) + "\n"
         (output / f"{name}.log").write_text(text)
         assert "PRIVATE_" not in text, text
         assert all(re.match(r"^\d{2}:\d{2}:\d{2} (INFO |WARN |ERROR|DEBUG) ", line) for line in lines), f"unformatted library output:\n{text}"
-        for expected in ["已连接 直连/IPv4", "映射已就绪", "hole 已停止"]:
+        for expected in ["已连接 " + path, "映射已就绪", "hole 已停止"]:
             assert expected in text, f"{name}: missing {expected}\n{text}"
         if DEBUG:
-            for expected in ["DEBUG", "turn mode=worker", "gen=", "path=直连/IPv4"]:
+            for expected in ["DEBUG", "turn mode=worker", "gen=", "path=" + path]:
                 assert expected in text, f"{name}: missing debug detail {expected}\n{text}"
         else:
-            for hidden in ["DEBUG", "gen=", "session=", "STUN", "turn mode=", "【", "「", "·"]:
+            for hidden in ["DEBUG", "gen=", "session=", "STUN", "turn mode=", "【", "「"]:
                 assert hidden not in text, f"{name}: default log contains {hidden}\n{text}"
         assert "traffic peer=" not in text and "status engine=" not in text, "periodic sampling remains"
-        path_line = next(i for i, line in enumerate(lines) if "已连接 直连/IPv4" in line)
+        path_line = next(i for i, line in enumerate(lines) if "已连接 " + path in line)
+        assert re.search(r"对端 127\.0\.0\.1:\d+", lines[path_line]), f"{name}: connected endpoint missing"
+        assert "耗时 " in lines[path_line], f"{name}: elapsed time missing"
+        for i, line in enumerate(lines):
+            if "信令连接断开" in line:
+                assert i > 0 and "信令断开原因:" in lines[i - 1], f"{name}: outage cause missing or out of order"
         mapping_line = next(i for i, line in enumerate(lines) if "映射已就绪" in line)
         assert path_line < mapping_line, f"{name}: mapping readiness appeared before connection"
     assert not turn_requests, "healthy direct path requested TURN"
-    assert sum("映射已就绪" in line for line in logs["beta"]) == 1
+    assert sum("映射已就绪" in line for line in logs["beta"]) == 2
     assert any(f"本地入口 127.0.0.1:{local_port}" in line for line in logs["beta"])
-    print(f"PASS ({'debug' if DEBUG else 'default'}): Worker/QUIC TCP echo, Chinese redacted logs, no idle noise/TURN requests, path before mapping, service failures summarized, recovery and clean stop")
+    print(f"PASS ({'debug' if DEBUG else 'default'}, {'fixed' if FIXED else 'ICE'}): Worker/QUIC TCP echo, offline/rejoin logs, Chinese redacted logs, no idle noise/TURN requests, path before mapping, service failures summarized, recovery and clean stop")
     print("\n".join(logs["beta"]))
 
 

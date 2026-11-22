@@ -141,8 +141,6 @@ pub struct ConnectionSettings {
     pub session_timeout: String,
     pub candidate_interfaces: Vec<String>,
     pub candidate_addresses: Vec<String>,
-    /// auto | ice | legacy
-    pub connection_mode: String,
     pub allow_insecure_signal: bool,
     pub ice: IceSettings,
     pub turn: TurnSettings,
@@ -158,7 +156,6 @@ impl Default for ConnectionSettings {
             session_timeout: "10m".into(),
             candidate_interfaces: vec![],
             candidate_addresses: vec![],
-            connection_mode: "auto".into(),
             allow_insecure_signal: false,
             ice: IceSettings::default(),
             turn: TurnSettings::default(),
@@ -224,6 +221,11 @@ pub struct Secrets {
 fn tcp() -> String { "tcp".into() }
 fn yes() -> bool { true }
 fn loopback() -> String { "127.0.0.1".into() }
+
+pub fn migrate_removed_transport(mut config: StoredConfig) -> StoredConfig {
+    config.connection.candidate_addresses.clear();
+    config
+}
 
 pub fn default_device_name() -> String {
     std::env::var("HOSTNAME")
@@ -443,9 +445,6 @@ pub fn find_connection_error(c: &ConnectionSettings, secrets: &Secrets) -> Optio
 
 /// 只把启用项映射为核心运行请求；返回可展示的错误。
 pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, String> {
-    if cfg.voice.enabled && cfg.connection.connection_mode == "legacy" {
-        return Err("语音需要 ICE，请先关闭语音或选择自动 / ICE 连接方式".into());
-    }
     if let Some(e) = find_connection_error(&cfg.connection, secrets) {
         return Err(e);
     }
@@ -453,16 +452,9 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
         return Err(e);
     }
     let c = &cfg.connection;
-    if !matches!(c.connection_mode.as_str(), "auto" | "ice" | "legacy") {
-        return Err("连接方式无效".into());
-    }
-    if c.connection_mode != "legacy" {
-        if !c.candidate_addresses.is_empty() {
-            return Err("手动 IPv6 候选地址只用于“仅 IPv6”模式；使用 ICE 前请清空此项".into());
-        }
-        if c.server_url.trim().starts_with("ws://") && !c.allow_insecure_signal {
-            return Err("ICE 默认使用 wss://；本地 ws:// 测试需在连接方式中显式开启".into());
-        }
+    if !c.candidate_addresses.is_empty() { return Err("手动 IPv6 候选地址已移除，请使用 ICE 地址探测".into()); }
+    if c.server_url.trim().starts_with("ws://") && !c.allow_insecure_signal {
+        return Err("ICE 默认使用 wss://；本地 ws:// 测试需在连接方式中显式开启".into());
     }
     if !matches!(c.turn.mode.as_str(), "worker" | "manual" | "off") {
         return Err("中继来源无效".into());
@@ -501,15 +493,14 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
     if c.turn.mode == "manual" && (c.turn.urls.is_empty() || c.turn.username.trim().is_empty() || secrets.turn_credential.is_empty()) {
         return Err("手动中继需要服务器、用户名和凭据".into());
     }
-    for a in &c.candidate_addresses {
-        if !is_public_ipv6(a) {
-            return Err(format!("候选地址 \"{a}\" 需要公网 IPv6 字面地址"));
-        }
-    }
-    for d in [&c.ice.direct_probe_timeout, &c.ice.gather_timeout, &c.ice.connectivity_timeout, &c.ice.retry_max_delay, &c.turn.ttl] {
-        if !is_valid_duration(d) {
-            return Err("请检查连接方式中的时间格式，例如 3s、6h".into());
-        }
+    if [
+        &c.ice.direct_probe_timeout,
+        &c.ice.gather_timeout,
+        &c.ice.connectivity_timeout,
+        &c.ice.retry_max_delay,
+        &c.turn.ttl,
+    ].iter().any(|value| !is_valid_duration(value)) {
+        return Err("请检查连接方式中的时间格式，例如 3s、6h".into());
     }
     let mut provide = Vec::new();
     for e in cfg.provide.iter().filter(|e| e.enabled) {
@@ -541,8 +532,6 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
         consume.push(json!({ "id": e.id.trim(), "expose": compose_expose(&e.host, e.port) }));
     }
     let transport = json!({
-        "preferred": if c.connection_mode == "legacy" { "ipv6" } else { "ice" },
-        "allow_legacy": c.connection_mode == "auto",
         "allow_insecure_signal": c.allow_insecure_signal,
     });
     let turn = if c.turn.mode == "manual" {
@@ -560,7 +549,6 @@ pub fn to_run_request(cfg: &StoredConfig, secrets: &Secrets) -> Result<Value, St
             "device_name": c.device_name.trim(),
             "session_timeout": c.session_timeout.trim(),
             "candidate_interfaces": c.candidate_interfaces,
-            "candidate_addresses": c.candidate_addresses,
             "provide": provide,
             "consume": consume,
             "voice": { "enabled": cfg.voice.enabled },
@@ -623,17 +611,10 @@ pub fn from_portable_document(doc: &Value, current: &StoredConfig) -> Result<(St
             }).unwrap_or_default()
     };
     let transport = &doc["transport"];
-    let preferred = s(&transport["preferred"]);
-    if !matches!(preferred.as_str(), "ice" | "ipv6" | "") {
-        return Err("transport.preferred 只接受 ice 或 ipv6".into());
+    if transport.get("preferred").is_some() || transport.get("allow_legacy").is_some() {
+        return Err("transport.preferred 和 allow_legacy 已移除，请删除这些字段".into());
     }
-    let connection_mode = if preferred == "ipv6" {
-        "legacy"
-    } else if transport["allow_legacy"].as_bool().unwrap_or(true) {
-        "auto"
-    } else {
-        "ice"
-    };
+    if !list(&doc["candidate_addresses"]).is_empty() { return Err("手动 IPv6 候选地址已移除".into()); }
     let ice = &doc["ice"];
     let turn = &doc["turn"];
     let dur = |v: &Value, dflt: &str| {
@@ -650,7 +631,6 @@ pub fn from_portable_document(doc: &Value, current: &StoredConfig) -> Result<(St
         session_timeout: dur(&doc["session_timeout"], "10m"),
         candidate_interfaces: list(&doc["candidate_interfaces"]),
         candidate_addresses: list(&doc["candidate_addresses"]),
-        connection_mode: connection_mode.into(),
         allow_insecure_signal: transport["allow_insecure_signal"].as_bool().unwrap_or(false),
         ice: IceSettings {
             port_mapping: ice["port_mapping"].as_str().unwrap_or("auto").into(),
@@ -708,9 +688,6 @@ pub fn split_endpoint(value: &str) -> Result<(String, u16), String> {
 
 /// 停止态草稿校验：允许缺少服务器与凭据，其余约束不变。
 pub fn validate_draft(cfg: &StoredConfig) -> Result<(), String> {
-    if cfg.voice.enabled && cfg.connection.connection_mode == "legacy" {
-        return Err("语音需要 ICE，请先关闭语音或选择自动 / ICE 连接方式".into());
-    }
     to_portable_document(cfg, &Secrets::default(), false).map(|_| ())
 }
 
@@ -749,6 +726,7 @@ pub fn read_backup(text: &str, current: &StoredConfig) -> Result<BackupPreview, 
         ("hole-android-backup", 1 | 2) => (android_backup(&doc["config"], version, current)?, "Android 配置备份"),
         _ => return Err("请选择 hole 桌面或 Android 配置备份".into()),
     };
+    config = migrate_removed_transport(config);
     config.schema_version = SCHEMA_VERSION;
     let ids: Vec<&String> = config.provide.iter().map(|e| &e.entry_id).chain(config.consume.iter().map(|e| &e.entry_id)).collect();
     let unique: std::collections::HashSet<_> = ids.iter().collect();
@@ -763,7 +741,7 @@ pub fn read_backup(text: &str, current: &StoredConfig) -> Result<BackupPreview, 
 }
 
 /// Android 备份使用 camelCase 与 Material/Miuix 主题字段；只保留可移植部分。
-fn android_backup(config: &Value, version: i64, current: &StoredConfig) -> Result<StoredConfig, String> {
+fn android_backup(config: &Value, _version: i64, current: &StoredConfig) -> Result<StoredConfig, String> {
     let s = |v: &Value| v.as_str().unwrap_or_default().trim().to_string();
     let list = |v: &Value| {
         v.as_array().map(|a| {
@@ -776,15 +754,7 @@ fn android_backup(config: &Value, version: i64, current: &StoredConfig) -> Resul
     let d = IceSettings::default();
     let or = |v: &Value, dflt: &str| { let t = s(v); if t.is_empty() { dflt.to_string() } else { t } };
     let server_url = s(&conn["serverUrl"]);
-    let candidate_addresses = list(&conn["candidateAddresses"]);
-    let schema = config["schemaVersion"].as_i64().unwrap_or(if version == 1 { 1 } else { 2 });
-    let connection_mode = if schema >= 2 {
-        or(&conn["connectionMode"], "auto")
-    } else if !candidate_addresses.is_empty() || server_url.starts_with("ws://") {
-        "legacy".into()
-    } else {
-        "auto".into()
-    };
+    let candidate_addresses = vec![];
     let mut prefs = current.prefs.clone();
     let mode = s(&config["themeMode"]);
     if matches!(mode.as_str(), "system" | "light" | "dark") {
@@ -801,7 +771,6 @@ fn android_backup(config: &Value, version: i64, current: &StoredConfig) -> Resul
             session_timeout: or(&conn["sessionTimeout"], "10m"),
             candidate_interfaces: list(&conn["candidateInterfaces"]),
             candidate_addresses,
-            connection_mode,
             allow_insecure_signal: conn["allowInsecureSignal"].as_bool().unwrap_or(false),
             ice: IceSettings {
                 port_mapping: ice["port_mapping"].as_str().unwrap_or("auto").into(),
@@ -889,6 +858,31 @@ mod tests {
     }
 
     #[test]
+    fn connection_durations_are_validated_before_saving_or_running() {
+        let fields: [(&str, fn(&mut ConnectionSettings) -> &mut String); 5] = [
+            ("direct_probe_timeout", |c| &mut c.ice.direct_probe_timeout),
+            ("gather_timeout", |c| &mut c.ice.gather_timeout),
+            ("connectivity_timeout", |c| &mut c.ice.connectivity_timeout),
+            ("retry_max_delay", |c| &mut c.ice.retry_max_delay),
+            ("turn.ttl", |c| &mut c.turn.ttl),
+        ];
+        for (field, select) in fields {
+            let (mut cfg, secrets) = sample();
+            for invalid in ["not-a-duration", "", "10", "1h 30m"] {
+                *select(&mut cfg.connection) = invalid.into();
+                let expected = "请检查连接方式中的时间格式，例如 3s、6h";
+                assert_eq!(to_run_request(&cfg, &secrets).unwrap_err(), expected, "{field}: {invalid}");
+                assert_eq!(validate_draft(&cfg).unwrap_err(), expected, "{field}: {invalid}");
+            }
+            for valid in ["3s", "6h", "1h30m", "500ms"] {
+                *select(&mut cfg.connection) = valid.into();
+                assert!(to_run_request(&cfg, &secrets).is_ok(), "{field}: {valid}");
+                assert!(validate_draft(&cfg).is_ok(), "{field}: {valid}");
+            }
+        }
+    }
+
+    #[test]
     fn server_urls() {
         assert_eq!(validate_server_url("wss://example.com/ws"), None);
         assert_eq!(validate_server_url("wss://[::1]:8443/ws"), None);
@@ -925,8 +919,8 @@ mod tests {
         assert_eq!(req["config"]["provide"].as_array().unwrap().len(), 1);
         assert_eq!(req["config"]["provide"][0]["service"], "tcp://[::1]:22");
         assert_eq!(req["config"]["consume"][0]["expose"], "127.0.0.1:8080");
-        assert_eq!(req["config"]["transport"]["preferred"], "ice");
-        assert_eq!(req["config"]["transport"]["allow_legacy"], true);
+        assert!(req["config"]["transport"].get("preferred").is_none());
+        assert!(req["config"]["transport"].get("allow_legacy").is_none());
         assert!(req["config"].get("server_url").is_none());
     }
 
@@ -942,7 +936,7 @@ mod tests {
         assert_eq!(back.provide.len(), 1);
         assert_eq!(back.provide[0].host, "::1");
         assert_eq!(back.consume[0].port, 8080);
-        assert_eq!(back.connection.connection_mode, "auto");
+        assert!(serde_json::to_value(&back.connection).unwrap().get("connection_mode").is_none());
         assert_eq!(back.connection.turn.order, vec!["tls", "udp"]);
         assert_eq!(back_secrets.password, "");
     }
@@ -962,7 +956,7 @@ mod tests {
 
     #[test]
     fn voice_survives_portable_and_backup_exchange() {
-        let mut cfg = StoredConfig::default();
+        let (mut cfg, secrets) = sample();
         cfg.voice.enabled = true;
         let doc = to_portable_document(&cfg, &Secrets::default(), false).unwrap();
         assert_eq!(doc["voice"]["enabled"], true);
@@ -973,9 +967,6 @@ mod tests {
         let android = r#"{"format":"hole-android-backup","version":2,"config":{"schemaVersion":2,"connection":{"connectionMode":"ice"},"voice":{"enabled":true}}}"#;
         assert!(read_backup(android, &StoredConfig::default()).unwrap().config.voice.enabled);
         assert!(!serde_json::from_str::<StoredConfig>("{}").unwrap().voice.enabled);
-        cfg.connection.connection_mode = "legacy".into();
-        assert!(validate_draft(&cfg).is_err());
-        assert!(to_run_request(&cfg, &Secrets::default()).unwrap_err().contains("语音需要 ICE"));
     }
 
     #[test]
@@ -983,7 +974,7 @@ mod tests {
         let text = r#"{"format":"hole-android-backup","version":2,"config":{"schemaVersion":2,"themeStyle":"miuix","themeMode":"dark","connection":{"serverUrl":"wss://a/ws","room":"r","deviceName":"phone","sessionTimeout":"10m","connectionMode":"ice"},"provide":[{"entryId":"e1","id":"ssh","protocol":"tcp","host":"127.0.0.1","port":22,"enabled":false}],"consume":[]},"password":"p","token":"t","resumeAfterBoot":true}"#;
         let p = read_backup(text, &StoredConfig::default()).unwrap();
         assert_eq!(p.config.prefs.theme_mode, "dark");
-        assert_eq!(p.config.connection.connection_mode, "ice");
+        assert!(serde_json::to_value(&p.config.connection).unwrap().get("connection_mode").is_none());
         assert!(!p.config.provide[0].enabled);
         assert!(p.resume_at_login);
         assert_eq!(p.secrets.token, "t");

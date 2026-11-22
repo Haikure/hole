@@ -34,7 +34,7 @@ Column {
     Field {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
         hostKeyboard: settings.hostKeyboard
         label: "STUN 服务器（逗号或换行分隔）"
         value: settings.form ? settings.form.stunUrls : ""
@@ -48,7 +48,7 @@ Column {
     ChoiceRow {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
         title: "TURN 模式"
         summary: "直连失败后的中继方式"
         options: [
@@ -66,7 +66,7 @@ Column {
     Field {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
                  && settings.form.turnMode === "manual"
         hostKeyboard: settings.hostKeyboard
         label: "TURN 地址（逗号或换行分隔）"
@@ -81,7 +81,7 @@ Column {
     Field {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
                  && settings.form.turnMode === "manual"
         hostKeyboard: settings.hostKeyboard
         label: "TURN 用户名"
@@ -95,7 +95,7 @@ Column {
     Field {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
                  && settings.form.turnMode === "manual"
         hostKeyboard: settings.hostKeyboard
         label: "TURN 凭据"
@@ -110,7 +110,7 @@ Column {
     Field {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
         hostKeyboard: settings.hostKeyboard
         label: "直连探测时间"
         value: settings.form ? settings.form.directProbeTimeout : ""
@@ -125,7 +125,7 @@ Column {
     Field {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
         hostKeyboard: settings.hostKeyboard
         label: "候选收集时间"
         value: settings.form ? settings.form.gatherTimeout : ""
@@ -140,7 +140,7 @@ Column {
     Field {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
         hostKeyboard: settings.hostKeyboard
         label: "连通性检查时间"
         value: settings.form ? settings.form.connectivityTimeout : ""
@@ -155,7 +155,7 @@ Column {
     Field {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
         hostKeyboard: settings.hostKeyboard
         label: "最大重试间隔"
         value: settings.form ? settings.form.retryMaxDelay : ""
@@ -170,7 +170,7 @@ Column {
     Field {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
                  && settings.form.turnMode !== "off"
         hostKeyboard: settings.hostKeyboard
         label: "TURN 凭据期限"
@@ -207,7 +207,7 @@ Column {
     Column {
         objectName: "advancedRelayOrder"
         width: parent.width
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
         spacing: Theme.cardSpacing
 
         Text {
@@ -250,7 +250,7 @@ Column {
     Field {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
         hostKeyboard: settings.hostKeyboard
         label: "允许使用的网卡"
         value: settings.form ? settings.form.interfaceAllowlist : ""
@@ -261,24 +261,10 @@ Column {
         }
     }
 
-    Field {
-        width: parent.width
-        height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ipv6"
-        hostKeyboard: settings.hostKeyboard
-        label: "手动 IPv6 候选地址"
-        value: settings.form ? settings.form.candidateAddresses : ""
-        placeholder: "留空表示自动收集"
-        onEdited: function(nextValue) {
-            settings.form.candidateAddresses = nextValue
-            settings.form.syncConfig()
-        }
-    }
-
     SwitchRow {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
         title: "包含回环候选"
         summary: "同机调试时可开启"
         checked: settings.form && settings.form.includeLoopback
@@ -291,7 +277,7 @@ Column {
     SwitchRow {
         width: parent.width
         height: implicitHeight
-        visible: settings.form && settings.form.preferred === "ice"
+        visible: settings.form !== null
         title: "仅使用中继"
         summary: "始终走 TURN，不做直连尝试"
         checked: settings.form && settings.form.relayOnly

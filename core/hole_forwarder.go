@@ -13,11 +13,13 @@ import (
 )
 
 const holePairQueue = 16
+const localRelayIdleTimeout = 2 * time.Minute
 
 type holeRoute struct {
 	id         string
 	generation uint64
 	until      int64
+	activity   [2]time.Time
 	auth       *holeAuth
 	grant      holeGrant
 	address    [2]netip.AddrPort
@@ -31,6 +33,7 @@ type holeRoute struct {
 }
 
 type holeGrantMark struct {
+	local      bool
 	generation uint64
 	until      int64
 	revoked    bool
@@ -101,7 +104,10 @@ func (f *holeForwarder) reportFatal(err error) {
 
 func (f *holeForwarder) install(m iceSignalMessage) error {
 	now := time.Now()
-	if m.Hole == nil || m.LeaseUntil <= now.UnixMilli() || m.LeaseUntil > now.Add(11*time.Minute).UnixMilli() || m.Hole.Generation != m.TransportGeneration {
+	if m.Hole != nil && m.Hole.LocalManagement && (m.LeaseUntil != 0 || !modernSoftware(m.WorkerVersion)) {
+		return errors.New("invalid local relay authorization")
+	}
+	if m.Hole == nil || ((!m.Hole.LocalManagement || m.LeaseUntil != 0) && (m.LeaseUntil <= now.UnixMilli() || m.LeaseUntil > now.Add(11*time.Minute).UnixMilli())) || m.Hole.Generation != m.TransportGeneration {
 		return errors.New("expired relay grant")
 	}
 	auth, err := newHoleAuth(m.Hole)
@@ -111,7 +117,7 @@ func (f *holeForwarder) install(m iceSignalMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := 0; i < len(f.order); {
-		if f.order[i].until <= now.UnixMilli() {
+		if f.order[i].expired(now) {
 			f.removeLocked(f.order[i])
 		} else {
 			i++
@@ -125,7 +131,7 @@ func (f *holeForwarder) install(m iceSignalMessage) error {
 		return errors.New("stale or revoked relay grant")
 	}
 	if r := f.routes[auth.route]; r != nil {
-		if r.id != m.TransportID || r.generation != m.TransportGeneration || r.grant != *m.Hole || r.until <= now.UnixMilli() {
+		if r.id != m.TransportID || r.generation != m.TransportGeneration || r.grant != *m.Hole || r.expired(now) {
 			return errors.New("route mismatch")
 		}
 		r.until = max(r.until, m.LeaseUntil)
@@ -140,7 +146,7 @@ func (f *holeForwarder) install(m iceSignalMessage) error {
 	// expired. Bound historical records independently of the active-pair quota.
 	if !known && len(f.grants) >= 4096 {
 		for id, old := range f.grants {
-			if old.until <= now.UnixMilli() {
+			if !old.local && old.until <= now.UnixMilli() {
 				delete(f.grants, id)
 			}
 		}
@@ -156,8 +162,8 @@ func (f *holeForwarder) install(m iceSignalMessage) error {
 	if len(f.order) >= f.limit {
 		return &Fault{Code: "relay_capacity", Message: "中继设备容量已满"}
 	}
-	r := &holeRoute{id: m.TransportID, generation: m.TransportGeneration, until: m.LeaseUntil, auth: auth, grant: *m.Hole}
-	f.grants[m.TransportID] = holeGrantMark{generation: m.TransportGeneration, until: max(mark.until, m.LeaseUntil)}
+	r := &holeRoute{id: m.TransportID, generation: m.TransportGeneration, until: m.LeaseUntil, auth: auth, grant: *m.Hole, activity: [2]time.Time{now, now}}
+	f.grants[m.TransportID] = holeGrantMark{generation: m.TransportGeneration, until: max(mark.until, m.LeaseUntil), local: m.Hole.LocalManagement}
 	f.routes[auth.route] = r
 	f.order = append(f.order, r)
 	return nil
@@ -165,7 +171,7 @@ func (f *holeForwarder) install(m iceSignalMessage) error {
 func (f *holeForwarder) removeLocked(r *holeRoute) {
 	mark := f.grants[r.id]
 	if mark.generation <= r.generation && f.grants != nil {
-		f.grants[r.id] = holeGrantMark{generation: r.generation, until: max(mark.until, r.until), revoked: true}
+		f.grants[r.id] = holeGrantMark{generation: r.generation, until: max(mark.until, r.until), revoked: true, local: r.grant.LocalManagement}
 	}
 	delete(f.routes, r.auth.route)
 	for r.size > 0 {
@@ -183,7 +189,7 @@ func (f *holeForwarder) removeLocked(r *holeRoute) {
 		}
 	}
 }
-func (f *holeForwarder) revoke(id string, generation uint64) {
+func (f *holeForwarder) revoke(id string, generation uint64, locallyManaged ...bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.grants == nil {
@@ -193,13 +199,18 @@ func (f *holeForwarder) revoke(id string, generation uint64) {
 		now := time.Now()
 		if len(f.grants) >= 4096 {
 			for key, mark := range f.grants {
-				if mark.until <= now.UnixMilli() {
+				if !mark.local && mark.until <= now.UnixMilli() {
 					delete(f.grants, key)
 				}
 			}
 		}
 		if len(f.grants) < 4096 {
-			f.grants[id] = holeGrantMark{generation: generation, until: now.Add(11 * time.Minute).UnixMilli(), revoked: true}
+			local := len(locallyManaged) > 0 && locallyManaged[0]
+			until := now.Add(11 * time.Minute).UnixMilli()
+			if local {
+				until = 0
+			}
+			f.grants[id] = holeGrantMark{generation: generation, until: until, revoked: true, local: local}
 		}
 	}
 	if mark, ok := f.grants[id]; ok && generation >= mark.generation {
@@ -284,12 +295,13 @@ func (f *holeForwarder) route(frame *holeFrame) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r := f.routes[id]
-	if r == nil || r.until <= now.UnixMilli() || !r.auth.valid(b) || !r.replay[side].accept(binary.BigEndian.Uint64(b[22:30])) {
+	if r == nil || r.expired(now) || !r.auth.valid(b) || !r.replay[side].accept(binary.BigEndian.Uint64(b[22:30])) {
 		return false
 	}
 	addr := canonicalHoleAddress(frame.address)
 	switch b[4] {
 	case holeRegister:
+		r.activity[side] = now
 		r.pending[side] = addr
 		_, _ = rand.Read(r.challenge[side][:])
 		copy(frame.data[holeHeader:], r.challenge[side][:])
@@ -301,6 +313,7 @@ func (f *holeForwarder) route(frame *holeFrame) bool {
 			return false
 		}
 		r.address[side] = addr
+		r.activity[side] = now
 		r.oob[side], r.oobn[side] = frame.oob, frame.oobn
 		r.pending[side] = netip.AddrPort{}
 		frame.n = holeHeader
@@ -310,6 +323,7 @@ func (f *holeForwarder) route(frame *holeFrame) bool {
 		if r.address[side] != addr || !r.address[1-side].IsValid() {
 			return false
 		}
+		r.activity[side] = now
 		if r.size == holePairQueue {
 			f.stats.QueueDrops++
 			return false
@@ -352,10 +366,10 @@ func (f *holeForwarder) forward() {
 		}
 		for f.ctx.Err() == nil {
 			f.mu.Lock()
-			now := time.Now().UnixMilli()
+			now := time.Now()
 			for i := 0; i < len(f.order); {
 				r := f.order[i]
-				if r.until <= now {
+				if r.expired(now) {
 					f.removeLocked(r)
 				} else {
 					i++
@@ -425,6 +439,13 @@ func (f *holeForwarder) forward() {
 			}
 		}
 	}
+}
+
+func (r *holeRoute) expired(now time.Time) bool {
+	if !r.grant.LocalManagement {
+		return r.until <= now.UnixMilli()
+	}
+	return now.Sub(r.activity[0]) >= localRelayIdleTimeout || now.Sub(r.activity[1]) >= localRelayIdleTimeout
 }
 func (f *holeForwarder) takeNormal() (*holeFrame, error) {
 	for {

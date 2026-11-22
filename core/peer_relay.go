@@ -28,15 +28,17 @@ type peerRelayLink struct {
 // Grants bind both existing direct transports, their runtimes and one opaque
 // route to an authorized end-to-end transport generation. No forwarding chains.
 type peerRelayGrant struct {
-	Route       string           `json:"route"`
-	Device      string           `json:"device"`
-	Runtime     string           `json:"runtime"`
-	Devices     [2]string        `json:"devices"`
-	Runtimes    [2]string        `json:"runtimes"`
-	Links       [2]peerRelayLink `json:"links"`
-	TransportID string           `json:"transport_id"`
-	Generation  uint64           `json:"generation,string"`
-	LeaseUntil  int64            `json:"lease_until,string"`
+	Route           string           `json:"route"`
+	Device          string           `json:"device"`
+	Runtime         string           `json:"runtime"`
+	Devices         [2]string        `json:"devices"`
+	Runtimes        [2]string        `json:"runtimes"`
+	Links           [2]peerRelayLink `json:"links"`
+	TransportID     string           `json:"transport_id"`
+	Generation      uint64           `json:"generation,string"`
+	LeaseUntil      int64            `json:"lease_until,string"`
+	LocalManagement bool             `json:"local_management,omitempty"`
+	activity        [2]time.Time
 }
 
 func (g peerRelayGrant) valid() bool {
@@ -45,7 +47,7 @@ func (g peerRelayGrant) valid() bool {
 		g.Devices[0] != g.Devices[1] && g.Device != g.Devices[0] && g.Device != g.Devices[1] &&
 		g.Runtimes[0] != "" && g.Runtimes[1] != "" && g.TransportID != "" && g.Generation > 0 &&
 		g.Links[0].ID != "" && g.Links[1].ID != "" && g.Links[0].ID != g.Links[1].ID &&
-		g.Links[0].Generation > 0 && g.Links[1].Generation > 0 && g.LeaseUntil > time.Now().UnixMilli()
+		g.Links[0].Generation > 0 && g.Links[1].Generation > 0 && ((g.LocalManagement && g.LeaseUntil == 0) || (!g.LocalManagement && g.LeaseUntil > time.Now().UnixMilli()))
 }
 
 func (c *iceCoordinator) validatePeerRelayReady(m iceSignalMessage) error {
@@ -77,6 +79,9 @@ func (c *iceCoordinator) handlePeerRelayGrant(m iceSignalMessage) error {
 	defer c.peerRelayMu.Unlock()
 	if m.Type == "peer_relay_revoke" {
 		delete(c.peerRelayGrants, id)
+		if g.LocalManagement {
+			c.markPeerRelayLocked(g.TransportID, g.Generation)
+		}
 		return nil
 	}
 	if m.PeerRelayVersion != peerRelayVersion || !g.valid() || g.Device != c.deviceID() || g.Runtime != c.runtimeID ||
@@ -86,8 +91,36 @@ func (c *iceCoordinator) handlePeerRelayGrant(m iceSignalMessage) error {
 	if c.peerRelayGrants == nil {
 		c.peerRelayGrants = make(map[sessionID]peerRelayGrant)
 	}
+	if g.LocalManagement {
+		if !modernSoftware(m.WorkerVersion) || c.peerRelayMarks[g.TransportID] >= g.Generation {
+			return nil
+		}
+		if c.peerRelayMarks == nil {
+			c.peerRelayMarks = map[string]uint64{}
+		}
+		if _, known := c.peerRelayMarks[g.TransportID]; !known {
+			if len(c.peerRelayMarks) >= 4096 {
+				return &Fault{Code: "relay_capacity", Message: "中继路由历史容量已满"}
+			}
+			c.peerRelayMarks[g.TransportID] = 0
+		}
+		for _, previous := range c.peerRelayGrants {
+			if previous.TransportID != g.TransportID {
+				continue
+			}
+			if previous.Generation > g.Generation || (previous.Generation == g.Generation && (previous.Route != g.Route || previous.Runtime != g.Runtime || previous.Devices != g.Devices || previous.Runtimes != g.Runtimes || previous.Links != g.Links)) {
+				return nil
+			}
+			if previous.Generation == g.Generation {
+				g.activity = previous.activity
+			}
+		}
+		if g.activity[0].IsZero() {
+			g.activity = [2]time.Time{time.Now(), time.Now()}
+		}
+	}
 	for key, grant := range c.peerRelayGrants {
-		if grant.LeaseUntil <= time.Now().UnixMilli() || grant.TransportID == g.TransportID {
+		if (!grant.LocalManagement && grant.LeaseUntil <= time.Now().UnixMilli()) || grant.TransportID == g.TransportID {
 			delete(c.peerRelayGrants, key)
 		}
 	}
@@ -107,10 +140,21 @@ func (c *iceCoordinator) directRelayMux(link peerRelayLink, device, runtime stri
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	a := p.active
-	if p.closed || !p.online || p.ready.LeaseUntil <= time.Now().UnixMilli() || a == nil ||
-		a.ready.TransportGeneration != link.Generation || p.ready.TransportGeneration != link.Generation ||
+	if a == nil {
+		return nil
+	}
+	local := a.ready.localAuthorization()
+	pathType := a.pathType
+	if pathType == "" {
+		pathType = p.stats.PathType
+	}
+	if a.ready.Profile == ProfileFixed {
+		pathType = "fixed"
+	}
+	if p.closed || (!local && (!p.online || p.ready.LeaseUntil <= time.Now().UnixMilli())) ||
+		a.ready.TransportGeneration != link.Generation || (!local && p.ready.TransportGeneration != link.Generation) ||
 		a.ready.PeerDevice != device || a.ready.PeerRuntimeID != runtime || !a.mux.peerRelay || a.mux.ctx.Err() != nil ||
-		(p.stats.PathType != "direct" && p.stats.PathType != "fixed") {
+		(pathType != "direct" && pathType != "fixed") {
 		return nil
 	}
 	return a.mux
@@ -160,7 +204,7 @@ func (p *muxPeer) receivePeerRelay(data []byte) bool {
 		}
 		return true
 	}
-	if !granted || grant.LeaseUntil <= time.Now().UnixMilli() {
+	if !granted || (!grant.LocalManagement && grant.LeaseUntil <= time.Now().UnixMilli()) {
 		return true
 	}
 	for i := range grant.Devices {
@@ -169,11 +213,23 @@ func (p *muxPeer) receivePeerRelay(data []byte) bool {
 		}
 		other := c.directRelayMux(grant.Links[1-i], grant.Devices[1-i], grant.Runtimes[1-i])
 		if other != nil {
+			if grant.LocalManagement {
+				c.peerRelayMu.Lock()
+				current, ok := c.peerRelayGrants[f.key.session]
+				if ok && current.Generation == grant.Generation {
+					current.activity[i] = time.Now()
+					c.peerRelayGrants[f.key.session] = current
+				}
+				c.peerRelayMu.Unlock()
+			}
 			other.queuePeerRelay(data)
 		} else {
 			// Report once per grant; the Worker advances both endpoints together.
 			c.peerRelayMu.Lock()
 			delete(c.peerRelayGrants, f.key.session)
+			if grant.LocalManagement {
+				c.markPeerRelayLocked(grant.TransportID, grant.Generation)
+			}
 			c.peerRelayMu.Unlock()
 			m := signalMessage("peer_relay_failed")
 			m.TransportID, m.TransportGeneration = grant.TransportID, grant.Generation
@@ -363,7 +419,7 @@ func (p *icePeer) attemptPeerRelay(a *iceAttempt) {
 	transport := &quic.Transport{Conn: packet}
 	defer transport.Close()
 	tlsConfig := c.identity.Clone()
-	tlsConfig.NextProtos, tlsConfig.ClientAuth, tlsConfig.InsecureSkipVerify = []string{iceALPN}, tls.RequireAnyClientCert, true
+	tlsConfig.NextProtos, tlsConfig.ClientAuth, tlsConfig.InsecureSkipVerify = []string{holeALPN}, tls.RequireAnyClientCert, true
 	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
 		if len(state.PeerCertificates) > 0 {
 			sum := sha256.Sum256(state.PeerCertificates[0].Raw)
@@ -428,5 +484,47 @@ func (p *icePeer) attemptPeerRelay(a *iceAttempt) {
 func (p *icePeer) allowRelayPath(a *iceAttempt) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return !p.closed && p.online && p.ready.TransportGeneration == a.ready.TransportGeneration && p.ready.LeaseUntil > time.Now().UnixMilli()
+	return !p.closed && p.online && p.ready.TransportGeneration == a.ready.TransportGeneration && (a.ready.localAuthorization() || p.ready.LeaseUntil > time.Now().UnixMilli())
+}
+
+func (c *iceCoordinator) markPeerRelayLocked(id string, generation uint64) {
+	if c.peerRelayMarks == nil {
+		c.peerRelayMarks = map[string]uint64{}
+	}
+	_, known := c.peerRelayMarks[id]
+	if len(c.peerRelayMarks) < 4096 || known {
+		c.peerRelayMarks[id] = max(c.peerRelayMarks[id], generation)
+	}
+}
+
+func (c *iceCoordinator) pruneLocalPeerRelays() {
+	c.peerRelayMu.Lock()
+	grants := make(map[sessionID]peerRelayGrant, len(c.peerRelayGrants))
+	for id, grant := range c.peerRelayGrants {
+		if grant.LocalManagement {
+			grants[id] = grant
+		}
+	}
+	c.peerRelayMu.Unlock()
+	now := time.Now()
+	for id, grant := range grants {
+		idle := now.Sub(grant.activity[0]) >= localRelayIdleTimeout || now.Sub(grant.activity[1]) >= localRelayIdleTimeout
+		broken := c.directRelayMux(grant.Links[0], grant.Devices[0], grant.Runtimes[0]) == nil || c.directRelayMux(grant.Links[1], grant.Devices[1], grant.Runtimes[1]) == nil
+		if !idle && !broken {
+			continue
+		}
+		c.peerRelayMu.Lock()
+		current, ok := c.peerRelayGrants[id]
+		remove := ok && current.Generation == grant.Generation && current.Route == grant.Route && (broken || now.Sub(current.activity[0]) >= localRelayIdleTimeout || now.Sub(current.activity[1]) >= localRelayIdleTimeout)
+		if remove {
+			delete(c.peerRelayGrants, id)
+			c.markPeerRelayLocked(grant.TransportID, grant.Generation)
+		}
+		c.peerRelayMu.Unlock()
+		if remove {
+			message := signalMessage("peer_relay_failed")
+			message.TransportID, message.TransportGeneration = grant.TransportID, grant.Generation
+			_ = c.send(message)
+		}
+	}
 }

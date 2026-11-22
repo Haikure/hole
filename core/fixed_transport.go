@@ -100,10 +100,9 @@ func (c *iceCoordinator) watchFixedRelay(f *fixedListener) {
 			Code: "hole_forwarder_failed", Message: "Hole 转发器发生不可恢复错误，正在重建共享固定入口",
 		}})
 	}
-	select {
-	case c.reset <- struct{}{}:
-	default:
-	}
+	// The forwarding state was lost, rather than only the signaling socket.
+	// A fresh epoch makes the Worker replace its grants on the next join.
+	c.networkChanged()
 }
 
 func (c *iceCoordinator) configureFixed(r Request) error {
@@ -146,7 +145,7 @@ func (c *iceCoordinator) configureFixed(r Request) error {
 	}
 	transport := &quic.Transport{Conn: packet}
 	tlsConfig := c.identity.Clone()
-	tlsConfig.NextProtos = []string{fixedALPN}
+	tlsConfig.NextProtos = []string{holeALPN}
 	tlsConfig.ClientAuth = tls.RequireAnyClientCert
 	// Accept early only to start the shared handshake budget; routeFixed waits
 	// for TLS completion before inspecting a hello. 0-RTT remains disabled.
@@ -202,6 +201,10 @@ func fixedFingerprint(conn *quic.Conn) string {
 // Only the first control hello is read before selecting a peer. No mux or
 // business socket is created until the signal record and certificate match.
 func (c *iceCoordinator) routeFixed(ctx context.Context, conn *quic.Conn) {
+	c.routeShared(ctx, conn, ProfileFixed)
+}
+
+func (c *iceCoordinator) routeShared(ctx context.Context, conn *quic.Conn, profile string) {
 	delivered := false
 	defer func() {
 		if !delivered {
@@ -246,7 +249,7 @@ func (c *iceCoordinator) routeFixed(ctx context.Context, conn *quic.Conn) {
 		return
 	}
 	m := a.ready
-	if m.Profile != ProfileFixed || m.ListenerID != c.deviceID() || m.LeaseUntil <= time.Now().UnixMilli() || hello.Profile != ProfileFixed || hello.Version != sessionProtocol || hello.Generation != m.TransportGeneration || hello.LocalRuntime != m.PeerRuntimeID || hello.RemoteRuntime != c.runtimeID || fixedFingerprint(conn) != m.PeerFingerprint {
+	if m.Profile != profile || m.ListenerID != c.deviceID() || (!m.localAuthorization() && m.LeaseUntil <= time.Now().UnixMilli()) || hello.Profile != profile || hello.Version != sessionProtocol || hello.Generation != m.TransportGeneration || hello.LocalRuntime != m.PeerRuntimeID || hello.RemoteRuntime != c.runtimeID || fixedFingerprint(conn) != m.PeerFingerprint {
 		return
 	}
 	select {
@@ -279,7 +282,7 @@ func (c *iceCoordinator) validateFixedReady(m iceSignalMessage) error {
 		}
 		keys[record.ID] = true
 	}
-	if len(m.Mappings) == 0 && !m.Voice {
+	if len(m.Mappings) == 0 && !m.Voice && !m.RoomControl {
 		return bad()
 	}
 	return nil
@@ -298,8 +301,8 @@ func (p *icePeer) retireForFixedPolicy() {
 	p.stats.State = "reconnecting"
 	p.mu.Unlock()
 	if active != nil {
-		active.cancel()
 		_ = active.session.CloseWithError(0, "fixed endpoint policy changed")
+		active.cancel()
 	}
 }
 
@@ -334,7 +337,7 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 	cleanup := func() {}
 	defer func() { cleanup() }()
 	if a.ready.DialerID == p.coordinator.deviceID() {
-		platform, err := p.coordinator.pin(hsCtx)
+		platform, err := p.coordinator.pin(a.ctx)
 		if err != nil {
 			p.failed(a, err)
 			return
@@ -360,7 +363,7 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 			if address.IP.To4() == nil {
 				network, local = "udp6", "[::]:0"
 			}
-			packet, err := platform.ListenPacket(hsCtx, network, local)
+			packet, err := platform.ListenPacket(a.ctx, network, local)
 			if err != nil {
 				p.failed(a, err)
 				return
@@ -369,7 +372,7 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 			cleanup = func() { _ = transport.Close(); _ = packet.Close() }
 		}
 		tlsConfig := p.coordinator.identity.Clone()
-		tlsConfig.NextProtos = []string{fixedALPN}
+		tlsConfig.NextProtos = []string{holeALPN}
 		tlsConfig.InsecureSkipVerify = true
 		var identityMismatch atomic.Bool
 		tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
@@ -436,6 +439,9 @@ func (p *icePeer) attemptFixed(a *iceAttempt) {
 	p.stats.ConnectMS = time.Since(started).Milliseconds()
 	p.stats.RelayState, p.stats.TURNExpiresAt = "", 0
 	p.mu.Unlock()
+	if mux.roomEnabled {
+		p.coordinator.room.attach(mux)
+	}
 	mux.syncMappings()
 	if old != nil {
 		old.close()

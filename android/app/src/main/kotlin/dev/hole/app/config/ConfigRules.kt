@@ -154,19 +154,13 @@ fun toStartRequest(
     require(!connection.relay.serve.enabled) { "中继服务仅 CLI 支持" }
     require(connection.relay.device.isEmpty() || (connection.relay.device.matches(Regex("[a-zA-Z0-9._-]{1,128}")) && connection.relay.device != connection.deviceName)) { "中继设备名无效或指向本机" }
     holeRelayOrderError(connection.relay.order)?.let { throw IllegalArgumentException(it) }
-    require(connection.connectionMode in setOf("auto", "ice", "legacy")) { "连接方式无效" }
-    if (connection.connectionMode != "legacy") {
-        require(connection.ice.portMapping in setOf("auto", "off")) { "端口映射只接受 auto 或 off" }
-        require(connection.ice.natStunUrls?.let { it.size <= 16 && it.all { url -> url.startsWith("stun:") } } != false) { "NAT 探测最多接受 16 条 STUN 地址" }
-        require(connection.candidateAddresses.isEmpty()) { "手动 IPv6 候选地址只用于“仅 IPv6”模式；使用 ICE 前请清空此项" }
-        require(!connection.serverUrl.startsWith("ws://") || connection.allowInsecureSignal) { "ICE 默认使用 wss://；本地 ws:// 测试需在连接方式中显式开启" }
-    }
+    require(connection.ice.portMapping in setOf("auto", "off")) { "端口映射只接受 auto 或 off" }
+    require(connection.ice.natStunUrls?.let { it.size <= 16 && it.all { url -> url.startsWith("stun:") } } != false) { "NAT 探测最多接受 16 条 STUN 地址" }
+    require(connection.candidateAddresses.isEmpty()) { "手动 IPv6 候选地址已移除，请使用 ICE 地址探测" }
+    require(!connection.serverUrl.startsWith("ws://") || connection.allowInsecureSignal) { "ICE 默认使用 wss://；本地 ws:// 测试需在连接方式中显式开启" }
     require(connection.turn.mode in setOf("worker", "manual", "off")) { "中继来源无效" }
     relayOrderError(normalizedTurnOrder(connection.turn.order))?.let { throw IllegalArgumentException(it) }
     if (connection.turn.mode == "manual") require(connection.turn.urls.isNotEmpty() && connection.turn.username.isNotBlank() && turnCredential.isNotEmpty()) { "手动中继需要服务器、用户名和凭据" }
-    for (address in stored.connection.candidateAddresses) {
-        if (!isPublicIpv6(address)) throw IllegalArgumentException("候选地址 \"$address\" 需要公网 IPv6 字面地址")
-    }
     val provide = stored.provide.filter { it.enabled }.map {
         require(isValidMappingId(it.id)) { "provide 项缺少有效的映射 ID" }
         require(parsePort(it.port.toString()) == it.port) { "provide \"${it.id}\" 的端口无效" }
@@ -190,7 +184,6 @@ fun toStartRequest(
             deviceName = stored.connection.deviceName.trim(),
             sessionTimeout = stored.connection.sessionTimeout.trim(),
             candidateInterfaces = stored.connection.candidateInterfaces,
-            candidateAddresses = stored.connection.candidateAddresses,
             provide = provide,
             consume = consume,
             transport = connection.coreTransport(), ice = connection.ice, turn = connection.coreTurn(turnCredential),

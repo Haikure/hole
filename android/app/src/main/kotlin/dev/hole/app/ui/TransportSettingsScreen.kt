@@ -29,12 +29,11 @@ import kotlinx.coroutines.launch
 @Composable
 fun TransportSettingsScreen(
     configState: ConfigUiState,
-    onSave: suspend (String, IceSettings, TurnSettings, String, Boolean, RelaySettings) -> String?,
+    onSave: suspend (IceSettings, TurnSettings, String, Boolean, RelaySettings) -> String?,
     onBack: () -> Unit,
     handleBack: Boolean = true,
 ) {
     val current = configState.config.connection
-    var mode by rememberSaveable { mutableStateOf(current.connectionMode) }
     var stun by rememberSaveable { mutableStateOf(current.ice.stunUrls.joinToString("\n")) }
     var relay by rememberSaveable { mutableStateOf(current.turn.mode) }
     var relayOrderText by rememberSaveable { mutableStateOf(effectiveRelayOrder(current.relay, current.turn).joinToString(", ")) }
@@ -63,11 +62,10 @@ fun TransportSettingsScreen(
     val relayOrder = splitListField(relayOrderText)
     val turn = TurnSettings(relay, ttl.trim(), splitListField(urls), username.trim(), current.turn.order)
     val holeRelay = current.relay.copy(device = relayDevice.trim(), order = if (relayOrderEdited) relayOrder else current.relay.order)
-    val dirty = mode != current.connectionMode || ice != current.ice || turn != current.turn || holeRelay != current.relay || credential != configState.turnCredential || insecure != current.allowInsecureSignal
+    val dirty = ice != current.ice || turn != current.turn || holeRelay != current.relay || credential != configState.turnCredential || insecure != current.allowInsecureSignal
     fun back() { if (busy) return; if (dirty) confirm = true else onBack() }
     val saveTransport: () -> Unit = {
                 error = when {
-                    mode != "legacy" && current.candidateAddresses.isNotEmpty() -> "请先在连接设置中清空手动 IPv6 候选地址，或选择“仅 IPv6”模式。"
                     listOf(probe, gather, check, retry, ttl).any { !isValidDuration(it) } -> "请检查时间格式，例如 3s、6h。"
                     ice.stunUrls.any { !it.startsWith("stun:") } -> "STUN 地址需以 stun: 开头。"
                     relay == "manual" && (turn.urls.isEmpty() || username.isBlank() || credential.isEmpty()) -> "请填齐 TURN 地址、用户名和凭据。"
@@ -75,17 +73,12 @@ fun TransportSettingsScreen(
                     holeRelayOrderError(relayOrder) != null -> holeRelayOrderError(relayOrder)
                     else -> null
                 }
-                if (error == null) scope.launch { busy = true; error = onSave(mode, ice, turn, credential, insecure, holeRelay); busy = false; if (error == null) onBack() }
+                if (error == null) scope.launch { busy = true; error = onSave(ice, turn, credential, insecure, holeRelay); busy = false; if (error == null) onBack() }
     }
     BackHandler(handleBack) { back() }
     HoleScaffold(title = "连接方式", navigationIcon = { HoleBackButton { back() } },
         floatingActions = { FloatingIconAction(androidx.compose.material.icons.Icons.Default.Check, "保存连接方式", saveTransport, enabled = configState.loaded && !busy) }) { insets ->
         HoleScrollColumn(Modifier.fillMaxWidth().padding(insets), enabled = !turnOrderDragging, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            HoleSettingsGroup("连接策略") {
-                HoleSingleChoice(listOf("auto", "ice", "legacy").map { it to connectionModeLabel(it) }, mode, { mode = it }, Modifier.fillMaxWidth())
-                HoleHelp("策略说明", connectionModeDescription(mode))
-                if (mode == "legacy") Text("此模式不使用下方 ICE / TURN 设置。", style = MaterialTheme.typography.bodySmall)
-            }
             HoleSettingsGroup("直连探测") {
                 HoleTextField(stun, { stun = it }, "STUN 服务器", modifier = Modifier.fillMaxWidth(),
                     supportingText = { Text("默认 Cloudflare：$DEFAULT_STUN_URL；每行一条，留空仅尝试本地地址。") })

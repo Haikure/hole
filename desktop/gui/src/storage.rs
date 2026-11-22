@@ -44,7 +44,12 @@ impl Storage {
             return Ok(StoredConfig::default());
         }
         let text = fs::read_to_string(&path).map_err(|e| format!("读取配置失败：{e}"))?;
-        serde_json::from_str(&text).map_err(|e| format!("配置文件格式无效，保留原文件：{e}"))
+        let document: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("配置文件格式无效，保留原文件：{e}"))?;
+        let has_connection_mode = document["connection"].get("connection_mode").is_some();
+        let config = serde_json::from_value(document).map(crate::config::migrate_removed_transport)
+            .map_err(|e| format!("配置文件格式无效，保留原文件：{e}"))?;
+        if has_connection_mode { self.save_config(&config)?; }
+        Ok(config)
     }
 
     pub fn save_config(&self, cfg: &StoredConfig) -> Result<(), String> {
@@ -128,6 +133,25 @@ fn atomic_write(path: &Path, data: &[u8], sensitive: bool) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_connection_strategies_are_removed_without_losing_settings() {
+        let dir = std::env::temp_dir().join(format!("hole-desktop-strategy-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let storage = Storage { dir: dir.clone() };
+        for mode in ["auto", "ice", "legacy"] {
+            fs::write(dir.join("config.json"), serde_json::json!({
+                "connection": {"room": "saved-room", "device_name": "saved-device", "connection_mode": mode},
+                "provide": [{"entry_id": "entry", "id": "ssh", "host": "127.0.0.1", "port": 22}]
+            }).to_string()).unwrap();
+            let loaded = storage.load_config().unwrap();
+            assert_eq!(loaded.connection.room, "saved-room");
+            assert_eq!(loaded.connection.device_name, "saved-device");
+            assert_eq!(loaded.provide[0].id, "ssh");
+            assert!(!fs::read_to_string(dir.join("config.json")).unwrap().contains("connection_mode"));
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn roundtrip_in_temp_dir() {

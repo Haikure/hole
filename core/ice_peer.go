@@ -48,6 +48,8 @@ type liveICETransport struct {
 
 func (t *liveICETransport) close() {
 	t.once.Do(func() {
+		// Send the QUIC close while the bound UDP path is still available.
+		t.mux.stop()
 		t.cancel()
 		t.mux.close()
 		if t.fixedCleanup != nil {
@@ -107,17 +109,19 @@ func (p *icePeer) mapping(id string) (peerMappingRecord, bool) {
 func (p *icePeer) allowNew() bool {
 	p.mu.Lock()
 	until := p.ready.LeaseUntil
+	local := p.ready.localAuthorization()
 	closed := p.closed || !p.online
 	p.mu.Unlock()
-	return !closed && p.coordinator.signalOnline() && until > time.Now().UnixMilli()
+	return !closed && (local || (p.coordinator.signalOnline() && until > time.Now().UnixMilli()))
 }
 func (p *icePeer) authorized(r peerMappingRecord) bool {
 	p.mu.Lock()
 	until := p.ready.LeaseUntil
+	local := p.ready.localAuthorization()
 	closed := p.closed
 	p.mu.Unlock()
 	current, ok := p.mapping(r.ID)
-	return !closed && ok && current == r && until > time.Now().UnixMilli()
+	return !closed && ok && current == r && (local || until > time.Now().UnixMilli())
 }
 func (p *icePeer) update(m iceSignalMessage) {
 	customOrderConfigured := len(p.coordinator.request().Config.TURN.Order) > 0
@@ -140,6 +144,8 @@ func (p *icePeer) update(m iceSignalMessage) {
 		p.process.reset()
 	}
 	p.ready = m
+	// Keep the room identity ordered with accepted transport generations.
+	p.coordinator.room.bindPeer(m.PeerDevice, m.PeerRuntimeID, m.PeerFingerprint, m.PeerCoreVersion)
 	p.stats.Profile = m.Profile
 	p.stats.FixedEndpoint, p.stats.ListenerID, p.stats.DialerID = m.FixedEndpoint, m.ListenerID, m.DialerID
 	p.stats.Voice = m.Voice
@@ -163,7 +169,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 	p.stats.RelayOrderFallback = m.Profile == ProfileICE && customOrderConfigured && m.RelayRound == nil
 	p.stats.MappingCount = len(m.Mappings)
 	active := p.active
-	retireHole := active != nil && active.ready.Phase == "hole" && (m.Hole == nil || m.Hole.Error != "" || active.ready.Hole == nil || active.ready.Hole.Route != m.Hole.Route)
+	retireHole := active != nil && active.ready.Phase == "hole" && !active.ready.localAuthorization() && (m.Hole == nil || m.Hole.Error != "" || active.ready.Hole == nil || active.ready.Hole.Route != m.Hole.Route)
 	retireActive := retireHole || identityChanged || (active != nil && (active.ready.Profile != m.Profile || (m.Profile == ProfileFixed && (active.ready.FixedEndpoint != m.FixedEndpoint || active.ready.ListenerID != m.ListenerID)))) || (m.RelayRequired && active != nil && !relayReadyConforms(active.ready, m.RelayOnly))
 	retireActive = retireActive || (active != nil && !active.mux.liveConfig && active.ready.Voice != m.Voice)
 	if retireActive {
@@ -185,7 +191,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 		default:
 		}
 	}
-	need := !same && !p.closed
+	need := !same && !p.closed && !m.RoomControl
 	if need {
 		if p.pending != nil {
 			p.pending.cancel()
@@ -440,9 +446,7 @@ func (p *icePeer) restartWithRoundFrom(m iceSignalMessage, round *int, phase, re
 			p.stateChanged()
 		}
 	}()
-	if !p.coordinator.signalOnline() {
-		return
-	}
+	signalOnline := p.coordinator.signalOnline()
 	p.mu.Lock()
 	if p.closed || !p.online || m.TransportGeneration == 0 || p.ready.TransportID != m.TransportID || p.ready.TransportGeneration != m.TransportGeneration || p.requestedGeneration == m.TransportGeneration ||
 		(failed == nil && p.pending != nil) || (failed != nil && p.pending != failed) {
@@ -466,6 +470,17 @@ func (p *icePeer) restartWithRoundFrom(m iceSignalMessage, round *int, phase, re
 				return
 			}
 		}
+	}
+	if !signalOnline {
+		p.mu.Unlock()
+		room := p.coordinator.room
+		if room != nil && room.enabled() && !m.RoomControl {
+			request := signalMessage("transport_restart")
+			request.TransportID, request.ExpectedGeneration = m.TransportID, m.TransportGeneration
+			request.Phase, request.RelayRound, request.Reason = phase, round, reason
+			_ = p.coordinator.send(request)
+		}
+		return
 	}
 	if m.Profile == ProfileFixed {
 		phase = "fixed"
@@ -496,20 +511,16 @@ func (p *icePeer) restartWithRoundFrom(m iceSignalMessage, round *int, phase, re
 }
 
 func (p *icePeer) renominate() {
-	if !p.coordinator.signalOnline() {
+	if !p.coordinator.signalOnline() && (p.coordinator.room == nil || !p.coordinator.room.enabled()) {
 		return
 	}
 
 	p.mu.Lock()
-	if p.closed || !p.online || p.terminal || (p.active == nil && p.pending == nil) || p.ready.TransportGeneration == 0 || p.requestedGeneration == p.ready.TransportGeneration {
+	if p.closed || !p.online || p.terminal || p.active == nil || p.pending != nil || p.ready.TransportGeneration == 0 || p.requestedGeneration == p.ready.TransportGeneration {
 		p.mu.Unlock()
 		return
 	}
 	m := p.ready
-	if p.pending != nil {
-		p.pending.cancel()
-		p.pending = nil
-	}
 	p.requestedGeneration = m.TransportGeneration
 	p.stats.RetryCount++
 	request := signalMessage("transport_restart")
@@ -1134,7 +1145,7 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		}
 	}()
 	tlsConfig := p.coordinator.identity.Clone()
-	tlsConfig.NextProtos = []string{iceALPN}
+	tlsConfig.NextProtos = []string{holeALPN}
 	tlsConfig.InsecureSkipVerify = true
 	tlsConfig.ClientAuth = tls.RequireAnyClientCert
 	var identityMismatch atomic.Bool
@@ -1237,6 +1248,9 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	p.stats.ConnectMS = time.Since(started).Milliseconds()
 	p.mu.Unlock()
 	p.coordinator.natConnectionEstablished()
+	if mux.roomEnabled {
+		p.coordinator.room.attach(mux)
+	}
 	a.processStep("connected", "业务线路已建立", 0, 0)
 	a.process.finish("connected", "业务通道已就绪")
 	mux.syncMappings()
@@ -1319,7 +1333,7 @@ func (p *icePeer) maintain() {
 			ready := p.ready
 			p.mu.Unlock()
 			if active != nil {
-				if lease <= time.Now().UnixMilli() {
+				if !ready.localAuthorization() && lease <= time.Now().UnixMilli() {
 					active.close()
 					continue
 				}
@@ -1328,7 +1342,7 @@ func (p *icePeer) maintain() {
 				if active.expires > 0 && expires > active.expires && pending == nil {
 					p.restartFrom(ready, ready.Phase, "turn_refresh")
 				}
-			} else if pending == nil && !terminal {
+			} else if pending == nil && !terminal && !ready.RoomControl {
 				p.restartFrom(ready, "direct", "retry")
 			}
 		}

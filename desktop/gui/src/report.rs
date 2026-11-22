@@ -100,7 +100,7 @@ pub fn diagnostic_report(ctx: &ReportContext<'_>) -> String {
     line(&mut out, format!("用户运行意图 {} · 核心 {} · 信令 {}", s.run_requested, s.engine_state, s.signal_state));
     line(&mut out, format!("启动 {} · 运行代次 {} · 传输代次 {}", s.started_at, s.generation, s.transport_generation));
     line(&mut out, format!("服务器 {} · 房间 {} · 设备 {}", server, c.room, c.device_name));
-    line(&mut out, format!("连接方式 {} · 中继 {} · STUN {}", c.connection_mode, c.turn.mode, c.ice.stun_urls.join(", ")));
+    line(&mut out, format!("中继 {} · STUN {}", c.turn.mode, c.ice.stun_urls.join(", ")));
     line(&mut out, format!("重连 {} · 切网 {} · 丢弃事件 {} · 桥接丢弃 {}", s.reconnects, s.network_changes, s.events_dropped, s.bridge_events_dropped));
     line(&mut out, format!("网络 {} / {} / handle={}", s.network.transport, s.network.interface, s.network.handle));
     line(&mut out, format!("可用 {} · 验证 {} · 计费 {}", s.network.available, s.network.validated, s.network.metered));

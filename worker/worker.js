@@ -1,4 +1,7 @@
-import { RoomICE, TurnBroker, iceJoinFields, negotiateProfile, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_ONLY_POLICY, VOICE_MEMBER_LIMIT, HOLE_VERSION } from "./worker_ice.mjs";
+import { RoomICE, TurnBroker, iceJoinFields, negotiateProfile, recordPhase, ICE_PROFILE, FIXED_PROFILE, RELAY_ONLY_POLICY, VOICE_MEMBER_LIMIT, HOLE_VERSION } from "./worker_ice.mjs";
+import { RoomControl } from "./worker_room.mjs";
+import { WORKER_VERSION, modernMember } from "./software_version.mjs";
+import { panelPath, panelPage, panelSession, validPanelSession, sameOrigin } from "./worker_panel.mjs";
 export { TurnBroker };
 const ROOM_PATH = "/ws";
 const MAX_MESSAGE_SIZE = 256 * 1024;
@@ -6,6 +9,32 @@ const MAX_MESSAGE_SIZE = 256 * 1024;
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    const panel = panelPath(env.PANEL_PATH);
+    if (panel && url.pathname === panel && request.method === 'GET') return panelPage();
+    if (panel && url.pathname === panel + '/auth') {
+      if (request.method !== 'POST' || !sameOrigin(request)) return new Response('Forbidden', { status: 403 });
+      let password;
+      try {
+        const raw = await request.text();
+        if (raw.length > 8192) return new Response('request too large', { status: 413 });
+        password = JSON.parse(raw).password;
+      } catch { return new Response('invalid request', { status: 400 }); }
+      if (!await passwordMatches(password, env.PASSWORD)) return new Response('unauthorized', { status: 401 });
+      const broker = env.ROOMS.get(env.ROOMS.idFromName('$hole-panel-sessions'));
+      return broker.fetch(new Request('https://panel-internal/__panel_session', { method: 'POST', body: JSON.stringify({ issue: true, password: env.PASSWORD }) }));
+    }
+    if (panel && url.pathname === panel + '/live') {
+      if (!sameOrigin(request) || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('Forbidden', { status: 403 });
+      const protocol = request.headers.get('Sec-WebSocket-Protocol') ?? '';
+      if (!/^hole\.[0-9]{10}\.[a-f0-9]{32}\.[a-f0-9]{64}$/.test(protocol)) return new Response('unauthorized', { status: 401 });
+      const broker = env.ROOMS.get(env.ROOMS.idFromName('$hole-panel-sessions'));
+      const check = await broker.fetch(new Request('https://panel-internal/__panel_session', { method: 'POST', body: JSON.stringify({ session: protocol, password: env.PASSWORD }) }));
+      if (!check.ok) return new Response('unauthorized', { status: 401 });
+      const room = url.searchParams.get('room');
+      if (!room || room.length > 128) return new Response('room is required', { status: 400 });
+      return env.ROOMS.get(env.ROOMS.idFromName(room)).fetch(request);
+    }
 
     if (url.pathname !== ROOM_PATH) {
       return new Response("Not found", { status: 404 });
@@ -42,7 +71,12 @@ async function authorized(request, env) {
   const header = request.headers.get("Authorization") ?? "";
   const [scheme, ...rest] = header.split(" ");
   if (scheme?.toLowerCase() !== "bearer" || rest.length === 0) return false;
-  const presented = new TextEncoder().encode(rest.join(" "));
+  return passwordMatches(rest.join(" "), expected);
+}
+
+async function passwordMatches(password, expected) {
+  if (typeof password !== 'string' || typeof expected !== 'string' || !expected) return false;
+  const presented = new TextEncoder().encode(password);
   const wanted = new TextEncoder().encode(expected);
   if (presented.length !== wanted.length) return false;
   try {
@@ -53,9 +87,9 @@ async function authorized(request, env) {
   }
 }
 
-// 房间状态全部落在两个地方：成员数据存 storage（member:<设备名>），
-// 设备名存 WebSocket attachment，房间 token 与已通知映射存 storage。
-// Hibernation 唤醒时构造函数会重新执行，内存里的 members/roomToken/activeMappings
+// 成员声明、设备连接图和传输记录保存在 storage。
+// WebSocket attachment 只保存设备名，断开 WS 不代表设备连接已失效。
+// Hibernation 唤醒时构造函数会重新执行，内存里的 members/roomToken
 // 都会丢失，每个事件入口先 loadState() 从持久层重建。
 // attachment 只存设备名而不是整个成员数据：官方建议 attachment 只放小值和 key，
 // 大对象走 Storage API。
@@ -64,44 +98,78 @@ export class Room {
     this.state = state;
     this.ice = new RoomICE(this, state, env);
     this.members = new Map();
-    this.activeMappings = new Set();
+    this.registered = new Map();
+    this.control = new RoomControl(this, state);
+    this.joining = new Map();
     this.roomToken = null;
     this.loaded = false;
+    this.panelLast = '';
   }
 
   async fetch(request) {
+    if (new URL(request.url).pathname === '/__panel_session' && request.method === 'POST') {
+      const data = await request.json();
+      if (!this.panelKeyPromise) this.panelKeyPromise = (async () => {
+        let key = await this.state.storage.get('panel_session_key');
+        if (!key) {
+          key = [...crypto.getRandomValues(new Uint8Array(32))].map(n => n.toString(16).padStart(2, '0')).join('');
+          await this.state.storage.put('panel_session_key', key);
+        }
+        return key;
+      })();
+      const key = await this.panelKeyPromise;
+      if (data.issue === true) return Response.json({ session: await panelSession(key, data.password) }, { headers: { 'Cache-Control': 'no-store' } });
+      return new Response(null, { status: await validPanelSession(data.session, key, data.password) ? 204 : 401 });
+    }
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket upgrade required", { status: 426 });
     }
 
     await this.loadState();
     await this.ice.setRoomName(new URL(request.url).searchParams.get("room"));
+    const isPanel = new URL(request.url).pathname !== ROOM_PATH;
+    if (isPanel && this.state.getWebSockets().filter(ws => panelAttachment(ws)).length >= 32) return new Response('too many viewers', { status: 429 });
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     // acceptWebSocket 而非 ws.accept()：socket 关联到 DO 并允许休眠，
     // 空闲时实例被逐出内存但连接不断。
     this.state.acceptWebSocket(server);
-
-    return new Response(null, { status: 101, webSocket: client });
+    if (isPanel) server.serializeAttachment({ panel: 'pending' });
+    return new Response(null, { status: 101, webSocket: client, ...(isPanel ? { headers: { 'Sec-WebSocket-Protocol': request.headers.get('Sec-WebSocket-Protocol') } } : {}) });
   }
 
   // loadState 从 storage 重建休眠期间丢失的内存状态。
-  // DO 的事件由 input gate 串行化，加载期间不会有并发事件插进来改写状态。
+  // Share one reconstruction across events, including asynchronous key imports.
   async loadState() {
     if (this.loaded) return;
+    if (!this.loading) this.loading = this.restoreState().finally(() => { this.loading = null; });
+    return this.loading;
+  }
+
+  async restoreState() {
     this.roomToken = (await this.state.storage.get("token")) ?? null;
-    const active = await this.state.storage.get("activeMappings");
-    this.activeMappings = new Set(active ?? []);
     this.members.clear();
+    this.registered.clear();
+    for (const [, member] of await this.state.storage.list({ prefix: 'member:' })) {
+      if (member?.device_name && member.signal_version === 2 && member.transport_profiles?.every(profile => [ICE_PROFILE, FIXED_PROFILE].includes(profile))) this.registered.set(member.device_name, { member, ws: null });
+    }
     for (const ws of this.state.getWebSockets()) {
       const name = memberName(ws);
       if (name === null || this.members.has(name)) continue;
       const member = await this.state.storage.get(memberKey(name));
-      if (member) this.members.set(name, { ws, member });
+      if (member && this.registered.has(name)) {
+        const entry = { ws, member };
+        this.members.set(name, entry);
+        this.registered.set(name, entry);
+      } else {
+        detach(ws);
+        ws.close(4002, 'unsupported client protocol');
+      }
     }
     await this.ice.init();
-    this.loaded = true;
+    await this.control.init();
+    this.control.rebuild();
     // Reconcile persisted topology against the sockets that actually survived
     // hibernation, including closes whose attachment is already gone.
     const resumeNames = new Set();
@@ -110,11 +178,14 @@ export class Room {
       if (!this.members.has(record.b)) resumeNames.add(record.b);
     }
     await this.reconcile(resumeNames);
+    this.loaded = true;
   }
 
   async alarm() {
     await this.loadState();
     await this.ice.expireOffline();
+    await this.pruneMembers();
+    this.broadcastPanel();
   }
 
   async webSocketMessage(ws, raw) {
@@ -134,7 +205,18 @@ export class Room {
     }
 
     if (!message || typeof message !== "object" || typeof message.type !== "string") { sendError(ws, "invalid_json", "message must be an object with a type"); return; }
-    if (message.signal_version === 2 && new TextEncoder().encode(raw).length > 64 * 1024) { sendError(ws, "message_too_large", "ICE message exceeds 64 KiB"); return; }
+    const panel = panelAttachment(ws);
+    if (panel) {
+      if (panel === 'pending' && message.type === 'watch' && typeof message.token === 'string' && this.roomToken !== null && message.token === this.roomToken) {
+        ws.serializeAttachment({ panel: 'watching' });
+        send(ws, this.panelSnapshot());
+      } else {
+        sendError(ws, 'panel_auth_failed', '房间不存在或房间密码错误');
+        ws.close(1008, 'panel authorization failed');
+      }
+      return;
+    }
+    if (message.signal_version === 2 && message.type !== 'room_graph' && new TextEncoder().encode(raw).length > 64 * 1024) { sendError(ws, "message_too_large", "ICE message exceeds 64 KiB"); return; }
     try {
       if (message.type === "join") {
         await this.handleJoin(ws, message);
@@ -153,25 +235,30 @@ export class Room {
         return;
       }
 
-      if (await this.ice.handle(ws, entry.member, message)) return;
-
-      if (message.type === "candidate") {
-        const candidates = validateCandidates(message.candidates);
-        if (!candidates) {
-          sendError(ws, "invalid_candidates", "invalid candidates");
-          return;
+      if (message.type === 'room_graph') {
+        if (!modernMember(entry.member) || !this.ice.takeRate(ws)) { sendError(ws, 'room_graph_rejected', '房间图上报未通过版本或频率检查'); return; }
+        if (await this.control.update(message.room_frames)) {
+          this.control.rebuild();
+          await this.broadcastRoomState();
+          await this.reconcile();
         }
-        entry.member = { ...entry.member, candidates };
-        await this.state.storage.put(memberKey(name), entry.member);
-        await this.reconcile();
-        // reconcile 只对新建映射发 mapping_ready，已激活的映射不会重新通知；
-        // 候选地址更新必须在这里主动推给活跃映射的对端，否则对端会一直
-        // 打向已轮换失效的旧地址。
-        await this.pushCandidateUpdates(name, candidates);
         return;
       }
 
+      if (message.type === 'room_pause') {
+        // Ignore legacy pause requests and keep their authenticated socket alive.
+        return;
+      }
+
+      if (await this.ice.handle(ws, entry.member, message)) return;
+
       if (message.type === "leave") {
+        await this.state.storage.delete(memberKey(name));
+        this.registered.delete(name);
+        this.control.nodes.delete(name);
+        this.control.rebuild();
+        await this.broadcastRoomState();
+        await this.reconcile();
         ws.close(1000, "left room");
         return;
       }
@@ -179,15 +266,27 @@ export class Room {
       sendError(ws, "unknown_message", "unknown message type");
     } catch (error) {
       sendError(ws, "server_error", error instanceof Error ? error.message : "server error");
+    } finally {
+      await this.control.flush();
+      this.broadcastPanel();
     }
   }
 
   async handleJoin(ws, message) {
-    if (memberName(ws) !== null) {
+    if (memberName(ws) !== null || this.joining.has(ws)) {
       sendError(ws, "already_joined", "this socket already joined");
       return;
     }
 
+    this.joining.set(ws, message.device_name);
+    try {
+      await this.joinMember(ws, message);
+    } finally {
+      this.joining.delete(ws);
+    }
+  }
+
+  async joinMember(ws, message) {
     const member = validateJoin(message);
     if (!member) {
       sendError(ws, "invalid_join", "invalid join message");
@@ -200,14 +299,31 @@ export class Room {
       return;
     }
 
+    if (modernMember(member)) {
+      try { await this.control.certificate(member); await this.control.ensureKey(); }
+      catch { sendError(ws, 'invalid_certificate', '设备证书与声明的指纹不一致'); return; }
+    }
+
     if (this.ice.staleJoin(member)) { sendError(ws, "stale_client_epoch", "旧网络代次已失效"); ws.close(4001, "stale client epoch"); return; }
-    if (!this.members.has(member.device_name) && this.members.size >= 16) { sendError(ws, "member_limit", "房间同时在线设备达到上限"); return; }
+    if ((!this.members.has(member.device_name) && this.members.size >= 16) || (!this.registered.has(member.device_name) && this.registered.size >= 128)) { sendError(ws, "member_limit", "房间成员记录达到上限"); return; }
+
+    // Certificate and key initialization can let another join claim the room.
+    // Check and claim its token before yielding or replacing any membership.
+    if (this.roomToken !== null && member.token !== this.roomToken) {
+      sendError(ws, "invalid_token", "token does not match this room");
+      ws.close(1008, "invalid token");
+      return;
+    }
+    if (this.roomToken === null) {
+      this.roomToken = member.token;
+      await this.state.storage.put("token", member.token);
+    }
 
     // Allow a reconnect to replace a stale WebSocket session.
-    const existing = this.members.get(member.device_name);
+    const existing = this.registered.get(member.device_name);
     if (existing) {
       try {
-        existing.ws.close(4001, "replaced by reconnect");
+        existing.ws?.close(4001, "replaced by reconnect");
       } catch {
         // The old socket may already be closed.
       }
@@ -222,37 +338,34 @@ export class Room {
       const sameMappings = JSON.stringify(existing.member.provide.map(item => item.id).sort()) === JSON.stringify(member.provide.map(item => item.id).sort()) &&
         JSON.stringify(existing.member.consume.map(item => item.id).sort()) === JSON.stringify(member.consume.map(item => item.id).sort());
       const sameDeclaration = sameResumeDeclaration(existing.member, member);
-      const resumable = sameMappings && sameDeclaration && this.ice.hasOnlineTransport(member.device_name, member);
-      if (!resumable && sameMappings) await this.ice.markOfflineForReconnect(member.device_name);
-      // 重连往往快于运行时对旧连接断开的感知（休眠恢复后尤其如此），
-      // 对端可能还挂着这条"僵尸"成员记录，配对 key 一直被视为 active。
-      // 主动清掉与该设备相关的已通知映射，让 reconcile 重新下发 ready，
-      // 否则重连的一端会一直等不到 mapping_ready，隧道无法重建。
-      if (!resumable) await this.dropActiveKeysFor(member.device_name);
-    }
-
-    if (this.roomToken === null) {
-      this.roomToken = member.token;
-      await this.state.storage.put("token", member.token);
+      const resumable = sameMappings && sameDeclaration && (modernMember(member) || this.ice.hasOnlineTransport(member.device_name, member));
+      if (!modernMember(member) && !resumable && sameMappings) await this.ice.markOfflineForReconnect(member.device_name);
+      if (existing.member.runtime_id !== member.runtime_id || existing.member.cert_fingerprint !== member.cert_fingerprint) this.control.nodes.delete(member.device_name);
     }
 
     await this.state.storage.put(memberKey(member.device_name), member);
     ws.serializeAttachment({ device_name: member.device_name });
     this.members.set(member.device_name, { ws, member });
+    this.registered.set(member.device_name, { ws, member });
+    this.control.rebuild();
 
     send(ws, {
       type: "joined",
       signal_version: 2,
       auth_mode: "shared-secret",
-      lease_renewal: true,
+      lease_renewal: !modernMember(member),
       live_config: true,
       signal_resume: true,
+      worker_version: WORKER_VERSION,
+      state_revision: String(this.control.revision),
+      ...(modernMember(member) ? { room_public_key: this.control.publicKey } : {}),
       hole_version: HOLE_VERSION,
       relay_only_policy: RELAY_ONLY_POLICY,
       room_members: [...this.members.keys()],
     });
     await this.broadcastRoomState();
     await this.reconcile();
+    this.ice.resumePending();
   }
 
   async handleMemberUpdate(ws, entry, message) {
@@ -280,24 +393,10 @@ export class Room {
     member.update_request_id = message.request_id;
     await this.state.storage.put(memberKey(member.device_name), member);
     entry.member = member;
+    this.registered.set(member.device_name, entry);
+    this.control.rebuild();
     // ACK precedes all topology notifications for this accepted declaration.
     send(ws, {type:"member_updated", request_id:message.request_id, member_revision:message.member_revision});
-    // Legacy mappings have no record snapshot. Retire only changed keys and
-    // explicitly notify both ends, including when the mapping was removed.
-    let legacyChanged = false;
-    for (const key of [...this.activeMappings]) {
-      const [left, right, id] = key.split("\0");
-      if (left !== member.device_name && right !== member.device_name) continue;
-      const definition = value => [value.provide.find(p=>p.id===id), value.consume.find(p=>p.id===id), value.candidates, value.transport_profiles, value.fixed_endpoint];
-      if (JSON.stringify(definition(previous)) === JSON.stringify(definition(member))) continue;
-      legacyChanged = true;
-      this.activeMappings.delete(key);
-      for (const [own, peer] of [[left,right],[right,left]]) {
-        const receiver = this.members.get(own);
-        if (receiver) send(receiver.ws, {type:"mapping_closed", mapping_id:id, peer_device:peer, reason:"configuration_changed"});
-      }
-    }
-    if (legacyChanged) await this.state.storage.put("activeMappings", [...this.activeMappings]);
     await this.broadcastRoomState();
     await this.reconcile();
   }
@@ -305,47 +404,84 @@ export class Room {
   async webSocketClose(ws, code, reason, wasClean) {
     await this.loadState();
     await this.removeMember(ws, !wasClean && code !== 1000);
+    await this.control.flush();
+    this.broadcastPanel();
   }
 
   async webSocketError(ws, error) {
     await this.loadState();
     await this.removeMember(ws, true);
+    await this.control.flush();
+    this.broadcastPanel();
   }
 
-  // removeMember 清掉断开连接对应的成员。attachment 在连接关闭后可能已经
-  // 丢失（官方文档：任一侧关闭连接 attachment 即失效），所以先读 attachment，
-  // 读不到再按 ws 对象在内存 members 里反查；两者都拿不到（休眠中连接静默
-  // 死亡）时只能留下一个无害的 storage 残键，重建后该键永远不会被引用，
-  // 下次同名设备加入时会覆盖，房间清空时会被 deleteAll 清走。
+  panelSnapshot() {
+    const graph = this.control.snapshot();
+    const members = graph.members.map(m => ({ device_name: m.device_name, voice: m.voice, core_version: m.core_version,
+      signal_online: m.signal_online, signal_recovering: m.signal_recovering, group_id: m.group_id }));
+    const transports = [...this.ice.records.values()].filter(r => r.online).map(r => {
+      const established = [r.a, r.b].map(name => r.established?.[name]?.generation === r.generation ? r.established[name].path_type : '');
+      const punch = [r.a, r.b].map(name => {
+        const events = r.ice?.[name]?.punch ?? [];
+        const last = events.at(-1);
+        return last ? { kind: last.kind, round: last.round, result: last.result } : null;
+      });
+      const phases = [0, 1].map(index => r.peer_relay ? 'peer_relay' : r.profile === FIXED_PROFILE ? 'fixed' : r.round_mode ? recordPhase(r, r.round ?? 0, index) : r.phase);
+      return { a: r.a, b: r.b, generation: r.generation, profile: r.profile, phases, direct_stage: r.direct_stage, blocked: r.blocked ?? '',
+        round: r.round, relay_required: r.relay_required, established, punch, voice: r.voice === true,
+        mappings: (r.mappings ?? []).map(m => m.mapping_id), control: r.room_control === true };
+    }).sort((a, b) => a.a.localeCompare(b.a) || a.b.localeCompare(b.b));
+    return { type: 'panel_snapshot', worker_version: WORKER_VERSION, members, groups: graph.groups, links: graph.links.map(l => ({from:l.from,to:l.to})), transports };
+  }
+
+  broadcastPanel() {
+    const watchers = this.state.getWebSockets().filter(ws => panelAttachment(ws) === 'watching');
+    if (!watchers.length) { this.panelLast = ''; return; }
+    const snapshot = this.panelSnapshot(), serialized = JSON.stringify(snapshot);
+    if (serialized === this.panelLast) return;
+    this.panelLast = serialized;
+    for (const ws of watchers) send(ws, snapshot);
+  }
+
+  // attachment may already be gone when the close callback arrives. Keep
+  // delegated members and identities needed by retained transports; prune
+  // unreachable, unreferenced declarations after reconciling the graph.
   async removeMember(ws, resumable = false) {
-    const name = memberName(ws) ?? findBySocket(this.members, ws);
+    const name = memberName(ws) ?? findBySocket(this.registered, ws);
     detach(ws);
     if (name === null) return;
-    const entry = this.members.get(name);
+    const entry = this.registered.get(name);
     if (!entry || entry.ws !== ws) return;
 
-    this.members.delete(name);
-    await this.state.storage.delete(memberKey(name));
+    if (modernMember(entry.member)) entry.ws = null;
+    else {
+      this.registered.delete(name);
+      await this.state.storage.delete(memberKey(name));
+    }
+    this.control.rebuild();
     await this.broadcastRoomState();
     // Online state may disappear; room authentication and transport generations remain.
     const canResume = resumable && this.ice.hasOnlineTransport(name, entry.member);
     await this.reconcile(canResume ? new Set([name]) : new Set());
   }
 
-  // 删除 activeMappings 里包含指定设备的 key，变化时持久化。
-  async dropActiveKeysFor(name) {
-    const kept = new Set();
-    for (const key of this.activeMappings) {
-      const [first, second] = key.split("\0");
-      if (first !== name && second !== name) kept.add(key);
+  async pruneMembers() {
+    const retained = new Set([...this.members.keys(), ...this.joining.values()]);
+    for (const record of this.ice.records.values()) {
+      // Offline records still need their declarations for same-runtime resume,
+      // including a selected third-party relay that may reconnect separately.
+      for (const name of [record.a, record.b, record.hole?.device, record.peer_relay?.device]) retained.add(name);
     }
-    if (kept.size === this.activeMappings.size) return;
-    this.activeMappings = kept;
-    if (kept.size === 0) {
-      await this.state.storage.delete("activeMappings");
-    } else {
-      await this.state.storage.put("activeMappings", [...kept]);
+    const keys = [];
+    let graphChanged = false;
+    for (const [name, entry] of this.registered) {
+      if (entry.ws || retained.has(name)) continue;
+      this.registered.delete(name);
+      graphChanged = this.control.nodes.delete(name) || graphChanged;
+      keys.push(memberKey(name));
     }
+    if (keys.length) await this.state.storage.delete(keys);
+    if (graphChanged) await this.state.storage.put('room_nodes', [...this.control.nodes.values()].map(value => value.frame));
   }
 
   // room_members remains the legacy string list in joined messages. Voice
@@ -354,29 +490,11 @@ export class Room {
     const members = [...this.members.values()]
       .map(({ member }) => ({ device_name: member.device_name, voice: member.voice === true }))
       .sort((a, b) => a.device_name.localeCompare(b.device_name));
-    for (const { ws } of this.members.values()) send(ws, { type: "room_state", version: 1, members });
-  }
-
-  // pushCandidateUpdates 把某成员的最新候选地址推给所有涉及它的活跃映射
-  // 的另一端，让对端把打洞目标热更新到当前有效地址。
-  async pushCandidateUpdates(name, candidates) {
-    for (const key of this.activeMappings) {
-      const [first, second, mappingId] = key.split("\0");
-      const peerName = first === name ? second : second === name ? first : null;
-      if (peerName === null) continue;
-      const peer = this.members.get(peerName);
-      if (!peer) continue;
-      send(peer.ws, {
-        type: "peer_candidates",
-        mapping_id: mappingId,
-        peer_device: name,
-        candidates,
-      });
-    }
+    for (const { ws, member } of this.members.values()) if (!modernMember(member)) send(ws, { type: "room_state", version: 1, members });
+    await this.control.publishSnapshot();
   }
 
   async reconcile(resumeNames = new Set()) {
-    const nextActive = new Set();
     const icePairs = new Set();
     const entries = [...this.members.values()];
     const voiceEntries = entries.filter(entry => entry.member.voice === true)
@@ -411,82 +529,25 @@ export class Room {
 
     for (let i = 0; i < entries.length; i += 1) {
       for (let j = i + 1; j < entries.length; j += 1) {
-        const left = entries[i];
-        const right = entries[j];
+        const left = entries[i], right = entries[j];
         const pairMappings = [...matchingPairs(left, right, providersById), ...matchingPairs(right, left, providersById)];
         const voicePair = left.member.voice === true && right.member.voice === true &&
           allowedVoice.has(left.member.device_name) && allowedVoice.has(right.member.device_name);
-
-        if (pairMappings.length || voicePair) {
-          if ((left.member.hole_device || right.member.hole_device) && !left.member.fixed_endpoint && !right.member.fixed_endpoint &&
-              (left.member.hole_version!==HOLE_VERSION || right.member.hole_version!==HOLE_VERSION)) {
-            for (const entry of [left,right]) send(entry.ws,{type:'error',code:'peer_upgrade_required',message:'Hole 中继需要双方更新客户端'});
-            continue;
-          }
-          const profile = negotiateProfile(left.member, right.member);
-          if (profile === ICE_PROFILE || profile === FIXED_PROFILE) { await this.ice.activate(left, right, pairMappings, icePairs, voicePair); continue; }
-          if ((left.member.fixed_endpoint || right.member.fixed_endpoint) && (left.member.relay_only || right.member.relay_only)) {
-            for (const entry of [left, right]) send(entry.ws, {type:"error",code:"fixed_relay_conflict",message:"固定入口直连与对端仅中继要求冲突"});
-            continue;
-          }
-          if (voicePair) {
-            for (const entry of [left, right]) send(entry.ws, { type: "error", code: "voice_protocol_mismatch", message: "语音传输需要双方支持 ICE / QUIC 语音协议" });
-            // A voice-only pair has no legacy mapping fallback.
-            if (!pairMappings.length) continue;
-          }
-          if (!profile) {
-            for (const match of pairMappings) for (const entry of [left, right]) send(entry.ws,{type:"error",code:"protocol_mismatch",mapping_id:match.id,message:"双方没有共同连接方式，请更新对端或显式开启旧版兼容"});
-            continue;
-          }
-        }
-        for (const match of pairMappings) {
-          // 名字排序后再拼 key：members 是插入序 Map，成员重连会调换 left/right，
-          // 未排序的 key 会让同一个映射在重连后既被判为"新建"又被判为"消失"，
-          // 于是 mapping_ready 之后紧跟一条错误的 mapping_closed。
-          const [first, second] = [left.member.device_name, right.member.device_name].sort();
-          const key = `${first}\0${second}\0${match.id}`;
-          nextActive.add(key);
-
-          if (!this.activeMappings.has(key)) {
-            notifyMappingReady(left, right, match);
-          }
-        }
-      }
-    }
-
-    for (const key of this.activeMappings) {
-      if (!nextActive.has(key)) {
-        const [leftName, rightName, mappingId] = key.split("\0");
-        const left = this.members.get(leftName);
-        const right = this.members.get(rightName);
-        const preserveForResume = (resumeNames.has(leftName) || resumeNames.has(rightName)) && (!left || !right);
-        if (preserveForResume) {
-          nextActive.add(key);
+        if (!pairMappings.length && !voicePair) continue;
+        if ((left.member.fixed_endpoint || right.member.fixed_endpoint) && (left.member.relay_only || right.member.relay_only)) {
+          for (const entry of [left, right]) send(entry.ws, {type:"error",code:"fixed_relay_conflict",message:"固定入口直连与对端仅中继要求冲突"});
           continue;
         }
-        for (const entry of [left, right]) {
-          if (entry) {
-            send(entry.ws, {
-              type: "mapping_closed",
-              mapping_id: mappingId,
-              peer_device: entry === left ? rightName : leftName,
-              reason: "peer_or_configuration_changed",
-            });
-          }
+        const profile = negotiateProfile(left.member, right.member);
+        if (profile !== ICE_PROFILE && profile !== FIXED_PROFILE) {
+          for (const entry of [left, right]) send(entry.ws, {type:"error",code:"protocol_mismatch",message:"设备软件版本或连接方式不兼容，请同步更新客户端"});
+          continue;
         }
+        await this.ice.activate(left, right, pairMappings, icePairs, voicePair);
       }
     }
-
     await this.ice.finish(icePairs, resumeNames);
-
-    if (!sameKeySet(this.activeMappings, nextActive)) {
-      this.activeMappings = nextActive;
-      if (nextActive.size === 0) {
-        await this.state.storage.delete("activeMappings");
-      } else {
-        await this.state.storage.put("activeMappings", [...nextActive]);
-      }
-    }
+    await this.pruneMembers();
   }
 }
 
@@ -509,6 +570,10 @@ function memberName(ws) {
     return attachment.device_name;
   }
   return null;
+}
+
+function panelAttachment(ws) {
+  try { return ws.deserializeAttachment()?.panel ?? null; } catch { return null; }
 }
 
 function detach(ws) {
@@ -538,7 +603,7 @@ function memberKey(name) {
 
 // 按单一方向匹配：left 的 provide 与 right 的 consume，id 对上即配对。
 // id 被多台设备同时提供时跳过（reconcile 已向相关成员发 error）；
-// service 是否有效由 consumer 在收到 mapping_ready 后自行校验。
+// service 是否有效由共享核心在收到 transport_ready 后自行校验。
 function matchingPairs(left, right, providersById) {
   const matches = [];
   for (const consume of right.member.consume) {
@@ -552,49 +617,10 @@ function matchingPairs(left, right, providersById) {
       service: provide.service,
       provider_device: left.member.device_name,
       consumer_device: right.member.device_name,
-      provider_candidates: left.member.candidates,
-      consumer_candidates: right.member.candidates,
-      provider_fingerprint: left.member.cert_fingerprint ?? "",
-      consumer_fingerprint: right.member.cert_fingerprint ?? "",
       consumer_expose: consume.expose,
     });
   }
   return matches;
-}
-
-function notifyMappingReady(left, right, match) {
-  const common = {
-    type: "mapping_ready",
-    profile: LEGACY_PROFILE,
-    mapping_id: match.id,
-    provider: match.provider,
-    service: match.service,
-  };
-
-  send(left.ws, {
-    ...common,
-    peer_device: right.member.device_name,
-    role: left.member.device_name === match.provider ? "provider" : "consumer",
-    local_expose: left.member.device_name === match.provider ? null : match.consumer_expose,
-    peer_candidates: left.member.device_name === match.provider ? match.consumer_candidates : match.provider_candidates,
-    peer_fingerprint: left.member.device_name === match.provider ? match.consumer_fingerprint : match.provider_fingerprint,
-  });
-  send(right.ws, {
-    ...common,
-    peer_device: left.member.device_name,
-    role: right.member.device_name === match.provider ? "provider" : "consumer",
-    local_expose: right.member.device_name === match.provider ? null : match.consumer_expose,
-    peer_candidates: right.member.device_name === match.provider ? match.consumer_candidates : match.provider_candidates,
-    peer_fingerprint: right.member.device_name === match.provider ? match.consumer_fingerprint : match.provider_fingerprint,
-  });
-}
-
-function sameKeySet(left, right) {
-  if (left.size !== right.size) return false;
-  for (const key of left) {
-    if (!right.has(key)) return false;
-  }
-  return true;
 }
 
 function validateJoin(message) {
@@ -623,7 +649,6 @@ function validateJoin(message) {
     device_id: message.device_name,
     provide,
     consume,
-    candidates: validateCandidates(message.candidates) ?? [],
     cert_fingerprint: certFingerprint,
   };
 }
@@ -657,17 +682,6 @@ function normalizeHostPort(endpoint) {
   if (!endpoint || typeof endpoint !== "object") return null;
   if (typeof endpoint.addr !== "string" || !endpoint.addr || endpoint.addr.length > 255 || !validPort(endpoint.port)) return null;
   return { addr: endpoint.addr, port: Number(endpoint.port) };
-}
-
-function validateCandidates(candidates) {
-  if (!Array.isArray(candidates)) return null;
-  if (candidates.length > 32) return null;
-  const result = [];
-  for (const candidate of candidates) {
-    if (!candidate || typeof candidate.ip !== "string" || !validPort(candidate.port)) return null;
-    result.push({ ip: candidate.ip, port: Number(candidate.port) });
-  }
-  return result;
 }
 
 function validPort(port) {

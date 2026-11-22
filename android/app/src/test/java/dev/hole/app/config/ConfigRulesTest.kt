@@ -113,8 +113,6 @@ class ConfigRulesTest {
                 deviceName = "android-ab12",
                 sessionTimeout = "10m",
                 candidateInterfaces = listOf("wlan0"),
-                candidateAddresses = listOf("240e:0123:4567::1"),
-                connectionMode = "legacy",
             ),
             provide = listOf(
                 ProvideEntry("p1", id = "phone_ssh", protocol = "tcp", host = "127.0.0.1", port = 22, enabled = true),

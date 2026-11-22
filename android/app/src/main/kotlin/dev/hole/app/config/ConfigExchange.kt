@@ -6,6 +6,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.encodeToJsonElement
@@ -42,7 +43,12 @@ object ConfigExchange {
         require(text.toByteArray().size <= MAX_DOCUMENT_BYTES) { "文件超过 128 KiB" }
         val envelope = json.parseToJsonElement(text).jsonObject
         require(envelope["format"]?.jsonPrimitive?.content == "hole-android-backup" && envelope["version"]?.jsonPrimitive?.content in setOf("1", "2")) { "请选择 Android 配置备份" }
-        val backup = json.decodeFromString<PortableBackup>(text)
+        val stored = envelope.getValue("config").jsonObject
+        val connection = stored["connection"]?.jsonObject
+        val migratedEnvelope = if (connection != null && "connectionMode" in connection) {
+            JsonObject(envelope + ("config" to JsonObject(stored + ("connection" to JsonObject(connection - "connectionMode")))))
+        } else envelope
+        val backup = json.decodeFromJsonElement<PortableBackup>(migratedEnvelope)
         require(backup.format == "hole-android-backup" && backup.version in 1..2) { "备份格式或版本不受支持" }
         val migrated = migrateStoredConfig(backup.config, if (backup.version == 1) 1 else backup.config.schemaVersion)
         val config = migrated.copy(connection = migrated.connection.copy(passwordCipher = "", tokenCipher = "", turnCredentialCipher = ""))
@@ -75,13 +81,13 @@ object ConfigExchange {
         val serverUrl = document["server_url"]?.jsonPrimitive?.content.orEmpty().trim()
         val cli = coreJson.decodeFromJsonElement<CoreConfig>(JsonObject(document - "server_url"))
         require(!cli.relay.serve.enabled) { "中继服务仅 CLI 支持" }
-        require(cli.transport.preferred in setOf(PREFERRED_ICE, PREFERRED_IPV6)) { "transport.preferred 只接受 ice 或 ipv6" }
+        require(document["transport"]?.jsonObject?.containsKey("allow_legacy") != true) { "allow_legacy 已移除" }
+        require(document["candidate_addresses"]?.jsonArray?.isEmpty() != false) { "手动 IPv6 候选地址已移除" }
         val config = current.copy(
             connection = ConnectionSettings(
                 serverUrl = serverUrl.ifBlank { current.connection.serverUrl }, room = cli.room,
                 deviceName = cli.deviceName.ifBlank { current.connection.deviceName },
-                sessionTimeout = cli.sessionTimeout, candidateInterfaces = cli.candidateInterfaces, candidateAddresses = cli.candidateAddresses,
-                connectionMode = if (cli.transport.preferred == PREFERRED_IPV6) "legacy" else if (cli.transport.allowLegacy) "auto" else "ice",
+                sessionTimeout = cli.sessionTimeout, candidateInterfaces = cli.candidateInterfaces,
                 allowInsecureSignal = cli.transport.allowInsecureSignal, ice = cli.ice, turn = TurnSettings(cli.turn.mode, cli.turn.ttl, cli.turn.urls, cli.turn.username, normalizedTurnOrder(cli.turn.order)),
                 relay = cli.relay,
             ),

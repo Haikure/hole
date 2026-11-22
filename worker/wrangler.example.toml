@@ -4,6 +4,10 @@ compatibility_date = "2026-08-22"
 workers_dev = true
 preview_urls = false
 
+[vars]
+# 可使用多级路径；设为 "off" 关闭面板。
+PANEL_PATH = "/panel"
+
 [observability]
 enabled = true
 

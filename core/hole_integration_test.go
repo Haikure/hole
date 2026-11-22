@@ -223,6 +223,9 @@ func TestHoleThreeDevices(t *testing.T) {
 			if oldFixed == nil || oldFixed.relay == nil {
 				t.Fatal("relay fixed listener is unavailable")
 			}
+			if oldFixed.relay.ctx.Err() != nil {
+				t.Fatalf("forwarder stopped before fault injection: parent=%v relay=%v", oldFixed.ctx.Err(), oldFixed.relay.ctx.Err())
+			}
 			oldFixed.relay.reportFatal(errors.New("injected Hole forwarder failure"))
 			deadline := time.Now().Add(20 * time.Second)
 			for {

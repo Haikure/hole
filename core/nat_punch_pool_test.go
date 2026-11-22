@@ -218,6 +218,7 @@ func TestPoolPunchEstablishesQUICWithCalibration(t *testing.T) {
 				config.RoundTimeout = config.Timeout
 			}
 			type outcome struct {
+				side int
 				live *liveICETransport
 				err  error
 			}
@@ -225,7 +226,7 @@ func TestPoolPunchEstablishesQUICWithCalibration(t *testing.T) {
 			for side, peer := range []*icePeer{pa, pb} {
 				go func() {
 					live, err := peer.predictNATPunch(attempts[side], &punchSimPlatform{nat: n.sides[side]}, Config{ICE: ICEConfig{NATSTUNURLs: []string{"stun:192.0.2.1:3478"}}}, &natPunchSession{local: models[side], remote: models[1-side], mode: "pool", poolPrediction: true, config: config, key: []byte("pool-calibration")})
-					out <- outcome{live, err}
+					out <- outcome{side, live, err}
 				}()
 			}
 			for range 2 {
@@ -234,7 +235,21 @@ func TestPoolPunchEstablishesQUICWithCalibration(t *testing.T) {
 					defer got.live.close()
 				}
 				if got.err != nil {
-					t.Error(got.err)
+					peer := []*icePeer{pa, pb}[got.side]
+					peer.mu.Lock()
+					diagnostics := append([]NATPunchDiagnostic(nil), peer.stats.PunchDiagnostics...)
+					peer.mu.Unlock()
+					t.Errorf("side %d: %v; diagnostics: %+v", got.side, got.err, diagnostics)
+				}
+			}
+			if !tc.fallback {
+				for side, peer := range []*icePeer{pa, pb} {
+					peer.mu.Lock()
+					diagnostics := append([]NATPunchDiagnostic(nil), peer.stats.PunchDiagnostics...)
+					peer.mu.Unlock()
+					if len(diagnostics) != 1 || diagnostics[0].Round != 1 || !diagnostics[0].QUICEstablished {
+						t.Errorf("side %d: expected QUIC in the first round: %+v", side, diagnostics)
+					}
 				}
 			}
 			if tc.fallback {

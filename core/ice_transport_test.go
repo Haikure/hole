@@ -39,7 +39,7 @@ func TestICEConfigCloudflareDefaultAndExplicitHostOnly(t *testing.T) {
 	}
 	r := engineRequest()
 	r.ServerURL = "ws://127.0.0.1/ws"
-	r.Config.Transport.Preferred = PreferredICE
+	r.Config.Transport.AllowInsecureSignal = false
 	if r.Validate() == nil {
 		t.Fatal("ICE accepted non-explicit plaintext signaling")
 	}

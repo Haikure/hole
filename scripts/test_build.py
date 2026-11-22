@@ -293,7 +293,9 @@ class BuildTests(unittest.TestCase):
         (self.root / "signing.env").write_text("exit 94\n")
         script = self.root / "desktop/scripts/package.sh"
         script.parent.mkdir(parents=True)
-        script.write_text(TOOL)
+        fixture = script.with_suffix(".py")
+        fixture.write_text(TOOL.replace('name = pathlib.Path(sys.argv[0]).name', 'name = "package.sh"'))
+        script.write_text('#!/usr/bin/env bash\nexec python3 "${BASH_SOURCE[0]%.sh}.py" "$@"\n')
         self.invoke("desktop", "desktop", "--offline", "--os", "linux", "--arch", "amd64")
         calls = self.calls("package.sh")
         self.assertEqual(1, len(calls))

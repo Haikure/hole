@@ -28,7 +28,7 @@ func (p *icePeer) publishNAT() {
 	online := p.online && !p.closed
 	p.mu.Unlock()
 	key := fmt.Sprintf("%s/%d/%s", ready.TransportID, ready.TransportGeneration, s.ProbedAt)
-	if !online || !connected || ready.Profile != ProfileICE || ready.RelayRequired || ready.LeaseUntil <= time.Now().UnixMilli() || key == published || time.Since(lastPublished) < 30*time.Second {
+	if !online || !connected || ready.Profile != ProfileICE || ready.RelayRequired || (!ready.localAuthorization() && ready.LeaseUntil <= time.Now().UnixMilli()) || key == published || time.Since(lastPublished) < 30*time.Second {
 		return
 	}
 	m := signalMessage("nat_status")

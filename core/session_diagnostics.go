@@ -44,7 +44,7 @@ func isSessionFault(f *Fault) bool {
 	return f != nil && (strings.HasPrefix(f.Code, "service_") || strings.HasPrefix(f.Code, "session_"))
 }
 
-func (a *Agent) sessionEvent(conn sessionConnection, hello sessionHello, target, state, stage string, fault *Fault) {
+func (a *sessionPeer) sessionEvent(conn sessionConnection, hello sessionHello, target, state, stage string, fault *Fault) {
 	if a.emit == nil {
 		return
 	}

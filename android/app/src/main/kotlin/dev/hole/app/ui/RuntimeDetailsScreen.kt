@@ -124,7 +124,6 @@ fun RuntimeDetailsScreen(
                     Icon(Icons.Default.Search, null, Modifier.size(36.dp), tint = MaterialTheme.colorScheme.outline)
                     Text(if (query.isNotBlank() || filter != "all") "没有匹配的连接" else if (!snapshot.runRequested) "连接已停止" else "等待对端连接",
                         style = MaterialTheme.typography.titleMedium)
-                    if (tab == "devices" && config.config.connection.connectionMode == "legacy") Text("IPv6 线路显示在服务中", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (tab == "devices") items(peers, key = { it.transportId }) { peer ->

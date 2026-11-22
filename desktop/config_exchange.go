@@ -37,7 +37,7 @@ type portableConfig struct {
 	DeviceName          string               `json:"device_name" yaml:"device_name"`
 	SessionTimeout      string               `json:"session_timeout" yaml:"session_timeout"`
 	CandidateInterfaces []string             `json:"candidate_interfaces" yaml:"candidate_interfaces,omitempty"`
-	CandidateAddresses  []string             `json:"candidate_addresses" yaml:"candidate_addresses,omitempty"`
+	CandidateAddresses  []string             `json:"candidate_addresses,omitempty" yaml:"candidate_addresses,omitempty"`
 	Provide             []portableProvide    `json:"provide" yaml:"provide"`
 	Consume             []portableConsume    `json:"consume" yaml:"consume"`
 }

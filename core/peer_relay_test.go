@@ -8,9 +8,37 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// Permit the two fixed relay legs and fixture STUN/TURN, while making the
+// ordinary A-B UDP path unreachable. This exercises actual failure and fallback.
+type relayLegPlatform struct {
+	DefaultPlatform
+	allowed  map[string]bool
+	allowAll *atomic.Bool
+}
+type relayLegPacket struct {
+	net.PacketConn
+	allowed  map[string]bool
+	allowAll *atomic.Bool
+}
+
+func (p *relayLegPlatform) ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error) {
+	packet, err := p.DefaultPlatform.ListenPacket(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	return &relayLegPacket{PacketConn: packet, allowed: p.allowed, allowAll: p.allowAll}, nil
+}
+func (p *relayLegPacket) WriteTo(data []byte, address net.Addr) (int, error) {
+	if !p.allowAll.Load() && !p.allowed[address.String()] {
+		return len(data), nil
+	}
+	return p.PacketConn.WriteTo(data, address)
+}
 
 func TestPeerRelayHandshakePreservesSignalFailure(t *testing.T) {
 	for _, code := range []string{"peer_identity_mismatch", "protocol_mismatch", "peer_upgrade_required", "network_error"} {
@@ -97,16 +125,30 @@ func TestPeerRelayThreeDevicesAndFallback(t *testing.T) {
 			_, _ = udp.WriteTo(buf[:n], addr)
 		}
 	}()
-	a, b, relay := NewEngine(Options{}), NewEngine(Options{}), NewEngine(Options{})
+	stunURLs := natFixtureSTUNURLs(t)
+	relayEndpoint := fmt.Sprintf("127.0.0.1:%d", unusedUDPPort(t))
+	allowed := map[string]bool{relayEndpoint: true}
+	for _, raw := range append(append([]string{}, stunURLs...), turnURL) {
+		_, address, _ := strings.Cut(raw, ":")
+		address, _, _ = strings.Cut(address, "?")
+		allowed[address] = true
+	}
+	allowAll := &atomic.Bool{}
+	a, b, relay := NewEngine(Options{Platform: &relayLegPlatform{allowed: allowed, allowAll: allowAll}}), NewEngine(Options{Platform: &relayLegPlatform{allowed: allowed, allowAll: allowAll}}), NewEngine(Options{})
 	defer a.Close()
 	defer b.Close()
 	defer relay.Close()
 	ra, rb, rr := iceFixtureRequest(server, "alpha"), iceFixtureRequest(server, "beta"), iceFixtureRequest(server, "relay")
-	stunURLs := natFixtureSTUNURLs(t)
+	rr.Config.Transport.FixedEndpoint = &FixedEndpointConfig{Listen: relayEndpoint, Advertise: relayEndpoint}
 	for _, r := range []*Request{&ra, &rb, &rr} {
 		// Voice relationships provide the two already-established relay legs.
 		r.Config.Voice.Enabled = true
 		r.Config.ICE.PortMapping = "off"
+		r.Config.ICE.DirectProbeTimeout = ConfigDuration(500 * time.Millisecond)
+		r.Config.ICE.ConnectivityTimeout = ConfigDuration(500 * time.Millisecond)
+		r.Config.ICE.GatherTimeout = ConfigDuration(500 * time.Millisecond)
+		r.Config.ICE.Punch.Timeout = ConfigDuration(time.Second)
+		r.Config.ICE.Punch.RoundTimeout = ConfigDuration(500 * time.Millisecond)
 		r.Config.ICE.NATSTUNURLs = stunURLs
 		r.Config.TURN = TURNConfig{Mode: "manual", URLs: []string{turnURL}, Username: "user", Credential: "secret", Order: []string{"udp"}}
 	}
@@ -127,7 +169,7 @@ func TestPeerRelayThreeDevicesAndFallback(t *testing.T) {
 				return false
 			}
 			for _, p := range s.PeerTransports {
-				if p.State != "active" || p.PathType != "direct" {
+				if p.State != "active" || (p.PathType != "fixed" && p.PathType != "peer_relay") {
 					return false
 				}
 			}
@@ -137,17 +179,6 @@ func TestPeerRelayThreeDevicesAndFallback(t *testing.T) {
 	a.mu.Lock()
 	coordinator := a.run.ice
 	a.mu.Unlock()
-	var pair *icePeer
-	for _, p := range coordinator.peerList() {
-		if p.peerID() == "beta" {
-			pair = p
-		}
-	}
-	if pair == nil {
-		t.Fatal("missing pair")
-	}
-	// Force only this pair past its direct budget; both relay legs stay real.
-	pair.restartRound(1, "", "direct_exhausted")
 	peerActive := func(s Snapshot) bool {
 		for _, p := range s.PeerTransports {
 			if p.PeerID == "alpha" || p.PeerID == "beta" {
@@ -194,6 +225,18 @@ func TestPeerRelayThreeDevicesAndFallback(t *testing.T) {
 	// Renew after hibernation to verify the persisted route can be replayed.
 	_ = coordinator.send(signalMessage("transport_sync"))
 	checkTCP("after Worker hibernation")
+	for _, item := range []struct {
+		engine  *Engine
+		request *Request
+	}{{a, &ra}, {b, &rb}} {
+		item.request.Config.ICE.DirectProbeTimeout = ConfigDuration(3 * time.Second)
+		item.request.Config.ICE.GatherTimeout = ConfigDuration(6 * time.Second)
+		item.request.Config.ICE.ConnectivityTimeout = ConfigDuration(10 * time.Second)
+		if err := item.engine.ApplyConfig(*item.request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	allowAll.Store(true)
 	if err := relay.Stop(); err != nil {
 		t.Fatal(err)
 	}

@@ -66,10 +66,19 @@ type MappingSnapshot struct {
 	TCPWrittenBytes uint64 `json:"tcp_written_bytes,string"`
 	// ReadBytes/WrittenBytes are protocol-agnostic mapping totals. The legacy
 	// TCP fields remain for clients that show TCP replay details.
-	ReadBytes    uint64 `json:"read_bytes,string"`
-	WrittenBytes uint64 `json:"written_bytes,string"`
-	ReplayBytes  uint64 `json:"replay_bytes,string"`
-	Profile      string `json:"profile,omitempty"`
+	ReadBytes    uint64            `json:"read_bytes,string"`
+	WrittenBytes uint64            `json:"written_bytes,string"`
+	ReplayBytes  uint64            `json:"replay_bytes,string"`
+	Profile      string            `json:"profile,omitempty"`
+	Listener     *ListenerSnapshot `json:"listener,omitempty"`
+}
+
+// Listener readiness is independent of the device path and target service.
+type ListenerSnapshot struct {
+	State    string `json:"state"`
+	Protocol string `json:"protocol"`
+	Address  string `json:"address"`
+	Error    *Fault `json:"error,omitempty"`
 }
 
 type Capabilities struct {
@@ -88,6 +97,8 @@ type Snapshot struct {
 	SessionProtocol     int                     `json:"session_protocol"`
 	CoreVersion         string                  `json:"core_version"`
 	CoreBuildID         string                  `json:"core_build_id,omitempty"`
+	WorkerVersion       string                  `json:"worker_version,omitempty"`
+	Room                *RoomSnapshot           `json:"room,omitempty"`
 	Configured          bool                    `json:"configured"`
 	RunRequested        bool                    `json:"run_requested"`
 	EngineState         string                  `json:"engine_state"`
@@ -107,7 +118,7 @@ type Snapshot struct {
 }
 
 // CoreVersion and CoreBuildID are injected by release builds.
-var CoreVersion = "development"
+var CoreVersion = "1.1.0-dev"
 var CoreBuildID = "development"
 
 func classifyError(err error) *Fault {

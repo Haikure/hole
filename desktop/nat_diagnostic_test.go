@@ -11,7 +11,7 @@ func TestNATDiagnosticRPCWithoutStart(t *testing.T) {
 	e := core.NewEngine(core.Options{})
 	defer e.Close()
 	h := host{engine: e}
-	for _, params := range []string{`{"room":"unexpected"}`, `{"nat_stun_urls":[]}`} {
+	for _, params := range []string{`{"room":"unexpected"}`, `{"nat_stun_urls":["https://invalid"]}`} {
 		if _, fault, _ := h.dispatch(request{Method: "start_nat_probe", Params: json.RawMessage(params)}); fault == nil {
 			t.Fatal("accepted invalid diagnostic request")
 		}

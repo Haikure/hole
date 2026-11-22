@@ -30,7 +30,7 @@ func TestVoiceFiveParticipantsRealOpusAndMute(t *testing.T) {
 	}
 	for _, engine := range engines {
 		waitSnapshot(t, engine, func(s Snapshot) bool {
-			if s.SignalState != "joined" || len(s.Voice.Peers) != len(names)-1 {
+			if (s.SignalState != "joined" && s.SignalState != "delegated") || len(s.Voice.Peers) != len(names)-1 {
 				return false
 			}
 			for _, peer := range s.Voice.Peers {
@@ -202,7 +202,7 @@ func TestVoicePreservesMappedSessionsAcrossReconnect(t *testing.T) {
 					t.Fatal(err)
 				}
 				ready := func(s Snapshot) bool {
-					return s.SignalState == "joined" && len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].ActiveChannels == 2
+					return (s.SignalState == "joined" || s.SignalState == "delegated") && len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].ActiveChannels == 2
 				}
 				waitSnapshot(t, a, ready)
 				waitSnapshot(t, b, ready)

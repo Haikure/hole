@@ -23,8 +23,9 @@ func writeCLIConfig(t *testing.T, path, data string) {
 
 func TestCLIConfigReloadValidationOverridesAndRetry(t *testing.T) {
 	r, output := testReporter(t)
+	r.debug = true
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	options := cliOptions{transport: "ice", allowLocalWS: true}
+	options := cliOptions{allowLocalWS: true}
 	data := "server_url: ws://127.0.0.1/ws\n" + cliFixtureConfig
 	initial, err := cliRequest([]byte(data), options)
 	if err != nil {
@@ -56,8 +57,8 @@ func TestCLIConfigReloadValidationOverridesAndRetry(t *testing.T) {
 	if !strings.Contains(output.String(), "继续使用原配置") || strings.Contains(output.String(), "PRIVATE_INVALID_VALUE") {
 		t.Fatal("invalid configuration was not reported safely", output.String())
 	}
-	// Comments and an overridden transport value do not change effective config.
-	writeCLIConfig(t, path, "# comment\n"+strings.Replace(data, "preferred: ice", "preferred: ipv6", 1))
+	// Comments do not change effective config.
+	writeCLIConfig(t, path, "# comment\n"+data)
 	reloader.reload()
 	if len(applied) != 0 {
 		t.Fatal("identical effective config triggered an update")
@@ -71,7 +72,7 @@ func TestCLIConfigReloadValidationOverridesAndRetry(t *testing.T) {
 	}
 	applyErr = nil
 	reloader.reload()
-	if len(applied) != 1 || applied[0].Config.SessionTimeout != 45*time.Second || applied[0].Config.Transport.AllowLegacy || !applied[0].Config.Transport.AllowInsecureSignal {
+	if len(applied) != 1 || applied[0].Config.SessionTimeout != 45*time.Second || !applied[0].Config.Transport.AllowInsecureSignal {
 		t.Fatalf("new config or CLI overrides were lost: %+v", applied)
 	}
 	if !reflect.DeepEqual(r.request, applied[0]) {
@@ -81,9 +82,10 @@ func TestCLIConfigReloadValidationOverridesAndRetry(t *testing.T) {
 	if len(applied) != 1 {
 		t.Fatal("repeated save applied twice")
 	}
-	r.info("old=%s new=%s", initial.Config.Token, applied[0].Config.Token)
-	if strings.Contains(output.String(), "PRIVATE_ROOM_TOKEN") || strings.Contains(output.String(), "PRIVATE_NEXT_TOKEN") {
-		t.Fatal("reload leaked old or new credentials", output.String())
+	// Late DEBUG diagnostics must protect credentials from before and after reload.
+	r.debugf("old=%s new=%s", initial.Config.Token, applied[0].Config.Token)
+	if !strings.Contains(output.String(), "DEBUG old=[redacted] new=[redacted]") || strings.Contains(output.String(), "PRIVATE_ROOM_TOKEN") || strings.Contains(output.String(), "PRIVATE_NEXT_TOKEN") {
+		t.Fatal("reload did not redact old and new diagnostic credentials", output.String())
 	}
 }
 

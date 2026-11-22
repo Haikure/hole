@@ -75,8 +75,9 @@ class ConfigRepository(context: Context, private val cipher: SecretCipher = Secr
             val document = json.parseToJsonElement(text).jsonObject
             val version = document["schemaVersion"]?.jsonPrimitive?.intOrNull ?: 1
             val hasLegacyRevision = "configRevision" in document
+            val hasConnectionMode = document["connection"]?.jsonObject?.containsKey("connectionMode") == true
             val stored = json.decodeFromString<StoredConfig>(text)
-            migrateStoredConfig(stored, version).also { if (version != 2 || hasLegacyRevision) writeUnlocked(it) }
+            migrateStoredConfig(stored, version).also { if (it != stored || version != 2 || hasLegacyRevision || hasConnectionMode) writeUnlocked(it) }
         } catch (_: SerializationException) {
             quarantineUnlocked()
             null

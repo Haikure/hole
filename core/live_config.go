@@ -35,20 +35,38 @@ func pathConfigChanged(a, b Config) bool {
 // later signaling reconnect from closing sessions created by a live update.
 func (c *iceCoordinator) applyLocal(applied *Request, next Request) error {
 	if !sameEffective(*applied, next) {
-		if !sameSignalingConfig(*applied, next) {
-			c.closeLegacy()
-		}
 		c.sessions.reconfigure(applied.Config, next.Config)
 		*applied = next
 		for _, p := range c.peerList() {
 			p.refreshPolicy()
 		}
 	}
-	return c.configureFixed(next)
+	if err := c.configureFixed(next); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *iceCoordinator) configAccepted(r Request) {
+	c.configMu.Lock()
+	c.acceptedConfig = r
+	c.configMu.Unlock()
+}
+
+func (c *iceCoordinator) signalingConfigPending() bool {
+	c.configMu.RLock()
+	defer c.configMu.RUnlock()
+	return c.configPending && !sameSignalingConfig(c.acceptedConfig, c.desired)
 }
 
 func (c *iceCoordinator) configApplied(r Request) {
-	if sameEffective(r, c.request()) {
+	c.configMu.Lock()
+	ready := c.configPending && sameEffective(r, c.desired) && sameSignalingConfig(r, c.acceptedConfig)
+	if ready {
+		c.configPending = false
+	}
+	c.configMu.Unlock()
+	if ready {
 		c.emit(Event{Kind: "config", State: "applied", appliedConfig: &r})
 	}
 }
@@ -57,8 +75,6 @@ func (c *iceCoordinator) configApplied(r Request) {
 // Edits coalesce while awaiting ACK; local revocations still apply immediately.
 func (c *iceCoordinator) signalUpdates(ctx context.Context, incoming <-chan iceSignalMessage, results <-chan error, platform Platform, accepted Request, applied *Request) (error, bool) {
 	joined, supported := false, false
-	reported := accepted
-	needsReport := false
 	var revision uint64
 	var pending *Request
 	var requestID string
@@ -70,9 +86,6 @@ func (c *iceCoordinator) signalUpdates(ctx context.Context, incoming <-chan iceS
 		c.configMu.RLock()
 		next, epoch := c.desired, c.networkEpoch.Load()
 		c.configMu.RUnlock()
-		c.mu.Lock()
-		legacy := c.legacy != nil
-		c.mu.Unlock()
 		if err := c.applyLocal(applied, next); err != nil {
 			return false, err
 		}
@@ -81,14 +94,10 @@ func (c *iceCoordinator) signalUpdates(ctx context.Context, incoming <-chan iceS
 		}
 		if sameSignalingConfig(accepted, next) {
 			accepted = next
-			if needsReport || !sameEffective(reported, next) {
-				c.configApplied(next)
-				reported = next
-				needsReport = false
-			}
+			c.configApplied(next)
 			return false, nil
 		}
-		if !supported || legacy {
+		if !supported {
 			return true, nil
 		}
 		message := c.memberDeclaration(ctx, platform, next)
@@ -118,7 +127,6 @@ func (c *iceCoordinator) signalUpdates(ctx context.Context, incoming <-chan iceS
 		case <-timeout:
 			return &Fault{Code: "config_update_timeout", Message: "在线配置确认超时，正在重新同步"}, false
 		case <-c.updates:
-			needsReport = true
 		case m := <-incoming:
 			if m.Type == "member_updated" {
 				if pending == nil || m.RequestID != requestID || m.MemberRevision != revision {
@@ -127,6 +135,7 @@ func (c *iceCoordinator) signalUpdates(ctx context.Context, incoming <-chan iceS
 				timer.Stop()
 				timeout = nil
 				accepted, pending = *pending, nil
+				c.configAccepted(accepted)
 				// Refresh records ignored while a newer local edit was pending.
 				if sameSignalingConfig(accepted, c.request()) {
 					_ = c.send(signalMessage("transport_sync"))
@@ -142,6 +151,9 @@ func (c *iceCoordinator) signalUpdates(ctx context.Context, incoming <-chan iceS
 				}
 				if err := c.handle(m, accepted, platform); err != nil {
 					return err, false
+				}
+				if m.Type == "joined" {
+					c.configAccepted(accepted)
 				}
 			}
 		}

@@ -18,7 +18,6 @@ func lifecycleCoordinator(t *testing.T) (*iceCoordinator, *icePeer) {
 		t.Fatal(err)
 	}
 	r := engineRequest()
-	r.Config.Transport.Preferred = PreferredICE
 	r.Config.TURN.Mode = "worker"
 	c := newICECoordinator(ctx, r, DefaultPlatform{}, nil, identity, strings.Repeat("a", 32), 1, func(Event) {}, func(NetworkSnapshot) {})
 	c.online, c.serverV2, c.leaseRenewal = true, true, true
@@ -81,7 +80,6 @@ func TestRelayOnlyRequiresWorkerSupportAndConsistentReady(t *testing.T) {
 	ready.RelayOnly, ready.RelayRequired, ready.Phase = true, true, "direct"
 	checkFault(ready, "protocol_mismatch")
 	legacy := signalMessage("mapping_ready")
-	c.desired.Config.Transport.AllowLegacy = true
 	r = c.request()
 	checkFault(legacy, "protocol_mismatch")
 }

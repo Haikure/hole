@@ -35,6 +35,31 @@ class BackgroundSupportTest {
         holder.close(); holder.update(true)
         assertFalse(lock.isHeld)
     }
+    @Test fun delegatedSignalingEndsRecoveryAndRearmsTheNextRecoveryWindow() {
+        val holder = RecoveryWakeLock(context)
+        try {
+            holder.update(true, "connecting")
+            val lock = ShadowPowerManager.getLatestWakeLock()
+            assertTrue(lock.isHeld)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(31))
+            assertFalse(lock.isHeld)
+            holder.update(true, "delegated")
+            repeat(20) { holder.update(true, "delegated") }
+            assertFalse(lock.isHeld)
+            assertEquals(1, shadowOf(lock).timesHeld)
+            holder.update(true, "reconnecting")
+            assertTrue(lock.isHeld)
+            assertEquals(2, shadowOf(lock).timesHeld)
+            repeat(20) { holder.update(true, "reconnecting") }
+            assertEquals(2, shadowOf(lock).timesHeld)
+            holder.update(true, "delegated")
+            assertFalse(lock.isHeld)
+            holder.update(false, "reconnecting")
+            assertFalse(lock.isHeld)
+        } finally {
+            holder.close()
+        }
+    }
     @Test fun stoppedIntentAndOptOutNeverAutoStartOnBootOrUpgrade() {
         val store = RunStateStore(context)
         val receiver = ResumeReceiver()

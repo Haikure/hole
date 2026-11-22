@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -47,7 +48,92 @@ func liveTestPath(t *testing.T, e *Engine) (*liveICETransport, *iceSignalSink) {
 	return path, sink
 }
 
-func TestLiveConfigurationKeepsQUICAndSignal(t *testing.T) {
+type deferredUDPResolve struct {
+	DefaultPlatform
+	target  string
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (p *deferredUDPResolve) ResolveUDP(ctx context.Context, address string) (*net.UDPAddr, error) {
+	if address == p.target {
+		p.once.Do(func() { close(p.entered) })
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-p.release:
+		}
+	}
+	return p.DefaultPlatform.ResolveUDP(ctx, address)
+}
+
+func TestLiveUDPMappingWaitsForSessionHandshakeBeforeReady(t *testing.T) {
+	server, _ := actualWorkerFixture(t)
+	echo, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echo.Close()
+	go func() {
+		var data [128]byte
+		for {
+			n, addr, err := echo.ReadFrom(data[:])
+			if err != nil {
+				return
+			}
+			_, _ = echo.WriteTo(data[:n], addr)
+		}
+	}()
+	platform := &deferredUDPResolve{target: echo.LocalAddr().String(), entered: make(chan struct{}), release: make(chan struct{})}
+	var released sync.Once
+	release := func() { released.Do(func() { close(platform.release) }) }
+	defer release()
+	a, b := NewEngine(Options{Platform: platform, RetryNetwork: true}), NewEngine(Options{RetryNetwork: true})
+	defer a.Close()
+	defer b.Close()
+	ra, rb := iceFixtureRequest(server, "alpha"), iceFixtureRequest(server, "beta")
+	ra.Config.Provide = []Provide{{ID: "udp", Service: ServiceEndpoint{"udp", "127.0.0.1", echo.LocalAddr().(*net.UDPAddr).Port}}}
+	rb.Config.Consume = []Consume{{ID: "udp", Expose: HostPort{"127.0.0.1", unusedUDPPort(t)}}}
+	if err := a.Start(ra); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Start(rb); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-platform.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("UDP session handshake did not reach the delayed resolver")
+	}
+	path, _ := liveTestPath(t, b)
+	path.mux.mu.Lock()
+	channel := path.mux.byMapping["udp"]
+	path.mux.mu.Unlock()
+	if channel == nil || channel.ready.Load() || b.Snapshot().PeerTransports[0].ActiveChannels != 0 {
+		t.Fatal("UDP mapping was marked ready before its session handshake completed")
+	}
+	release()
+	waitSnapshot(t, b, func(s Snapshot) bool {
+		return len(s.PeerTransports) == 1 && s.PeerTransports[0].ActiveChannels == 1
+	})
+	client, err := net.Dial("udp4", endpointString("127.0.0.1", rb.Config.Consume[0].Expose.Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := client.Write([]byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	var reply [128]byte
+	n, err := client.Read(reply[:])
+	if err != nil || string(reply[:n]) != "first" {
+		t.Fatalf("first packet after readiness: %q, %v", reply[:n], err)
+	}
+}
+
+func TestLiveConfigurationKeepsQUICAndResidentSignal(t *testing.T) {
 	server, hibernate := actualWorkerFixture(t)
 	target, alternate := liveTestEcho(t), liveTestEcho(t)
 	a, b := NewEngine(Options{RetryNetwork: true}), NewEngine(Options{RetryNetwork: true})
@@ -139,7 +225,7 @@ func TestLiveConfigurationKeepsQUICAndSignal(t *testing.T) {
 		}{{a, pathA, sinkA}, {b, pathB, sinkB}} {
 			path, sink := liveTestPath(t, item.e)
 			if path != item.path || sink != item.sink || path.session.Context().Err() != nil {
-				t.Fatal("live update replaced QUIC or WebSocket")
+				t.Fatal("live update replaced QUIC or resident signaling")
 			}
 		}
 	}
@@ -270,7 +356,7 @@ func TestLiveConfigScopeAndPathClassification(t *testing.T) {
 		{"STUN", func(c *Config) { c.ICE.STUNURLs = []string{"stun:127.0.0.1:9"} }, false},
 		{"probe", func(c *Config) { c.ICE.DirectProbeTimeout = ConfigDuration(time.Second) }, false},
 		{"relay-only", func(c *Config) { c.ICE.RelayOnly = !c.ICE.RelayOnly }, true},
-		{"interface", func(c *Config) { c.ICE.InterfaceAllowlist = []string{"lo"} }, true},
+		{"interface", func(c *Config) { c.ICE.InterfaceAllowlist = []string{"other"} }, true},
 		{"TURN", func(c *Config) { c.TURN.Credential = "changed" }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -292,9 +378,15 @@ func TestLiveConfigScopeAndPathClassification(t *testing.T) {
 
 func TestLiveConfigCoalescesEditsAndRejectsStaleAcknowledgments(t *testing.T) {
 	c, _ := lifecycleCoordinator(t)
+	completed := make(chan Request, 4)
+	c.emit = func(event Event) {
+		if event.Kind == "config" && event.State == "applied" && event.appliedConfig != nil {
+			completed <- *event.appliedConfig
+		}
+	}
 	c.sessions = newSessionManager(time.Minute)
 	defer c.sessions.close()
-	c.desired.Config.Transport = TransportConfig{Preferred: PreferredICE}
+	c.desired.Config.Transport = TransportConfig{}
 	initial := c.request()
 	incoming := make(chan iceSignalMessage, 16)
 	result := make(chan error, 1)
@@ -332,6 +424,10 @@ func TestLiveConfigCoalescesEditsAndRejectsStaleAcknowledgments(t *testing.T) {
 	latest := initial
 	latest.Config.Provide = []Provide{{ID: "latest", Service: ServiceEndpoint{"tcp", "127.0.0.1", 23}}}
 	c.submit(latest)
+	c.room.synchronized() // An older transport sync cannot acknowledge the new declaration.
+	if !c.signalNeeded() {
+		t.Fatal("pending member update allowed signaling to be delegated")
+	}
 	wrong := signalMessage("member_updated")
 	wrong.MemberRevision = one.MemberRevision
 	wrong.RequestID = "wrong"
@@ -353,18 +449,29 @@ func TestLiveConfigCoalescesEditsAndRejectsStaleAcknowledgments(t *testing.T) {
 		t.Fatalf("stale ACK advanced update: %+v", m)
 	case <-time.After(30 * time.Millisecond):
 	}
+	if len(completed) != 0 {
+		t.Fatal("unacknowledged or superseded declaration emitted config completion")
+	}
 	ack := signalMessage("member_updated")
 	ack.MemberRevision = two.MemberRevision
 	ack.RequestID = two.RequestID
 	incoming <- ack
 	nextMessage("transport_sync")
+	select {
+	case applied := <-completed:
+		if !sameEffective(applied, latest) {
+			t.Fatal("completion did not use the latest acknowledged declaration")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("acknowledged declaration did not complete")
+	}
 }
 
 func TestLiveConfigOldWorkerRejoinsOnlyForDeclarationChanges(t *testing.T) {
 	c, _ := lifecycleCoordinator(t)
 	c.sessions = newSessionManager(time.Minute)
 	defer c.sessions.close()
-	c.desired.Config.Transport = TransportConfig{Preferred: PreferredICE}
+	c.desired.Config.Transport = TransportConfig{}
 	initial := c.request()
 	incoming := make(chan iceSignalMessage, 4)
 	done := make(chan bool, 1)
@@ -486,7 +593,7 @@ func TestLiveVoiceCancellationPreservesCongestedQUIC(t *testing.T) {
 	}
 }
 
-func TestLegacySessionTimeoutDoesNotRejoin(t *testing.T) {
+func TestSessionTimeoutDoesNotRejoin(t *testing.T) {
 	url, joins := recordingSignal(t)
 	e := NewEngine(Options{Platform: &loopbackPlatform{opened: make(chan net.PacketConn, 128)}, RetryNetwork: true})
 	defer e.Close()
@@ -506,7 +613,7 @@ func TestLegacySessionTimeoutDoesNotRejoin(t *testing.T) {
 	}
 	select {
 	case <-joins:
-		t.Fatal("local retention setting rejoined IPv6 signaling")
+		t.Fatal("local retention setting rejoined signaling")
 	case <-time.After(30 * time.Millisecond):
 	}
 	if s := e.Snapshot(); s.TransportGeneration != before || s.EngineState != "running" {
@@ -520,5 +627,49 @@ func TestLegacySessionTimeoutDoesNotRejoin(t *testing.T) {
 	manager.mu.Unlock()
 	if timeout != 83*time.Second {
 		t.Fatal(timeout)
+	}
+}
+
+func TestSignalUpdatesKeepsWSSWhenRoomHasAnotherSignal(t *testing.T) {
+	c := roomTestCoordinator(t, "b")
+	remote := roomTestCoordinator(t, "a")
+	link := roomLink{PeerID: "a", RuntimeID: remote.runtimeID, TransportID: "ab", Generation: 1}
+	c.room.directory["a"] = voiceRoomMember{DeviceName: "a", RuntimeID: remote.runtimeID, CoreVersion: CoreVersion, TransportEpoch: 1}
+	c.room.nodes["a"] = roomNodeRecord{node: roomNode{DeviceName: "a", RuntimeID: remote.runtimeID, CoreVersion: CoreVersion,
+		WorkerVersion: "1.1.0", Epoch: 1, Revision: 1, SignalOnline: true, Resident: true}}
+	c.room.peers["ab"] = &roomTestPeer{link: link}
+	c.configAccepted(c.initial)
+
+	incoming := make(chan iceSignalMessage, 4)
+	done := make(chan error, 1)
+	applied := c.initial
+	go func() {
+		err, _ := c.signalUpdates(c.ctx, incoming, make(chan error), DefaultPlatform{}, c.initial, &applied)
+		done <- err
+	}()
+	defer func() { c.cancel(); <-done }()
+
+	joined := signalMessage("joined")
+	joined.SignalVersion, joined.LiveConfig = 2, true
+	incoming <- joined
+	waitingForSync := true
+	for waitingForSync {
+		select {
+		case message := <-c.sink.messages:
+			waitingForSync = message.Type != "transport_sync"
+		case <-time.After(time.Second):
+			t.Fatal("join did not request transport synchronization")
+		}
+	}
+
+	c.room.mu.Lock()
+	c.room.workerVersion, c.room.workerKey = "1.1.0", remote.room.workerKey
+	c.room.mu.Unlock()
+	incoming <- signalMessage("transport_synced")
+	time.Sleep(50 * time.Millisecond)
+	for len(c.sink.messages) > 0 {
+		if message := <-c.sink.messages; message.Type == "room_pause" {
+			t.Fatal("client proactively paused a healthy signaling connection")
+		}
 	}
 }

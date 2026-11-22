@@ -101,7 +101,7 @@ private:
     QString m_pluginDirectory;
     QString m_state = QStringLiteral("stopped");
     QString m_serverUrl;
-    QString m_configJson = QStringLiteral("{\"room\":\"\",\"password\":\"\",\"token\":\"\",\"device_name\":\"pen\",\"session_timeout\":\"10m\",\"transport\":{\"preferred\":\"ice\",\"allow_legacy\":true},\"provide\":[],\"consume\":[]}");
+    QString m_configJson = QStringLiteral("{\"room\":\"\",\"password\":\"\",\"token\":\"\",\"device_name\":\"pen\",\"session_timeout\":\"10m\",\"transport\":{},\"provide\":[],\"consume\":[]}");
     QString m_mappingStateJson;
     QString m_turnStateJson;
     QString m_lastError;

@@ -139,7 +139,7 @@ Android 手机与 Wear Release 共用以下仓库或组织 Actions secrets：
 
 ### 版本清单与同步
 
-编辑根目录 `versions.json`：`core.version` 是共享核心版本，CLI、独立核心宿主和 Android AAR 始终使用同一个值；Android 手机与 Wear OS 共用 `frontends.android` 的版本名和版本码。桌面 GUI 与 PenMods 插件各自维护前端版本。
+编辑根目录 `versions.json`：`core.version` 是共享核心版本，CLI、独立核心宿主和 Android AAR 始终使用同一个值；Android 手机与 Wear OS 共用 `frontends.android` 的版本名和版本码。桌面 GUI 与 PenMods 插件各自维护前端版本。`worker.version` 独立定义 Worker 软件版本，由 Worker 模块直接读取并上报；客户端能力依据实际共享核心版本和已确认的 Worker 版本判断。
 修改后运行 `python3 scripts/sync_versions.py`，同步 Cargo package/lock 元数据以及 PenMods 的 `xmake.lua` 和 `metadata.json`。Android Gradle 配置直接读取该清单。桌面 GUI 与 PenMods 正式构建会先检查同步状态；也可手动运行 `python3 scripts/sync_versions.py --check`。
 
 核心构建标识由提交标识和共享核心源码/依赖摘要自动生成，和手动维护的核心版本分开记录；Android APK 验证会同时核对核心版本与构建标识。

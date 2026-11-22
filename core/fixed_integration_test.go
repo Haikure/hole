@@ -217,7 +217,6 @@ func TestFixedActualWorkerBidirectionalMappingsRecoveryAndSharedListener(t *test
 	a, b, c := engines[0], engines[1], engines[2]
 	ra, rb, rc := iceFixtureRequest(server, "alpha"), iceFixtureRequest(server, "beta"), iceFixtureRequest(server, "charlie")
 	ra.Config.Transport.FixedEndpoint = fixedEndpoint(t, "udp4")
-	ra.Config.Transport.AllowLegacy = true
 	// Exercise DNS on the pinned dialer and real UDP port forwarding.
 	local := ra.Config.Transport.FixedEndpoint.Listen
 	public := fixedPortMapping(t, local)

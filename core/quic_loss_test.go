@@ -16,6 +16,43 @@ import (
 	"github.com/apernet/quic-go/monotime"
 )
 
+func newTestTransport(t *testing.T) (*quic.Transport, *net.UDPAddr) {
+	t.Helper()
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("绑定测试套接字：%v", err)
+	}
+	transport := &quic.Transport{Conn: pc}
+	t.Cleanup(func() {
+		_ = transport.Close()
+		_ = pc.Close()
+	})
+	return transport, pc.LocalAddr().(*net.UDPAddr)
+}
+
+func TestExposeNetworkFollowsConfiguredFamily(t *testing.T) {
+	for _, tc := range []struct{ addr, want string }{
+		{"0.0.0.0", "tcp4"}, {"127.0.0.1", "tcp4"}, {"192.168.1.10", "tcp4"},
+		{"::1", "tcp6"}, {"fd00::1", "tcp6"}, {"::", "tcp"},
+	} {
+		if got := exposeNetwork("tcp", net.ParseIP(tc.addr)); got != tc.want {
+			t.Errorf("exposeNetwork(tcp, %s) = %s，期望 %s", tc.addr, got, tc.want)
+		}
+	}
+}
+
+func TestExposeBindsConfiguredFamily(t *testing.T) {
+	bind := tcpAddr(HostPort{Addr: "0.0.0.0", Port: 0})
+	listener, err := net.ListenTCP(exposeNetwork("tcp", bind.IP), bind)
+	if err != nil {
+		t.Fatalf("监听 0.0.0.0：%v", err)
+	}
+	defer listener.Close()
+	if got := listener.Addr().(*net.TCPAddr); got.IP.To4() == nil {
+		t.Fatalf("配置 0.0.0.0 却绑到了 %s", got)
+	}
+}
+
 func TestQUICLossCountsPersistForConnectionLifetime(t *testing.T) {
 	loss := &quicPacketLoss{}
 	if loss.snapshot().RatePercent != nil {

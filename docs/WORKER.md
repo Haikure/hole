@@ -1,13 +1,13 @@
 # Worker 部署
 
-`worker/worker.js` 提供房间 WebSocket 协调，`worker/worker_ice.mjs` 提供 ICE / 固定入口关系管理和 TURN broker。
+`worker/worker.js` 提供房间 WebSocket 协调，`worker/worker_ice.mjs` 提供 ICE / 固定入口关系管理和 TURN broker，`worker/worker_room.mjs` 管理房间图和认证通知。
 Worker 不转发业务数据；客户端之间使用直连 QUIC、Peer Relay 节点中继、Hole 设备中继或 TURN。
 
 [准备](#准备) · [配置与发布](#配置与发布) · [升级兼容](#升级与兼容) · [Hole 授权](#hole-三方授权) · [TURN broker](#turn-broker) · [验证](#验证) · [项目首页](../README.md)
 
 | Worker 负责 | 客户端负责 |
 | --- | --- |
-| 房间、设备关系、信令与租约 | UDP 入口、DNS、QUIC 与业务转发 |
+| 房间发现、设备关系、建连协调与状态镜像 | UDP 入口、DNS、QUIC 与业务转发 |
 | 按需签发 TURN 短期凭据 | 直连、Hole / TURN 数据通道 |
 
 ## 准备
@@ -24,7 +24,7 @@ Worker 不转发业务数据；客户端之间使用直连 QUIC、Peer Relay 节
 | `ROOMS` | `Room` | `v1` |
 | `TURN_BROKER` | `TurnBroker` | `v2-ice` |
 
-已有部署继续沿用迁移历史。更新时同时发布 `worker.js`、`worker_ice.mjs` 与 `wrangler.toml`。
+已有部署继续沿用迁移历史。更新时保留完整 `worker/` 源码和根目录 `versions.json`，由 Wrangler 打包部署；沿用原绑定与迁移配置。
 
 ## 配置与发布
 
@@ -45,25 +45,48 @@ wrangler deploy
 | `server_url` | 客户端填写 `wss://HOST/ws` |
 | `PASSWORD` | Worker secret；对应客户端 `password` |
 | 房间口令 | 客户端约定的 `token`，与 TURN API Token 无关 |
+| `PANEL_PATH` | 可选 Worker 变量，面板路径，默认 `/panel`；设为 `off` 可关闭 |
 | `TURN_KEY_ID` / `TURN_KEY_API_TOKEN` | 只配置在 Worker；客户端接收按需签发的短期凭据 |
 
 `build.sh` 只构建客户端，不执行上述部署命令。
+
+## 房间面板
+
+部署后访问 `https://HOST/panel`。先输入信令密码 `PASSWORD`，再输入房间号和客户端配置的房间口令 `token`。
+在 Wrangler 配置的 `[vars]` 中设置 `PANEL_PATH = "/your/path"` 可更换入口；路径由斜杠分隔的字母、数字、下划线或连字符组成，不能使用 `/ws`，无效路径会关闭面板。面板需要 HTTPS 和同源访问。
+
+面板分两页验证：信令密码校验成功后，才显示房间号与房间密码输入页。进入房间后以可拖动、缩放的拓扑图显示设备，实际直连信令的设备以橙色虚线连接 Cloudflare 节点；设备之间的连接以绿色实线、灰色虚线和红色虚线分别表示已确认、协商中和受阻。信令委托设备不绘制到 Cloudflare 的直接连线。
+悬停可预览状态，点击设备、Cloudflare 节点或连线可查看版本、信令状态、连通分组、双方确认的路径、协商与打洞进度、映射 ID 和语音状态。可以切换全部、设备或信令连接图层；手机支持拖动与双指缩放，点按后显示底部详情卡片。设备和连线随事件平滑增删，系统开启减少动态效果时停用动画。
+亮暗主题默认跟随系统，手动选择后只保存主题偏好。切换房间保留当前信令验证，退出则清除当前页面的凭据与房间状态；断线重连期间保留并淡化最后收到的拓扑，直到重新取得房间状态。
+这些数据来自 Worker 已收到的房间图与传输事件；没有新增客户端周期上报或主动探测。委托信令和连接状态以最近收到的事件为准，不能用来推断实时延迟或流量；暂未在 Worker 可见的变化不会显示。
+面板只读，首次加入必须由设备创建房间，面板不能创建房间或占用设备名额。房间口令错误和房间不存在均拒绝访问。
+
+信令密码与房间口令只保存在当前页面内存；断线时使用内存中的凭据重新认证并恢复订阅，关闭页面或退出后需重新输入。浏览器使用有效期 10 分钟的短期会话建立 WebSocket，不把密码放入 URL；更换信令密码会使旧会话无法建立新连接。会话签名密钥保存在现有 `ROOMS` 绑定的独立 Durable Object 中，无需新增绑定或迁移，每个房间最多 32 个面板连接。
 
 ## 升级与兼容
 
 协议升级按 **Worker → 客户端** 顺序部署。
 
+共享核心和 Worker 均至少为 1.1.0 时启用房间控制与按需信令：每个现有连通组保留少量 WS，
+其他成员复用已有 QUIC 接收通知；建连双方临时直接连接 Worker。成员不依赖在线租期，
+健康路径不需要中央周期续租。最后一个入口恢复失败一次后通知组内其他成员共同恢复。
+房间签名密钥、连接图和状态镜像保存在原 Room storage，不新增绑定、secret 或 DO 迁移。
+`worker.version` 独立维护在根 `versions.json`；部署包需包含其依赖，不能只复制两个旧 Worker 源文件。
+ALPN 统一改为 `hole`，旧仅 IPv6 模式已移除，参与连接的核心需同步升级；原 `ipv6` / `allow_legacy`
+配置需要更新。设备图与版本进入 `room_mirror`，面板另外使用现有传输事件展示协商状态。详见 [按需信令协议](PROTOCOL.md#房间控制与按需信令)。
+
 Peer Relay 需要 Worker 和三端客户端协商 `peer-relay-v1`，无需新增绑定、secret 或 Durable Object 迁移。
-Worker 只选择同房间、已与两端直连且有剩余容量的节点，向节点发放短期路由授权；业务密文经客户端的已有连接转发。
+Worker 只选择同房间、已与两端直连的节点，向节点发放绑定运行身份与直连代次的路由授权；业务密文经客户端的已有连接转发。
+新版容量限制由中继本地执行，Worker 不周期续租；旧软件组合仍按协商的租约和容量记录处理。
 直连及打洞耗尽后尝试一次节点路径，无候选或失败则进入原 Hole / TURN 轮次。旧客户端和旧 Worker 保持原有回退行为。
-授权字段、租约及数据帧见 [Peer Relay 协议](PROTOCOL.md#peer-relay-节点中继)。
+授权字段、本地回收及数据帧见 [Peer Relay 协议](PROTOCOL.md#peer-relay-节点中继)。
 
 新版 Worker 的 `joined.live_config` 能力支持在现有 WebSocket 更新服务声明，映射和语音变化
 无需反复退出房间。客户端仍兼容旧 Worker：未声明能力时回退到重新加入。语音原地开关还要求
 双方客户端支持在线配置协议，旧对端会重建对应传输。该能力不需要新增 Durable Object 迁移；
-更新时仍需同时发布两个 Worker 源文件。协议与修订确认规则见 [在线配置](PROTOCOL.md#在线配置与兼容)。
+更新时由完整源码打包。协议与修订确认规则见 [在线配置](PROTOCOL.md#在线配置与兼容)。
 `joined.signal_resume` 能力允许同一运行实例的信令 WebSocket 替换时复用仍健康的数据路径；
-Worker 会按一个传输租约窗口保留代次，网络代次、身份或传输声明变化仍会正常重建。
+新版授权不以时间到期，WS 替换保留健康连接代次；网络、身份或实际传输约束变化仍会正常重建。
 
 路径恢复与手动重选修复需要同时更新 `worker.js`、`worker_ice.mjs` 和两端核心，无需新增绑定、
 secret 或 Durable Object 迁移。重连比较忽略在线声明的确认元数据，备用 Hole 节点变化不再
@@ -123,11 +146,11 @@ UDP 3478、TCP 3478、TCP 80、TLS 5349、TLS 443 排序；缓存键随端口优
 `joined` 声明 `hole-relay-v1` 能力。具备真实映射或语音关系的两端通过 `hole_device` 和
 统一顺序生成 `relay_plan`；无需先创建到中继设备的映射。只有声明固定入口与
 `hole_serve` 的 CLI 可服务。Hole 轮次向中继发送 `hole_grant`，向双方发送带授权的
-`transport_ready`；包含设备身份、运行实例、网络和传输代次、入口及租约。
+`transport_ready`；包含设备身份、运行实例、网络和传输代次、入口及软件版本。
 容量按正在建立或活动的设备对统计，不按映射数统计；暂时不可用时双方按计划回退。
 
 `hole_revoke` 在离线、服务变化和阶段推进时撤销授权。三方重连均重新核对身份，
-端点租约过期后推进传输代次并重新生成路由和密钥；中继单独同步不能延长已过期授权。
+新版中继本地管理容量和生命周期；任一端 2 分钟没有认证流量即回收路由。已回收的旧代次授权不能被同步重放复活。
 `hole_failed` 保存失败状态，休眠后不得恢复旧路由。Hole 轮次不需要 TURN broker 配置。
 旧 Worker、旧对端及旧中继必须先升级；未使用 Hole 的设备继续使用原兼容流程。
 部署顺序为 Worker → 客户端。
@@ -157,4 +180,4 @@ node --test worker/worker_ice.test.mjs worker/worker_fixture.test.mjs
 
 测试使用内存 Durable Object 模型，覆盖协商、关系恢复、候选路由、续租和 broker 行为。
 实际部署后还需检查账户绑定、WSS 连接、短期凭据签发与真实网络的直连 / 中继路径。
-迁移、租约和会话恢复约定见 [协议说明](PROTOCOL.md)。
+迁移、按需信令和会话恢复约定见 [协议说明](PROTOCOL.md)。

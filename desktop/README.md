@@ -160,7 +160,7 @@ Linux 默认网关读取 `/proc/net/route`，Windows 使用系统 IPv4 路由表
 ## 房间语音
 
 侧栏“语音”页提供语音开关、静音、房间成员和语音线路状态。双方填写相同房间并开启语音，
-启动连接后自动建立通话，无需添加服务映射。语音需要自动 / ICE 连接方式；仅 IPv6 模式下不能启用。
+启动连接后自动建立通话，无需添加服务映射。连接与语音均使用共享 ICE / QUIC；旧仅 IPv6 模式已移除。
 语音开关保存在本机配置，支持 CLI YAML、桌面备份及 Android 备份交换；旧配置默认关闭。
 
 Rust 使用 CPAL 打开系统默认麦克风和播放设备：Linux 使用 ALSA，Windows 使用 WASAPI。
@@ -311,7 +311,6 @@ Hole；没有本端设备名仍可参与对端指定的 Hole 路径。配置存�
       "token": "ROOM_TOKEN",
       "device_name": "desktop",
       "session_timeout": "10m",
-      "transport": {"preferred": "ice", "allow_legacy": true},
       "provide": [{"id": "ssh", "service": "tcp://127.0.0.1:22"}],
       "consume": []
     }

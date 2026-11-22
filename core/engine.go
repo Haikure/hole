@@ -40,7 +40,7 @@ func (r Request) validated() (Request, error) {
 		return Request{}, &Fault{Code: "invalid_config", Message: "server_url 需要完整 ws:// 或 wss:// URL，凭据使用独立字段"}
 	}
 	r.Config = r.Config.normalized()
-	if r.Config.Transport.Preferred == PreferredICE && u.Scheme != "wss" && !r.Config.Transport.AllowInsecureSignal {
+	if u.Scheme != "wss" && !r.Config.Transport.AllowInsecureSignal {
 		return Request{}, &Fault{Code: "insecure_signal", Message: "ICE 使用 wss:// 信令；本地 ws:// 测试需显式开启 transport.allow_insecure_signal"}
 	}
 	if err := r.Config.Validate(); err != nil {
@@ -53,8 +53,7 @@ type engineRun struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	done       chan struct{}
-	agent      *Agent // protected by Engine.mu
-	err        error  // published by closing done
+	err        error // published by closing done
 	generation uint64
 	changes    chan struct{}
 	epoch      uint64 // invalidates callbacks before a replacement starts
@@ -158,7 +157,6 @@ func (e *Engine) finishRun(run *engineRun, err error) {
 	defer run.cancel()
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	run.agent = nil
 	run.sessions = nil
 	e.signal = "disconnected"
 	if run.ctx.Err() != nil || errors.Is(err, context.Canceled) {
@@ -262,22 +260,6 @@ func (e *Engine) ApplyConfig(request Request) error {
 	previous := e.request
 	e.setRequestLocked(request, true)
 	e.lastError = nil
-	if previous != nil && request.Config.Transport.Preferred != PreferredICE && e.run != nil && e.run.sessions != nil {
-		old, next := *previous, request
-		old.Config.SessionTimeout, next.Config.SessionTimeout = 0, 0
-		if sameEffective(old, next) {
-			manager := e.run.sessions
-			// Session teardown can publish Engine events while holding its lock.
-			// Keep the existing manager -> Engine lock order.
-			e.mu.Unlock()
-			manager.mu.Lock()
-			manager.timeout = request.Config.SessionTimeout
-			manager.mu.Unlock()
-			e.mu.Lock()
-			e.publishLocked(Event{Kind: "config", State: "applied"})
-			return nil
-		}
-	}
 	if e.requested && e.run != nil {
 		e.state = "reconfiguring"
 		if previous != nil && e.run.ice != nil && sameScope(*previous, request) {
@@ -479,7 +461,7 @@ func (e *Engine) agentEventEpoch(run *engineRun, epoch *uint64, event Event) {
 			return
 		}
 		event.appliedConfig = nil
-		if event.State == "applied" && e.signal == "joined" {
+		if event.State == "applied" && (e.signal == "joined" || e.signal == "delegated") {
 			previousState := e.state
 			e.state, e.lastError = "running", nil
 			if previousState != e.state {
@@ -497,7 +479,7 @@ func (e *Engine) agentEventEpoch(run *engineRun, epoch *uint64, event Event) {
 			e.reconnects++
 		}
 		e.signal = event.State
-		if event.State == "joined" {
+		if event.State == "joined" || event.State == "delegated" {
 			e.state = "running"
 			e.lastError = nil
 		} else {
@@ -571,7 +553,7 @@ func (e *Engine) Snapshot() Snapshot {
 		TransportGeneration: e.transportGeneration, NetworkChanges: e.networkChanges, Reconnects: e.reconnects,
 		StartedAt: e.startedAt, Network: e.network.clone(),
 		NATDiagnostic: e.natDiagnostic.view(),
-		Mappings:      []MappingSnapshot{}, PeerTransports: []PeerTransportSnapshot{}, Voice: VoiceSnapshot{State: "disabled", Members: []VoiceMemberSnapshot{}, Peers: []VoicePeerSnapshot{}}, Capabilities: Capabilities{Transport: "IPv6 / QUIC / hole-v2", RequiresIPv6: true, LiveConfiguration: true},
+		Mappings:      []MappingSnapshot{}, PeerTransports: []PeerTransportSnapshot{}, Voice: VoiceSnapshot{State: "disabled", Members: []VoiceMemberSnapshot{}, Peers: []VoicePeerSnapshot{}}, Capabilities: Capabilities{Transport: "ICE / 固定入口直连 / QUIC / hole", LiveConfiguration: true},
 	}
 	s.Network.NAT = natUnknown()
 	s.Capabilities.HoleRelay = true
@@ -591,10 +573,8 @@ func (e *Engine) Snapshot() Snapshot {
 	if s.Voice.Enabled {
 		s.Voice.State = "waiting"
 	}
-	if e.request.Config.Transport.Preferred == PreferredICE {
-		s.Capabilities.Transport = "ICE / 固定入口直连 / QUIC / mux-v1"
-		s.Capabilities.RequiresIPv6 = false
-	}
+	s.Capabilities.Transport = "ICE / 固定入口直连 / QUIC / hole"
+	s.Capabilities.RequiresIPv6 = false
 	var manager *sessionManager
 	var coordinator *iceCoordinator
 	if e.run != nil {
@@ -618,10 +598,16 @@ func (e *Engine) Snapshot() Snapshot {
 	for _, item := range e.request.Config.Consume {
 		appendMapping(item.ID)
 	}
+	redactConfig := e.request.Config
 	e.mu.Unlock()
 	activeMappings := map[string]bool{}
 	if coordinator != nil {
 		s.PeerTransports = coordinator.snapshot()
+		if coordinator.room != nil {
+			room := coordinator.room.snapshot()
+			s.Room = &room
+			s.WorkerVersion = room.WorkerVersion
+		}
 		s.Relay = coordinator.relaySnapshot()
 		activeMappings = coordinator.activeMappings()
 		s.Voice = coordinator.voiceSnapshot()
@@ -637,6 +623,10 @@ func (e *Engine) Snapshot() Snapshot {
 		mapping.TCPSessions, mapping.UDPSessions = stats[mapping.ID].tcp, stats[mapping.ID].udp
 		mapping.TCPReadBytes, mapping.TCPWrittenBytes, mapping.ReplayBytes = stats[mapping.ID].tcpRead, stats[mapping.ID].tcpWritten, stats[mapping.ID].buffered
 		mapping.ReadBytes, mapping.WrittenBytes = stats[mapping.ID].read, stats[mapping.ID].written
+		mapping.Listener = stats[mapping.ID].listener
+		if mapping.Listener != nil && mapping.Listener.Error != nil {
+			mapping.Listener.Error.Message = redact(mapping.Listener.Error.Message, redactConfig)
+		}
 		if activeMappings[mapping.ID] || (stats[mapping.ID].active && s.SignalState == "joined") {
 			mapping.State = "active"
 			if !isSessionFault(mapping.Error) {

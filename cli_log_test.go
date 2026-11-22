@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -100,7 +101,7 @@ func TestCLIFixedPathShowsEndpointActualAddressAndFailure(t *testing.T) {
 func TestCLIStartupExplainsEffectivePolicyWithoutCredentials(t *testing.T) {
 	r, output := testReporter(t)
 	r.startup()
-	for _, want := range []string{"hole development", "设备 desktop"} {
+	for _, want := range []string{"hole " + core.CoreVersion, "设备 desktop", "房间 fixture", "信令 wss://fixture.invalid/ws", "连接策略: 直连优先"} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("missing %q in %s", want, output)
 		}
@@ -137,7 +138,7 @@ func TestCLILogsActualPathChangesButNotStatisticsOrLeases(t *testing.T) {
 	p.ActiveChannels, p.ConnectMS, p.RelayState = 2, 100, "ready"
 	s.PeerTransports[0] = p
 	r.snapshot(s)
-	if !strings.Contains(output.String(), "已连接 直连/IPv4 100ms") || strings.Contains(output.String(), "通道") {
+	if !strings.Contains(output.String(), "已连接 直连/IPv4，耗时 100ms") || !strings.Contains(output.String(), "对端 "+p.RemoteAddress) || strings.Contains(output.String(), "通道") {
 		t.Fatal(output)
 	}
 	output.Reset()
@@ -181,7 +182,7 @@ func TestCLILogsActualPathChangesButNotStatisticsOrLeases(t *testing.T) {
 	}
 }
 
-func TestCLIEventsKeepMappingContextAndRedactErrors(t *testing.T) {
+func TestCLIEventsKeepMappingContextAndPreserveErrors(t *testing.T) {
 	r, output := testReporter(t)
 	e := core.Event{Kind: "mapping", MappingID: "ssh", State: "active", Peer: "peer", Protocol: "tcp", Profile: core.ProfileICE}
 	r.event(e)
@@ -196,7 +197,7 @@ func TestCLIEventsKeepMappingContextAndRedactErrors(t *testing.T) {
 	e.SessionID, e.Target, e.Stage = "session-fixture", "127.0.0.1:12345", "dial"
 	e.Error = &core.Fault{Code: "service_refused", Message: "PRIVATE_SIGNAL_PASSWORD PRIVATE_ROOM_TOKEN PRIVATE_TURN_USER PRIVATE_TURN_CREDENTIAL\nforged line"}
 	r.event(e)
-	if strings.Contains(output.String(), "PRIVATE_") || strings.Count(output.String(), "\n") != 1 || !strings.Contains(output.String(), "service_refused") || !strings.Contains(output.String(), "目标 127.0.0.1:12345") || !strings.Contains(output.String(), "拒绝连接") {
+	if !strings.Contains(output.String(), logText(e.Error.Message)) || strings.Contains(output.String(), "[redacted]") || strings.Count(output.String(), "\n") != 1 || !strings.Contains(output.String(), "service_refused") || !strings.Contains(output.String(), "目标 127.0.0.1:12345") || !strings.Contains(output.String(), "拒绝连接") {
 		t.Fatal(output)
 	}
 	r.snapshot(core.Snapshot{Configured: true, EventsDropped: 3})
@@ -247,6 +248,82 @@ func TestCLIConnectionLogIncludesMeasuredQUICRTT(t *testing.T) {
 				t.Fatalf("connection log omitted measured RTT: %s", output)
 			}
 		})
+	}
+}
+
+func TestCLIConnectedEndpointsAndElapsedTime(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		peer core.PeerTransportSnapshot
+		want string
+	}{
+		{"IPv4", core.PeerTransportSnapshot{PathType: "direct", RemoteAddress: "203.0.113.5:42117"}, "对端 203.0.113.5:42117"},
+		{"IPv6", core.PeerTransportSnapshot{PathType: "direct", RemoteAddress: "[2001:db8::5]:42117"}, "对端 [2001:db8::5]:42117"},
+		{"fixed", core.PeerTransportSnapshot{Profile: core.ProfileFixed, PathType: "fixed", FixedEndpoint: "gateway.example:50000", RemoteAddress: "203.0.113.5:50000"}, "对端 203.0.113.5:50000"},
+		{"local TURN", core.PeerTransportSnapshot{PathType: "relay", RelaySide: "local", RemoteAddress: "203.0.113.5:42117"}, "对端 203.0.113.5:42117"},
+		{"remote TURN", core.PeerTransportSnapshot{PathType: "relay", RelaySide: "remote", RemoteAddress: "198.51.100.8:41000"}, "对端中继 198.51.100.8:41000"},
+		{"Hole", core.PeerTransportSnapshot{PathType: "hole", RelayDevice: "relay", RemoteAddress: "198.51.100.8:40000", RelayAccessAddress: "198.51.100.8:40000"}, "中继 198.51.100.8:40000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, output := testReporter(t)
+			p := tc.peer
+			p.PeerID, p.State, p.ConnectMS, p.RTTMS = "laptop", "active", 1200, 28
+			r.peer(p)
+			for _, want := range []string{"laptop: 已连接", tc.want, "耗时 1.2s", "RTT 28ms"} {
+				if !strings.Contains(output.String(), want) {
+					t.Fatalf("missing %q: %s", want, output)
+				}
+			}
+			if strings.Count(output.String(), p.RemoteAddress) != 1 || strings.Contains(output.String(), "建连") {
+				t.Fatal("address duplicated or old elapsed label remains", output)
+			}
+			output.Reset()
+			p.State = "paused"
+			r.peer(p)
+			if !strings.HasSuffix(output.String(), "WARN  设备 laptop: 离线\n") || strings.Count(output.String(), "\n") != 1 {
+				t.Fatal("offline log retained old path details", output)
+			}
+			output.Reset()
+			p.State = "active"
+			r.peer(p)
+			if !strings.Contains(output.String(), "已恢复") || !strings.Contains(output.String(), tc.want) {
+				t.Fatal("recovery omitted the current endpoint", output)
+			}
+		})
+	}
+}
+
+func TestCLISwitchAndAddressChangeUseCurrentEndpoint(t *testing.T) {
+	r, output := testReporter(t)
+	p := core.PeerTransportSnapshot{PeerID: "laptop", State: "active", PathType: "direct", Generation: 1, RemoteAddress: "203.0.113.5:42117", ConnectMS: 100}
+	r.peer(p)
+	p.State, p.PendingPhase = "switching", "direct"
+	r.peer(p)
+	output.Reset()
+	p.State, p.PendingPhase, p.Generation, p.RemoteAddress = "active", "", 2, "203.0.113.6:42118"
+	r.peer(p)
+	if !strings.Contains(output.String(), "已切换") || !strings.Contains(output.String(), p.RemoteAddress) || strings.Contains(output.String(), "203.0.113.5:42117") {
+		t.Fatal("switch reported an old endpoint", output)
+	}
+	output.Reset()
+	p.RemoteAddress = "203.0.113.7:42119"
+	r.peer(p)
+	r.peer(p)
+	if !strings.Contains(output.String(), "连接地址已更新") || !strings.Contains(output.String(), p.RemoteAddress) || strings.Contains(output.String(), "耗时") || strings.Count(output.String(), "\n") != 1 {
+		t.Fatal("address update was hidden, repeated, or reused old handshake timing", output)
+	}
+}
+
+func TestCLIPeerRelayShowsActualOuterEndpoint(t *testing.T) {
+	r, output := testReporter(t)
+	s := core.Snapshot{Configured: true, PeerTransports: []core.PeerTransportSnapshot{
+		{PeerID: "laptop", TransportID: "a-inner", State: "active", PathType: "peer_relay", RelayDevice: "relay", RemoteAddress: "127.0.0.2:1", RelayEndpoint: "old.example:40000"},
+		{PeerID: "relay", TransportID: "z-outer", State: "active", PathType: "direct", RemoteAddress: "203.0.113.8:41000"},
+	}}
+	r.snapshot(s)
+	line := strings.Split(output.String(), "\n")[0]
+	if !strings.Contains(line, "laptop: 已连接 节点中继") || !strings.Contains(line, "中继 203.0.113.8:41000") || strings.Contains(line, "127.0.0.2:1") || strings.Contains(line, "old.example") {
+		t.Fatal("node relay endpoint was virtual, stale, or depended on display order", output)
 	}
 }
 
@@ -323,7 +400,7 @@ func TestCLIStartupAndReadyDistinguishServiceRoles(t *testing.T) {
 	output.Reset()
 	r.event(core.Event{Kind: "mapping", MappingID: "共享服务", State: "waiting_peer"})
 	r.event(core.Event{Kind: "mapping", MappingID: "SSH", State: "waiting_peer"})
-	if !strings.Contains(output.String(), "等待提供方上线") || !strings.Contains(output.String(), "等待访问方上线") {
+	if !strings.Contains(output.String(), "提供方离线") || !strings.Contains(output.String(), "访问方离线") || strings.Contains(output.String(), "上线") {
 		t.Fatal(output)
 	}
 	output.Reset()
@@ -349,13 +426,13 @@ func TestCLIDebugPreservesDiagnosticsAndEscapesAllInputs(t *testing.T) {
 	e := core.Event{Kind: "session", MappingID: "SSH\n伪造", Peer: "设备\x1b[31m", State: "error", Protocol: "tcp", SessionID: "session-fixture", Target: "127.0.0.1:22", Stage: "dial", Phase: "direct", TransportGeneration: 7,
 		Error: &core.Fault{Code: "service_refused", Message: "PRIVATE_SIGNAL_PASSWORD PRIVATE_ROOM_TOKEN PRIVATE_TURN_USER PRIVATE_TURN_CREDENTIAL\nforged line " + r.request.ServerURL + " " + url.QueryEscape(r.request.ServerURL)}}
 	r.event(e)
-	for _, hidden := range []string{"session-fixture", "代次", "PRIVATE_", "\x1b", "\u3010", "\u300c", "\u00b7"} {
+	for _, hidden := range []string{"session-fixture", "代次", "[redacted]", "\x1b", "\u3010", "\u300c", "\u00b7"} {
 		if strings.Contains(output.String(), hidden) {
 			t.Fatalf("default log contains %q: %s", hidden, output)
 		}
 	}
-	if strings.Count(output.String(), "\n") != 1 {
-		t.Fatal("untrusted fields injected log lines", output)
+	if strings.Count(output.String(), "\n") != 1 || !strings.Contains(output.String(), logText(e.Error.Message)) {
+		t.Fatal("error content was changed or injected log lines", output)
 	}
 	output.Reset()
 	r.debug = true
@@ -459,8 +536,14 @@ func TestCLISignalRetryDoesNotClaimBusinessDisconnection(t *testing.T) {
 		r.event(core.Event{Kind: "signal", State: "connecting"})
 		r.peer(p)
 	}
-	if strings.Count(output.String(), "\n") != 2 || !strings.Contains(output.String(), "信令连接中断") || strings.Contains(output.String(), "服务中断") {
+	if strings.Count(output.String(), "\n") != 4 || !strings.Contains(output.String(), "WARN  信令连接断开 [信令委托]") || !strings.Contains(output.String(), " x5") || strings.Contains(output.String(), "服务中断") {
 		t.Fatal(output)
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	for i := 0; i < len(lines); i += 2 {
+		if !strings.Contains(lines[i], "信令断开原因: network_error: raw") || !strings.Contains(lines[i+1], "WARN  信令连接断开 [信令委托]") {
+			t.Fatal("cause must precede each outage summary", output)
+		}
 	}
 	output.Reset()
 	r.event(core.Event{Kind: "signal", State: "joined"})
@@ -470,8 +553,79 @@ func TestCLISignalRetryDoesNotClaimBusinessDisconnection(t *testing.T) {
 	}
 	initial, initialOutput := testReporter(t)
 	initial.event(core.Event{Kind: "signal", State: "reconnecting", Error: &core.Fault{Code: "signal_auth_failed"}})
-	if strings.Contains(initialOutput.String(), "中断") || !strings.Contains(initialOutput.String(), "signal_auth_failed") {
+	if strings.Contains(initialOutput.String(), "信令连接断开") || !strings.Contains(initialOutput.String(), "signal_auth_failed") {
 		t.Fatal("first connection failure described as an outage", initialOutput)
+	}
+}
+
+func TestCLISignalDisconnectSeverityUsesCurrentConnections(t *testing.T) {
+	for _, tc := range []struct {
+		name, peerState, room, want string
+	}{
+		{"live peer", "active", `{"signal_via":["peer"]}`, "WARN  信令连接断开 [信令委托]"},
+		{"switching peer", "switching", `{"signal_via":["peer"]}`, "WARN  信令连接断开 [信令委托]"},
+		{"last signal despite live data peer", "active", `{"groups":[{"members":["desktop","peer"],"signaling":["desktop"]}]}`, "ERROR 信令连接断开"},
+		{"reachable room route", "", `{"signal_via":["peer"]}`, "WARN  信令连接断开 [信令委托]"},
+		{"last signal connection", "", `{"groups":[{"members":["desktop"],"signaling":["desktop"]}]}`, "ERROR 信令连接断开"},
+		{"pending is not connected", "connecting", `{"groups":[{"members":["desktop"],"signaling":["desktop"]}]}`, "ERROR 信令连接断开"},
+		{"other group cannot delegate", "paused", `{"groups":[{"members":["desktop"],"signaling":["desktop"]},{"members":["other"],"signaling":["other"]}]}`, "ERROR 信令连接断开"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, output := testReporter(t)
+			r.event(core.Event{Kind: "signal", State: "joined"})
+			// A cached connection must not override the current snapshot.
+			r.peer(core.PeerTransportSnapshot{PeerID: "old", State: "active", PathType: "direct"})
+			output.Reset()
+			s := core.Snapshot{Configured: true, SignalState: "reconnecting", Room: testCLIRoom(t, tc.room)}
+			if tc.peerState != "" {
+				s.PeerTransports = []core.PeerTransportSnapshot{{PeerID: "peer", State: tc.peerState}}
+			}
+			r.eventWithSnapshot(core.Event{Kind: "signal", State: "reconnecting", Error: &core.Fault{Code: "network_error", Message: "EOF PRIVATE_ROOM_TOKEN\n\x1b[31m"}}, s)
+			lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+			if len(lines) != 2 || !strings.Contains(lines[0], "信令断开原因: network_error: EOF PRIVATE_ROOM_TOKEN") || !strings.HasSuffix(lines[1], tc.want) {
+				t.Fatal("wrong severity, missing cause, or reversed output order", output)
+			}
+			if strings.Contains(output.String(), "[redacted]") || strings.Contains(output.String(), "\x1b") {
+				t.Fatal("signal error was changed or bypassed terminal escaping", output)
+			}
+			stamp := regexp.MustCompile(`^\d{2}:\d{2}:\d{2} `)
+			for _, line := range lines {
+				if !stamp.MatchString(line) {
+					t.Fatal("time prefix was removed", output)
+				}
+			}
+		})
+	}
+}
+
+func TestCLIDelegatedOutageEscalatesWhenLastConnectionIsLost(t *testing.T) {
+	r, output := testReporter(t)
+	s := core.Snapshot{Configured: true, SignalState: "joined", PeerTransports: []core.PeerTransportSnapshot{{PeerID: "peer", State: "active", PathType: "direct"}}, Room: testCLIRoom(t, `{"signal_via":["peer"]}`)}
+	r.followEvent(core.Event{Kind: "signal", State: "joined"}, s)
+	s.SignalState = "delegated"
+	r.followEvent(core.Event{Kind: "signal", State: "reconnecting", Error: &core.Fault{Code: "network_error", Message: "EOF"}}, s)
+	output.Reset()
+	r.followEvent(core.Event{Kind: "signal", State: "delegated"}, s)
+	if output.Len() != 0 {
+		t.Fatal("delegation repeated the outage or claimed recovery", output)
+	}
+	s.PeerTransports, s.Room = nil, testCLIRoom(t, `{"groups":[{"members":["desktop"],"signaling":["desktop"]}]}`)
+	r.followEvent(core.Event{Kind: "room", State: "changed"}, s)
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) < 2 || !strings.HasSuffix(lines[len(lines)-2], "ERROR 信令断开原因: network_error: EOF") || !strings.HasSuffix(lines[len(lines)-1], "ERROR 信令连接断开") {
+		t.Fatal("last connection loss did not escalate with its cause", output)
+	}
+	output.Reset()
+	for i := 0; i < 6; i++ {
+		r.snapshot(s)
+	}
+	if output.Len() != 0 {
+		t.Fatal("snapshot reads counted as signal retries", output)
+	}
+	s.SignalState = "joined"
+	r.followEvent(core.Event{Kind: "signal", State: "joined"}, s)
+	if strings.Count(output.String(), "信令已恢复") != 1 || strings.Contains(output.String(), "信令连接断开") {
+		t.Fatal("direct signaling recovery retained the outage", output)
 	}
 }
 
@@ -503,6 +657,151 @@ func TestCLIPathRetriesUseRetryCountNotGeneration(t *testing.T) {
 	r.peer(p)
 	if !strings.Contains(output.String(), "连接中断") || !strings.Contains(output.String(), "已恢复 TLS 中继") {
 		t.Fatal("actual outage or recovery missing", output)
+	}
+}
+
+func testCLIRoom(t *testing.T, data string) *core.RoomSnapshot {
+	t.Helper()
+	var room core.RoomSnapshot
+	if err := json.Unmarshal([]byte(data), &room); err != nil {
+		t.Fatal(err)
+	}
+	return &room
+}
+
+func TestCLIRoomPresenceReportsOfflineAndRecovery(t *testing.T) {
+	r, output := testReporter(t)
+	p := core.PeerTransportSnapshot{PeerID: "huawei", TransportID: "pair", State: "active", PathType: "direct"}
+	s := core.Snapshot{Configured: true, EngineState: "running", SignalState: "joined", PeerTransports: []core.PeerTransportSnapshot{p},
+		Room: testCLIRoom(t, `{"members":[{"device_name":"desktop"},{"device_name":"huawei"}],"groups":[{"group_id":"desktop","members":["desktop","huawei"],"signaling":["desktop"]}]}`)}
+	r.snapshot(s)
+	output.Reset()
+
+	p.State, p.RetryCount = "reconnecting", 5
+	s.PeerTransports[0] = p
+	s.Room = testCLIRoom(t, `{"members":[{"device_name":"desktop"}],"groups":[{"group_id":"desktop","members":["desktop"],"signaling":["desktop"]}]}`)
+	r.snapshot(s)
+	p.RetryCount = 10
+	s.PeerTransports[0] = p
+	r.snapshot(s)
+	if got := output.String(); strings.Count(got, "WARN  设备 huawei: 离线\n") != 1 || strings.Contains(got, "重连中") || strings.Contains(got, "重试中") || strings.Contains(got, "等待") {
+		t.Fatalf("offline peer reported as retrying: %s", got)
+	}
+
+	output.Reset()
+	s.Room = testCLIRoom(t, `{"members":[{"device_name":"desktop"}],"groups":[{"group_id":"desktop","members":["desktop"],"signaling":["desktop"]},{"group_id":"huawei","members":["huawei"],"signaling":["huawei"]}]}`)
+	r.snapshot(s)
+	if !strings.Contains(output.String(), "huawei: 重试中") || strings.Contains(output.String(), "离线") {
+		t.Fatalf("returning peer was still shown offline: %s", output)
+	}
+	output.Reset()
+	p.State, p.PathType = "active", "direct"
+	s.PeerTransports[0] = p
+	r.snapshot(s)
+	if !strings.Contains(output.String(), "huawei: 已恢复 直连") {
+		t.Fatalf("connection recovery missing: %s", output)
+	}
+}
+
+func TestCLIRoomPresenceWaitsForTopologyAfterConnectionLoss(t *testing.T) {
+	r, output := testReporter(t)
+	p := core.PeerTransportSnapshot{PeerID: "huawei", TransportID: "pair", State: "active", PathType: "direct"}
+	s := core.Snapshot{Configured: true, EngineState: "running", SignalState: "joined", PeerTransports: []core.PeerTransportSnapshot{p},
+		Room: testCLIRoom(t, `{"members":[{"device_name":"desktop"},{"device_name":"huawei"}],"groups":[{"group_id":"desktop","members":["desktop","huawei"],"signaling":["desktop"]}]}`)}
+	r.snapshot(s)
+	output.Reset()
+
+	// The local edge is gone, while the Worker's previous graph still contains it.
+	p.State = "reconnecting"
+	s.PeerTransports[0] = p
+	s.Room = testCLIRoom(t, `{"members":[{"device_name":"desktop"}],"groups":[{"group_id":"desktop","members":["desktop","huawei"],"signaling":["desktop"]}]}`)
+	r.snapshot(s)
+	r.snapshot(s)
+	if got := output.String(); strings.Count(got, "连接中断，对端状态未知") != 1 || strings.Contains(got, "离线") || strings.Contains(got, "重试中") || strings.Contains(got, "重连中") {
+		t.Fatalf("stale graph was treated as confirmed presence: %s", got)
+	}
+	output.Reset()
+	s.Room = testCLIRoom(t, `{"members":[{"device_name":"desktop"}],"groups":[{"group_id":"desktop","members":["desktop"],"signaling":["desktop"]}]}`)
+	r.snapshot(s)
+	if !strings.Contains(output.String(), "WARN  设备 huawei: 离线\n") {
+		t.Fatalf("confirmed offline state missing: %s", output)
+	}
+}
+
+func TestCLIRoomPresenceDoesNotMistakeOnlineOrUnknownForOffline(t *testing.T) {
+	for _, tc := range []struct {
+		name, signal, room, want string
+	}{
+		{"reachable through room", "delegated", `{"signal_via":["relay"],"members":[{"device_name":"desktop"},{"device_name":"huawei"}],"groups":[{"members":["desktop","huawei"],"signaling":["relay"]}]}`, "重连中"},
+		{"direct signaling", "joined", `{"members":[{"device_name":"desktop"}],"groups":[{"members":["desktop","huawei"],"signaling":["desktop","huawei"]}]}`, "重连中"},
+		{"different group", "joined", `{"members":[{"device_name":"desktop"}],"groups":[{"members":["desktop"],"signaling":["desktop"]},{"members":["huawei"],"signaling":["huawei"]}]}`, "重连中"},
+		{"local signaling unavailable", "reconnecting", `{"members":[{"device_name":"desktop"}],"groups":[{"members":["desktop"],"signaling":["desktop"]}]}`, "对端状态未知"},
+		{"delegated signal route lost", "delegated", `{"members":[{"device_name":"desktop"}],"groups":[{"members":["desktop"],"signaling":["desktop"]}]}`, "对端状态未知"},
+		{"own group missing", "joined", `{"members":[{"device_name":"desktop"}],"groups":[{"members":["other"],"signaling":["other"]}]}`, "对端状态未知"},
+		{"no room graph", "joined", `{"members":[{"device_name":"desktop"}],"groups":[]}`, "重连中"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, output := testReporter(t)
+			p := core.PeerTransportSnapshot{PeerID: "huawei", TransportID: "pair", State: "active", PathType: "direct"}
+			s := core.Snapshot{Configured: true, EngineState: "running", SignalState: tc.signal, PeerTransports: []core.PeerTransportSnapshot{p}, Room: testCLIRoom(t, tc.room)}
+			r.snapshot(s)
+			output.Reset()
+			p.State = "reconnecting"
+			s.PeerTransports[0] = p
+			r.snapshot(s)
+			if got := output.String(); !strings.Contains(got, tc.want) || strings.Contains(got, "离线") {
+				t.Fatalf("incorrect presence: %s", got)
+			}
+		})
+	}
+}
+
+func TestCLIRoomPresenceKeepsActivePathsAndErrorsVisible(t *testing.T) {
+	r, output := testReporter(t)
+	p := core.PeerTransportSnapshot{PeerID: "huawei", TransportID: "pair", State: "active", PathType: "direct"}
+	s := core.Snapshot{Configured: true, EngineState: "running", SignalState: "joined", PeerTransports: []core.PeerTransportSnapshot{p},
+		Room: testCLIRoom(t, `{"members":[{"device_name":"desktop"}],"groups":[{"members":["desktop"],"signaling":["desktop"]}]}`)}
+	r.snapshot(s)
+	if !strings.Contains(output.String(), "已连接 直连") || strings.Contains(output.String(), "离线") {
+		t.Fatalf("live path masked by stale Worker state: %s", output)
+	}
+	output.Reset()
+	p.State, p.Error = "error", &core.Fault{Code: "peer_identity_mismatch"}
+	s.PeerTransports[0] = p
+	r.snapshot(s)
+	if !strings.Contains(output.String(), "连接失败") || strings.Contains(output.String(), "离线") {
+		t.Fatalf("terminal error masked by room presence: %s", output)
+	}
+}
+
+func TestCLIRoomPresenceDoesNotShowStaleFixedPathErrors(t *testing.T) {
+	r, output := testReporter(t)
+	p := core.PeerTransportSnapshot{PeerID: "huawei", TransportID: "pair", Profile: core.ProfileFixed, FixedEndpoint: "127.0.0.1:1234", State: "active", PathType: "fixed"}
+	s := core.Snapshot{Configured: true, EngineState: "running", SignalState: "joined", PeerTransports: []core.PeerTransportSnapshot{p},
+		Room: testCLIRoom(t, `{"members":[{"device_name":"desktop"},{"device_name":"huawei"}],"groups":[{"members":["desktop","huawei"],"signaling":["desktop"]}]}`)}
+	r.snapshot(s)
+	output.Reset()
+
+	p.State = "reconnecting"
+	p.Error = &core.Fault{Code: "fixed_path_failed", Message: "固定入口连接已断开，正在重试"}
+	s.PeerTransports[0] = p
+	s.Room = testCLIRoom(t, `{"members":[{"device_name":"desktop"}],"groups":[{"members":["desktop","huawei"],"signaling":["desktop"]}]}`)
+	r.snapshot(s)
+	s.Room = testCLIRoom(t, `{"members":[{"device_name":"desktop"}],"groups":[{"members":["desktop"],"signaling":["desktop"]}]}`)
+	r.snapshot(s)
+	if got := output.String(); !strings.Contains(got, "对端状态未知，固定入口 127.0.0.1:1234") || !strings.Contains(got, "WARN  设备 huawei: 离线\n") || strings.Contains(got, "正在重试") || strings.Contains(got, "fixed_path_failed") {
+		t.Fatalf("outdated fixed path error contradicted room presence: %s", got)
+	}
+}
+
+func TestCLIRoomPresenceOnlineWaitDoesNotClaimPriorConnection(t *testing.T) {
+	r, output := testReporter(t)
+	p := core.PeerTransportSnapshot{PeerID: "huawei", TransportID: "pair", State: "waiting_peer"}
+	s := core.Snapshot{Configured: true, EngineState: "running", SignalState: "joined", PeerTransports: []core.PeerTransportSnapshot{p},
+		Room: testCLIRoom(t, `{"groups":[{"members":["desktop"],"signaling":["desktop"]},{"members":["huawei"],"signaling":["huawei"]}]}`)}
+	r.snapshot(s)
+	if got := output.String(); !strings.Contains(got, "huawei: 连接中") || strings.Contains(got, "连接中断") || strings.Contains(got, "离线") {
+		t.Fatalf("online peer incorrectly reported as disconnected: %s", got)
 	}
 }
 
@@ -593,8 +892,8 @@ func TestCLILibraryLogsUseDebugChannelAndRestoreGlobalLogger(t *testing.T) {
 		}
 		log.Print("an unexpected library diagnostic")
 		log.Print("an unexpected library diagnostic")
-		if strings.Count(output.String(), "\n") != 1 || !strings.Contains(output.String(), "WARN  网络库: an unexpected library diagnostic") {
-			t.Fatal(output)
+		if output.Len() != 0 {
+			t.Fatal("raw library diagnostic reached default logs", output)
 		}
 		output.Reset()
 		r.debug = true
@@ -605,5 +904,171 @@ func TestCLILibraryLogsUseDebugChannelAndRestoreGlobalLogger(t *testing.T) {
 	}()
 	if log.Writer() != writer || log.Flags() != flags || log.Prefix() != prefix {
 		t.Fatal("global logger configuration was not restored")
+	}
+}
+
+func TestCLIListenerTimelineUsesCurrentStateAndRealServiceEvents(t *testing.T) {
+	r, output := testReporter(t)
+	fault := &core.Fault{Code: "address_in_use", Message: "listen tcp 127.0.0.1:2222: bind: address already in use"}
+	s := core.Snapshot{Configured: true, EngineState: "running", SignalState: "joined",
+		PeerTransports: []core.PeerTransportSnapshot{{PeerID: "laptop", State: "active", PathType: "direct", RemoteAddress: "203.0.113.1:45678"}},
+		Mappings: []core.MappingSnapshot{{ID: "SSH", State: "error", Protocol: "tcp", Peer: "laptop", Error: fault,
+			Listener: &core.ListenerSnapshot{State: "error", Protocol: "tcp", Address: "127.0.0.1:2222", Error: fault}}}}
+	// A queued success must not hide the bind failure in the current snapshot.
+	r.followEvent(core.Event{Kind: "listener", MappingID: "SSH", State: "ready", Target: "old:2222"}, s)
+	if !strings.Contains(output.String(), "ERROR 映射 SSH: 本地端口被占用 tcp://127.0.0.1:2222") || strings.Count(output.String(), "address_in_use") != 1 || strings.Contains(output.String(), "已监听") {
+		t.Fatal("listener failure missing or repeated as a mapping failure", output)
+	}
+	output.Reset()
+	r.snapshot(s)
+	if output.Len() != 0 {
+		t.Fatal("unchanged listener snapshot generated logs", output)
+	}
+	s.Mappings[0].State, s.Mappings[0].Error = "active", nil
+	s.Mappings[0].Listener = &core.ListenerSnapshot{State: "ready", Protocol: "tcp", Address: "127.0.0.1:2222"}
+	r.followEvent(core.Event{Kind: "listener", MappingID: "SSH", State: "error", Error: fault}, s)
+	for _, want := range []string{"INFO  映射 SSH: 监听已恢复 tcp://127.0.0.1:2222", "映射已就绪"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatal("listener recovery missing", want, output)
+		}
+	}
+	if strings.Contains(output.String(), "目标服务") {
+		t.Fatal("listening was mistaken for a target health check", output)
+	}
+	output.Reset()
+	e := core.Event{Kind: "session", MappingID: "SSH", Peer: "laptop", State: "active", Target: "127.0.0.1:22"}
+	for i := 0; i < 3; i++ {
+		e.SessionID = fmt.Sprint(i)
+		r.event(e)
+	}
+	if strings.Count(output.String(), "INFO  服务 SSH: 目标服务已连通，目标 127.0.0.1:22") != 1 {
+		t.Fatal("first service success missing or repeated per session", output)
+	}
+	output.Reset()
+	s.PeerTransports[0].State, s.Mappings[0].State = "waiting_peer", "waiting_peer"
+	r.snapshot(s)
+	if strings.Contains(output.String(), "监听已关闭") {
+		t.Fatal("device loss incorrectly closed a retained listener", output)
+	}
+	output.Reset()
+	s.Mappings = nil
+	r.snapshot(s)
+	r.snapshot(s)
+	if strings.Count(output.String(), "监听已关闭 tcp://127.0.0.1:2222") != 1 {
+		t.Fatal("removed listener closure missing or repeated", output)
+	}
+}
+
+func TestCLIJSONRecordsKeepContextAndFiltering(t *testing.T) {
+	if err := run("missing-config.yaml", cliOptions{logFormat: "yaml"}); err == nil || !strings.Contains(err.Error(), "日志格式") {
+		t.Fatal("invalid log format was not rejected before file access", err)
+	}
+	r, output := testReporter(t)
+	r.format = "json"
+	r.startup()
+	r.event(core.Event{Kind: "log", Message: "hidden raw diagnostics"})
+	r.peer(core.PeerTransportSnapshot{PeerID: "laptop", State: "active", PathType: "direct", Phase: "direct", Generation: 9,
+		RemoteAddress: "[2001:db8::1]:45678", AddressFamily: "IPv6", ConnectMS: 123, RTTMS: 45})
+	e := core.Event{Kind: "session", MappingID: "SSH", Peer: "laptop", State: "error", Target: "127.0.0.1:22",
+		Error: &core.Fault{Code: "service_refused", Message: "quoted \" PRIVATE_ROOM_TOKEN\n" + r.request.ServerURL}}
+	for i := 0; i < 5; i++ {
+		r.event(e)
+	}
+	r.event(core.Event{Kind: "signal", State: "joined"})
+	r.event(core.Event{Kind: "signal", State: "reconnecting", Error: &core.Fault{Code: "network_error", Message: "EOF"}})
+	var records []cliLogRecord
+	for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {
+		var record cliLogRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("invalid JSON log: %v: %s", err, line)
+		}
+		if !regexp.MustCompile(`^\d{2}:\d{2}:\d{2}$`).MatchString(record.Time) || record.Level == "" || record.Component == "" {
+			t.Fatal("missing time, severity or component", line)
+		}
+		records = append(records, record)
+	}
+	var connected, failure, summary bool
+	for _, record := range records {
+		switch record.Component {
+		case "peer":
+			connected = record.Peer == "laptop" && record.RemoteAddress == "[2001:db8::1]:45678" && record.ElapsedMS == 123 && record.RTTMS == 45 && record.TransportGeneration == 9
+		case "session":
+			if record.ErrorCode != "service_refused" || record.MappingID != "SSH" || record.Target != "127.0.0.1:22" || record.ErrorMessage != e.Error.Message {
+				t.Fatal("service context or original error lost", record)
+			}
+			failure = true
+			summary = summary || record.Count == 5
+		}
+	}
+	if !connected || !failure || !summary || strings.Contains(output.String(), "[redacted]") || strings.Contains(output.String(), "hidden raw diagnostics") {
+		t.Fatal("JSON context, filtering or original content changed", output)
+	}
+	last := records[len(records)-2:]
+	if !strings.Contains(last[0].Message, "信令断开原因") || last[1].Message != "信令连接断开 [信令委托]" || last[0].Level != "WARN" || last[1].Level != "WARN" {
+		t.Fatal("signal cause and summary were separated", last)
+	}
+	output.Reset()
+	r.debug = true
+	for i := 0; i < 12; i++ {
+		r.event(core.Event{Kind: "log", State: "warning", Peer: "laptop", Stage: "ice", Phase: "direct", TransportGeneration: 9, Message: "repeated diagnostic"})
+	}
+	if strings.Count(output.String(), "\n") != 3 || !strings.Contains(output.String(), `"count":10`) || !strings.Contains(output.String(), `"level":"DEBUG"`) {
+		t.Fatal("debug repeats were not summarized", output)
+	}
+	output.Reset()
+	r.debugEvent(e)
+	var diagnostic cliLogRecord
+	if err := json.Unmarshal(output.Bytes(), &diagnostic); err != nil || diagnostic.Level != "DEBUG" || !strings.Contains(diagnostic.ErrorMessage, "[redacted]") || strings.Contains(output.String(), "PRIVATE_") {
+		t.Fatal("DEBUG JSON diagnostic lost its credential handling", err, output)
+	}
+}
+
+func TestCLIStatusLogsPreserveNamesMatchingCredentials(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		for _, debug := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/debug=%t", format, debug), func(t *testing.T) {
+				base, _ := testReporter(t)
+				request := base.request
+				request.ServerURL = "wss://hole.bsgm.us.kg/ws"
+				request.Config.DeviceName, request.Config.Room = "nec", "zhuang"
+				request.Config.Password, request.Config.Token = "hole", "zhuang"
+				request.Config.TURN.Username, request.Config.TURN.Credential = "nec", "203.0.113.5"
+				var output bytes.Buffer
+				r := newCLIReporter(log.New(&output, "", log.Ltime), request)
+				r.format, r.debug = format, debug
+				r.startup()
+				r.peer(core.PeerTransportSnapshot{PeerID: "nec", State: "active", PathType: "direct", RemoteAddress: "203.0.113.5:443"})
+				fault := &core.Fault{Code: "service_refused", Message: "hole: connect 203.0.113.5:443 refused"}
+				r.event(core.Event{Kind: "session", MappingID: "hole", Peer: "nec", State: "error", Target: "203.0.113.5:443", Error: fault})
+				r.event(core.Event{Kind: "engine", State: "stopped"})
+				var messages []string
+				for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {
+					if format == "json" {
+						var record cliLogRecord
+						if err := json.Unmarshal([]byte(line), &record); err != nil {
+							t.Fatal(err, line)
+						}
+						if record.Level == "DEBUG" {
+							continue
+						}
+						if strings.Contains(line, "[redacted]") {
+							t.Fatal("ordinary JSON fields were redacted", line)
+						}
+						messages = append(messages, record.Message)
+					} else if !strings.Contains(line, " DEBUG ") {
+						messages = append(messages, line)
+					}
+				}
+				ordinary := strings.Join(messages, "\n")
+				for _, want := range []string{"hole " + core.CoreVersion + " 设备 nec", "房间 zhuang，信令 wss://hole.bsgm.us.kg/ws", "nec: 已连接", "203.0.113.5:443", fault.Message, "hole 已停止"} {
+					if !strings.Contains(ordinary, want) {
+						t.Fatalf("ordinary logs changed %q: %s", want, ordinary)
+					}
+				}
+				if strings.Contains(ordinary, "[redacted]") {
+					t.Fatal("ordinary logs applied credential substitution", ordinary)
+				}
+			})
+		}
 	}
 }

@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { webcrypto } from 'node:crypto';
-import { Room } from './worker.js';
-import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, LEGACY_PROFILE, RELAY_POLICY, negotiateProfile, iceJoinFields, validateTurnResponse, relayPairs, validFixedEndpoint } from './worker_ice.mjs';
+import { webcrypto, timingSafeEqual } from 'node:crypto';
+import worker, { Room } from './worker.js';
+import { panelPath, validPanelSession } from './worker_panel.mjs';
+import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, RELAY_POLICY, negotiateProfile, iceJoinFields, validateTurnResponse, relayPairs, validFixedEndpoint } from './worker_ice.mjs';
 import {HOLE_VERSION,deviceRelayPlan,validNATPlan,validPunch} from './worker_ice.mjs';
+import { roomSigningBytes } from './worker_room.mjs';
 
 test('Peer Relay requires two current direct legs and holds the ordinary fallback round',async()=>{
  for (const evidence of ['missing','relay','stale','direct']) {
@@ -569,6 +571,122 @@ test('Hole install failure persists across Worker hibernation',async()=>{
  await live.webSocketMessage(f.a,JSON.stringify({type:'transport_sync'}));
  assert.match([...live.ice.records.values()][0].hole.error,/不可用/);
 });
+test('concurrent room initialization preserves one key and the latest mirror',async()=>{
+ const f=fixture(),r=new Room(f.state,{});
+ await Promise.all([r.loadState(),r.loadState()]);
+ await r.ice.setRoomName('fixture');
+ const keys=await Promise.all(Array.from({length:8},async()=>{await r.control.ensureKey();return r.control.publicKey}));
+ assert.equal(new Set(keys).size,1);
+ assert.equal(f.values.get('room_control_key').public,keys[0]);
+ const a=f.socket(),b=f.socket();
+ r.registered.set('alpha',{member:join('alpha'),ws:a});r.control.rebuild();
+ let started,release;
+ const waiting=new Promise(resolve=>{started=resolve}),gate=new Promise(resolve=>{release=resolve});
+ const put=f.state.storage.put;let first=true;
+ f.state.storage.put=async(k,v)=>{if(k==='room_mirror'&&first){first=false;started();await gate}return put(k,v)};
+ const one=r.control.publishSnapshot();await waiting;
+ r.registered.set('beta',{member:join('beta'),ws:b});r.control.rebuild();
+ const two=r.control.publishSnapshot();release();await Promise.all([one,two]);
+ const mirror=f.values.get('room_mirror');
+ assert.deepEqual(mirror.members.map(m=>m.device_name),['alpha','beta']);
+ assert.equal(mirror.state_revision,String(r.control.revision));
+ assert.equal(mirror.worker_version,'1.1.0');
+});
+
+test('concurrent initial joins recheck the room token after asynchronous authentication',async t=>{
+ for(const pauseAt of ['certificate','ensureKey']) {
+  for(const sameToken of [false,true]) {
+   await t.test(`${pauseAt}: ${sameToken?'matching':'different'} tokens`,async()=>{
+    const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+    await r.loadState();await r.ice.setRoomName('fixture');
+    let started,release,waiting=0;
+    const bothWaiting=new Promise(resolve=>{started=resolve}),gate=new Promise(resolve=>{release=resolve});
+    const pause=async()=>{if(++waiting===2)started();await gate};
+    const ensureKey=r.control.ensureKey.bind(r.control);
+    r.control.certificate=async()=>{if(pauseAt==='certificate')await pause()};
+    r.control.ensureKey=async()=>{if(pauseAt==='ensureKey')await pause();await ensureKey()};
+    const modern=name=>({...join(name),core_version:'1.1.0',certificate:`fixture-${name}`});
+    const first=r.webSocketMessage(a,JSON.stringify(modern('alpha')));
+    const second=r.webSocketMessage(b,JSON.stringify({...modern('beta'),token:sameToken?'room-secret':'other-secret'}));
+    await bothWaiting;release();await Promise.all([first,second]);
+    assert.equal(a.messages.filter(m=>m.type==='joined').length,1);
+    assert.equal(b.messages.some(m=>m.type==='joined'),sameToken);
+    assert.equal(r.roomToken,'room-secret');assert.equal(f.values.get('token'),'room-secret');
+    assert.equal(r.registered.has('beta'),sameToken);
+    assert.equal(f.values.has('member:beta'),sameToken);
+    if(!sameToken) {
+     assert.equal(b.messages.find(m=>m.type==='error').code,'invalid_token');
+     assert.equal(b.closed,true);assert.equal(b.attachment,null);
+    }
+   });
+  }
+ }
+});
+
+test('a socket cannot join again while its first membership write is pending',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),ws=f.socket();
+ await r.loadState();
+ let started,release;
+ const writing=new Promise(resolve=>{started=resolve}),gate=new Promise(resolve=>{release=resolve});
+ const put=f.state.storage.put;
+ f.state.storage.put=async(k,v)=>{if(k==='member:alpha'){started();await gate}return put(k,v)};
+ const first=r.webSocketMessage(ws,JSON.stringify(join('alpha')));
+ await writing;
+ try {
+  assert.equal(ws.attachment,null);
+  await r.webSocketMessage(ws,JSON.stringify(join('beta')));
+ } finally {
+  release();await first;
+ }
+ assert.equal(ws.messages.some(m=>m.code==='already_joined'),true);
+ assert.equal(ws.messages.filter(m=>m.type==='joined').length,1);
+ assert.deepEqual([...r.registered.keys()],['alpha']);
+ assert.equal(f.values.has('member:beta'),false);
+});
+
+test('stale room graphs cannot abort current updates or restore old network epochs',async()=>{
+ const f=fixture(),r=new Room(f.state,{});
+ await r.ice.setRoomName('fixture');
+ const keys=await webcrypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},false,['sign','verify']);
+ const members=['alpha','beta'].map(name=>({...join(name),core_version:'1.1.0',certificate:'fixture-'+name}));
+ for(const member of members) {
+  r.registered.set(member.device_name,{member,ws:f.socket()});
+  r.control.keys.set(member.runtime_id+'/'+member.cert_fingerprint,{verify:keys.publicKey});
+ }
+ const signed=async(member,revision,epoch)=>{
+  const node={device_name:member.device_name,runtime_id:member.runtime_id,core_version:member.core_version,worker_version:'1.1.0',
+   revision,transport_epoch:epoch,signal_online:true,resident:true,neighbours:[]};
+  const frame={id:revision.padStart(32,'0'),room:'fixture',origin:member.device_name,runtime:member.runtime_id,kind:'node',
+   body:Buffer.from(JSON.stringify(node)).toString('base64'),certificate:member.certificate,hops:16};
+  frame.signature=Buffer.from(await webcrypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},keys.privateKey,roomSigningBytes(frame))).toString('base64');
+  return frame;
+ };
+ const [alpha,beta]=members,old=await signed(alpha,'1','1');
+ assert.equal(await r.control.update([old]),true);
+ alpha.transport_epoch='2';
+ const current=await signed(alpha,'2','2');
+ assert.equal(await r.control.update([old,current]),true);
+ assert.equal(r.control.nodes.get('alpha').node.transport_epoch,'2');
+ await assert.rejects(r.control.update([{...current,signature:Buffer.alloc(64).toString('base64')}]),/signature/);
+ assert.equal(r.control.nodes.get('alpha').frame,current);
+ const pending=await signed(alpha,'3','2'),other=await signed(beta,'1','1');
+ const certificate=r.control.certificate.bind(r.control);
+ r.control.certificate=async member=>{
+  if(member.device_name==='beta') alpha.transport_epoch='3';
+  return certificate(member);
+ };
+ assert.equal(await r.control.update([pending,other]),true);
+ assert.equal(r.control.nodes.get('alpha').node.revision,'2');
+ assert.equal(r.control.nodes.get('beta').frame,other);
+ const fresh=await signed(alpha,'4','3');
+ assert.equal(await r.control.update([fresh,old]),true);
+ assert.equal(r.control.nodes.get('alpha').node.transport_epoch,'3');
+ const staleIdentity={...other,runtime:'c'.repeat(32)};
+ assert.equal(await r.control.update([staleIdentity]),false);
+ assert.equal(r.control.nodes.get('beta').frame,other);
+ assert.equal(f.values.get('room_nodes').find(frame=>frame.origin==='alpha').id,fresh.id);
+});
+
 function fixture(){
  const values=new Map(),sockets=[];
  let alarm=null;const counts={puts:0,lists:0,alarms:0};
@@ -577,9 +695,108 @@ function fixture(){
  function socket(){const s={attachment:null,closed:false,messages:[],serializeAttachment(v){this.attachment=structuredClone(v)},deserializeAttachment(){return structuredClone(this.attachment)},send(v){this.messages.push(JSON.parse(v))},close(){this.closed=true}};sockets.push(s);return s}
  return{values,state,socket,counts};
 }
+
+test('panel authentication is same-origin and rejects invalid sessions before opening a room', async () => {
+ Object.defineProperty(webcrypto.subtle, 'timingSafeEqual', { value: timingSafeEqual, configurable: true });
+ let touches=0;
+ const broker=new Room(fixture().state,{});
+ const env={PASSWORD:'信令 password',ROOMS:{idFromName(name){return name},get(name){if(name==='$hole-panel-sessions')return broker;touches++;return {fetch:async()=>new Response('forwarded')}}}};
+ assert.equal(panelPath(undefined),'/panel');
+ assert.equal(panelPath('/custom/view'),'/custom/view');
+ assert.equal(panelPath('/ws'),null);
+ assert.equal(panelPath('off'),null);
+ const auth=(origin,password)=>new Request('https://example.test/panel/auth',{method:'POST',headers:{Origin:origin},body:JSON.stringify({password})});
+ assert.equal((await worker.fetch(auth('https://evil.test',env.PASSWORD),env)).status,403);
+ assert.equal((await worker.fetch(auth('https://example.test','bad'),env)).status,401);
+ const response=await worker.fetch(auth('https://example.test',env.PASSWORD),env);
+ assert.equal(response.status,200);
+ const {session}=await response.json();
+ assert.equal(await validPanelSession(session,env.PASSWORD),false);
+ assert.equal(await validPanelSession(session,'other'),false);
+ assert.equal(await validPanelSession(session.slice(0,-1)+'x',env.PASSWORD),false);
+ const live=(origin,protocol)=>new Request('https://example.test/panel/live?room=demo',{headers:{Origin:origin,Upgrade:'websocket','Sec-WebSocket-Protocol':protocol}});
+ assert.equal((await worker.fetch(live('https://evil.test',session),env)).status,403);
+ assert.equal((await worker.fetch(live('https://example.test','bad'),env)).status,401);
+ assert.equal(touches,0);
+ assert.equal((await worker.fetch(live('https://example.test',session),env)).status,200);
+ assert.equal(touches,1);
+ assert.equal((await worker.fetch(live('https://example.test',session),{...env,PASSWORD:'changed'})).status,401);
+ const original=Date.now;
+ try { Date.now=()=>original()+601000; assert.equal((await worker.fetch(live('https://example.test',session),env)).status,401); }
+ finally { Date.now=original; }
+ assert.equal((await worker.fetch(new Request('https://example.test/panel'),{PANEL_PATH:'off'})).status,404);
+ assert.equal((await worker.fetch(new Request('https://example.test/custom/view'),{PANEL_PATH:'/custom/view'})).status,200);
+});
+
+test('panel watches only an existing authenticated room and receives event-driven state across hibernation', async () => {
+ const f=fixture(), r=new Room(f.state,{}), empty=f.socket();
+ empty.serializeAttachment({panel:'pending'});
+ await r.webSocketMessage(empty,JSON.stringify({type:'watch',token:'room-secret'}));
+ assert.equal(empty.messages[0].code,'panel_auth_failed');
+ assert.equal(f.values.has('token'),false);
+ const a=f.socket(),b=f.socket();
+ await r.webSocketMessage(a,JSON.stringify(join('alpha',['one'])));
+ const bad=f.socket();bad.serializeAttachment({panel:'pending'});
+ await r.webSocketMessage(bad,JSON.stringify({type:'watch',token:'wrong'}));
+ assert.equal(bad.messages[0].code,'panel_auth_failed');
+ assert.equal(bad.messages.some(m=>m.type==='panel_snapshot'),false);
+ const watch=f.socket();watch.serializeAttachment({panel:'pending'});
+ await r.webSocketMessage(watch,JSON.stringify({type:'watch',token:'room-secret'}));
+ assert.deepEqual(watch.messages.at(-1).members.map(m=>m.device_name),['alpha']);
+ await r.webSocketMessage(b,JSON.stringify(join('beta',[],['one'])));
+ let snapshot=watch.messages.at(-1);
+ assert.deepEqual(snapshot.members.map(m=>m.device_name),['alpha','beta']);
+ assert.equal(snapshot.transports.length,1);
+ assert.deepEqual(snapshot.transports[0].established,['','']);
+ const record=[...r.ice.records.values()][0];
+ for(const ws of [a,b]) await r.webSocketMessage(ws,JSON.stringify({type:'transport_established',transport_id:record.id,transport_generation:record.generation,path_type:'direct'}));
+ snapshot=watch.messages.at(-1);
+ assert.deepEqual(snapshot.transports[0].established,['direct','direct']);
+ assert.equal(JSON.stringify(snapshot).includes('room-secret'),false);
+ assert.equal(JSON.stringify(snapshot).includes('127.0.0.1'),false);
+ const before=watch.messages.length;
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_sync'}));
+ assert.equal(watch.messages.length,before);
+ const resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'direct',reason:'retry'}));
+ assert.equal(watch.closed,false);
+ assert.equal(watch.messages.at(-1).type,'panel_snapshot');
+ assert.equal(watch.messages.at(-1).transports[0].generation,'2');
+ await resumed.webSocketMessage(a,JSON.stringify({type:'transport_failed',transport_id:record.id,transport_generation:'2',code:'peer_identity_mismatch'}));
+ assert.equal(watch.messages.at(-1).transports[0].blocked,'peer_identity_mismatch');
+ await resumed.webSocketMessage(watch,JSON.stringify({type:'leave'}));
+ assert.equal(watch.closed,true);
+ assert.equal(resumed.members.size,2);
+});
 const endpoint={protocol:'tcp',addr:'127.0.0.1',port:22};
-function join(name,provide=[],consume=[]){return{type:'join',signal_version:2,auth_mode:'shared-secret',runtime_id:(name==='alpha'?'a':'b').repeat(32),transport_epoch:'1',transport_profiles:[ICE_PROFILE,LEGACY_PROFILE],session_versions:[2],cert_fingerprint:(name==='alpha'?'a':'b').repeat(64),room:'fixture',token:'room-secret',device_name:name,provide:provide.map(id=>({id,service:endpoint})),consume:consume.map(id=>({id,expose:{addr:'127.0.0.1',port:18080}}))}}
+function join(name,provide=[],consume=[]){return{type:'join',signal_version:2,auth_mode:'shared-secret',runtime_id:(name==='alpha'?'a':'b').repeat(32),transport_epoch:'1',transport_profiles:[ICE_PROFILE],session_versions:[2],cert_fingerprint:(name==='alpha'?'a':'b').repeat(64),room:'fixture',token:'room-secret',device_name:name,provide:provide.map(id=>({id,service:endpoint})),consume:consume.map(id=>({id,expose:{addr:'127.0.0.1',port:18080}}))}}
 async function pair(){const f=fixture();const r=new Room(f.state,{});const a=f.socket(),b=f.socket();await r.webSocketMessage(a,JSON.stringify(join('alpha',['one','two'])));await r.webSocketMessage(b,JSON.stringify(join('beta',[],['one','two'])));return{...f,r,a,b,record:[...r.ice.records.values()][0]}}
+
+function modernJoin(name, provide = [], consume = []) {
+ return {...join(name, provide, consume), core_version:'1.1.0', certificate:'fixture-'+name};
+}
+async function modernFixture() {
+ const f=fixture();
+ const keys=await webcrypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+ const encrypt=await webcrypto.subtle.importKey('spki',await webcrypto.subtle.exportKey('spki',keys.publicKey),{name:'ECDH',namedCurve:'P-256'},false,[]);
+ const newRoom=()=>{
+  const r=new Room(f.state,{});
+  // These lifecycle tests substitute certificate lookup; graph signatures and
+  // notice encryption still use real keys and the production implementation.
+  r.control.certificate=async()=>({verify:keys.publicKey,encrypt});
+  return r;
+ };
+ const r=newRoom();await r.loadState();await r.ice.setRoomName('fixture');
+ const nodeFrame=async(member,neighbours=[],revision=1)=>{
+  const node={device_name:member.device_name,runtime_id:member.runtime_id,core_version:member.core_version,worker_version:'1.1.0',
+   revision:String(revision),transport_epoch:member.transport_epoch,signal_online:true,resident:true,neighbours};
+  const frame={id:crypto.randomUUID().replaceAll('-',''),room:'fixture',origin:member.device_name,runtime:member.runtime_id,kind:'node',
+   body:Buffer.from(JSON.stringify(node)).toString('base64'),certificate:member.certificate,hops:16};
+  frame.signature=Buffer.from(await webcrypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},keys.privateKey,roomSigningBytes(frame))).toString('base64');
+  return frame;
+ };
+ return {...f,r,newRoom,nodeFrame};
+}
 
 function memberUpdate(declaration, revision) {
  return {...declaration,type:'member_update',member_revision:String(revision),request_id:revision.toString(16).padStart(32,'0')};
@@ -632,18 +849,6 @@ test('online endpoint changes advance only the affected device transports',async
  assert.equal(record.generation,String(BigInt(generation)+1n));
 });
 
-test('online updates explicitly revoke changed legacy mappings',async()=>{
- const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
- const left={...join('alpha',['one','two']),transport_profiles:[LEGACY_PROFILE]};
- const right={...join('beta',[],['one','two']),transport_profiles:[LEGACY_PROFILE]};
- await r.webSocketMessage(a,JSON.stringify(left));await r.webSocketMessage(b,JSON.stringify(right));
- a.messages=[];b.messages=[];
- await r.webSocketMessage(b,JSON.stringify(memberUpdate({...right,consume:right.consume.slice(1)},1)));
- for(const ws of [a,b]) {
-  assert.deepEqual(ws.messages.filter(m=>m.type==='mapping_closed').map(m=>m.mapping_id),['one']);
-  assert.equal(ws.messages.some(m=>m.type==='mapping_ready' && m.mapping_id==='two'),false);
- }
-});
 const payload={iceServers:[{urls:['stun:stun.cloudflare.com:3478']},{urls:['turn:turn.cloudflare.com:3478?transport=udp','turn:turn.cloudflare.com:3478?transport=tcp','turn:turn.cloudflare.com:80?transport=tcp','turns:turn.cloudflare.com:5349?transport=tcp','turns:turn.cloudflare.com:443?transport=tcp'],username:'temporary-user',credential:'temporary-secret'}]};
 
 test('fixed endpoints validate addresses and enforce exclusive negotiation',()=>{
@@ -715,10 +920,11 @@ test('one fixed listener never falls back, relay-only conflict is explicit',asyn
  assert.equal(r.ice.records.size,0);
 });
 
-test('version negotiation only falls back when both sides advertise legacy',()=>{
+test('transport profiles reject removed IPv6 and absent signal version',()=>{
  assert.equal(negotiateProfile({transport_profiles:[ICE_PROFILE]},{transport_profiles:[ICE_PROFILE]}),ICE_PROFILE);
  assert.equal(negotiateProfile({transport_profiles:[ICE_PROFILE]},{}),null);
- assert.equal(negotiateProfile({transport_profiles:[ICE_PROFILE,LEGACY_PROFILE]},{}),LEGACY_PROFILE);
+ assert.equal(iceJoinFields({...join('alpha'),transport_profiles:['legacy-ipv6-quic-v2']}),null);
+ assert.equal(iceJoinFields({...join('alpha'),signal_version:undefined}),null);
  assert.equal(iceJoinFields({...join('alpha'),auth_mode:'device-proof'}),null);
  assert.equal(iceJoinFields({...join('alpha'),transport_epoch:1}),null);
 });
@@ -743,12 +949,13 @@ test('voice participant capacity does not change ordinary mapping capacity', asy
  assert.ok(ninth);
 });
 
-test('voice-only pair requires the ICE profile', async()=>{
+test('voice-only members reject removed IPv6 profiles', async()=>{
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
- await r.webSocketMessage(a,JSON.stringify({...join('alpha'),voice:true,transport_profiles:[LEGACY_PROFILE]}));
- await r.webSocketMessage(b,JSON.stringify({...join('beta'),voice:true,transport_profiles:[LEGACY_PROFILE]}));
- assert.equal([...r.ice.records.values()].length,0);
- assert.equal(a.messages.at(-1).code,'voice_protocol_mismatch');
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha'),voice:true,transport_profiles:['legacy-ipv6-quic-v2']}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta'),voice:true,transport_profiles:['legacy-ipv6-quic-v2']}));
+ assert.equal(r.ice.records.size,0);
+ assert.equal(a.messages.at(-1).code,'invalid_join');
+ assert.equal(b.messages.at(-1).code,'invalid_join');
 });
 test('complete relay pairing covers cross types, survives hibernation and coalesces restarts',async()=>{
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
@@ -789,7 +996,7 @@ test('relay pairing requires both endpoints and rejects unknown capabilities',as
  assert.equal(a.messages.at(-1).relay_pairing,undefined);
 });
 test('relay-only joins reject impossible settings and cannot negotiate legacy',()=>{
- for (const fields of [{relay_only:'true'},{relay_only:true,relay_enabled:false,relay_order:['udp']},{relay_only:true,relay_order:[]},{relay_only:true,transport_profiles:[LEGACY_PROFILE]}])
+ for (const fields of [{relay_only:'true'},{relay_only:true,relay_enabled:false,relay_order:['udp']},{relay_only:true,relay_order:[]},{relay_only:true,transport_profiles:['legacy-ipv6-quic-v2']}])
   assert.equal(iceJoinFields({...join('alpha'),...fields}),null);
  assert.equal(negotiateProfile({...iceJoinFields(join('alpha')),relay_only:true},{}),null);
 });
@@ -1094,6 +1301,108 @@ test('offline retention starts at disconnect and expires without another user re
  now=f.record.expires_at+1;await f.state.storage.deleteAlarm();await new Room(f.state,{}).alarm();
  assert.equal([...f.values.keys()].filter(k=>k.startsWith('transport:')).length,0);
  assert.equal(f.values.get('token'),'room-secret');assert.equal(await f.state.storage.getAlarm(),null);
+});
+test('unreferenced modern members release capacity after disconnect and cold reconstruction',async()=>{
+ const f=await modernFixture();
+ for(let i=0;i<129;i++) {
+  const ws=f.socket(),member=modernJoin('device-'+i);
+  await f.r.webSocketMessage(ws,JSON.stringify(member));
+  assert.equal(ws.messages.some(m=>m.type==='joined'),true,member.device_name);
+  if(i===0) await f.r.webSocketMessage(ws,JSON.stringify({type:'room_graph',room_frames:[await f.nodeFrame(member)]}));
+  ws.closed=true;await f.r.webSocketClose(ws,1000,'',true);
+  assert.equal(f.r.registered.size,0);
+  assert.equal(f.values.has('member:'+member.device_name),false);
+ }
+ assert.equal(f.r.control.nodes.size,0);
+ assert.deepEqual(f.values.get('room_nodes'),[]);
+ // Upgrade/reconstruction must reclaim declarations left by the old code too.
+ for(let i=0;i<128;i++) await f.state.storage.put('member:old-'+i,modernJoin('old-'+i));
+ const restored=f.newRoom(),next=f.socket();
+ await restored.webSocketMessage(next,JSON.stringify(modernJoin('new-device')));
+ assert.equal(next.messages.some(m=>m.type==='joined'),true);
+ assert.deepEqual([...restored.registered.keys()],['new-device']);
+ assert.deepEqual([...f.values.keys()].filter(k=>k.startsWith('member:')),['member:new-device']);
+ assert.equal(f.values.get('token'),'room-secret');
+ assert.ok(f.values.get('room_control_key'));
+});
+test('member cleanup cannot delete a same-name join while its storage write is pending',async()=>{
+ const f=await modernFixture(),member=modernJoin('alpha'),ws=f.socket();
+ f.r.registered.set('alpha',{member,ws:null});
+ await f.state.storage.put('member:alpha',member);
+ let started,release;
+ const writing=new Promise(resolve=>{started=resolve}),gate=new Promise(resolve=>{release=resolve});
+ const put=f.state.storage.put;
+ f.state.storage.put=async(k,v)=>{await put(k,v);if(k==='member:alpha'){started();await gate}};
+ const joining=f.r.webSocketMessage(ws,JSON.stringify(member));
+ await writing;
+ try { await f.r.reconcile(); } finally { release();await joining; }
+ assert.equal(ws.messages.some(m=>m.type==='joined'),true);
+ assert.equal(f.values.get('member:alpha').runtime_id,member.runtime_id);
+ const restored=f.newRoom();await restored.loadState();
+ assert.equal(restored.registered.get('alpha').ws,ws);
+});
+test('modern transport retention starts at disconnect after long uptime and preserves resume',async t=>{
+ for(const cold of [false,true]) await t.test(cold?'cold alarm':'warm alarm',async t=>{
+  const f=await modernFixture(),a=f.socket(),b=f.socket();
+  const left=modernJoin('alpha',['one']),right=modernJoin('beta',[],['one']);
+  await f.r.webSocketMessage(a,JSON.stringify(left));await f.r.webSocketMessage(b,JSON.stringify(right));
+  const original=[...f.r.ice.records.values()][0];
+  await f.r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:original.id,expected_generation:original.generation,phase:'direct',reason:'manual_renomination'}));
+  const generation=original.generation;
+  assert.notEqual(generation,'1');
+  let now=Date.now()+25*60*60*1000;t.mock.method(Date,'now',()=>now);
+  a.closed=true;await f.r.webSocketClose(a,1006,'',false);
+  const expires=now+24*60*60*1000;
+  now+=1000;b.closed=true;await f.r.webSocketClose(b,1006,'',false);
+  assert.equal(original.expires_at,expires);
+  assert.equal(await f.state.storage.getAlarm(),expires);
+  const writes=f.counts.puts;await f.r.reconcile();assert.equal(f.counts.puts,writes);
+  assert.equal(f.r.registered.size,2);
+  const restored=f.newRoom();await restored.alarm();
+  assert.equal([...restored.ice.records.values()][0].id,original.id);
+  const nextA=f.socket(),nextB=f.socket();
+  await restored.webSocketMessage(nextA,JSON.stringify(left));await restored.webSocketMessage(nextB,JSON.stringify(right));
+  const resumed=[...restored.ice.records.values()][0];
+  assert.equal(resumed.id,original.id);assert.equal(resumed.generation,generation);
+  assert.equal(resumed.online,true);assert.equal(await f.state.storage.getAlarm(),null);
+  nextA.closed=true;await restored.webSocketClose(nextA,1000,'',true);
+  nextB.closed=true;await restored.webSocketClose(nextB,1000,'',true);
+  assert.equal(resumed.expires_at,now+24*60*60*1000);
+  now=resumed.expires_at+1;
+  const cleaning=cold?f.newRoom():restored;await cleaning.alarm();
+  assert.equal(cleaning.ice.records.size,0);assert.equal(cleaning.registered.size,0);
+  assert.equal([...f.values.keys()].some(k=>k.startsWith('transport:')||k.startsWith('member:')),false);
+  assert.equal(await f.state.storage.getAlarm(),null);
+  assert.equal(f.values.get('token'),'room-secret');assert.ok(f.values.get('room_control_key'));
+ });
+});
+test('cleanup retains delegated members and control edges after long uptime and hibernation',async t=>{
+ for(const controlOnly of [false,true]) await t.test(controlOnly?'control edge':'business edge',async t=>{
+  const f=await modernFixture(),a=f.socket(),b=f.socket();
+  const left=modernJoin('alpha',['one']),right=modernJoin('beta',[],['one']);
+  await f.r.webSocketMessage(a,JSON.stringify(left));await f.r.webSocketMessage(b,JSON.stringify(right));
+  const record=[...f.r.ice.records.values()][0];
+  for(const ws of [a,b]) await f.r.webSocketMessage(ws,JSON.stringify({type:'transport_established',transport_id:record.id,transport_generation:record.generation,path_type:'direct'}));
+  const frames=await Promise.all([[left,right],[right,left]].map(async([own,peer])=>f.nodeFrame(own,[{peer_id:peer.device_name,runtime_id:peer.runtime_id,transport_id:record.id,generation:record.generation}])));
+  await f.r.webSocketMessage(a,JSON.stringify({type:'room_graph',room_frames:frames}));
+  await f.r.webSocketMessage(b,JSON.stringify({type:'room_pause',request_id:'pause'}));
+  assert.equal(b.messages.some(m=>m.type==='room_pause_rejected'),false);
+  assert.equal(b.messages.some(m=>m.type==='room_paused'),false);
+  assert.equal(b.closed,false);
+  assert.deepEqual(f.r.control.snapshot().groups[0].signaling,['alpha','beta']);
+  await f.r.webSocketClose(b,1006,'network disconnected',false);
+  if(controlOnly) await f.r.webSocketMessage(a,JSON.stringify(memberUpdate({...left,provide:[]},1)));
+  assert.equal(record.room_control,controlOnly);
+  const now=Date.now()+25*60*60*1000;t.mock.method(Date,'now',()=>now);
+  await f.r.alarm();
+  const restored=f.newRoom();await restored.alarm();
+  assert.equal(restored.members.get('beta').ws.proxy,true);
+  assert.equal(restored.registered.get('beta').ws,null);
+  assert.equal(restored.control.nodes.size,2);
+  assert.equal([...restored.ice.records.values()][0].id,record.id);
+  assert.equal([...restored.ice.records.values()][0].online,true);
+  assert.equal(await f.state.storage.getAlarm(),null);
+ });
 });
 test('broker schedules actual rate/cache expiries and stops after the final deletion',async(t)=>{
  const f=fixture();let now=Date.now();t.mock.method(Date,'now',()=>now);

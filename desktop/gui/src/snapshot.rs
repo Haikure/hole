@@ -455,7 +455,7 @@ pub fn parse_snapshot(j: &Value) -> Result<Snapshot, String> {
             validated: n["validated"].as_bool().unwrap_or(false),
             metered: n["metered"].as_bool().unwrap_or(false),
         },
-        transport_label: s_or(caps, "transport", "IPv6 / QUIC / hole-v2"),
+        transport_label: s_or(caps, "transport", "ICE / 固定入口直连 / QUIC / hole"),
         network_binding: caps["network_binding"].as_bool().unwrap_or(false),
     })
 }
@@ -485,6 +485,7 @@ pub fn signal_label(state: &str) -> &'static str {
         "connecting" => "连接中",
         "joining" => "正在加入房间",
         "joined" => "已加入房间",
+        "delegated" => "通过房间设备接收信令",
         "reconnecting" => "等待重连",
         "error" => "异常",
         _ => "未知",
@@ -512,22 +513,6 @@ pub fn mapping_kind(state: &str) -> &'static str {
     }
 }
 
-pub fn connection_mode_label(mode: &str) -> &'static str {
-    match mode {
-        "legacy" => "仅 IPv6",
-        "ice" => "仅 ICE",
-        _ => "自动",
-    }
-}
-
-pub fn connection_policy_label(mode: &str) -> &'static str {
-    match mode {
-        "legacy" => "仅 IPv6 · 公网直连",
-        "ice" => "仅 ICE · IPv4 / IPv6 与中继",
-        _ => "自动 · ICE 优先，兼容 IPv6 协议",
-    }
-}
-
 const ACTIONABLE: [&str; 7] = ["signal_auth_failed", "invalid_token", "protocol_mismatch", "worker_upgrade_required", "invalid_config", "insecure_signal", "fixed_relay_conflict"];
 
 pub fn connection_title(s: &Snapshot) -> &'static str {
@@ -538,9 +523,9 @@ pub fn connection_title(s: &Snapshot) -> &'static str {
         "转发连接正常"
     } else if ACTIONABLE.contains(&code) {
         "连接需要处理"
-    } else if s.signal_state == "joined" && s.mappings.is_empty() {
+    } else if matches!(s.signal_state.as_str(), "joined" | "delegated") && s.mappings.is_empty() {
         "已就绪，尚未启用服务"
-    } else if s.signal_state == "joined" && s.peers.is_empty() {
+    } else if matches!(s.signal_state.as_str(), "joined" | "delegated") && s.peers.is_empty() {
         "等待对端设备"
     } else if s.peers.iter().any(|p| p.state == "reconnecting") || s.engine_state == "recovering" {
         "正在恢复连接"
@@ -568,7 +553,7 @@ pub fn configuration_text(s: &Snapshot) -> &'static str {
         "设置已保存，开启连接后使用"
     } else if s.error.is_some() {
         "设置尚未生效，请检查连接提示"
-    } else if s.signal_state == "joined" {
+    } else if matches!(s.signal_state.as_str(), "joined" | "delegated") {
         "当前启用的设置已生效"
     } else {
         "正在应用设置并加入房间"
@@ -717,7 +702,6 @@ pub fn nat_text(n: &Value, local: bool) -> String {
 pub fn profile_label(profile: &str) -> &'static str {
     match profile {
         "fixed-quic-mux-v1" => "固定入口直连",
-        "legacy-ipv6-quic-v2" => "IPv6 直连",
         "ice-quic-mux-v1" => "ICE · 多服务共享 QUIC",
         _ => "等待协商",
     }
@@ -732,11 +716,10 @@ pub fn connection_issue(code: &str) -> &'static str {
         "signal_auth_failed" => "协调服务密码不匹配，请检查“信令密码”。",
         "invalid_token" => "房间密码不匹配，请与对端使用相同的房间密码。",
         "no_network" => "当前没有可用网络，恢复网络后会自动重试。",
-        "no_ipv6" => "IPv6 直连需要双方具有可用的公网 IPv6；“自动”和“仅 ICE”支持 IPv4 / IPv6 探测与中继，需协调服务及对端支持 ICE。",
         "network_dns_failed" => "当前网络未能解析服务器地址，请检查 DNS 或切换网络。",
         "address_in_use" => "本地监听端口已被占用，请修改该服务的端口。",
-        "worker_upgrade_required" => "协调服务尚未支持 ICE，请更新 Worker，或选择“仅 IPv6”并确认双方公网 IPv6 可用。",
-        "protocol_mismatch" => "双方传输协议不一致，请核对“自动”“仅 ICE”或“仅 IPv6”的选择，并检查对端版本。",
+        "worker_upgrade_required" => "协调服务尚未支持当前协议，请更新 Worker。",
+        "protocol_mismatch" => "双方传输协议不一致，请同步更新共享核心，并检查 Worker 版本和连接设置。",
         "peer_identity_mismatch" => "对端身份校验没有通过，请核对设备与协调服务配置。",
         "relay_unavailable" | "turn_rate_limited" => "中继暂未就绪；设备仍会优先尝试直连。",
         "service_unavailable" => "目标服务未响应，请检查提供端的服务地址、端口及运行状态。",
@@ -1025,7 +1008,7 @@ mod tests {
         assert_eq!(peer_path_label(p), "直连 · IPv4");
         assert_eq!(peer_path_label(&Peer { path_type: "relay".into(), address_family: "IPv6".into(), ..Default::default() }), "中继 · IPv6");
         assert_eq!(relay_path_label(&Peer { path_type: "relay".into(), local_relay_protocol: "tcp".into(), ..Default::default() }), "TCP 中继");
-        assert_eq!(profile_label("legacy-ipv6-quic-v2"), "IPv6 直连");
+        assert_eq!(profile_label("legacy-ipv6-quic-v2"), "等待协商");
     }
 
     #[test]

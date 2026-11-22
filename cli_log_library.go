@@ -16,17 +16,11 @@ func (w *cliLibraryLog) Write(data []byte) (int, error) {
 	defer w.reporter.mu.Unlock()
 	message := strings.TrimSuffix(string(data), "\n")
 	if w.reporter.debug {
-		w.reporter.debugf("lib %s", logText(message))
-		return len(data), nil
+		defer w.reporter.logScope(cliLogContext{Component: "library"})()
+		w.reporter.problem("debug/library", logLevelDebug, "lib "+logText(message))
 	}
-	// ICE owns its sockets; quic-go sees a packet adapter, not a raw UDPConn.
-	// This expected capability notice is not a failure to connect or transfer.
-	for _, direction := range []string{"receive", "send"} {
-		if strings.HasPrefix(message, "connection doesn't allow setting of "+direction+" buffer size. Not a *net.UDPConn?") {
-			return len(data), nil
-		}
-	}
-	w.reporter.problem("library", logLevelWarn, "网络库: "+logText(message))
+	// Raw library diagnostics cannot establish device or service failure.
+	// Those failures arrive as classified core events with their context.
 	return len(data), nil
 }
 

@@ -1,6 +1,9 @@
 #include "HolePlugin.h"
 
 #include <QJsonDocument>
+#include <QJsonArray>
+#include <QFile>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QtTest>
 #include <memory>
@@ -29,6 +32,47 @@ class HolePluginTest : public QObject {
     }
 
 private slots:
+    void savedConnectionStrategyIsRemovedWithoutLosingEditorState() {
+        const QString path = plugin->configPath();
+        const bool existed = QFile::exists(path);
+        QByteArray original;
+        if (existed) {
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            original = file.readAll();
+        }
+        const auto restore = qScopeGuard([&] {
+            if (existed) {
+                QFile file(path);
+                if (file.open(QIODevice::WriteOnly)) file.write(original);
+            } else QFile::remove(path);
+        });
+        for (const QString& mode : {QStringLiteral("auto"), QStringLiteral("ice"), QStringLiteral("legacy")}) {
+            QJsonObject config{
+                {"room", "saved-room"}, {"password", "saved-password"}, {"token", "saved-token"},
+                {"transport", QJsonObject{{"preferred", mode}, {"allow_insecure_signal", true}}},
+                {"provide", QJsonArray{QJsonObject{{"id", "ssh"}, {"service", "tcp://127.0.0.1:22"}}}}
+            };
+            const QJsonObject mapping{{"provide", QJsonArray{QJsonObject{{"mappingId", "draft"}, {"active", false}}}}};
+            const QJsonObject turn{{"mode", "manual"}, {"credential", "saved-turn"}};
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QVERIFY(file.write(QJsonDocument(QJsonObject{
+                {"server_url", "wss://example.invalid/ws"}, {"config", config},
+                {"mapping_state", mapping}, {"turn_state", turn}
+            }).toJson()) > 0);
+            file.close();
+            QVERIFY(plugin->loadConfig());
+            config["transport"] = QJsonObject{{"allow_insecure_signal", true}};
+            QCOMPARE(QJsonDocument::fromJson(plugin->configJson().toUtf8()).object(), config);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            const QJsonObject saved = QJsonDocument::fromJson(file.readAll()).object();
+            QCOMPARE(saved["config"].toObject(), config);
+            QCOMPARE(saved["mapping_state"].toObject(), mapping);
+            QCOMPARE(saved["turn_state"].toObject(), turn);
+        }
+    }
+
     void init() {
         plugin = std::make_unique<HolePlugin>();
         // Capture outgoing RPCs without starting the network core.

@@ -59,14 +59,13 @@ func decodeNATPunch(b, key []byte, round int) (natPunchPacket, bool) {
 }
 
 type natPunchAttempt struct {
-	process        *natProcessRun
-	sockets        []net.PacketConn
-	transports     []*quic.Transport
-	listeners      []*quic.Listener
-	selected       int
-	continueProbes bool               // retained cone must not let incoming ACK work starve probes
-	diagnostic     NATPunchDiagnostic // populated after run has joined its readers
-	observed       []*punchSocketObservation
+	process    *natProcessRun
+	sockets    []net.PacketConn
+	transports []*quic.Transport
+	listeners  []*quic.Listener
+	selected   int
+	diagnostic NATPunchDiagnostic // populated after run has joined its readers
+	observed   []*punchSocketObservation
 }
 
 func newNATPunchAttempt(sockets []net.PacketConn) *natPunchAttempt {
@@ -217,6 +216,7 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 		sent          uint32
 		last          time.Time
 		ack           *natPunchPacket
+		reachable     bool
 		seen          [64]holeReplay // Bounded sequence windows, including reordered probes.
 	}
 	var slots []slot
@@ -273,6 +273,7 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 				}
 				ack := natPunchPacket{kind: 2, round: uint32(round), socket: uint16(ev.index), sequence: packet.sequence, nonce: s.nonce, echo: packet.nonce}
 				s.ack = &ack
+				s.reachable = true
 			} else if dialer && selected < 0 && s.sent > 0 && packet.echo == s.nonce && packet.sequence <= s.sent {
 				selected = i
 				a.diagnostic.ACKsVerified++
@@ -293,10 +294,10 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 			isACK := false
 			for j := range slots {
 				socket := slots[j].index
-				// With many peer sockets, a retained cone can have an ACK
-				// queued every tick. Reserve the next eligible send for a
-				// probe after an ACK, until its path challenge is verified.
-				if a.continueProbes && selected < 0 && lastWasACK[socket] {
+				// Incoming probes can keep an ACK queued every tick, even
+				// with one target. Reserve a send for our own challenge after
+				// an ACK, until the dialer has verified the return path.
+				if dialer && selected < 0 && lastWasACK[socket] {
 					continue
 				}
 				if slots[j].ack != nil && now.Sub(lastSend[socket]) >= natPunchInterval &&
@@ -313,7 +314,12 @@ func (a *natPunchAttempt) run(ctx context.Context, dialer bool, round int, key [
 					// starts QUIC or the round ends. ACK replies share the socket cap.
 					if now.Sub(lastSend[s.index]) >= natPunchInterval && now.Sub(s.last) >= natPunchInterval &&
 						(i < 0 || lastSend[s.index].Before(lastSend[slots[i].index]) ||
-							lastSend[s.index].Equal(lastSend[slots[i].index]) && s.last.Before(slots[i].last)) {
+							lastSend[s.index].Equal(lastSend[slots[i].index]) &&
+								(dialer && s.reachable && !slots[i].reachable ||
+									(!dialer || s.reachable == slots[i].reachable) && s.last.Before(slots[i].last))) {
+						// An authenticated peer probe identifies a working mapping.
+						// Retry its challenge before scanning more ports: the first
+						// probe may have preceded the peer's mapping and been lost.
 						i = j
 					}
 				}

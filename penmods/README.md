@@ -8,14 +8,14 @@
 | --- | --- |
 | 主页 | 一屏连接面板、启停按钮、在线设备和可用服务计数、四个图标入口 |
 | 设备 | 设备卡片、横向延迟 / 流量指标、QUIC 表格、可展开的线路和运行诊断 |
-| 设置 | 房间、信令、连接策略与高级 ICE / TURN 参数 |
+| 设置 | 房间、信令与高级 ICE / TURN 参数 |
 | 服务 | 提供 / 使用切换、可折叠服务卡片与地址 / 端口编辑 |
 | NAT 检测 | 无需房间的独立检测、分组结果与 STUN 明细 |
 | 打洞过程 | 独立详情页、阶段时间线、端口矩阵、逐包记录、NAT 采样与回放 |
 
 ## 使用
 
-1. 在“设置”填写房间、信令与连接策略。
+1. 在“设置”填写房间与信令参数。
 2. 在“服务”切换提供 / 使用并添加映射，与对端使用相同服务 ID。点按服务卡片展开编辑。
 3. 用主页右侧电源按钮启动或停止，在“设备”中查看连接、流量和线路详情；点按设备卡片的“打洞过程”打开完整过程页。
 
@@ -23,13 +23,10 @@
 不依赖图标字体或外部图片。设备页返回键回到首页；设置、服务、网络继续使用宿主返回页和输入页。
 连接成功表示已加入房间，在线设备与可用服务数取自最新快照，停用或尚未连接的服务不会计入。
 
-| 连接方式 | `preferred` | `allow_legacy` |
-| --- | --- | --- |
-| 自动 | `ice` | `true` |
-| 仅 ICE | `ice` | `false` |
-| 仅 IPv6 | `ipv6` | `false` |
-
-已有配置可直接读取，无需迁移文件格式。
+普通连接统一使用共享 ICE / QUIC，连接策略选择器和 `transport.preferred` 已移除。
+旧配置载入时清理该字段，不再输出手动 IPv6 候选地址；身份、服务和 TURN 编辑状态保留。
+ALPN 固定为 `hole`，功能依据共享核心与 Worker 软件版本判断。
+信令状态“通过房间设备接收信令”表示已有连接正常运行，需要协商时临时直接接入 Worker。
 
 ### 重载核心
 
@@ -65,7 +62,6 @@ mv -f hole-core.new hole-core
   "token": "ROOM_TOKEN",
   "device_name": "pen",
   "session_timeout": "10m",
-  "transport": {"preferred": "ice", "allow_legacy": true},
   "turn": {"mode": "worker", "order": ["tls", "udp"]},
   "provide": [],
   "consume": [
@@ -198,7 +194,7 @@ TURN TCP / TLS 等可靠外层也可能掩盖底层链路丢包；本机队列�
 
 | 构建项 | 默认值 |
 | --- | --- |
-| Qt | `/home/haiku/program/qt` |
+| Qt | `<Qt 安装目录>` |
 | cross | `aarch64-linux-gnu.2.27` |
 | mode | `release` |
 
@@ -235,7 +231,7 @@ dist/penmods/hole_plugin/
 ```bash
 source scripts/build-env.sh
 cd penmods
-xmake f --qt="/home/haiku/program/qt" --arch=arm64-v8a --toolchain=zigcc --cross=aarch64-linux-gnu.2.27 -m release -vD
+xmake f --qt="<Qt 安装目录>" --arch=arm64-v8a --toolchain=zigcc --cross=aarch64-linux-gnu.2.27 -m release -vD
 xmake build hole_plugin
 ```
 
@@ -258,9 +254,9 @@ xmake build hole_plugin
 
 插件配置保存为同目录的 `config.json`，使用缩进 JSON 便于阅读，不会写入主程序配置。
 其中 `config` 是传给共享核心的运行配置，`mapping_state` 只保存插件表单中的停用或尚未填写完整的映射，
-`turn_state` 保存 TURN 编辑状态；后两者都不会传给核心。切换到协调服务、关闭 TURN 或仅 IPv6 后，
+`turn_state` 保存 TURN 编辑状态；后两者都不会传给核心。切换到协调服务或关闭 TURN 后，
 手动 TURN 地址、用户名、凭据及其他 TURN 设置仍保存在本地，重新打开插件并切回手动时可继续使用。
-只有启用手动 TURN 的 ICE 模式才向核心传入手动凭据。旧配置没有 `turn_state` 时从 `config.turn` 读取；
+只有启用手动 TURN 时才向核心传入手动凭据。旧配置没有 `turn_state` 时从 `config.turn` 读取；
 旧版本已经清空并保存的内容无法自动找回，需要重新填写。`config.json` 含明文凭据，请妥善保管，不要公开分享。
 升级时保留设备上的 `config.json`，同时更新核心程序、插件库和 QML 文件。运行状态中的
 “核心版本”显示统一维护的核心版本号；Android APK 构建清单还记录核心构建标识。`hole-core.sha256` 可用于核对核心文件是否完整复制。
@@ -310,7 +306,7 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input penmods
 Node 测试执行 `Main.qml` 的 QUIC 格式化与配置反馈函数，检查统计口径、缺失值和保存状态。
 桥接回归测试需要本机 C++ 编译器、Qt 5 Core / Test 开发包和 moc，覆盖无重连应用、事件丢失、旧快照、断线及请求拒绝。
 QML 交互测试需要 Qt 5 的 QtQuick、QtQuick.Layouts 和 QtTest 模块，覆盖首页一屏尺寸、启停、重载和导航、
-服务编辑与折叠、高级设置展开与重开、窄屏与连接模式切换、设备卡片和 QUIC 单元格复用、
+服务编辑与折叠、高级设置展开与重开、窄屏与配置保存重开、设备卡片和 QUIC 单元格复用、
 详情按需创建与释放，以及 NAT 检测操作和时间格式。
 测试不依赖宿主页面或截图脚本，本地检查不代表 PenMods 真机验收。
 

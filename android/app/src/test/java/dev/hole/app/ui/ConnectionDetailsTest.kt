@@ -140,21 +140,18 @@ class ConnectionDetailsTest {
         assertEquals("中继 · IPv4", peerPathLabel(PeerSnapshot(pathType="relay",relayProtocol="tls",addressFamily="IPv4")))
         assertEquals("直连 · 192.0.2.1:40000", selectedConnectionLabel("srflx", "192.0.2.1:40000"))
         assertEquals("中继 · [2001:db8::1]:3478", selectedConnectionLabel("relay", "[2001:db8::1]:3478"))
-        assertEquals("仅 IPv6", connectionModeLabel("legacy"))
-        assertTrue(connectionModeDescription("legacy").contains("不使用 ICE、STUN 或 TURN"))
-        assertTrue(connectionModeDescription("auto").contains("不因探测失败而切换协议"))
-        assertTrue(connectionPolicyLabel("legacy").contains("公网直连"))
+        assertEquals("等待对端设备",connectionTitle(CoreSnapshot(runRequested=true,signalState="delegated",mappings=listOf(dev.hole.corebridge.MappingSnapshot("ssh","provide","tcp","waiting_peer")))))
     }
-    @Test fun ipv6ModeUsesTheNewLabelAndExplainsTheActualBehavior() {
+    @Test fun transportSettingsOmitConnectionStrategy() {
         compose.setContent { HoleTheme(ThemeMode.LIGHT, false) {
-            TransportSettingsScreen(ConfigUiState(loaded=true, config=StoredConfig(connection=ConnectionSettings(connectionMode="legacy"))),
-                onSave={_,_,_,_,_,_->null}, onBack={})
+            TransportSettingsScreen(ConfigUiState(loaded=true, config=StoredConfig()),
+                onSave={_,_,_,_,_->null}, onBack={})
         } }
-        compose.onNodeWithText("仅 IPv6").assertExists()
+        compose.onNodeWithText("仅 IPv6").assertDoesNotExist()
+        compose.onNodeWithText("连接策略").assertDoesNotExist()
+        compose.onNodeWithText("仅 ICE").assertDoesNotExist()
+        compose.onNodeWithText("STUN 服务器").assertExists()
         compose.onNodeWithText("旧 IPv6").assertDoesNotExist()
-        compose.onNodeWithText(connectionModeDescription("legacy")).assertDoesNotExist()
-        compose.onNodeWithContentDescription("策略说明 说明").performClick()
-        compose.onNodeWithText(connectionModeDescription("legacy")).assertIsDisplayed()
     }
     @Test fun relayLabelsDistinguishTcpTlsAndUnreportedRemoteAccess() {
         assertEquals("中继 · IPv4", peerPathLabel(PeerSnapshot(pathType="relay",relayProtocol="tcp",relaySide="local",addressFamily="IPv4")))

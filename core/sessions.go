@@ -39,6 +39,7 @@ type sessionManager struct {
 	provides        map[string]Provide
 	consumes        map[string]Consume
 	clients         map[string]*clientTunnel
+	listeners       map[string]ListenerSnapshot
 	tcp             map[providerSessionKey]*providerTCPEntry
 	tcpBytes        map[string]*tcpTraffic
 	replay          replayBudget
@@ -76,11 +77,12 @@ func newSessionManager(timeout time.Duration, options ...sessionOptions) *sessio
 		emit:     option.emit,
 		platform: option.platform, logf: option.logf,
 		ctx: ctx, cancel: cancel, timeout: timeout,
-		clients:  make(map[string]*clientTunnel),
-		tcp:      make(map[providerSessionKey]*providerTCPEntry),
-		tcpBytes: make(map[string]*tcpTraffic),
-		udp:      make(map[providerSessionKey]*providerUDPGroup),
-		owners:   make(map[peerMapping]string),
+		clients:   make(map[string]*clientTunnel),
+		listeners: make(map[string]ListenerSnapshot),
+		tcp:       make(map[providerSessionKey]*providerTCPEntry),
+		tcpBytes:  make(map[string]*tcpTraffic),
+		udp:       make(map[providerSessionKey]*providerUDPGroup),
+		owners:    make(map[peerMapping]string),
 	}
 	go m.reap()
 	if option.shared {
@@ -100,6 +102,7 @@ func (m *sessionManager) close() {
 	m.cancel()
 	for _, client := range m.clients {
 		client.close()
+		m.listenerClosedLocked(client)
 	}
 	for _, entry := range m.tcp {
 		if entry.cancel != nil {
@@ -137,15 +140,41 @@ func (m *sessionManager) consumerAuthorized(t tunnel, fingerprint string, allowe
 		}
 		// A provider restart/configuration change is not a network migration.
 		existing.close()
+		m.listenerClosedLocked(existing)
 		delete(m.clients, t.id)
 	}
 	client, err := newClientTunnel(m.ctx, t, fingerprint, m.logf, m.tcpTrafficLocked(t.id), m.clientTCPBudget, m.clientUDPBudget)
 	if err != nil {
+		m.listenerEventLocked(t, "error", endpointString(t.expose.Addr, t.expose.Port), classifyError(err))
 		return nil, err
 	}
 	m.clients[t.id] = client
 	client.emit = m.emit
+	address := ""
+	if client.tcpListener != nil {
+		address = client.tcpListener.Addr().String()
+	} else if client.udpListener != nil {
+		address = client.udpListener.LocalAddr().String()
+	}
+	m.listenerEventLocked(t, "ready", address, nil)
 	return client, nil
+}
+
+func (m *sessionManager) listenerEventLocked(t tunnel, state, address string, fault *Fault) {
+	if m.listeners == nil {
+		m.listeners = make(map[string]ListenerSnapshot)
+	}
+	m.listeners[t.id] = ListenerSnapshot{State: state, Protocol: t.protocol, Address: address, Error: fault}
+	if m.emit != nil {
+		m.emit(Event{Kind: "listener", State: state, MappingID: t.id, Protocol: t.protocol, Peer: t.peer, Target: address, Error: fault})
+	}
+}
+
+func (m *sessionManager) listenerClosedLocked(client *clientTunnel) {
+	listener, ok := m.listeners[client.t.id]
+	if ok && listener.State == "ready" {
+		m.listenerEventLocked(client.t, "closed", listener.Address, nil)
+	}
 }
 
 func (m *sessionManager) consumerForConnection(t tunnel, fingerprint string) (*clientTunnel, error) {
@@ -381,7 +410,6 @@ func newClientTunnel(ctx context.Context, t tunnel, fingerprint string, logf log
 	} else {
 		go c.readUDP()
 	}
-	c.logf("映射 %s 本地监听已启动：%s %s（会话跨重连保留）", t.id, t.protocol, net.JoinHostPort(t.expose.Addr, fmt.Sprint(t.expose.Port)))
 	return c, nil
 }
 
@@ -629,7 +657,7 @@ func (c *clientTunnel) reap(now time.Time, timeout time.Duration) {
 	}
 }
 
-func (a *Agent) handleProviderStream(ctx context.Context, conn sessionConnection, stream *quic.Stream, admitted ...func()) {
+func (a *sessionPeer) handleProviderStream(ctx context.Context, conn sessionConnection, stream *quic.Stream, admitted ...func()) {
 	defer stream.Close()
 	defer stream.CancelRead(0)
 	_ = stream.SetDeadline(time.Now().Add(sessionHandshakeTimeout))
@@ -698,7 +726,7 @@ func (a *Agent) handleProviderStream(ctx context.Context, conn sessionConnection
 	_ = session.runLink(ctx, link, hello.ReceiveOffset)
 }
 
-func (a *Agent) runConsumer(ctx context.Context, conn sessionConnection, t tunnel) {
+func (a *sessionPeer) runConsumer(ctx context.Context, conn sessionConnection, t tunnel) {
 	if ctx.Err() != nil {
 		return
 	}

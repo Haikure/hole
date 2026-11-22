@@ -139,7 +139,7 @@ fun BackgroundScreen(onBack: () -> Unit) {
                 if (info.lastResumeError.isNotEmpty()) Text(info.lastResumeError, color = MaterialTheme.colorScheme.error)
             }
             HoleSettingsGroup("连接恢复") {
-                HoleHelp("网络恢复", "网络切换后自动重连；仅 IPv6 模式下无公网 IPv6 时等待网络恢复。")
+                HoleHelp("网络恢复", "网络切换后自动恢复连接；暂无可用网络时等待网络恢复。")
                 HoleHelp("强制停止", "强制停止或系统清理后需重新启动，原 TCP 连接不会恢复。")
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }

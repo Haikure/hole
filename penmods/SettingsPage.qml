@@ -142,14 +142,9 @@ YBackButtonPage {
 
             Section {
                 Layout.fillWidth: true
-                title: "连接策略"
-                subtitle: "优先路径"
+                title: "信令安全"
+                subtitle: "连接权限"
                 iconName: "mapping"
-
-                ConnectionModeRow {
-                    Layout.fillWidth: true
-                    form: settingsPage.form
-                }
 
                 SwitchRow {
                     Layout.fillWidth: true

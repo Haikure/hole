@@ -16,9 +16,6 @@ func TestParseTransportDefaultsAndExplicitOverrides(t *testing.T) {
 		if !reflect.DeepEqual(cfg.TURN, want) {
 			t.Fatalf("%q has unexpected TURN defaults: %+v", text, cfg.TURN)
 		}
-		if cfg.Transport.Preferred != PreferredIPv6 {
-			t.Fatal("URL-less mobile/old transport policy changed")
-		}
 	}
 	for _, text := range []string{
 		"turn:\n  mode: off\n  ttl: 2h\nice:\n  stun_urls: []\n",
@@ -31,22 +28,18 @@ func TestParseTransportDefaultsAndExplicitOverrides(t *testing.T) {
 	}
 }
 
-func TestPreferredNamesAreStrictAndSeparateFromWireProfiles(t *testing.T) {
-	for _, preferred := range []string{PreferredICE, PreferredIPv6, "auto"} {
-		cfg := validConfig()
-		cfg.Transport.Preferred = preferred
-		if err := cfg.Validate(); err != nil {
-			t.Fatal(preferred, err)
+func TestRemovedTransportPreferredIsRejected(t *testing.T) {
+	for _, preferred := range []string{"auto", "ice", ProfileICE, ProfileFixed, "legacy-ipv6-quic-v2", "legacy", "ipv6"} {
+		for _, text := range []string{
+			"transport:\n  preferred: " + preferred + "\n",
+			`{"transport":{"preferred":"` + preferred + `"}}`,
+		} {
+			if _, err := ParseConfig([]byte(text)); err == nil {
+				t.Fatalf("accepted removed preferred field %q", preferred)
+			}
 		}
 	}
-	for _, old := range []string{ProfileICE, ProfileLegacy, ProfileFixed, "legacy", "ICE", "IPv6"} {
-		cfg := validConfig()
-		cfg.Transport.Preferred = old
-		if err := cfg.Validate(); err == nil {
-			t.Fatalf("accepted obsolete name %q", old)
-		}
-	}
-	if ProfileICE != "ice-quic-mux-v1" || ProfileLegacy != "legacy-ipv6-quic-v2" {
-		t.Fatal("configuration rename changed a wire protocol")
+	if ProfileICE != "ice-quic-mux-v1" || ProfileFixed != "fixed-quic-mux-v1" {
+		t.Fatal("configuration change changed a wire protocol")
 	}
 }

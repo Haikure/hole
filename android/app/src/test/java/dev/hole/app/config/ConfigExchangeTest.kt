@@ -8,6 +8,7 @@ import kotlin.test.assertFailsWith
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 
 class ConfigExchangeTest {
@@ -76,15 +77,14 @@ class ConfigExchangeTest {
         assertTrue(blank.contains("\"server_url\":\"\""))
         assertFalse(blank.contains("wss://HOST"))
     }
-    @Test fun cliPreferredUsesOnlyIceAndIpv6() {
+    @Test fun cliRejectsRemovedStrategyField() {
         val text = ConfigExchange.cliJSON(original, "", "", false)
-        assertTrue(text.contains("\"preferred\":\"ice\""))
-        for (old in listOf("ice-quic-mux-v1", "legacy-ipv6-quic-v2", "legacy", "auto")) {
-            assertFailsWith<IllegalArgumentException> { ConfigExchange.readCLIJSON(text.replace("\"preferred\":\"ice\"", "\"preferred\":\"$old\""), original) }
+        assertFalse(text.contains("preferred"))
+        for (old in listOf("auto", "ice", "ice-quic-mux-v1", "legacy-ipv6-quic-v2", "legacy", "ipv6")) {
+            val document = Json.parseToJsonElement(text).jsonObject
+            val transport = document.getValue("transport").jsonObject
+            val oldDocument = JsonObject(document + ("transport" to JsonObject(transport + ("preferred" to JsonPrimitive(old)))))
+            assertFailsWith<IllegalArgumentException> { ConfigExchange.readCLIJSON(oldDocument.toString(), original) }
         }
-        val ipv6 = original.copy(connection = original.connection.copy(connectionMode = "legacy"))
-        val exported = ConfigExchange.cliJSON(ipv6, "", "", false)
-        assertTrue(exported.contains("\"preferred\":\"ipv6\""))
-        assertEquals("legacy", ConfigExchange.readCLIJSON(exported, original).config.connection.connectionMode)
     }
 }

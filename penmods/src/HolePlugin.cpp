@@ -155,7 +155,14 @@ bool HolePlugin::loadConfig() {
         return false;
     }
     m_serverUrl = serverUrl.toString();
-    m_configJson = QString::fromUtf8(QJsonDocument(config.toObject()).toJson(QJsonDocument::Compact));
+    QJsonObject runtimeConfig = config.toObject();
+    QJsonObject transport = runtimeConfig.value(QStringLiteral("transport")).toObject();
+    const bool hasPreferred = transport.contains(QStringLiteral("preferred"));
+    if (hasPreferred) {
+        transport.remove(QStringLiteral("preferred"));
+        runtimeConfig.insert(QStringLiteral("transport"), transport);
+    }
+    m_configJson = QString::fromUtf8(QJsonDocument(runtimeConfig).toJson(QJsonDocument::Compact));
     const QJsonValue mappingState = root.value(QStringLiteral("mapping_state"));
     m_mappingStateJson = mappingState.isObject()
         ? QString::fromUtf8(QJsonDocument(mappingState.toObject()).toJson(QJsonDocument::Compact))
@@ -165,6 +172,7 @@ bool HolePlugin::loadConfig() {
         ? QString::fromUtf8(QJsonDocument(turnState.toObject()).toJson(QJsonDocument::Compact))
         : QString();
     emit configChanged();
+    if (hasPreferred) return saveConfig();
     return true;
 }
 

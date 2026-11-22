@@ -4,35 +4,19 @@ import dev.hole.app.ConfigUiState
 import dev.hole.corebridge.CoreSnapshot
 import dev.hole.corebridge.PeerSnapshot
 
-fun connectionModeLabel(mode: String): String = when (mode) {
-    "legacy" -> "仅 IPv6"
-    "ice" -> "仅 ICE"
-    else -> "自动"
-}
-fun connectionModeDescription(mode: String): String = when (mode) {
-    "legacy" -> "仅使用公网 IPv6 直连，双方都需支持。不使用 ICE、STUN 或 TURN。"
-    "ice" -> "通过 ICE 探测 IPv4 / IPv6；直连失败后尝试 TURN。双方与协调服务都需支持 ICE。"
-    else -> "优先使用 ICE；对端仅支持 IPv6 协议时改用公网 IPv6 直连。双方均支持 ICE 时，不因探测失败而切换协议。"
-}
-fun connectionPolicyLabel(mode: String): String = when (mode) {
-    "legacy" -> "仅 IPv6 · 公网直连"
-    "ice" -> "仅 ICE · IPv4 / IPv6 与中继"
-    else -> "自动 · ICE 优先，兼容 IPv6 协议"
-}
-
 fun connectionTitle(s: CoreSnapshot): String = when {
     !s.runRequested -> "连接已停止"
     s.mappings.any { it.state == "active" } || s.peers.any { it.state in setOf("active", "switching") } -> "转发连接正常"
     s.errorCode in setOf("signal_auth_failed", "invalid_token", "protocol_mismatch", "worker_upgrade_required", "invalid_config", "insecure_signal", "fixed_relay_conflict") -> "连接需要处理"
-    s.signalState == "joined" && s.mappings.isEmpty() -> "已就绪，尚未启用服务"
-    s.signalState == "joined" && s.peers.isEmpty() -> "等待对端设备"
+    s.signalState in setOf("joined", "delegated") && s.mappings.isEmpty() -> "已就绪，尚未启用服务"
+    s.signalState in setOf("joined", "delegated") && s.peers.isEmpty() -> "等待对端设备"
     s.peers.any { it.state == "reconnecting" } || s.engineState == "recovering" -> "正在恢复连接"
     else -> "正在建立连接"
 }
 fun configurationText(s: CoreSnapshot, config: ConfigUiState): String = when {
     !s.runRequested -> "设置已保存，开启连接后使用"
     s.errorCode != null -> "设置尚未生效，请检查连接提示"
-    s.signalState == "joined" -> "当前启用的设置已生效"
+    s.signalState in setOf("joined", "delegated") -> "当前启用的设置已生效"
     else -> "正在应用设置并加入房间"
 }
 fun phaseLabel(phase: String): String = when (phase) {
@@ -128,11 +112,10 @@ fun connectionIssue(code: String?): String = when (code) {
     "signal_auth_failed" -> "协调服务密码不匹配，请检查“信令密码”。"
     "invalid_token" -> "房间密码不匹配，请与对端使用相同的房间密码。"
     "no_network" -> "当前没有可用网络，恢复网络后会自动重试。"
-    "no_ipv6" -> "IPv6 直连需要双方具有可用的公网 IPv6；“自动”和“仅 ICE”支持 IPv4 / IPv6 探测与中继，需协调服务及对端支持 ICE。"
     "network_dns_failed" -> "当前网络未能解析服务器地址，请检查 DNS 或切换网络。"
     "address_in_use" -> "本地监听端口已被占用，请修改该服务的端口。"
-    "worker_upgrade_required" -> "协调服务尚未支持 ICE，请更新 Worker，或选择“仅 IPv6”并确认双方公网 IPv6 可用。"
-    "protocol_mismatch" -> "双方传输协议不一致，请核对“自动”“仅 ICE”或“仅 IPv6”的选择，并检查对端版本。"
+    "worker_upgrade_required" -> "协调服务尚未支持当前协议，请更新 Worker。"
+    "protocol_mismatch" -> "双方传输协议不一致，请同步更新共享核心，并检查 Worker 版本和连接设置。"
     "peer_identity_mismatch" -> "对端身份校验没有通过，请核对设备与协调服务配置。"
     "relay_unavailable", "turn_rate_limited" -> "中继暂未就绪；设备仍会优先尝试直连。"
     "service_unavailable" -> "目标服务未响应，请检查提供端的服务地址、端口及运行状态。"

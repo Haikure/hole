@@ -120,7 +120,7 @@ func TestBridgeRealCoreStartReconfigureNetworkStopRestart(t *testing.T) {
 		}
 	}
 	params := strings.Replace(validParams(), "wss://example.invalid/ws", "ws"+strings.TrimPrefix(server.URL, "http"), 1)
-	params = strings.Replace(params, `"preferred":"ice"`, `"preferred":"ice","allow_insecure_signal":true`, 1)
+	params = strings.Replace(params, `"transport":{}`, `"transport":{"allow_insecure_signal":true}`, 1)
 	params = strings.Replace(params, `"config":{`, `"config":{"voice":{"enabled":true},`, 1)
 	call("hello", "")
 	call("validate", params)

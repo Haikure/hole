@@ -17,6 +17,7 @@ type mappingStats struct {
 	tcpRead    uint64
 	tcpWritten uint64
 	buffered   uint64
+	listener   *ListenerSnapshot
 }
 
 // tcpTraffic is owned by the mapping rather than an individual session, so a
@@ -37,6 +38,15 @@ func (m *sessionManager) snapshot() map[string]mappingStats {
 	defer m.mu.Unlock()
 	if m.closed {
 		return result
+	}
+	for id, listener := range m.listeners {
+		if listener.Error != nil {
+			fault := *listener.Error
+			listener.Error = &fault
+		}
+		stats := result[id]
+		stats.listener = &listener
+		result[id] = stats
 	}
 	for id, traffic := range m.tcpBytes {
 		stats := result[id]

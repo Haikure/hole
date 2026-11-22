@@ -63,7 +63,7 @@ func (c *iceCoordinator) validateHoleReady(m iceSignalMessage) error {
 	if !first {
 		side = 1
 	}
-	if g.Devices[side] != local || g.Devices[1-side] != m.PeerDevice || g.Runtimes[side] != c.runtimeID || g.Runtimes[1-side] != m.PeerRuntimeID || g.Epochs[side] != strconv.FormatUint(c.networkEpoch.Load(), 10) || g.RelayRuntime == "" || validateFixedAddress(g.Endpoint, false) != nil || m.LeaseUntil <= time.Now().UnixMilli() {
+	if g.Devices[side] != local || g.Devices[1-side] != m.PeerDevice || g.Runtimes[side] != c.runtimeID || g.Runtimes[1-side] != m.PeerRuntimeID || g.Epochs[side] != strconv.FormatUint(c.networkEpoch.Load(), 10) || g.RelayRuntime == "" || validateFixedAddress(g.Endpoint, false) != nil || (!m.localAuthorization() && m.LeaseUntil <= time.Now().UnixMilli()) {
 		return bad()
 	}
 	_, err := newHoleAuth(g)
@@ -78,7 +78,7 @@ func (c *iceCoordinator) handleHoleGrant(m iceSignalMessage) error {
 		return nil
 	}
 	if m.Type == "hole_revoke" {
-		f.relay.revoke(m.TransportID, m.TransportGeneration)
+		f.relay.revoke(m.TransportID, m.TransportGeneration, modernSoftware(m.WorkerVersion))
 		return nil
 	}
 	if m.HoleVersion != HoleRelayVersion || m.RuntimeID != c.runtimeID || m.TransportEpoch != c.networkEpoch.Load() || m.Hole == nil || m.Hole.Device != cfg.DeviceName || m.Hole.RelayRuntime != c.runtimeID || m.Hole.RelayEpoch != c.networkEpoch.Load() || m.Hole.Endpoint != cfg.Transport.FixedEndpoint.Advertise {

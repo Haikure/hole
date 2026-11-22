@@ -13,8 +13,7 @@ func endpointString(host string, port int) string { return net.JoinHostPort(host
 func sameScope(a, b Request) bool {
 	return a.ServerURL == b.ServerURL && a.Config.Room == b.Config.Room &&
 		a.Config.Password == b.Config.Password && a.Config.Token == b.Config.Token &&
-		a.Config.DeviceName == b.Config.DeviceName &&
-		a.Config.Transport.Preferred == b.Config.Transport.Preferred
+		a.Config.DeviceName == b.Config.DeviceName
 }
 
 // One supervisor owns all transport replacements. Stop cancels this supervisor;
@@ -50,7 +49,7 @@ func (e *Engine) execute(run *engineRun, initial Request) {
 			}
 			manager = newSessionManager(request.Config.SessionTimeout, sessionOptions{
 				platform: e.platform,
-				shared:   request.Config.Transport.Preferred == PreferredICE,
+				shared:   true,
 				emit:     func(event Event) { e.agentEvent(run, event) },
 				logf: func(format string, args ...any) {
 					e.agentEvent(run, Event{Kind: "log", Message: fmt.Sprintf(format, args...)})
@@ -89,7 +88,6 @@ func (e *Engine) execute(run *engineRun, initial Request) {
 		}
 		cancel()
 		e.mu.Lock()
-		run.agent = nil
 		hadTransport = hadTransport || e.signal == "joined" || e.state == "running"
 		if epoch != run.epoch {
 			changed = true
@@ -129,71 +127,38 @@ func (e *Engine) execute(run *engineRun, initial Request) {
 }
 
 func (e *Engine) serveCycle(ctx context.Context, run *engineRun, epoch uint64, request Request, manager *sessionManager, identity *tls.Config) error {
-	if request.Config.Transport.Preferred == PreferredICE {
-		c := newICECoordinator(ctx, request, e.platform, manager, identity, run.runtimeID, e.transportGeneration,
-			func(event Event) { e.agentEventEpoch(run, &epoch, event) }, func(network NetworkSnapshot) {
-				e.mu.Lock()
-				if e.run == run && run.epoch == epoch && ctx.Err() == nil {
-					e.network = network.clone()
-				}
-				e.mu.Unlock()
-			})
-		e.mu.Lock()
-		c.natAllocation = &e.natAllocation
-		run.ice = c
-		if e.request != nil && sameScope(request, *e.request) {
-			c.submit(*e.request)
-		}
-		e.mu.Unlock()
-		defer func() {
+	c := newICECoordinator(ctx, request, e.platform, manager, identity, run.runtimeID, e.transportGeneration,
+		func(event Event) { e.agentEventEpoch(run, &epoch, event) }, func(network NetworkSnapshot) {
 			e.mu.Lock()
-			if run.ice == c {
-				run.ice = nil
+			if e.run == run && run.epoch == epoch && ctx.Err() == nil {
+				e.network = network.clone()
 			}
 			e.mu.Unlock()
-		}()
-		return c.run()
-	}
-	platform := e.platform
-	if source, ok := platform.(NetworkSnapshotter); ok {
-		selected, network, err := source.SnapshotNetwork(ctx)
-		e.mu.Lock()
-		if run.epoch == epoch && run.ctx.Err() == nil {
-			e.network = network.clone()
-		}
-		e.mu.Unlock()
-		if err != nil {
-			return err
-		}
-		platform = selected
-	}
-	agent, err := newAgentWithState(ctx, request.Config, platform, func(event Event) {
-		// Redact against the producing generation as well as the current one.
-		event.Message = redact(event.Message, request.Config)
-		if event.Error != nil {
-			copy := *event.Error
-			copy.Message = redact(copy.Message, request.Config)
-			event.Error = &copy
-		}
-		e.agentEventEpoch(run, &epoch, event)
-	}, manager, identity)
-	if err != nil {
-		return err
-	}
+		})
 	e.mu.Lock()
-	if run.epoch == epoch && ctx.Err() == nil {
-		run.agent = agent
+	c.natAllocation = &e.natAllocation
+	run.ice = c
+	if e.request != nil && sameScope(request, *e.request) {
+		c.submit(*e.request)
 	}
 	e.mu.Unlock()
-	return agent.run(ctx, request.ServerURL)
+	defer func() {
+		e.mu.Lock()
+		if run.ice == c {
+			run.ice = nil
+		}
+		e.mu.Unlock()
+	}()
+	return c.run()
 }
 
-// Legacy Agent workers exit before reconfiguration; ICE keeps the mux alive.
+// The shared device mux survives application configuration changes.
 // Install the new tables under the session lock so a late handshake cannot
 // recreate a removed listener or dial an old target after revocation.
 func (m *sessionManager) reconfigure(old, next Config) {
 	before, after := provideTable(old.Provide), provideTable(next.Provide)
 	consumers := consumeTable(next.Consume)
+	oldConsumers := consumeTable(old.Consume)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.provides, m.consumes = after, consumers
@@ -202,7 +167,15 @@ func (m *sessionManager) reconfigure(old, next Config) {
 		item, ok := consumers[id]
 		if !ok || item.Expose != client.t.expose {
 			client.close()
+			m.listenerClosedLocked(client)
 			delete(m.clients, id)
+		}
+	}
+	for id, listener := range m.listeners {
+		item, ok := consumers[id]
+		previous, existed := oldConsumers[id]
+		if !ok || (listener.State != "ready" && existed && item.Expose != previous.Expose) {
+			delete(m.listeners, id)
 		}
 	}
 	changed := func(id string) bool { a, ok := after[id]; return !ok || a != before[id] }
@@ -249,6 +222,7 @@ func (m *sessionManager) terminate(mapping, fingerprint string) {
 	defer m.mu.Unlock()
 	if c := m.clients[mapping]; c != nil && (fingerprint == "" || c.fingerprint == fingerprint) {
 		c.close()
+		m.listenerClosedLocked(c)
 		delete(m.clients, mapping)
 	}
 	for key, entry := range m.tcp {
@@ -287,7 +261,7 @@ func (m *sessionManager) peerAllowedLocked(mapping, fingerprint string) bool {
 	return !known
 }
 
-// Ownership lives with application sessions, not an individual Agent. A peer
+// Ownership lives with application sessions, not an individual transport. A peer
 // process replacing its certificate must not leave its old upstream sockets
 // open until timeout, nor claim them with only a recycled device name.
 func (m *sessionManager) claimPeer(mapping, peer, fingerprint string) {
@@ -301,6 +275,7 @@ func (m *sessionManager) claimPeer(mapping, peer, fingerprint string) {
 	}
 	if client := m.clients[mapping]; client != nil && client.fingerprint == old && client.t.peer == peer {
 		client.close()
+		m.listenerClosedLocked(client)
 		delete(m.clients, mapping)
 	}
 	for key, entry := range m.tcp {

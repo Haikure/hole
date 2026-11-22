@@ -48,7 +48,7 @@ func recordingSignal(t *testing.T) (string, <-chan SignalMessage) {
 			return
 		}
 		joins <- join
-		if conn.WriteJSON(SignalMessage{Type: "joined"}) != nil {
+		if conn.WriteJSON(iceSignalMessage{SignalMessage: SignalMessage{Type: "joined"}, SignalVersion: 2}) != nil {
 			return
 		}
 		for {
@@ -178,11 +178,11 @@ type recoverablePlatform struct {
 	online atomic.Bool
 }
 
-func (p *recoverablePlatform) Candidates(ctx context.Context, cfg Config, port int) ([]Candidate, error) {
+func (p *recoverablePlatform) DialSignal(ctx context.Context, network, address string) (net.Conn, error) {
 	if !p.online.Load() {
-		return nil, nil
+		return nil, &Fault{Code: "no_network", Message: "fixture network unavailable"}
 	}
-	return p.loopbackPlatform.Candidates(ctx, cfg, port)
+	return p.DefaultPlatform.DialSignal(ctx, network, address)
 }
 func TestNetworkAppearsAfterOfflineStartAndStopCancelsRecovery(t *testing.T) {
 	url, joins := recordingSignal(t)
@@ -195,7 +195,7 @@ func TestNetworkAppearsAfterOfflineStartAndStopCancelsRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitSnapshot(t, e, func(s Snapshot) bool {
-		return s.EngineState == "recovering" && s.Error != nil && s.Error.Code == "no_ipv6"
+		return s.EngineState != "running" && s.Error != nil && s.Error.Code == "no_network"
 	})
 	p.online.Store(true)
 	_ = e.NetworkChanged()

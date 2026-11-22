@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"github.com/gorilla/websocket"
 	"net/http"
@@ -21,8 +22,11 @@ type iceSignalSink struct {
 	messages chan iceSignalMessage
 }
 type iceCoordinator struct {
+	room                     *roomControl
+	pendingSignals           map[string]iceSignalMessage
 	peerRelayMu              sync.Mutex
 	peerRelayGrants          map[sessionID]peerRelayGrant
+	peerRelayMarks           map[string]uint64
 	peerRelayPaths           map[sessionID]*peerRelayPath
 	natAllocation            *natAllocationGate
 	natMu                    sync.Mutex
@@ -45,6 +49,8 @@ type iceCoordinator struct {
 	networkObserved          func(NetworkSnapshot)
 	configMu                 sync.RWMutex
 	desired                  Request
+	acceptedConfig           Request
+	configPending            bool
 	initial                  Request
 	networkEpoch             atomic.Uint64
 	reset                    chan struct{}
@@ -56,7 +62,6 @@ type iceCoordinator struct {
 	serverV2                 bool
 	leaseRenewal             bool
 	signalResume             bool
-	legacy                   *Agent
 	turnMu                   sync.Mutex
 	turnServers              []ICEServer
 	turnExpires, turnRefresh int64
@@ -89,6 +94,8 @@ func newICECoordinator(ctx context.Context, r Request, platform Platform, sessio
 	c.initial = r
 	c.natSnapshot = natUnknown()
 	c.natAllocation = &natAllocationGate{}
+	c.room = newRoomControl(c)
+	c.pendingSignals = map[string]iceSignalMessage{}
 	return c
 }
 func (c *iceCoordinator) request() Request {
@@ -99,6 +106,12 @@ func (c *iceCoordinator) request() Request {
 func (c *iceCoordinator) deviceID() string   { return c.request().Config.DeviceName }
 func (c *iceCoordinator) signalOnline() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.online }
 func (c *iceCoordinator) submit(r Request) {
+	c.configMu.RLock()
+	previous := c.desired
+	c.configMu.RUnlock()
+	if !reflect.DeepEqual(previous.Config.Transport.FixedEndpoint, r.Config.Transport.FixedEndpoint) {
+		c.room.wakeExistingPeers()
+	}
 	c.configMu.Lock()
 	old := c.desired
 	pathChanged := pathConfigChanged(old.Config, r.Config)
@@ -106,19 +119,14 @@ func (c *iceCoordinator) submit(r Request) {
 		c.networkEpoch.Add(1)
 	}
 	c.desired = r
+	c.configPending = true
 	c.configMu.Unlock()
+	if c.room != nil && !sameSignalingConfig(old, r) {
+		c.room.requireSignal(false)
+	}
 	if !reflect.DeepEqual(old.Config.Transport.FixedEndpoint, r.Config.Transport.FixedEndpoint) {
 		for _, p := range c.peerList() {
 			p.retireForFixedPolicy()
-		}
-		if r.Config.Transport.FixedEndpoint != nil {
-			c.mu.Lock()
-			legacy := c.legacy
-			c.mu.Unlock()
-			if legacy != nil {
-				legacy.lifecycleCancel()
-				_ = legacy.quicTransport.Close()
-			}
 		}
 	}
 	if old.Config.Voice.Enabled != r.Config.Voice.Enabled {
@@ -168,6 +176,9 @@ func (c *iceCoordinator) submit(r Request) {
 }
 func (c *iceCoordinator) networkChanged() {
 	c.networkEpoch.Add(1)
+	if c.room != nil {
+		c.room.requireSignal(false)
+	}
 	c.natMu.Lock()
 	if c.natCancel != nil {
 		c.natCancel()
@@ -189,11 +200,59 @@ func (c *iceCoordinator) pin(ctx context.Context) (Platform, error) {
 	}
 	return c.platform, nil
 }
+
+func (m iceSignalMessage) wakesSignal() bool {
+	switch m.Type {
+	case "room_graph", "transport_established", "peer_relay_failed", "nat_status":
+		// Losing the signaling socket must not turn routine reports or relay
+		// cleanup into a request for a new direct connection.
+		return false
+	default:
+		return true
+	}
+}
+
 func (c *iceCoordinator) send(m iceSignalMessage) error {
 	c.mu.Lock()
 	sink := c.sink
 	c.mu.Unlock()
 	if sink == nil {
+		if c.room != nil && c.room.enabled() {
+			if m.Type == "transport_restart" && (m.Reason == "path_lost" || m.Reason == "retry" || m.Reason == "peer_relay_failed") {
+				c.mu.Lock()
+				peer := c.peers[m.TransportID]
+				c.mu.Unlock()
+				if peer == nil {
+					return errors.New("signal disconnected")
+				}
+				peer.mu.Lock()
+				ready := peer.ready
+				stale := peer.closed || !peer.online || ready.TransportGeneration != m.ExpectedGeneration
+				peer.mu.Unlock()
+				if stale || c.room.deferPeerRecovery(ready) {
+					return errors.New("signal disconnected")
+				}
+			}
+			queued := false
+			switch m.Type {
+			case "transport_restart", "transport_established", "transport_failed", "hole_failed", "peer_relay_failed", "nat_status":
+				c.mu.Lock()
+				if c.pendingSignals == nil {
+					c.pendingSignals = map[string]iceSignalMessage{}
+				}
+				key := m.Type + "/" + m.TransportID
+				if _, exists := c.pendingSignals[key]; exists || len(c.pendingSignals) < 128 {
+					c.pendingSignals[key] = m
+					queued = true
+				}
+				c.mu.Unlock()
+			}
+			if m.wakesSignal() {
+				c.room.requireSignal(false)
+			} else if queued {
+				return nil
+			}
+		}
 		return errors.New("signal disconnected")
 	}
 	if m.RequestID == "" {
@@ -210,6 +269,13 @@ func (c *iceCoordinator) send(m iceSignalMessage) error {
 	}
 }
 func (c *iceCoordinator) run() error {
+	roomDone := make(chan struct{})
+	if c.room != nil {
+		go func() { defer close(roomDone); c.room.run(c.ctx) }()
+	} else {
+		close(roomDone)
+	}
+	defer func() { c.cancel(); <-roomDone }()
 	natDone := make(chan struct{})
 	go func() { defer close(natDone); c.monitorNAT() }()
 	defer func() { c.cancel(); <-natDone }()
@@ -222,6 +288,7 @@ func (c *iceCoordinator) run() error {
 	defer func() { c.cancel(); <-monitorDone; c.close() }()
 	last := c.initial
 	backoff := time.Second
+	soloRecovery := false
 	for c.ctx.Err() == nil {
 		c.configMu.RLock()
 		current, epoch := c.desired, c.networkEpoch.Load()
@@ -237,16 +304,33 @@ func (c *iceCoordinator) run() error {
 			continue
 		default:
 		}
+		if c.room != nil && c.room.enabled() && c.room.waitForSignal() && !c.signalNeeded() {
+			c.configApplied(current)
+			c.emit(Event{Kind: "signal", State: "delegated"})
+			select {
+			case <-c.ctx.Done():
+				return c.ctx.Err()
+			case <-c.room.wake:
+			case <-c.room.changed:
+			case <-c.updates:
+			case <-c.reset:
+			}
+			continue
+		}
 		started := time.Now()
 		err, changed := c.connect(current, &last, epoch)
 		if c.ctx.Err() != nil {
 			return c.ctx.Err()
 		}
 		c.mu.Lock()
+		hadOnline := c.online
 		c.online = false
 		resume := c.signalResume
 		c.sink = nil
 		c.mu.Unlock()
+		if c.room != nil {
+			c.room.signalClosed(hadOnline && !c.room.hasSignalVia())
+		}
 		c.fixedMu.Lock()
 		if !resume && c.fixed != nil && c.fixed.relay != nil {
 			c.fixed.relay.revokeAll()
@@ -257,8 +341,16 @@ func (c *iceCoordinator) run() error {
 			// A queued restart may have been lost with the old WebSocket.
 			// Keep healthy media paths, but let the next replay request recovery.
 			peer.requestedGeneration = 0
+			pending := peer.pending
+			if pending != nil && c.room != nil && c.room.enabled() {
+				peer.pending = nil
+				pending.cancel()
+			}
 			retire := !resume && (peer.ready.Voice || peer.ready.HoleVersion == HoleRelayVersion)
 			peer.mu.Unlock()
+			if pending != nil && c.room != nil && c.room.enabled() {
+				peer.restartFrom(pending.ready, pending.ready.Phase, "signal_interrupted")
+			}
 			if retire {
 				peer.offline("signal_offline")
 			}
@@ -275,9 +367,25 @@ func (c *iceCoordinator) run() error {
 			backoff = time.Second
 			continue
 		}
+		// Report the original cause even when room delegation or an immediate
+		// recovery attempt skips the backoff below. Planned changes stay quiet.
 		fault := classifyError(err)
 		fault.Message = redact(fault.Message, current.Config)
 		c.emit(Event{Kind: "signal", State: "reconnecting", Error: fault})
+		if c.room != nil && c.room.enabled() {
+			if c.room.hasSignalVia() && !c.signalNeeded() {
+				soloRecovery = false
+				continue
+			}
+			if hadOnline {
+				soloRecovery = true
+				continue
+			}
+			if soloRecovery {
+				c.room.recoverTogether()
+				soloRecovery = false
+			}
+		}
 		if time.Since(started) > 30*time.Second {
 			backoff = time.Second
 		}
@@ -330,7 +438,7 @@ func (c *iceCoordinator) connect(r Request, applied *Request, epoch uint64) (err
 		return err, false
 	}
 	defer conn.Close()
-	conn.SetReadLimit(64 * 1024)
+	conn.SetReadLimit(256 * 1024)
 	_ = conn.SetReadDeadline(time.Now().Add(signalPongWait))
 	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(signalPongWait)) })
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
@@ -346,21 +454,23 @@ func (c *iceCoordinator) connect(r Request, applied *Request, epoch uint64) (err
 
 func (c *iceCoordinator) memberDeclaration(ctx context.Context, platform Platform, r Request) iceSignalMessage {
 	profiles := []string{ProfileICE, ProfileFixed}
-	var candidates []Candidate
-	if r.Config.Transport.AllowLegacy && !r.Config.ICE.RelayOnly && r.Config.Transport.FixedEndpoint == nil {
-		profiles = append(profiles, ProfileLegacy)
-		candidates, _ = platform.Candidates(ctx, r.Config, holePort)
-	}
 	relayEnabled := r.Config.TURN.Mode != "off"
 	order := relayOrderForConfig(RelayPolicyUDPTCPTLS, r.Config.TURN)
 	// Older round-capable Workers require a present relay_order when disabled.
 	if !relayEnabled {
 		order = relayOrder(RelayPolicyUDPTCPTLS, nil)
 	}
-	join := iceSignalMessage{SignalMessage: SignalMessage{Type: "join", Room: r.Config.Room, Token: r.Config.Token, DeviceID: r.Config.DeviceName, DeviceName: r.Config.DeviceName, Provide: r.Config.Provide, Consume: r.Config.Consume, Candidates: candidates, CertFingerprint: c.fingerprint},
+	join := iceSignalMessage{SignalMessage: SignalMessage{Type: "join", Room: r.Config.Room, Token: r.Config.Token, DeviceID: r.Config.DeviceName, DeviceName: r.Config.DeviceName, Provide: r.Config.Provide, Consume: r.Config.Consume, CertFingerprint: c.fingerprint},
 		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS,
 		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll, RelayOnly: r.Config.ICE.RelayOnly}
 	join.Voice = r.Config.Voice.Enabled
+	join.CoreVersion = CoreVersion
+	join.Certificate = base64.StdEncoding.EncodeToString(c.identity.Certificates[0].Certificate[0])
+	if c.room != nil {
+		c.room.mu.Lock()
+		join.WorkerVersion = c.room.workerVersion
+		c.room.mu.Unlock()
+	}
 	join.LiveConfig = true
 	join.PeerRelayVersion = peerRelayVersion
 	join.PunchVersion = natPunchVersion
@@ -459,10 +569,15 @@ func (c *iceCoordinator) serveSignal(ctx context.Context, cancel context.CancelF
 func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, platform Platform) error {
 	switch m.Type {
 	case "joined":
+		if c.room != nil {
+			if err := c.room.joined(m); err != nil {
+				return err
+			}
+		}
 		if sessionRequest.Config.holeConfigured() && m.HoleVersion != HoleRelayVersion {
 			return &Fault{Code: "worker_upgrade_required", Message: "Hole 中继需要先更新 Worker"}
 		}
-		if m.SignalVersion < 2 && !sessionRequest.Config.Transport.AllowLegacy {
+		if m.SignalVersion < 2 {
 			return &Fault{Code: "worker_upgrade_required", Message: "协调服务尚未支持 ICE，请先更新 Worker"}
 		}
 		if sessionRequest.Config.ICE.RelayOnly && m.RelayOnlyPolicy != relayOnlyPolicy {
@@ -474,10 +589,28 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		c.leaseRenewal = m.LeaseRenewal
 		c.signalResume = m.SignalResume
 		c.mu.Unlock()
+		if c.room != nil {
+			c.room.uploadGraph()
+		}
 		c.emit(Event{Kind: "signal", State: "joined"})
 		if m.SignalVersion >= 2 {
 			// Full state is requested once on join/rejoin, never as a heartbeat.
 			_ = c.send(signalMessage("transport_sync"))
+		}
+		c.mu.Lock()
+		pending := c.pendingSignals
+		c.pendingSignals = map[string]iceSignalMessage{}
+		c.mu.Unlock()
+		for _, message := range pending {
+			_ = c.send(message)
+		}
+	case "transport_synced":
+		if c.room != nil {
+			c.room.synchronized()
+		}
+	case "room_frame":
+		if c.room != nil && m.RoomFrame != nil {
+			c.room.accept(*m.RoomFrame, nil)
 		}
 	case "room_state":
 		if err := c.updateVoiceMembers(m.RoomState); err != nil {
@@ -618,6 +751,10 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		}
 		c.mu.Lock()
 		p := c.peers[m.TransportID]
+		if p == nil && m.RoomControl {
+			c.mu.Unlock()
+			return nil
+		}
 		if p == nil {
 			if len(c.peers) >= maxPeerTransports {
 				c.mu.Unlock()
@@ -638,37 +775,17 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 		if p != nil {
 			p.receive(m)
 		}
-	case "mapping_ready":
-		if !sameSignalingConfig(sessionRequest, c.request()) {
-			return nil
-		}
-		if m.Profile != "" && m.Profile != ProfileLegacy {
-			return nil
-		}
-		if !sessionRequest.Config.Transport.AllowLegacy || c.request().Config.ICE.RelayOnly || c.request().Config.Transport.FixedEndpoint != nil {
-			return &Fault{Code: "protocol_mismatch", Message: "对端仅支持 IPv6 直连协议，当前配置未启用兼容模式"}
-		}
-		if err := c.legacyMapping(m.SignalMessage, platform); err != nil {
-			c.emit(Event{Kind: "mapping", MappingID: m.MappingID, State: "error", Error: classifyError(err)})
-		}
-	case "peer_candidates":
-		c.mu.Lock()
-		a := c.legacy
-		c.mu.Unlock()
-		if a != nil {
-			a.updateSessionCandidates(m.MappingID, m.PeerDevice, m.Candidates)
-		}
-	case "mapping_closed":
-		c.mu.Lock()
-		a := c.legacy
-		c.mu.Unlock()
-		if a != nil {
-			a.stopMapping(m.MappingID, m.PeerDevice)
-		}
-		c.emit(Event{Kind: "mapping", MappingID: m.MappingID, State: "waiting_peer"})
+	case "mapping_ready", "peer_candidates", "mapping_closed":
+		return &Fault{Code: "protocol_mismatch", Message: "旧 IPv6 传输协议已移除，请更新对端和 Worker"}
 	case "peer_state":
+		if c.room != nil && c.room.enabled() && m.Reason == "peer_offline" {
+			break
+		}
 		for _, p := range c.peerList() {
-			if p.peerID() == m.PeerDevice {
+			p.mu.Lock()
+			matches := p.ready.PeerDevice == m.PeerDevice && (m.TransportID == "" || p.ready.TransportID == m.TransportID) && (m.TransportGeneration == 0 || p.ready.TransportGeneration <= m.TransportGeneration)
+			p.mu.Unlock()
+			if matches {
 				if m.Reason == "mapping_removed" || m.Reason == "revoked" {
 					c.mu.Lock()
 					for id, current := range c.peers {
@@ -843,7 +960,7 @@ func (c *iceCoordinator) voiceSnapshot() VoiceSnapshot {
 	}
 	c.voiceMu.RLock()
 	signalState := "online"
-	if !c.signalOnline() {
+	if !c.signalOnline() && (c.room == nil || !c.room.hasSignalVia()) {
 		signalState = "offline"
 	}
 	for _, member := range c.voiceMembers {
@@ -909,41 +1026,8 @@ func (c *iceCoordinator) close() {
 		p.close()
 	}
 	c.closeFixed()
-	c.closeLegacy()
 	if voice := c.voiceRuntimePtr(); voice != nil {
 		voice.close()
-	}
-}
-func (c *iceCoordinator) legacyMapping(msg SignalMessage, p Platform) error {
-	c.mu.Lock()
-	a := c.legacy
-	c.mu.Unlock()
-	if a == nil {
-		var err error
-		a, err = newAgentWithState(c.ctx, c.request().Config, p, func(event Event) { event.Profile = ProfileLegacy; c.emit(event) }, c.sessions, c.identity)
-		if err != nil {
-			return err
-		}
-		if err = a.ensureProviderListener(a.lifecycleContext); err != nil {
-			a.shutdown()
-			return err
-		}
-		a.spawn(func() { a.runPunchReceiver(a.lifecycleContext) })
-		c.mu.Lock()
-		c.legacy = a
-		c.mu.Unlock()
-	}
-	a.setPeerFingerprint(msg.MappingID, msg.PeerDevice, msg.PeerFingerprint)
-	a.startMapping(a.lifecycleContext, msg)
-	return nil
-}
-func (c *iceCoordinator) closeLegacy() {
-	c.mu.Lock()
-	a := c.legacy
-	c.legacy = nil
-	c.mu.Unlock()
-	if a != nil {
-		a.shutdown()
 	}
 }
 func (c *iceCoordinator) requestTURN() {
@@ -984,6 +1068,9 @@ func (c *iceCoordinator) requestTURN() {
 }
 
 func (c *iceCoordinator) leaseRequest() (iceSignalMessage, bool) {
+	if c.room != nil && c.room.enabled() {
+		return iceSignalMessage{}, false
+	}
 	c.mu.Lock()
 	ready, light := c.online && c.serverV2, c.leaseRenewal
 	c.mu.Unlock()
@@ -1118,7 +1205,7 @@ func (c *iceCoordinator) activeMappings() map[string]bool {
 		active := p.active
 		lease := p.ready.LeaseUntil
 		p.mu.Unlock()
-		if active == nil || active.mux.ctx.Err() != nil || lease <= time.Now().UnixMilli() {
+		if active == nil || active.mux.ctx.Err() != nil || (!active.ready.localAuthorization() && lease <= time.Now().UnixMilli()) {
 			continue
 		}
 		active.mux.mu.Lock()

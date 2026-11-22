@@ -3,7 +3,6 @@ ActionButton 1.0 ActionButton.qml
 AdvancedSettings 1.0 AdvancedSettings.qml
 AdvancedSettingsForm 1.0 AdvancedSettingsForm.qml
 ChoiceRow 1.0 ChoiceRow.qml
-ConnectionModeRow 1.0 ConnectionModeRow.qml
 Field 1.0 Field.qml
 MappingCard 1.0 MappingCard.qml
 MappingSection 1.0 MappingSection.qml

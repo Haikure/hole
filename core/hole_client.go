@@ -20,16 +20,36 @@ type deviceDatagramPath interface {
 	net.PacketConn
 	PeerAddr() net.Addr
 }
+
+const holeRegisterInterval = 10 * time.Second
+const holeResponseTimeout = 15 * time.Second
+
 type holeClientPath struct {
 	conn                net.PacketConn
 	remote              *net.UDPAddr
 	readAuth, writeAuth *holeAuth
 	side                int
 	replay              holeReplay
+	responseReplay      holeReplay
 	writeMu             sync.Mutex
+	activityMu          sync.Mutex
+	lastResponse        time.Time
 	seq                 uint64
 	writeBuffer         [holePacketSize]byte
 	readBuffer          [holePacketSize]byte
+}
+
+func (p *holeClientPath) observedResponse() {
+	p.activityMu.Lock()
+	p.lastResponse = time.Now()
+	p.activityMu.Unlock()
+}
+
+func (p *holeClientPath) responseAge(now time.Time) time.Duration {
+	p.activityMu.Lock()
+	last := p.lastResponse
+	p.activityMu.Unlock()
+	return now.Sub(last)
 }
 
 func (p *holeClientPath) send(kind byte, data []byte) (int, error) {
@@ -63,11 +83,17 @@ func (p *holeClientPath) ReadFrom(b []byte) (int, net.Addr, error) {
 		}
 		switch packet[4] {
 		case holeChallenge:
-			if int(packet[5]) == p.side && n == holeHeader+16 {
+			if int(packet[5]) == p.side && n == holeHeader+16 && p.responseReplay.accept(binarySequence(packet)) {
+				p.observedResponse()
 				_, _ = p.send(holeConfirm, packet[holeHeader:])
+			}
+		case holeAck:
+			if int(packet[5]) == p.side && n == holeHeader && p.responseReplay.accept(binarySequence(packet)) {
+				p.observedResponse()
 			}
 		case holeData:
 			if int(packet[5]) != p.side && p.replay.accept(binarySequence(packet)) {
+				p.observedResponse()
 				return copy(b, packet[holeHeader:]), p.remote, nil
 			}
 		}
@@ -125,13 +151,14 @@ func openHolePath(ctx context.Context, platform Platform, g *holeGrant, side int
 		if a.String() != address.String() || !auth.valid(b) || int(b[5]) != side {
 			continue
 		}
-		if b[4] == holeChallenge && n == holeHeader+16 {
+		if b[4] == holeChallenge && n == holeHeader+16 && p.responseReplay.accept(binarySequence(b)) {
 			_, err = p.send(holeConfirm, b[holeHeader:])
 			if err != nil {
 				break
 			}
 		}
-		if b[4] == holeAck {
+		if b[4] == holeAck && n == holeHeader && p.responseReplay.accept(binarySequence(b)) {
+			p.observedResponse()
 			_ = conn.SetReadDeadline(time.Time{})
 			return p, nil
 		}
@@ -207,19 +234,37 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	defer func() { stopHeartbeat(); <-done }()
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(10 * time.Second)
+		interval := holeRegisterInterval
+		if g.LocalManagement {
+			interval = time.Second
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		registerAt := time.Now().Add(holeRegisterInterval)
 		for {
 			select {
 			case <-heartbeatCtx.Done():
 				return
-			case <-ticker.C:
-				_, _ = packet.send(holeRegister, nil)
+			case now := <-ticker.C:
+				age := packet.responseAge(now)
+				if g.LocalManagement && age >= holeResponseTimeout {
+					// A relay may have lost its routes without closing our UDP
+					// socket. Wake delegated signaling through normal path loss.
+					_ = packet.Close()
+					return
+				}
+				if !now.Before(registerAt) || (g.LocalManagement && age >= holeRegisterInterval) {
+					if _, err := packet.send(holeRegister, nil); err != nil {
+						_ = packet.Close()
+						return
+					}
+					registerAt = now.Add(holeRegisterInterval)
+				}
 			}
 		}
 	}()
 	tlsConfig := p.coordinator.identity.Clone()
-	tlsConfig.NextProtos = []string{iceALPN}
+	tlsConfig.NextProtos = []string{holeALPN}
 	tlsConfig.ClientAuth = tls.RequireAnyClientCert
 	tlsConfig.InsecureSkipVerify = true
 	var mismatch atomic.Bool
@@ -289,6 +334,9 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	p.mu.Unlock()
 	a.processStep("connected", "Hole 中继业务通道已就绪", 0, 0)
 	a.process.finish("connected", "Hole 中继已连接")
+	if mux.roomEnabled {
+		p.coordinator.room.attach(mux)
+	}
 	mux.syncMappings()
 	if old != nil {
 		old.close()

@@ -145,9 +145,6 @@ func (cfg Config) Validate() error {
 	if err := cfg.validateTransport(); err != nil {
 		return err
 	}
-	if cfg.Voice.Enabled && cfg.Transport.Preferred != PreferredICE {
-		return errors.New("语音需要 ICE / QUIC 传输")
-	}
 	if cfg.SessionTimeout < 0 {
 		return errors.New("session_timeout 必须为正时长，例如 10m")
 	}

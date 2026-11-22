@@ -61,7 +61,7 @@ func (p *muxPeer) syncVoice() {
 		return
 	}
 	voice := p.owner.coordinator.voiceRuntimePtr()
-	wanted := ready.Voice && voice != nil && ready.LeaseUntil > time.Now().UnixMilli()
+	wanted := ready.Voice && voice != nil && (ready.localAuthorization() || ready.LeaseUntil > time.Now().UnixMilli())
 	enabled := wanted && p.ready.Voice
 	if p.liveConfig {
 		if ready.VoiceRevision == 0 {

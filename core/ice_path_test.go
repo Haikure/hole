@@ -149,7 +149,7 @@ func mustTLS(t *testing.T) *tls.Config {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.NextProtos = []string{iceALPN}
+	cfg.NextProtos = []string{holeALPN}
 	return cfg
 }
 

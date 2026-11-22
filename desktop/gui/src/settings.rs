@@ -176,19 +176,10 @@ impl Desktop {
             )
             .child(self.field(
                 "room-interfaces",
-                "IPv6 候选接口",
+                "ICE 候选接口",
                 config::join_list(&c.candidate_interfaces),
                 0,
                 |a, v| a.draft.connection.candidate_interfaces = config::split_list(&v),
-                window,
-                cx,
-            ))
-            .child(self.field(
-                "room-addresses",
-                "手动公网 IPv6（仅 IPv6 模式）",
-                config::join_list(&c.candidate_addresses),
-                0,
-                |a, v| a.draft.connection.candidate_addresses = config::split_list(&v),
                 window,
                 cx,
             ));
@@ -201,25 +192,6 @@ impl Desktop {
     fn transport_settings(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette(cx);
         let c = &self.draft.connection;
-        let mut modes = row().flex_wrap();
-        for (mode, label) in [("auto", "自动"), ("ice", "仅 ICE"), ("legacy", "仅 IPv6")] {
-            modes = modes.child(self.action(
-                format!("mode-{mode}"),
-                label,
-                "route",
-                c.connection_mode == mode,
-                false,
-                move |a, _, _| a.draft.connection.connection_mode = mode.into(),
-                cx,
-            ));
-        }
-        let policy =
-            card(p)
-                .child(section("route", "连接策略", p))
-                .child(modes)
-                .child(div().text_sm().text_color(p.muted).child(
-                    "自动：ICE 优先，兼容 IPv6；仅 ICE：不回退 IPv6；仅 IPv6：不使用 ICE。",
-                ));
         let mut nat_modes = row().flex_wrap();
         for (mode, label) in [(0, "默认分类服务"), (1, "自定义")] {
             let selected = match mode {
@@ -505,7 +477,7 @@ impl Desktop {
                 |a, v| a.draft.connection.allow_insecure_signal = v,
                 cx,
             ));
-        col().gap_5().child(policy).child(pair).child(timing)
+        col().gap_5().child(pair).child(timing)
     }
     fn reorder_relay(&mut self, index: usize, direction: isize) {
         let mut order = self.draft.connection.relay_order();

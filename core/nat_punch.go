@@ -215,7 +215,7 @@ func (p *icePeer) prepareNATPunch(a *iceAttempt, platform Platform, cfg Config) 
 	if a.ready.PunchSchedule == natPunchSchedule && len(urls) > 0 {
 		// Do not hold one device's allocator while waiting for the peer's
 		// offer. Ordered dual-device reservation happens after both offers.
-		queueCtx, stopQueue := context.WithDeadline(a.ctx, time.UnixMilli(a.ready.LeaseUntil))
+		queueCtx, stopQueue := authorizationContext(a.ctx, a.ready)
 		release, err = p.coordinator.natAllocation.acquire(queueCtx)
 		stopQueue()
 		if err != nil {
@@ -593,7 +593,6 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				dialer = natGroup(model) == "cone"
 			}
 			attempt := newNATPunchAttempt(sockets)
-			attempt.continueProbes = extra && dialer
 			attempt.process = a.process
 			for _, pc := range sockets {
 				a.process.socket(pc, "business", round, trial)
@@ -763,7 +762,7 @@ func natPunchBind(ctx context.Context, platform Platform, cfg ICEConfig) (string
 
 func (p *icePeer) punchTLS(a *iceAttempt) *tls.Config {
 	c := p.coordinator.identity.Clone()
-	c.NextProtos, c.InsecureSkipVerify, c.ClientAuth = []string{iceALPN}, true, tls.RequireAnyClientCert
+	c.NextProtos, c.InsecureSkipVerify, c.ClientAuth = []string{holeALPN}, true, tls.RequireAnyClientCert
 	c.VerifyConnection = func(state tls.ConnectionState) error {
 		if len(state.PeerCertificates) == 0 {
 			return errors.New("peer certificate missing")

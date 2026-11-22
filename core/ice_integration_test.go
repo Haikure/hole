@@ -124,7 +124,7 @@ func iceFixtureRequest(server, name string) Request {
 	r.Config.DeviceName = name
 	r.Config.Provide = nil
 	r.Config.Consume = nil
-	r.Config.Transport = TransportConfig{Preferred: PreferredICE, AllowInsecureSignal: true}
+	r.Config.Transport = TransportConfig{AllowInsecureSignal: true}
 	r.Config.ICE = ICEConfig{STUNURLs: []string{}, InterfaceAllowlist: []string{"lo"}, IncludeLoopback: true, DirectProbeTimeout: ConfigDuration(5 * time.Second)}
 	r.Config.TURN.Mode = "off"
 	return r
@@ -257,6 +257,9 @@ func TestICEMuxActualWorkerMultipleMappingsAndRecovery(t *testing.T) {
 	if accepted.Load() != 2 {
 		t.Fatalf("manual renomination replaced application sockets: %d", accepted.Load())
 	}
+	waitSnapshot(t, b, func(s Snapshot) bool {
+		return s.SignalState == "joined" && ready(s)
+	})
 	beforeRemoval := a.Snapshot().PeerTransports[0].Generation
 	pathBeforeRemoval, signalBeforeRemoval := liveTestPath(t, a)
 	peerPathBeforeRemoval, peerSignalBeforeRemoval := liveTestPath(t, b)
@@ -279,6 +282,7 @@ func TestICEMuxActualWorkerMultipleMappingsAndRecovery(t *testing.T) {
 	a.mu.Unlock()
 	_ = ca.send(signalMessage("transport_sync"))
 	transfer(second, "hibernation")
+	before = a.Snapshot().PeerTransports[0].Generation
 	if e = a.NetworkChanged(); e != nil {
 		t.Fatal(e)
 	}
@@ -290,16 +294,20 @@ func TestICEMuxActualWorkerMultipleMappingsAndRecovery(t *testing.T) {
 	if accepted.Load() != 2 {
 		t.Fatalf("application sockets were replaced: %d", accepted.Load())
 	}
+	waitSnapshot(t, b, func(s Snapshot) bool {
+		return s.SignalState == "joined" && len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].Generation > before
+	})
+	pathBeforeClear, _ := liveTestPath(t, b)
 	rb.Config.Provide = nil
 	rb.Config.Consume = nil
 	if e = b.ApplyConfig(rb); e != nil {
 		t.Fatal(e)
 	}
 	waitSnapshot(t, b, func(s Snapshot) bool {
-		return len(s.PeerTransports) == 0 && s.SignalState == "joined"
+		return s.SignalState == "joined" && len(s.PeerTransports) == 1 && s.PeerTransports[0].State == "active" && s.PeerTransports[0].ActiveChannels == 0 && s.Room != nil && s.Room.GroupID == "alpha" && len(s.Room.Members) == 2
 	})
-	time.Sleep(50 * time.Millisecond)
-	if b.Snapshot().SignalState != "joined" {
-		t.Fatal("closed transport error corrupted signaling state")
+	pathAfterClear, _ := liveTestPath(t, b)
+	if pathAfterClear != pathBeforeClear || pathAfterClear.session.Context().Err() != nil {
+		t.Fatal("removing all business mappings replaced the room control connection")
 	}
 }

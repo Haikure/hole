@@ -41,7 +41,6 @@ data class ConnectionSettings(
     // 明文仅在运行内存中出现，不落盘、不进快照。
     val passwordCipher: String = "",
     val tokenCipher: String = "",
-    val connectionMode: String = "auto",
     val allowInsecureSignal: Boolean = false,
     val ice: IceSettings = IceSettings(),
     val turn: TurnSettings = TurnSettings(),
@@ -115,7 +114,6 @@ data class CoreConfig(
     @SerialName("device_name") val deviceName: String,
     @SerialName("session_timeout") val sessionTimeout: String,
     @SerialName("candidate_interfaces") val candidateInterfaces: List<String>,
-    @SerialName("candidate_addresses") val candidateAddresses: List<String>,
     // 空集合必须序列化为 []，核心要求 provide/consume 以数组出现。
     @SerialName("provide") val provide: List<CoreProvide> = emptyList(),
     @SerialName("consume") val consume: List<CoreConsume> = emptyList(),

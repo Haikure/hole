@@ -25,13 +25,19 @@ func (p *loopbackPlatform) Candidates(context.Context, Config, int) ([]Candidate
 func (p *loopbackPlatform) ListenPacket(ctx context.Context, _, _ string) (net.PacketConn, error) {
 	conn, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp4", "127.0.0.1:0")
 	if err == nil {
-		p.opened <- conn
+		select {
+		case p.opened <- conn:
+		case <-ctx.Done():
+			_ = conn.Close()
+			return nil, ctx.Err()
+		}
 	}
 	return conn, err
 }
 
-func TestEngineJoinedAndStopReleasesSocket(t *testing.T) {
+func TestEngineJoinedAndStopReleasesSignal(t *testing.T) {
 	joined := make(chan SignalMessage, 1)
+	closed := make(chan struct{}, 1)
 	allowJoin := make(chan struct{})
 	defer func() {
 		select {
@@ -58,10 +64,15 @@ func TestEngineJoinedAndStopReleasesSocket(t *testing.T) {
 		}
 		joined <- message
 		<-allowJoin
-		if err := conn.WriteJSON(SignalMessage{Type: "joined"}); err != nil {
+		if err := conn.WriteJSON(iceSignalMessage{SignalMessage: SignalMessage{Type: "joined"}, SignalVersion: 2}); err != nil {
 			return
 		}
-		_, _, _ = conn.ReadMessage()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				closed <- struct{}{}
+				return
+			}
+		}
 	}))
 	defer server.Close()
 	platform := &loopbackPlatform{opened: make(chan net.PacketConn, 1)}
@@ -72,12 +83,6 @@ func TestEngineJoinedAndStopReleasesSocket(t *testing.T) {
 	r.Config.Provide, r.Config.Consume = nil, nil
 	if err := e.Start(r); err != nil {
 		t.Fatal(err)
-	}
-	var pc net.PacketConn
-	select {
-	case pc = <-platform.opened:
-	case <-time.After(3 * time.Second):
-		t.Fatal("UDP socket not opened")
 	}
 	select {
 	case join := <-joined:
@@ -102,8 +107,16 @@ func TestEngineJoinedAndStopReleasesSocket(t *testing.T) {
 	if err := e.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pc.WriteTo([]byte("closed fixture"), pc.LocalAddr()); !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("socket survived Stop: %v", err)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("signaling socket survived Stop")
+	}
+	for len(platform.opened) > 0 {
+		packet := <-platform.opened
+		if _, err := packet.WriteTo([]byte("closed fixture"), packet.LocalAddr()); !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("network probe socket survived Stop: %v", err)
+		}
 	}
 	e.agentEvent(oldRun, Event{Kind: "signal", State: "joined"})
 	if s := e.Snapshot(); s.SignalState != "disconnected" {

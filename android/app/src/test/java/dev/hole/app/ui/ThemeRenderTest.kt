@@ -103,8 +103,7 @@ class ThemeRenderTest {
                                 mappings = listOf(MappingSnapshot("ssh", "provide", "tcp", "active", "127.0.0.1:22", "desktop", "[2001:db8::1234]:55140"))),
                             config = configState, commandError = null, onBack = {}, onReconnect = {}, onExport = {}, onBackground = {},
                         )
-                        "transport" -> TransportSettingsScreen(configState,onSave={_,_,_,_,_,_->null},onBack={})
-                        "transport-ipv6" -> TransportSettingsScreen(configState.copy(config=configState.config.copy(connection=configState.config.connection.copy(connectionMode="legacy"))),onSave={_,_,_,_,_,_->null},onBack={})
+                        "transport" -> TransportSettingsScreen(configState,onSave={_,_,_,_,_->null},onBack={})
                         "config" -> ConfigOverviewScreen(
                             configState = configState,
                             onAddProvide = {}, onEditProvide = {}, onAddConsume = {}, onEditConsume = {},
@@ -163,7 +162,7 @@ class ThemeRenderTest {
             }
         }
         for (appearance in listOf(ThemeMode.LIGHT, ThemeMode.DARK)) {
-            for (page in listOf("hub", "appearance", "settings", "home", "provide", "consume", "details", "background", "transfer", "transport", "transport-ipv6", "config", "voice")) {
+            for (page in listOf("hub", "appearance", "settings", "home", "provide", "consume", "details", "background", "transfer", "transport", "config", "voice")) {
                 compose.runOnIdle { mode = appearance; screen = page }
                 compose.waitForIdle()
                 capture("theme-${appearance.value}-$page.png")

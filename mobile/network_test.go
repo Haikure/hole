@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"hole/core"
 )
@@ -77,7 +76,7 @@ func TestAndroidExplicitCandidatesAndCancellationSkipProvider(t *testing.T) {
 	}
 }
 
-func TestAndroidFacadeOfflineConstructionAndNoIPv6(t *testing.T) {
+func TestAndroidFacadeOfflineConstructionUsesSharedICE(t *testing.T) {
 	if _, err := NewEngineWithNetworkProvider(nil, nil); err == nil {
 		t.Fatal("accepted a missing Android network provider")
 	}
@@ -93,14 +92,17 @@ func TestAndroidFacadeOfflineConstructionAndNoIPv6(t *testing.T) {
 	if source.calls.Load() != 0 {
 		t.Fatal("stopped construction/configuration accessed networks")
 	}
+	if s := e.engine.Snapshot(); s.Capabilities.RequiresIPv6 || !s.Configured {
+		t.Fatalf("default transport retained the removed IPv6 requirement: %+v", s)
+	}
 	if err := e.Start(requestJSON); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_ = e.engine.Wait(ctx)
-	if s := e.engine.Snapshot(); s.Error == nil || s.Error.Code != "no_ipv6" || s.SignalState != "disconnected" {
-		t.Fatalf("wrong unavailable network state: %+v", s)
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if s := e.engine.Snapshot(); s.SignalState != "disconnected" || s.RunRequested {
+		t.Fatalf("stopped ICE facade retained network work: %+v", s)
 	}
 	if err := e.Close(); err != nil {
 		t.Fatal(err)

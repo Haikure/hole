@@ -4,12 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"hole/core"
 )
 
 func validParams() string {
-	return `{"api_version":1,"server_url":"wss://example.invalid/ws","config":{"room":"ROOM","password":"PRIVATE_PASSWORD","token":"PRIVATE_TOKEN","device_name":"desktop","transport":{"preferred":"ice"},"ice":{"stun_urls":[]},"turn":{"mode":"off"},"provide":[],"consume":[]}}`
+	return `{"api_version":1,"server_url":"wss://example.invalid/ws","config":{"room":"ROOM","password":"PRIVATE_PASSWORD","token":"PRIVATE_TOKEN","device_name":"desktop","transport":{},"ice":{"stun_urls":[]},"turn":{"mode":"off"},"provide":[],"consume":[]}}`
 }
 
 func wireRequest(id, method, params string) string {
@@ -68,7 +66,7 @@ func TestConfigurationUsesCoreParserWithoutRevisionCounter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Config.Transport.Preferred != core.PreferredICE || r.Config.TURN.Mode != "off" || r.Config.ICE.STUNURLs == nil || len(r.Config.ICE.STUNURLs) != 0 {
+	if r.Config.TURN.Mode != "off" || r.Config.ICE.STUNURLs == nil || len(r.Config.ICE.STUNURLs) != 0 {
 		t.Fatalf("configuration changed: %+v", r)
 	}
 	if r.Config.SessionTimeout == 0 || r.Config.ICE.GatherTimeout == 0 {
@@ -93,7 +91,7 @@ func TestConfigurationFailuresAreBoundedAndDoNotEchoSecrets(t *testing.T) {
 		strings.Replace(valid, `wss://example.invalid/ws`, `http://PRIVATE_PAYLOAD/`, 1),
 		strings.Replace(valid, `wss://example.invalid/ws`, `ws://example.invalid/ws`, 1),
 		strings.Replace(valid, `"device_name":"desktop"`, `"device_name":""`, 1),
-		strings.Replace(valid, `"preferred":"ice"`, `"preferred":"PRIVATE_PASSWORD"`, 1),
+		strings.Replace(valid, `"transport":{}`, `"transport":{"preferred":"PRIVATE_PASSWORD"}`, 1),
 	}
 	for i, data := range tests {
 		_, err := engineRequest([]byte(data))

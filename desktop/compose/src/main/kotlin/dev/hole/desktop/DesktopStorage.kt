@@ -25,14 +25,14 @@ internal data class DesktopState(
     fun presentation() = ConfigUiState(true, config, password, token, turnCredential = turnCredential)
 }
 
-internal class DesktopStorage : AutoCloseable {
+internal class DesktopStorage(configDirectory: Path? = null) : AutoCloseable {
     private val windows = System.getProperty("os.name").startsWith("Windows")
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = true; prettyPrint = true }
-    val directory: Path = Path.of(System.getenv("HOLE_DESKTOP_CONFIG_DIR") ?: if (windows) {
+    val directory: Path = (configDirectory ?: Path.of(System.getenv("HOLE_DESKTOP_CONFIG_DIR") ?: if (windows) {
         (System.getenv("APPDATA") ?: error("缺少 APPDATA")) + "/hole-desktop"
     } else {
         (System.getenv("XDG_CONFIG_HOME") ?: (System.getProperty("user.home") + "/.config")) + "/hole-desktop"
-    }).toAbsolutePath()
+    })).toAbsolutePath()
     private val file = directory.resolve("compose-state.json")
     private val channel: FileChannel
     private val lease: java.nio.channels.FileLock
@@ -46,9 +46,14 @@ internal class DesktopStorage : AutoCloseable {
 
     fun load(): DesktopState {
         if (Files.exists(file)) {
-            val value = json.decodeFromString<DesktopState>(read(file))
+            val text = read(file)
+            val hasConnectionMode = json.parseToJsonElement(text).jsonObject["config"]?.jsonObject
+                ?.get("connection")?.jsonObject?.containsKey("connectionMode") == true
+            val value = json.decodeFromString<DesktopState>(text)
             require(value.version == 1) { "桌面配置版本不受支持，原文件已保留" }
-            return value
+            val migrated = value.copy(config = migrateStoredConfig(value.config, value.config.schemaVersion))
+            if (migrated != value || hasConnectionMode) save(migrated)
+            return migrated
         }
         val legacy = directory.resolve("config.json")
         val state = if (Files.exists(legacy)) {
@@ -126,7 +131,7 @@ internal class DesktopStorage : AutoCloseable {
         val connection = JSONObject(root.getJSONObject("connection").toString())
         mapOf("server_url" to "serverUrl", "device_name" to "deviceName", "session_timeout" to "sessionTimeout",
             "candidate_interfaces" to "candidateInterfaces", "candidate_addresses" to "candidateAddresses",
-            "connection_mode" to "connectionMode", "allow_insecure_signal" to "allowInsecureSignal").forEach { (old, new) ->
+            "allow_insecure_signal" to "allowInsecureSignal").forEach { (old, new) ->
             if (connection.has(old)) connection.put(new, connection.remove(old))
         }
         val prefs = root.optJSONObject("prefs") ?: JSONObject()
@@ -147,7 +152,8 @@ internal class DesktopStorage : AutoCloseable {
             put("materialPalette", when (val accent = prefs.optString("accent", "blue")) { "teal" -> "green"; "violet" -> "purple"; else -> accent })
         }
         fun secret(name: String) = if (secrets.isNull(name)) "" else secrets.optString(name)
-        return DesktopState(config = json.decodeFromJsonElement(config), password = secret("password"),
+        val stored = json.decodeFromJsonElement<StoredConfig>(config)
+        return DesktopState(config = migrateStoredConfig(stored, stored.schemaVersion), password = secret("password"),
             token = secret("token"), turnCredential = secret("turn_credential"),
             resumeOnOpen = prefs.optBoolean("resume_at_login"), reduceMotion = prefs.optBoolean("reduce_motion"))
     }

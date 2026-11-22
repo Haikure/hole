@@ -63,7 +63,6 @@ Android 检测的 DNS 和 UDP 均绑定当前物理 Network，切网使旧结果
     "token": "ROOM_TOKEN",
     "device_name": "android-device",
     "session_timeout": "10m",
-    "transport": {"preferred": "ice", "allow_legacy": true},
     "provide": [{"id": "ssh", "service": "tcp://127.0.0.1:22"}],
     "consume": []
   }

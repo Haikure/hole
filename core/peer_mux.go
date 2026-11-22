@@ -22,6 +22,8 @@ const (
 var muxMagic = [4]byte{'H', 'M', 'X', 1}
 
 type muxHello struct {
+	CoreVersion        string `json:"core_version"`
+	WorkerVersion      string `json:"worker_version,omitempty"`
 	PeerRelayVersion   string `json:"peer_relay_version,omitempty"`
 	Profile            string `json:"profile"`
 	TransportID        string `json:"transport_id"`
@@ -57,6 +59,13 @@ type receivedPacket struct {
 	data []byte
 }
 type muxPeer struct {
+	roomEnabled          bool
+	roomMu               sync.Mutex
+	roomPending          map[string]roomFrame
+	roomOrder            []string
+	roomBytes            int
+	roomNotify           chan struct{}
+	roomReceiving        atomic.Bool
 	peerRelay            bool
 	peerRelaySend        chan []byte
 	owner                *icePeer
@@ -175,6 +184,12 @@ func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, re
 	defer stopIO()
 	hello := muxHello{Profile: ready.Profile, TransportID: ready.TransportID, Generation: ready.TransportGeneration, LocalRuntime: owner.coordinator.runtimeID, RemoteRuntime: ready.PeerRuntimeID, Version: sessionProtocol, LocalRelayProtocol: localRelayProtocol, RelayProtocol: localRelayProtocol, Voice: ready.Voice, VoiceVersion: voiceProtocolVersion}
 	hello.QUICStats = true
+	hello.CoreVersion = CoreVersion
+	if room := owner.coordinator.room; room != nil {
+		room.mu.Lock()
+		hello.WorkerVersion = room.workerVersion
+		room.mu.Unlock()
+	}
 	hello.PeerRelayVersion = peerRelayVersion
 	hello.LiveConfig = true
 	hello.ObservedAddress = conn.RemoteAddr().String()
@@ -213,6 +228,9 @@ func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, re
 	if err == nil && ready.LiveConfig && (!remote.LiveConfig || remote.VoiceVersion != voiceProtocolVersion) {
 		err = &Fault{Code: "protocol_mismatch", Message: "对端不支持已协商的在线配置协议"}
 	}
+	if err == nil && ready.PeerCoreVersion != "" && remote.CoreVersion != ready.PeerCoreVersion {
+		err = &Fault{Code: "protocol_mismatch", Message: "对端软件版本与信令声明不一致"}
+	}
 	if err == nil && !p.liveConfig && ready.Voice && (!remote.Voice || remote.VoiceVersion != voiceProtocolVersion) {
 		err = &Fault{Code: "protocol_mismatch", Message: "对端语音协议版本不兼容"}
 	}
@@ -242,6 +260,12 @@ func newMuxPeerPrepared(ctx context.Context, owner *icePeer, conn *quic.Conn, re
 	p.peerRelaySend = make(chan []byte, 64)
 	p.voiceEnabled.Store(ready.Voice && !p.liveConfig)
 	p.metrics.startBandwidth(time.Now(), conn.ConnectionStats())
+	if owner.coordinator.room != nil && owner.coordinator.room.enabled() && modernSoftware(remote.CoreVersion) && modernSoftware(remote.WorkerVersion) {
+		p.roomEnabled = true
+		p.roomPending = map[string]roomFrame{}
+		p.roomNotify = make(chan struct{}, 1)
+		p.spawn(p.writeRoom)
+	}
 	p.spawn(p.readControl)
 	p.spawn(p.readStreams)
 	p.spawn(p.readDatagrams)
@@ -275,10 +299,15 @@ func (p *muxPeer) stop() {
 		list = append(list, c)
 	}
 	p.mu.Unlock()
-	p.cancel()
+	// Cancellation may immediately close a platform-bound UDP socket.
+	// Deliver the close before waking the transport's cleanup goroutine.
+	_ = p.conn.CloseWithError(0, "peer path replaced")
 	p.control.CancelRead(0)
 	p.control.CancelWrite(0)
-	_ = p.conn.CloseWithError(0, "peer path replaced")
+	p.cancel()
+	if p.roomEnabled {
+		p.owner.coordinator.room.detach(p)
+	}
 	for _, c := range list {
 		c.close(false)
 	}
@@ -466,11 +495,14 @@ func (p *muxPeer) openMapping(c *muxChannel) {
 		return
 	}
 	defer client.unbind(transport)
-	c.ready.Store(true)
-	p.owner.emitMapping(record.ID, "active", record.Service.Protocol)
+	ready := func() {
+		c.ready.Store(true)
+		p.owner.emitMapping(record.ID, "active", record.Service.Protocol)
+	}
 	if record.Service.Protocol == "udp" {
-		client.serveUDP(transport)
+		client.serveUDPWithReady(transport, ready)
 	} else {
+		ready()
 		<-transport.ctx.Done()
 	}
 }
@@ -498,6 +530,11 @@ func (p *muxPeer) serveStream(stream *quic.Stream, admitted func()) {
 	stop := context.AfterFunc(p.ctx, func() { stream.CancelRead(0); stream.CancelWrite(0) })
 	defer stop()
 	kind, id, err := readMuxPrefix(stream)
+	if err == nil && kind == muxRoom && id == 0 && p.roomEnabled {
+		admitted()
+		p.readRoom(stream)
+		return
+	}
 	if err != nil || kind != muxSession {
 		stream.CancelRead(1)
 		stream.CancelWrite(1)
@@ -514,7 +551,7 @@ func (p *muxPeer) serveStream(stream *quic.Stream, admitted func()) {
 	stopChannel := context.AfterFunc(channel.ctx, func() { stream.CancelRead(0); stream.CancelWrite(0) })
 	defer stopChannel()
 	r := channel.mapping
-	facade := &Agent{provide: map[string]Provide{r.ID: {ID: r.ID, Service: r.Service}}, sessions: p.owner.coordinator.sessions, emit: p.owner.coordinator.emit,
+	facade := &sessionPeer{provide: map[string]Provide{r.ID: {ID: r.ID, Service: r.Service}}, sessions: p.owner.coordinator.sessions, emit: p.owner.coordinator.emit,
 		peerFingerprints: map[peerMapping]string{{mappingID: r.ID, device: p.ready.PeerDevice}: p.ready.PeerFingerprint}}
 	facade.handleProviderStream(channel.ctx, channel, stream, admitted)
 }

@@ -30,6 +30,9 @@ class RecoveryWakeLock(context: Context) : AutoCloseable {
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hole:network-recovery").apply { setReferenceCounted(false) }
     private var recovering = false
     private var closed = false
+    fun update(runRequested: Boolean, signalState: String) {
+        update(runRequested && signalState != "joined" && signalState != "delegated")
+    }
     @Synchronized fun update(value: Boolean) {
         if (closed) return
         if (value && !recovering) wakeLock.acquire(30_000L)

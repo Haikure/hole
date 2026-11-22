@@ -112,14 +112,16 @@ func TestNATPunchExtendedSequencesAcknowledgeReorderingAndRejectReplays(t *testi
 	key := []byte("extended-sequence-fixture")
 	a := newNATPunchAttempt([]net.PacketConn{local})
 	defer a.close()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// Five ACKs and the dialer's interleaved challenges share the socket's
+	// 200ms pacing budget, so the replay test must allow both kinds of packet.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		_, err := a.run(ctx, true, 1, key, []*net.UDPAddr{remote.LocalAddr().(*net.UDPAddr)}, nil)
 		done <- err
 	}()
-	_ = remote.SetReadDeadline(time.Now().Add(time.Second))
+	_ = remote.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buffer := make([]byte, 2048)
 	for _, tc := range []struct {
 		sequence uint32
@@ -150,7 +152,7 @@ func TestNATPunchExtendedSequencesAcknowledgeReorderingAndRejectReplays(t *testi
 	if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
-	if d := a.diagnostic; d.ProbesReceived != 9 || d.ACKsSent != 5 || d.PacketRejected != 0 || d.QUICDialStarted {
+	if d := a.diagnostic; d.ProbesReceived != 9 || d.ACKsSent != 5 || d.ProbesSent < 4 || d.PacketRejected != 0 || d.QUICDialStarted {
 		t.Fatalf("extended sequence replay window accounting: %+v", d)
 	}
 }

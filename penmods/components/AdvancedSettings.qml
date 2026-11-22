@@ -11,7 +11,7 @@ Section {
     readonly property bool turnOrderDragging: formLoader.item ? formLoader.item.turnOrderDragging : false
 
     title: "高级连接参数"
-    subtitle: form && form.preferred === "ipv6" ? "IPv6" : "ICE / TURN"
+    subtitle: "ICE / TURN"
     collapsible: true
 
     ContentLoader {

@@ -85,9 +85,6 @@ func (c Config) validateHoleRelay() error {
 	if c.Relay.Serve.Enabled && c.Transport.FixedEndpoint == nil {
 		return fmt.Errorf("relay.serve.enabled 需要 transport.fixed_endpoint")
 	}
-	if (c.Relay.Device != "" || c.Relay.Serve.Enabled || c.Relay.Order != nil) && c.Transport.Preferred != PreferredICE {
-		return fmt.Errorf("Hole 中继需要 auto / ice 传输")
-	}
 	return nil
 }
 

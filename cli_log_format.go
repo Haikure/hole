@@ -112,6 +112,30 @@ func logRoute(p core.PeerTransportSnapshot) string {
 	return path
 }
 
+func logPeerEndpoint(p core.PeerTransportSnapshot) string {
+	if p.PathType == "peer_relay" {
+		// The inner QUIC addresses are virtual. The snapshot renderer supplies
+		// the current address of the existing direct connection to the relay.
+		if p.RelayAccessAddress != "" {
+			return "中继 " + logValue(p.RelayAccessAddress)
+		}
+		return ""
+	}
+	if p.PathType == "hole" && p.RelayAccessAddress != "" {
+		return "中继 " + logValue(p.RelayAccessAddress)
+	}
+	if p.RemoteAddress != "" {
+		label := "对端 "
+		if p.PathType == "hole" {
+			label = "中继 "
+		} else if p.RemoteType == "relay" || p.RelaySide == "remote" || p.RelaySide == "both" {
+			label = "对端中继 "
+		}
+		return label + logValue(p.RemoteAddress)
+	}
+	return ""
+}
+
 func logCause(f *core.Fault) string {
 	if f == nil {
 		return ""
@@ -164,11 +188,13 @@ func logAppendField(line, name, value string) string {
 }
 
 func (r *cliReporter) debugEvent(e core.Event) {
-	if !r.debug {
+	if !r.debug || (e.Error == nil && e.Kind != "log" && e.Kind != "session") {
 		return
 	}
+	defer r.logScope(logEventContext(e))()
+	key := "debug/" + e.Kind + "/" + e.Peer + "/" + e.MappingID + "/" + e.Stage
 	if e.Kind == "log" && e.State == "" && e.Stage == "" && e.Peer == "" && e.Phase == "" && e.TransportGeneration == 0 && e.Error == nil {
-		r.debugf("core %s", logText(e.Message))
+		r.problem(key, logLevelDebug, "core "+logText(e.Message))
 		return
 	}
 	kind := e.Kind
@@ -194,7 +220,7 @@ func (r *cliReporter) debugEvent(e core.Event) {
 		line += " err=" + logValue(e.Error.Code) + " msg=" + strconv.Quote(logText(e.Error.Message))
 	}
 	line = logAppendField(line, "message", e.Message)
-	r.debugf("%s", line)
+	r.problem(key, logLevelDebug, line)
 }
 
 func (r *cliReporter) debugPeer(p core.PeerTransportSnapshot) {
@@ -248,6 +274,7 @@ func (r *cliReporter) debugPeer(p core.PeerTransportSnapshot) {
 		if pair.Selected {
 			line += " selected"
 		}
+		line += " peer=" + logValue(p.PeerID) + " phase=" + logValue(p.Phase) + fmt.Sprintf(" gen=%d", p.Generation)
 		r.debugf("%s", line)
 	}
 }

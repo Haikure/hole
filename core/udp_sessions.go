@@ -62,6 +62,10 @@ func (c *clientTunnel) readUDP() {
 }
 
 func (c *clientTunnel) serveUDP(transport *clientTransport) {
+	c.serveUDPWithReady(transport, nil)
+}
+
+func (c *clientTunnel) serveUDPWithReady(transport *clientTransport, onReady func()) {
 	conn, ctx := transport.conn, transport.ctx
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
@@ -110,6 +114,10 @@ func (c *clientTunnel) serveUDP(transport *clientTransport) {
 		c.mu.Unlock()
 		link.close()
 	}()
+	// A ready mapping must already be able to send its first local datagram.
+	if onReady != nil {
+		onReady()
+	}
 	c.logf("映射 %s UDP 传输已就绪，现有 session_id 自动恢复", c.t.id)
 	serveUDPLink(link, func(id sessionID, packet []byte) {
 		c.mu.Lock()
@@ -364,7 +372,7 @@ func (g *providerUDPGroup) readReplies(session *providerUDPSession) {
 	}
 }
 
-func (a *Agent) handleProviderUDP(ctx context.Context, conn sessionConnection, stream *quic.Stream, hello sessionHello, key providerSessionKey, endpoint ServiceEndpoint, admitted ...func()) {
+func (a *sessionPeer) handleProviderUDP(ctx context.Context, conn sessionConnection, stream *quic.Stream, hello sessionHello, key providerSessionKey, endpoint ServiceEndpoint, admitted ...func()) {
 	group, err := a.sessions.providerUDPContext(ctx, key, endpoint)
 	if err != nil {
 		_ = writeSessionJSON(stream, sessionReply{Version: sessionProtocol, Status: "UDP_session_unavailable"})

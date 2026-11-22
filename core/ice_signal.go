@@ -17,6 +17,16 @@ type peerMappingRecord struct {
 	Expose   HostPort        `json:"expose"`
 }
 type iceSignalMessage struct {
+	CoreVersion      string            `json:"core_version,omitempty"`
+	PeerCoreVersion  string            `json:"peer_core_version,omitempty"`
+	WorkerVersion    string            `json:"worker_version,omitempty"`
+	Certificate      string            `json:"certificate,omitempty"`
+	RoomPublicKey    string            `json:"room_public_key,omitempty"`
+	RoomFrame        *roomFrame        `json:"room_frame,omitempty"`
+	RoomFrames       []roomFrame       `json:"room_frames,omitempty"`
+	RoomGroups       []roomGroup       `json:"groups,omitempty"`
+	StateRevision    uint64            `json:"state_revision,string,omitempty"`
+	RoomControl      bool              `json:"room_control,omitempty"`
 	ManualProbe      bool              `json:"manual_probe,omitempty"`
 	PeerRelayVersion string            `json:"peer_relay_version,omitempty"`
 	PeerRelay        *peerRelayGrant   `json:"peer_relay,omitempty"`
@@ -87,14 +97,28 @@ type iceSignalMessage struct {
 }
 
 type voiceRoomMember struct {
-	DeviceName string `json:"device_name"`
-	Voice      bool   `json:"voice"`
+	DeviceName            string `json:"device_name"`
+	Voice                 bool   `json:"voice"`
+	RuntimeID             string `json:"runtime_id,omitempty"`
+	CoreVersion           string `json:"core_version,omitempty"`
+	WorkerVersion         string `json:"worker_version,omitempty"`
+	ObservedWorkerVersion string `json:"observed_worker_version,omitempty"`
+	SignalRecovering      bool   `json:"signal_recovering"`
+	Certificate           string `json:"certificate,omitempty"`
+	CertFingerprint       string `json:"cert_fingerprint,omitempty"`
+	TransportEpoch        uint64 `json:"transport_epoch,string,omitempty"`
+	SignalOnline          bool   `json:"signal_online"`
+	GroupID               string `json:"group_id,omitempty"`
 }
 
 type transportLease struct {
 	TransportID string `json:"transport_id"`
 	Generation  uint64 `json:"transport_generation,string"`
 	Until       int64  `json:"lease_until,string"`
+}
+
+func (m iceSignalMessage) localAuthorization() bool {
+	return modernSoftware(m.CoreVersion) && modernSoftware(m.PeerCoreVersion) && modernSoftware(m.WorkerVersion)
 }
 
 type PeerTransportSnapshot struct {

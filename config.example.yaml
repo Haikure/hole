@@ -6,10 +6,10 @@ token: ROOM_TOKEN   # 房间密码
 device_name: desktop    # 当前设备名，房间内唯一，用于区分设备
 session_timeout: 10m    # 断开会话重建超时时间
 transport:
-  preferred: ice    # auto / ice / ipv6；auto 允许旧 IPv6 对端
-  allow_legacy: true    # 对端仅支持 IPv6 协议时允许兼容
+  allow_insecure_signal: false # 仅本地 ws:// 测试时显式开启
+  # 普通连接统一使用 ICE，无需配置连接策略。
   # 可选固定入口。两项必须同时填写；对端自动获取地址，无需开启监听。
-  # 本例公网 UDP 50000 映射到本机 UDP 40000；仅在 auto / ice 下可用。
+  # 本例公网 UDP 50000 映射到本机 UDP 40000。
   # 该设备对只重试固定路径，不进入 ICE / TURN，也不能与 relay_only 共用。
   # fixed_endpoint:
   #   listen: 0.0.0.0:40000
