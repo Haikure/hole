@@ -6,7 +6,7 @@
 `hole/desktop` 为 Windows / Linux GUI 提供独立的 stdio 宿主，入口为
 `cmd/hole-core`；Rust + Yororen UI GUI 源码位于 `desktop/gui/`。
 
-[构建与启动](#构建与启动) · [界面操作](#桌面界面与操作) · [NAT 检测](#nat-检测) · [语音](#房间语音) · [桥接协议](#协议-v1) · [验证](#回归验证) · [项目首页](../README.md)
+[构建与启动](#构建与启动) · [界面操作](#桌面界面与操作) · [NAT 检测](#nat-检测) · [语音](#房间语音) · [桥接协议](#协议-v1) · [构建指南](../docs/BUILDING.md) · [项目首页](../README.md)
 
 | 使用桌面客户端 | 开发宿主或前端 |
 | --- | --- |
@@ -77,72 +77,35 @@ stdin 消息中，不放到启动参数。Rust `CoreClient` 分离 stdout / stde
 GUI 配置仍按原方式保存；系统可能对匿名内存使用交换空间。
 GUI 退出会等待控制线程完成关闭与清理。强制结束 GUI 后，核心也会沿 stdin EOF 路径退出。
 
-开发时 `cargo build` / `cargo test` 默认不嵌入核心，沿用独立宿主查找方式。显式设置绝对路径
-`HOLE_CORE` 可覆盖内嵌核心用于调试；无效的显式路径会报错。发布版默认优先使用内嵌核心，
-不会自动加载同目录其他核心文件。直接开启 `embedded-core` 时必须提供绝对路径 `HOLE_EMBED_CORE`：
-
-```bash
-source scripts/build-env.sh
-cd desktop/gui
-HOLE_EMBED_CORE="$HOLE_ROOT/dist/core/hole-core-linux-amd64" \
-  cargo test --offline --features embedded-core
-```
-
-这条命令包含 Linux 真正从 memfd 启动核心、握手和释放句柄的测试。Windows 文件回收的共用逻辑可在
-Linux 测试中验证，Windows ACL / CreateProcess 仍需 Windows 系统运行验收。
-Linux 单文件运行验收可用 `xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop-rust/linux-amd64/hole-desktop`：
-测试只复制 GUI，检查子进程来自 memfd、确认关闭及强制结束 GUI 后核心沿 EOF 退出。
+开发时可用绝对路径 `HOLE_CORE` 指定独立核心；直接启用 Cargo `embedded-core` feature 时，
+通过 `HOLE_EMBED_CORE` 提供同平台核心的绝对路径。
 
 </details>
 
 ## 桌面界面与操作
 
-桌面使用 Yororen UI 0.4 与 GPUI CE 0.3。窗口默认 1240×820，最小 780×540，保留系统标题栏。
-侧栏为「首页、服务、连接、语音、设置」，宽度不足 1000px 时收为图标导航。
-页面随宽度切换单双栏并允许纵向滚动，卡片不设描边，采用 24px 圆角、浅色渐变和柔和阴影。
-应用图标使用 `gui/ui/assets/app-icon.png`，同时用于页面标识、Linux 窗口图标和 Windows 可执行文件资源。
-背景、卡片渐变、五组配色、连接状态色和浮动导航延续 Android 的设计；导航选中背景使用相同的弹簧参数，减少动态效果时立即定位。
-按钮悬停与按下、开关滑动、分段选中背景、数值更新、设备详情切换、阶段展开，以及抽屉、确认框和提示的进出场均有过渡。
-外观中的“减少动态效果”会让这些动效立即到达目标状态；报文流动只在实际记录变化时播放。
-常用操作使用组件库内置图标，网络、服务与打洞过程使用内嵌 SVG，无需下载图标资源。
-
-- 首页显示运行状态、设备与服务数量、实时速率、累计流量和近期活动。各页面共用侧栏的启动 / 停止入口。
-- 服务按提供 / 使用分组，支持搜索、启用、编辑、排序、删除与撤销；编辑在右侧抽屉中完成。
-- 连接页展示设备、实际地址、NAT、中继与 QUIC 质量，宽屏并排显示列表和详情，窄屏上下排列。
-- 设置包含房间与身份、连接方式、外观、桌面行为；配置交换和备份另有页面。编辑草稿保留到保存或还原。
-- 外观支持跟随系统、浅色、深色，以及与 Android 对应的五组强调色。普通卡片无描边，键盘焦点保留可见反馈。
-
-设备的 QUIC 统计按丢包率、峰值速率、平均速率显示合计、上行、下行。
-无样本与未收到对端反馈分别显示；本地丢弃、重试独立展示。平均速率按有流量的采样时长计算。
-统计口径见 [协议统计说明](../docs/PROTOCOL.md#重连与状态展示)。
+首页、服务、连接、语音和设置通过侧栏切换，窄窗口收起为图标导航。
+首页显示运行状态、设备、服务和流量；服务支持搜索、启用、编辑、排序、删除及撤销。
+外观可选择浅色、深色、跟随系统和五组强调色，也可减少动态效果。
 
 | 按键 / 操作 | 行为 |
 | --- | --- |
 | Ctrl+1～5 | 切换一级导航 |
 | Tab / Shift+Tab | 遍历控件 |
-| Enter / Space | 激活获得焦点的操作按钮 |
-| Esc | 关闭记录详情、关闭确认框、确认放弃服务编辑，或返回首页 |
+| Enter / Space | 激活获得焦点的操作 |
+| Esc | 关闭详情或弹窗、确认放弃编辑，或返回首页 |
 | 关闭窗口 | 确认后停止核心并退出 |
 
-配置、凭据和运行意图仍使用原有独立文件，替换前端无需迁移配置。
-“打开应用时恢复连接”只在已启用该选项且上次仍请求运行时生效，手动停止会清除恢复意图。
-系统托盘和系统登录自启尚未接入。
+“打开应用时恢复连接”需手动启用，手动停止会清除恢复意图。当前不提供系统托盘或系统登录自启。
 
-### 平台行为与打洞过程
+### 连接与打洞过程
 
-桌面与 PenMods 启动同一个 `hole-core` 宿主；Android 经 mobile 接口进入相同的 `core.Engine`。
-界面不计算 NAT 模型、预测端口、重试时序或传输角色。
-“重选路径”调用 `renominate_transports`；系统网络变化对应 `network_changed`，二者分别保留选路与网络失效语义。
-外观偏好不进入运行请求，不因修改主题而重启连接。
+连接页显示实际路径、地址、NAT、中继、流量和 QUIC 统计，支持重选路径。
+“查看打洞过程”可查看阶段、端口计划、报文与 NAT 采样，支持切换尝试、筛选、分页、暂停和回放，
+也可复制原始记录。暂停仅冻结展示，连接继续运行。
 
-“连接 → 查看打洞过程”读取核心的独立过程记录，包括阶段时间线、socket、双方模型与计划、端口矩阵、报文和 NAT 采样。
-布局与 Android 保持一致：双端点活动卡、四项统计、回放控制和“过程 / 端口 / 报文”分段导航。
-过程按阶段折叠，NAT 采样按分类与公网 IP 绘制端口曲线；端口页显示使用的网络与 socket 卡片。
-报文页支持连接收发 / 模型采样切换，突出端点端口与认证结果；记录详情在右侧展开，可筛选同一 STUN 事务并复制原始记录。
-支持切换连接尝试、筛选轮次 / 方向 / 报文类型、分页、暂停、逐条与连续回放，以及复制原始记录。
-过程读取与普通快照分开；每次最多读取 256 条，按代次与采样轨道维护增量游标。
-读取完两条轨道的当前分页后才能暂停；暂停同时冻结连接与模型采样展示，不暂停实际打洞。序号使用完整 uint64，丢弃与移出保留窗口分别显示。
-矩阵最多显示 32 个 socket × 64 个目标，原始计划保留在详情中。
+QUIC 丢包率、峰值速率和平均速率分为合计、上行、下行；本机丢弃与重试独立展示。
+统计口径见 [协议说明](../docs/PROTOCOL.md#重连与状态展示)。
 
 ## NAT 检测
 
@@ -171,8 +134,7 @@ Opus、混音、抖动缓冲、成员发现和网络传输全部复用共享 Go 
 停止连接、关闭语音、重配或退出会释放音频设备；静音停止本机发送但继续收听。
 音频设备不可用或系统权限被拒绝时页面显示原因，恢复后点“重试音频设备”。切换系统默认设备后可点
 “重新打开音频设备”。静音状态在本次 GUI 进程的重配与设备重启中保留；不作为配置导出。
-桌面适配目前不提供应用内回声消除和降噪，建议使用耳机。编译、自动化和截图检查不代表真实麦克风、
-Windows 设备或 Android 跨端通话验收。
+桌面适配目前不提供应用内回声消除和降噪，建议使用耳机。
 
 ## 协议 v1
 
@@ -267,8 +229,7 @@ GUI 先释放旧设备，再重配并重新开启音频扩展；播放端也用�
 
 两个转换方法使用与 Android 相同的 CLI 文档字段：`server_url`、`transport`、`ice`、`turn`、`voice`、
 身份字段、会话期限、候选设置和有效 `provide` / `consume`。`service` / `expose` 仍为字符串端点。
-生产代码只依赖核心解析器；测试直接与 `mobile.DecodeCLIConfig` / `EncodeCLIConfig` 比较规范化结果，
-保持现有 mobile 源码、接口与构建输入不变。
+配置转换复用共享核心解析器，交换格式与 Android 一致。
 
 连接设置支持 Hole 中继设备名及 `relay.order` 统一顺序，接受 `hole`、`udp`、`tcp`、`tls`。
 恢复默认顺序保存显式空数组；未编辑顺序时保留旧 `turn.order` 迁移语义。关闭 TURN 不关闭
@@ -389,32 +350,4 @@ Hole；没有本端设备名仍可参与对端指定的 Hole 路径。配置存�
 退出码：正常 EOF、`shutdown` 或取消为 0；I/O 错误、写入超时或输入超限为 1；参数用法错误为 2。
 后台常驻服务模式、磁盘文件操作和配置持久化留在桌面宿主层；当前桥接提供纯文本配置转换。
 
-## 回归验证
-
-使用项目缓存与当前源码构建：
-
-```bash
-source scripts/build-env.sh
-./build.sh desktop-rust --offline
-export HOLE_EMBED_CORE="$PWD/dist/core/hole-core-linux-amd64"
-cd desktop/gui
-cargo test --locked --release --offline --no-default-features --features embedded-core
-```
-
-Rust 测试覆盖配置交换、快照精度、音频适配、内嵌核心完整性和生命周期、配置偏好不重启连接、打洞分页与回放。
-`tests/platform_contract.rs` 调用 Node.js 执行 PenMods 实际的配置序列化函数，对照桌面的自动 / ICE / IPv6 策略、
-TURN、分类 STUN 的 null / 空列表与自定义列表，防止 UI 重写改变有效参数。该测试需要 Node.js。
-
-Linux 窗口检查需要 Xvfb、X11 / Xtst、Python Pillow 和可用的 Vulkan 驱动（无 GPU 环境可使用 Mesa）：
-
-```bash
-source scripts/build-env.sh
-xvfb-run -a -s "-screen 0 1600x1100x24" python3 desktop/gui/tests/ui_x11.py dist/desktop-rust/linux-amd64/hole-desktop
-xvfb-run -a python3 desktop/gui/tests/embedded_core_linux.py dist/desktop-rust/linux-amd64/hole-desktop
-go test ./desktop ./cmd/hole-core
-git diff --check
-```
-
-窗口检查使用独立配置目录，截图保存在 `.cache/desktop-ui/`。
-内嵌核心检查只复制 GUI，验证 memfd 执行、确认退出和 GUI 被强制结束后的核心 EOF 清理。
-这些检查不代表真实 NAT 网络、Windows 窗口或跨平台语音验收；网络算法的回归仍由共享核心的集成测试覆盖。
+构建环境与开发检查命令见 [构建指南](../docs/BUILDING.md)。

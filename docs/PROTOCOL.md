@@ -16,13 +16,14 @@
 当前认证模式为 `shared-secret`；设备名标识房间成员，随机 `runtime_id` 标识本次运行实例。
 数据面使用 QUIC，连接时核对通过信令交换的证书指纹。
 
-设备连接在 TLS 成功后、业务 mux 开始前安装独立的 BBR 标准控制器。各条连接分别维护带宽和 RTT 模型，保留 QUIC pacing；初始数据报大小不超过连接配置，ICE/TURN 的 1200 字节路径继续遵守既有 MTU 策略。BBR 不改变信令、证书校验、每对设备一条 QUIC 或会话恢复协议。依赖为 Hysteria 维护的 `apernet/quic-go` v0.63 固定提交，替换原上游 v0.65；版本差异和源码许可证见 [实现来源](../core/internal/congestion/README.md)。
+设备连接在 TLS 成功后、业务 mux 开始前安装独立的 BBR 标准控制器。各条连接分别维护带宽和 RTT 模型，保留 QUIC pacing；初始数据报大小不超过连接配置，ICE/TURN 的 1200 字节路径继续遵守既有 MTU 策略。BBR 不改变信令、证书校验、每对设备一条 QUIC 或会话恢复协议。依赖版本和源码许可证见 [实现来源](../core/internal/congestion/README.md)。
 
 同一进程的证书和应用会话独立于短期网络路径。配置更换服务器、房间、凭据或设备名时，
 结束旧运行作用域；同名对端更换证书时，清理旧证书拥有的上游会话。
 
 ICE 配置要求 WSS；本地 WS 测试需显式启用 `transport.allow_insecure_signal` 或 CLI
-`-allow-insecure-signal`。凭据不进入快照，日志脱敏凭据与服务器 URL 查询参数。
+`-allow-insecure-signal`。凭据不进入快照；核心诊断消息处理已知凭据，
+CLI 普通状态行保留原文，输出规则见 [CLI 日志](../README.md#cli-日志)。
 
 ## 传输选择
 
@@ -209,9 +210,6 @@ UDP 路由查询获取出口 IP，查询不发送数据，也不替换打洞 soc
 
 分类与可预测性独立。缺少有效来源或服务器忽略 CHANGE-REQUEST 时保留信息不足，不把请求超时当作确定过滤结论。本机结果按网络代次失效，快照 5 分钟后过期；尚未建立连接时每 5 分钟刷新，连接建立后上报一次可用结果并停止该网络代次的周期探测；后续新的直连打洞尝试会触发一次探测，为本轮算法选择更新 NAT 结果。网络代次变化后重新探测。对端未上报与信息不足分别展示。映射结果仅作为地址来源，不改写 NAT 分类，私网外部地址不证明公网可达。
 
-CLI、手机和 Wear 使用同一 Go 实现。配置与交互入口见 [README](../README.md)，
-本文件描述当前协议行为，不包含历史构建流水。
-
 ## 固定入口直连
 
 ### 能力与协商
@@ -269,7 +267,7 @@ ECN 信号与 MTU 探测失败不计入丢失；每个 ACK 或判丢结果在核
 随后每 2 秒在已有的已认证 QUIC 控制流发送 `QUIC_STATS`，消息的 `send_loss` 为发送方当前连接计数。
 统计不经过 Worker，不增加信令字段，也不建立额外连接；旧版未声明能力时不发送新消息。
 接收方校验 `scope` 为 `connection`、丢失数不大于样本数，并由计数重算比例；无效反馈不刷新有效期。
-快照新增同结构的 `receive_loss`（对端→本机）和 `quic_loss`（双向整体），整体比例为
+快照包含同结构的 `receive_loss`（对端→本机）和 `quic_loss`（双向整体），整体比例为
 `(本机判丢数 + 对端判丢数) / (本机已判定包数 + 对端已判定包数) × 100`，不是两个百分比的平均。
 两边均按各自本次连接累计，存在反馈周期和传输延迟造成的采样偏差；这是双向 QUIC 判丢估计，
 无法显示被 TCP / TLS 中继外层恢复的底层链路丢包。对端未上报或距上次有效反馈达到 6 秒时，
@@ -288,7 +286,7 @@ ECN 信号与 MTU 探测失败不计入丢失；每个 ACK 或判丢结果在核
 
 固定入口功能只扩展当前协议，没有固定入口的旧版兼容分支；固定入口的发布顺序为 Worker、两端核心。
 上述 QUIC 统计扩展只需更新客户端核心和展示端，无需更新 Worker。
-Android / Wear、桌面和 PenMods 的固定监听配置界面后续接入。
+固定入口监听由 CLI 配置；Android / Wear、桌面和 PenMods 可拨号并展示固定入口路径。
 
 ## Peer Relay 节点中继
 
@@ -659,7 +657,7 @@ Worker 接收带来源签名的 `room_graph`，按实际 WS 和双向连接图�
 `room_mirror` 保存成员版本、每台设备最近观察到的 Worker 版本、分组、信令入口与连接边，
 `room_revision` / `state_revision` 防止旧镜像覆盖新状态。WebUI 经过信令密码和房间口令认证后，
 通过独立只读 WebSocket 接收当前房间图及 Worker 已接收的传输事件快照；状态变化时推送，
-不新增周期上报，不公开 ICE 凭据或业务地址。核心快照新增 `worker_version` 和 `room`；
+不增加周期上报，不公开 ICE 凭据或业务地址。核心快照包含 `worker_version` 和 `room`；
 `room` 包含本组成员、分组 ID、可达信令入口及最近收到的房间分组。
 
 ### 授权与传输代次
@@ -702,7 +700,7 @@ UDP：`read_bytes` 是从本地端点读入并转发给对端的字节（本机�
 
 ### 调用与预算
 
-桥接 API 1 新增 `start_nat_probe` / `cancel_nat_probe`；gomobile 对应 `StartNATProbe` /
+桥接 API 1 提供 `start_nat_probe` / `cancel_nat_probe`；gomobile 对应 `StartNATProbe` /
 `CancelNATProbe`。检测不需要信令服务器、房间或运行中的转发。开始参数为 `stun_urls`、
 `nat_stun_urls`、`interface_allowlist` 的对象。分类 STUN 列表最多 16 条，仅接受 UDP STUN，
 `stun_urls` 最多 8 条。空对象、分类服务列表省略、null 或空数组均复用普通 STUN 并补充内置默认服务，
@@ -726,6 +724,7 @@ UDP：`read_bytes` 是从本地端点读入并转发给对端的字节（本机�
 NAT 的开始、完成及本机／对端探测时间在界面、复制报告和 CLI 日志中统一按查看设备的系统时区显示为
 `yyyy-MM-dd HH:mm:ss`（24 小时制、精确到秒）。桥接与信令中的原始时间仍为带时区的 RFC 3339，
 由展示端转换；总耗时继续以时长显示。
+
 | 已完成的检测结果 | 色调 |
 | --- | --- |
 | 全锥型 / 开放网络 | `green` |

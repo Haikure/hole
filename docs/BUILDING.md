@@ -41,7 +41,7 @@ Linux 可先执行 `bash desktop/scripts/setup-appimage.sh`，显式下载固定
 | Android 组件 | 版本 |
 | --- | --- |
 | Go | 1.27.4 |
-| JDK | 17；Robolectric / Miuix UI 测试宿主另需 21+ |
+| JDK | 17；JVM 测试宿主需 21+ |
 | x/mobile（gomobile、gobind） | `v0.0.0-20261011034528-197770444867` |
 | Gradle Wrapper / AGP | 9.4.1 / 9.2.1 |
 | Kotlin / Compose compiler | 2.4.0 |
@@ -219,7 +219,7 @@ CLI / 独立 Go 核心宿主使用 `CGO_ENABLED=0`、`-trimpath`、`-s -w`，不
 Kotlin 桌面使用 Compose Release / ProGuard 与裁剪 Java 运行时，JNI 原生库使用 `-s -w`；
 Windows 使用官方 `packageReleaseExe`，Linux 使用 `createReleaseDistributable` 后封装 AppImage。
 桌面 JDK 21+ 必须包含 `jmods/java.base.jmod`；CI 使用 Zulu JDK 25，缺少 JMODs 的发行包需先自行补齐匹配模块。
-命令与本地验证见 [Kotlin 桌面说明](../desktop/compose/README.md)。JNI 带 `desktopjni` 标记，不进入普通 CLI / Android 构建。
+构建与运行方式见 [Kotlin 桌面说明](../desktop/compose/README.md)。JNI 带 `desktopjni` 标记，不进入普通 CLI / Android 构建。
 
 旧 Rust GUI 使用 Cargo `release` profile 和 `embedded-core` feature；`desktop-rust` 目录包含内嵌核心的 GUI
 与 SHA-256 文件。构建时通过 `HOLE_EMBED_CORE` 传入刚生成的同架构宿主，校验 ELF / PE 后压缩嵌入；
@@ -229,7 +229,7 @@ Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使�
 不包含调试信息或静态符号表，动态链接与 Go 运行所需元数据保留。
 
 构建自动检查 APK 签名、ABI、16 KiB ZIP / ELF 对齐、核心摘要、JNI 保留、R8、资源收缩及 native strip。
-普通构建不运行单元测试或完整 lint，清单中的相应字段标为未检查，而不是复用旧报告声明通过。
+普通构建不运行单元测试或完整 lint；构建清单记录实际执行的检查。
 `SHA256SUMS` 仅引用同目录交付文件；用于追踪核心的 AAR 摘要保留在构建清单中。
 
 旧桌面桥接的 stdio 协议、Rust 构建和界面说明见 [desktop/README.md](../desktop/README.md)。
@@ -238,67 +238,48 @@ Android Go 核心同样使用 `-s -w`，原生库保持 16 KiB 对齐；APK 使�
 
 ## 回归测试
 
-按改动范围选择检查；下面的全量命令用于跨模块或发布验证，不是每次修改的固定清单。
-
-| 改动 | 最小检查 |
-| --- | --- |
-| 文档 | `git diff --check` |
-| Worker | 两个 Worker 测试文件 |
-| Go 单模块 | 受影响包测试；核心 / mobile 同时检查 Android 独立依赖图 |
-| 并发、传输、身份或资源限额 | 在相关包追加 race 检查 |
-| Android UI / 业务 | 相关 JVM 测试与 lint；构建、桥接、签名或交付变化时追加 Release |
-
-日常 Go 检查保留默认缓存，不无条件添加 `-count=1`。
-
-### 桌面 CI
-
-旧桌面 Rust 编译与测试使用独立的 [test.yaml](../.github/workflows/test.yaml)，通过 `desktop-rust` 构建。
-它不代表 Kotlin 已通过验证。Kotlin 本地 JNI、共享 UI、Release 包和实际连接的验证命令见
-[Kotlin 桌面验证](../desktop/compose/README.md#本地验证)。
-
-| 项目 | 说明 |
-| --- | --- |
-| 自动触发 | `main`、临时分支 `codex/nat-direct` 推送涉及桌面、共享核心、构建脚本或版本的变更；相关 PR |
-| 手动触发 | `gh workflow run test.yaml --repo Haikure/hole --ref <分支>` |
-| 查看 / 下载 | `gh run view` / `gh run download` |
-| 源码范围 | 工作流只读取远端分支；未提交源码需先获准提交到远端 |
-
-CI 通过 `scripts/test_desktop_timezones.py` 在 UTC、上海、纽约分别启动独立 Rust 测试进程，验证 NAT 时间秒级格式、跨日、带偏移输入、夏令时及本机 / 对端展示。Linux 使用 `TZ`，Windows 切换 runner 时区并在结束后恢复；常规测试不修改时区。
-
-核心构建标识覆盖 `core/internal/nat`。自动 NAT 测试使用本地 STUN / 内存路由器 fixture，不代表真实路由器、运营商 NAT、移动切网或成功率验收。
+按修改范围运行相关检查。Go 检查默认保留缓存；涉及并发、传输、身份或资源限额时，
+对相关包追加 `-race`，需要强制重跑时使用 `-count=1`。仅修改文档时运行 `git diff --check`。
 
 ### Go、脚本与 Worker
 
-<details>
-<summary>跨模块 / 发布全量检查命令</summary>
+在仓库根目录执行：
 
 ```bash
-# 仓库根目录；手工调用工具也采用项目缓存
 source scripts/build-env.sh
 python3 -m unittest discover -s scripts -p 'test_build.py'
 python3 -m unittest discover -s scripts -p 'test_release_workflow.py'
 python3 -m unittest discover -s android/scripts -p 'verify_apk_test.py'
-go test -race -count=1 ./...
+go test ./...
 go vet ./...
 node --test worker/worker_ice.test.mjs worker/worker_fixture.test.mjs
-
-# Android 绑定依赖图也单独验证
-(cd android/corebridge/gobuild && go test -race -count=1 hole/core hole/mobile && go vet hole/core hole/mobile)
 ```
 
-</details>
+共享核心、mobile 或 Go 依赖变化时，同时检查 Android 的独立依赖图：
 
-`go test ./...` 包含桌面协议、真实 Engine 本地信令及宿主子进程测试；可单独执行
-`go test -race -count=1 ./desktop ./cmd/hole-core`。Windows 交叉编译只验证构建，
-Windows 管道、窗口与系统集成运行验收在相应系统单独执行。
+```bash
+source scripts/build-env.sh
+(cd android/corebridge/gobuild && go test hole/core hole/mobile)
+```
 
-Hole 中继专项覆盖 `core/hole_*test.go`、Worker 三方生命周期、各客户端配置往返和
-PenMods 排序交互。可用 `go test ./core -run '^$' -bench BenchmarkHoleForwarding -benchmem`
-测量鉴权、路由入队热路径；它不包含内核 UDP 收发，不代表公网吞吐或设备性能。
-`BenchmarkHoleBackendLoopback` 对照逐包与 Linux 批量系统调用，报告每包耗时、吞吐和
-批次完成耗时的 p50/p95/p99；这是回环提交加接收时间，不是公网 RTT。
-CLI 中继及跨平台核心保留 `CGO_ENABLED=0`；Android/Wear、桌面和 PenMods 沿用各自
-Release 构建入口。真实跨 NAT、长时间稳定性及真机音频播放需单独验收。
+### 桌面与 PenMods
+
+Kotlin 桌面测试通过统一 Gradle 入口选择 JDK 和项目缓存：
+
+```bash
+bash desktop/scripts/gradle.sh test
+```
+
+旧 Rust 桌面的持续集成入口为 [test.yaml](../.github/workflows/test.yaml)。
+PenMods 的配置、桥接和 QML 检查命令如下；桥接需要本机 C++ 编译器和 Qt 5 Core / Test 开发包，
+QML 检查另需 QtQuick、QtQuick.Layouts、QtTest 和 `qmltestrunner`。
+
+```bash
+source scripts/build-env.sh
+node --test penmods/tests/*.test.mjs
+bash penmods/tests/run-bridge-tests.sh
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software qmltestrunner -input penmods/tests
+```
 
 ### Android JVM、lint 与 APK
 
@@ -329,4 +310,4 @@ python3 android/scripts/verify-apk.py android/wear/build/outputs/apk/release/wea
 ```
 
 可加 `--previous OLD_APK` 检查与旧包同签名、同包名且 versionCode 递增。
-清单记录静态检查结果；设备安装、运行、切网、息屏和升级检查另行记录，不由脚本推断。
+APK 检查报告只记录静态检查结果。

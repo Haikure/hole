@@ -3,7 +3,7 @@
 `hole/core` 实现信令、ICE / 固定入口 QUIC、TCP / UDP 映射及可恢复应用会话，供 CLI、Android、桌面与插件共用。
 本包不读取配置文件、不解析命令行参数，不安装进程信号处理器，也不退出宿主进程。
 
-[宿主接入](#宿主接入) · [网络与诊断](#网络与诊断) · [平台与恢复](#平台与恢复) · [构建与测试](#构建与测试) · [项目首页](../README.md)
+[宿主接入](#宿主接入) · [网络与诊断](#网络与诊断) · [平台与恢复](#平台与恢复) · [构建与依赖](#构建与依赖) · [项目首页](../README.md)
 
 | 宿主负责 | 核心负责 |
 | --- | --- |
@@ -74,7 +74,7 @@ CLI 仅在 `-debug` 下展示这些诊断。每次尝试最多输出 64 条底�
 产生事件前按本次尝试的配置、动态 TURN 凭据和 ICE 凭据脱敏，再进入 Engine 的统一脱敏流程；
 不受 `PION_LOG_*` 环境变量影响，不启用 info/debug/trace 报文日志。
 
-CLI 默认只显示设备、映射、监听和目标服务的状态变化及分类错误；NAT 结果、候选对、中继计数和进程级网络库原文放在 `-debug`，普通结构化状态事件不再同时重复打印一条无额外信息的 DEBUG。重复的相同诊断在首次和每五次输出，保留阶段和代次上下文。CLI 对普通 INFO / WARN / ERROR 行不再按凭据做全局字符串替换，直接展示核心提供的内容；DEBUG 诊断继续处理凭据。`-log-format json` 仅改变输出格式，复用同一套筛选、分级和诊断凭据处理规则，仍写入 stdout；其字段约定见根 README。
+CLI 的输出选项及日志含义见 [CLI 日志](../README.md#cli-日志)。
 
 </details>
 
@@ -98,11 +98,7 @@ NetworkChanged 使记录失效，完成的分类在 5 分钟后标为过期。�
 
 STUN 记录包含事务编号、CHANGE-REQUEST、请求服务、实际响应来源、OTHER-ADDRESS 和已匹配事务的映射；
 UDP 打洞记录包含每次 PROBE / ACK 的端点、长度、序号、最小重传间隔与认证结果。地址保留其观测来源。
-预测探测在本轮时限内持续重传，每个 socket 的探测与 ACK 合计至少间隔 200ms，共用每端最多 200 包 / 秒的预算。
-拨号端回复 ACK 后保留主动探测机会；扫描时，收到有效对端探测后优先重试该候选的挑战，避免已可达端口被扫描或 ACK 排队拖延。
-拨号端验证有效 ACK、开始 QUIC 拨号后停止所有主动 PROBE，握手期间继续回复有效探测；接收端持续探测至 QUIC 建立或本轮结束。
-`probe_limit` 为 0 或省略时表示不设次数上限，停止时机由打洞阶段与本轮时限控制。
-记录窗口的移出数量及采集时未记录的数量单独返回；普通运行快照继续使用原有字段。
+探测消息、认证与预算见 [打洞协议](../docs/PROTOCOL.md#打洞消息与认证)。
 
 ### DNS 与直连顺序
 
@@ -110,22 +106,8 @@ UDP 打洞记录包含每次 PROBE / ACK 的端点、长度、序号、最小重
 
 允许直连的设备对始终先尝试普通 ICE，不等待 NAT 分类，也不因对称型或证据不足跳过。双方与 Worker 协商 `direct_order: ice-first-v1` 后，ICE 失败才切换新代次进入 NAT 分类及后续打洞；成功直接使用连接，打洞耗尽再进入中继。后台 NAT 探测及展示独立运行。旧 Worker 或混合能力设备对保留普通 ICE，失败后进入中继。
 
-<details>
-<summary>NAT 实现文件与快照字段</summary>
-
-| 文件 / 包 | 职责 |
-| --- | --- |
-| `natprobe` | 与独立工具共用 UDP STUN 探测、分类、端口保持及 No-PAT 特征 |
-| `internal/nat` | 平台探测适配、IGD / NAT-PMP |
-| `nat_transport.go` | 最多三次完整分类探测与状态上报 |
-| `nat_punch*.go` | NAT 分组、有限端口预测与认证 UDP 探测 |
-| `ice_check_pacing.go` | 锥形 ICE 的实际请求间隔 |
-| `ice_port_mapping.go` | ICE 候选端口的映射租约 |
-
-所有成功路径复用同一个设备对 mux。`Network.NAT` 为本机网络结果，`PeerTransports.local_nat/peer_nat` 分别为本机/对端结果。
-分类与映射状态独立；仅中继及固定入口不启动 NAT 探测与自动映射。新核心源码自动进入 `scripts/build_meta.py` 的递归摘要。
-
-</details>
+所有成功路径复用同一个设备对 mux。`Network.NAT` 为本机结果，
+`PeerTransports.local_nat/peer_nat` 分别为本机和对端结果。仅中继及固定入口不启动 NAT 探测与自动映射。
 
 ### 房间控制与按需信令
 
@@ -138,8 +120,8 @@ Worker 连接；连接意外中断的成员可通过仍在线的组员接收通�
 业务或语音消失后可保留已有控制边；普通路径不依赖中央授权续租。
 
 房间帧保留原始来源签名、去重 ID 和跳数；定向 Worker 授权通知端到端加密。
-通知独立处理，来源节点及目录按修订号过滤旧状态。核心快照增加 `worker_version` 和 `room`，
-Worker 保存分组、信令入口、连接图及版本镜像；WebUI 尚未提供。
+通知独立处理，来源节点及目录按修订号过滤旧状态。核心快照通过 `worker_version` 和 `room` 提供版本与房间状态。
+Worker 的只读 [房间面板](../docs/WORKER.md#房间面板) 展示成员、信令入口和连接图。
 共享 ALPN 固定为 `hole`，功能依据软件版本判断；旧仅 IPv6 模式与配置入口已移除，
 IPv6 仍通过 ICE 支持。完整边界见 [房间协议](../docs/PROTOCOL.md#房间控制与按需信令)。
 
@@ -162,7 +144,7 @@ Peer Relay 在直连及打洞预算耗尽后、Hole / TURN 之前自动尝试。
 `transport.fixed_endpoint` 提供固定 UDP 监听与公布地址。
 对端无需填写连接地址；新版核心自动处理 Worker 下发的 `fixed-quic-mux-v1`，复用平台网络
 绑定、DNS、mux、会话恢复与限额。固定设备对失败只重试固定入口，不启动 ICE / TURN。
-Android / Wear 重打包新版 AAR 后具备自动拨号能力，固定入口配置界面后续接入。
+Android / Wear 可自动连接固定入口，监听配置使用 CLI。
 配置和部署顺序见 [固定入口直连](../docs/PROTOCOL.md#固定入口直连)。
 
 ### 语音
@@ -194,19 +176,10 @@ Android / Wear 重打包新版 AAR 后具备自动拨号能力，固定入口配
 协议格式、重放和资源限额见 [协议说明](../docs/PROTOCOL.md)。
 
 TCP 重放数据按需分块分配，单方向上限 16 MiB，同一运行的所有映射共用 128 MiB 块容量预算。
-性能基准可执行 `go test ./core -run '^$' -bench 'Benchmark(ICETCP|TCPReplayRTT100ms|UDPReassembly)' -benchmem`。
-`BenchmarkICETCP` 使用真实本地 TCP → ICE / QUIC → TCP，两端共享本机 CPU，预热后测持续转发。
-TCP 基准使用有固定延迟的内存链路，仅衡量应用重放协议，不代表实际 TURN、QUIC 或设备网络带宽。
 
-## 构建与测试
+## 构建与依赖
 
-```bash
-# 仓库根目录
-./build.sh cli
-source scripts/build-env.sh
-go test -race -count=1 ./...
-go vet ./...
-```
+CLI 构建使用 `./build.sh cli`，开发检查命令见 [构建指南](../docs/BUILDING.md#回归测试)。
 
 根 `go.mod` 与 `android/corebridge/gobuild/go.mod` 分别锁定 CLI 和绑定依赖图；
 两者共用本包源码及 [anet 兼容模块](compat/anet/README.md)。

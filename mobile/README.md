@@ -32,7 +32,6 @@ engine.close();
 ```
 
 Android 使用带 `NetworkBinding` 的构造方法；旧 `newEngine` 和 `newEngineWithNetworkProvider` 入口保留兼容。
-创建实例不联网；`stop` 可重复调用并等待清理，`close` 为最终关闭。
 
 ### 手动 NAT 检测
 
@@ -85,6 +84,7 @@ Android 检测的 DNS 和 UDP 均绑定当前物理 Network，切网使旧结果
   区分 `waiting` / `sending` / `receiving` / `active`；`sent_frames`、`received_frames`、
   `decoded_frames`、`concealed_frames` 分别记录成功发送、收到、解码与 PLC / 静音补帧。
   这些 64 位计数仍使用十进制字符串。字段为 API 1 的兼容扩展，旧快照缺失时不得推断媒体活跃。
+
 ### 事件、错误与版本
 
 - 错误以含 `code`、`message` 的 JSON 传出。状态快照与事件不包含凭据。
@@ -135,4 +135,4 @@ Network handle 使用十进制字符串。失效网络返回明确错误，不�
 `build-core.sh` 固定 `-androidapi=26` 和 `-javapkg=dev.hole.core`，生成 ARM32 / ARM64 AAR，
 开启 Go strip 与 16 KiB ELF 对齐。Gradle 跟踪源码、锁文件、构建脚本和根目录 `versions.json` 中的核心版本。
 
-详细工具链和双依赖图测试见 [构建指南](../docs/BUILDING.md)。
+工具链和开发检查命令见 [构建指南](../docs/BUILDING.md)。
