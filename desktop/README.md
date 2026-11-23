@@ -190,6 +190,8 @@ GUI 启动后主动发送 `hello`，核对协议与核心 API 版本后再发送
 | `renominate_transports` | 省略或 `{}` | 对已有 ICE active 路径发起新代次；进行中或无可用路径时幂等 |
 | `start_nat_probe` | 可选 `stun_urls`、`nat_stun_urls`、`interface_allowlist` 的对象 | 异步返回 accepted；无需 `start` 或房间凭据，结果见 `snapshot.nat_diagnostic`，由 `nat_diagnostic` 事件通知 |
 | `cancel_nat_probe` | 省略或 `{}` | 取消手动 NAT 检测 |
+| `nat_punch_process` | `transport_id`，可选 `after_sequence`、`generation`、`stream`、`limit` | 分页读取一个连接尝试的过程；`stream` 为 `connection` 或 `discovery`，每页最多 256 条事件，不改变连接 |
+| `export_nat_punch_process` | `transport_id`、绝对路径 `directory` | 将设备对最近保留的全部尝试及 NAT 采样写入新 JSON 文件，返回 `{"path":"完整文件路径"}`；不改变连接 |
 | `set_voice_audio` | `{"enabled":true}` | 运行且启用语音时返回新的十进制字符串 `stream_id`，启用下述二进制 PCM 扩展；false 停止扩展并返回 `"0"` |
 | `set_voice_muted` | `{"muted":true}` | 设置核心本机语音发送静音；不停止播放 |
 | `decode_cli_config` | `{"text":"YAML 或 JSON 文本"}` | `{"config":规范化便携配置}`；纯转换/预览，不改变 Engine |
@@ -198,6 +200,11 @@ GUI 启动后主动发送 `hello`，核对协议与核心 API 版本后再发送
 
 无参方法不接受 `null`、数组或额外字段。`start` / `apply_config` 的响应表示请求被接受，
 不表示信令、ICE 或映射已连通；GUI 用事件与快照确定真实状态。
+
+`export_nat_punch_process` 通过 `hello.methods` 协商。宿主读取一次完整保留记录，以
+`hole-nat-punch-process`、格式版本 1 保存核心版本、构建标识和原始 `nat_punch_process`，
+不经过页面投影或分页，也不把完整文件送入受大小限制的 NDJSON 响应。文件名包含 UTC 时间戳与随机编号，
+采用临时文件写完并同步后再改名，不覆盖以前的导出；无记录或写入失败时返回错误。
 
 `apply_config` 直接提交完整配置；核心按配置内容判定幂等或重配，不在桥接层维护修订号。
 重复 `stop` 可用，随后 `start` 创建新的运行代次；停止态已有配置不自动启动。

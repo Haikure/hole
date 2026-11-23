@@ -23,6 +23,7 @@ class HolePlugin final : public QObject {
     Q_PROPERTY(QString pluginDirectory READ pluginDirectory CONSTANT)
     Q_PROPERTY(bool coreReady READ coreReady NOTIFY capabilitiesChanged)
     Q_PROPERTY(bool natPunchProcessAvailable READ natPunchProcessAvailable NOTIFY capabilitiesChanged)
+    Q_PROPERTY(bool natPunchProcessExportAvailable READ natPunchProcessExportAvailable NOTIFY capabilitiesChanged)
 
 public:
     explicit HolePlugin(QObject* parent = nullptr);
@@ -40,6 +41,7 @@ public:
     QString pluginDirectory() const { return m_pluginDirectory; }
     bool coreReady() const { return m_helloReceived; }
     bool natPunchProcessAvailable() const { return m_helloReceived && m_natPunchProcessAvailable; }
+    bool natPunchProcessExportAvailable() const { return m_helloReceived && m_natPunchProcessExportAvailable; }
 
     void setServerUrl(const QString& value);
     void setConfigJson(const QString& value);
@@ -57,6 +59,7 @@ public:
     Q_INVOKABLE void cancelNATProbe();
     Q_INVOKABLE QString requestNATPunchProcess(const QString& transportId, const QString& afterSequence,
                                               const QString& generation, const QString& stream);
+    Q_INVOKABLE QString exportNATPunchProcess(const QString& transportId);
     Q_INVOKABLE bool saveConfig();
     Q_INVOKABLE bool loadConfig();
     Q_INVOKABLE void clearError();
@@ -72,6 +75,8 @@ signals:
     void capabilitiesChanged();
     void natPunchProcessReady(const QString& requestId, const QString& resultJson);
     void natPunchProcessFailed(const QString& requestId, const QString& message);
+    void natPunchProcessExportReady(const QString& requestId, const QString& path);
+    void natPunchProcessExportFailed(const QString& requestId, const QString& message);
 
 private slots:
     void onProcessStarted();
@@ -119,6 +124,10 @@ private:
     QString m_natPunchProcessRequestId;
     QStringList m_natPunchProcessRequests;
     QTimer m_natPunchProcessTimer;
+    bool m_natPunchProcessExportAvailable = false;
+    QString m_natPunchExportRequestId;
+    QStringList m_natPunchExportRequests;
+    QTimer m_natPunchExportTimer;
 };
 
 extern "C" void init_plugin();

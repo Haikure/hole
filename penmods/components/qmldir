@@ -29,3 +29,4 @@ NATPunchFacts 1.0 NATPunchFacts.qml
 NATPunchMatrix 1.0 NATPunchMatrix.qml
 NATPunchReplay 1.0 NATPunchReplay.qml
 NATPunchSamples 1.0 NATPunchSamples.qml
+NATPunchExport 1.0 NATPunchExport.qml

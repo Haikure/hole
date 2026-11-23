@@ -36,12 +36,20 @@ HolePlugin::HolePlugin(QObject* parent) : QObject(parent) {
         m_natPunchProcessRequestId.clear();
         emit natPunchProcessFailed(id, QStringLiteral("过程记录读取超时"));
     });
+    m_natPunchExportTimer.setSingleShot(true);
+    m_natPunchExportTimer.setInterval(30000);
+    connect(&m_natPunchExportTimer, &QTimer::timeout, this, [this] {
+        const QString id = m_natPunchExportRequestId;
+        m_natPunchExportRequestId.clear();
+        emit natPunchProcessExportFailed(id, QStringLiteral("打洞过程导出超时，请检查存储后重试"));
+    });
     loadConfig();
 }
 
 HolePlugin::~HolePlugin() {
     m_reloadTimer.stop();
     m_natPunchProcessTimer.stop();
+    m_natPunchExportTimer.stop();
     m_reloading = m_reloadStopping = m_resumeAfterReload = false;
     if (!m_process) return;
     // Teardown must never dispatch finished() into the reload path.
@@ -362,6 +370,22 @@ QString HolePlugin::requestNATPunchProcess(const QString& transportId, const QSt
     return m_natPunchProcessRequestId;
 }
 
+QString HolePlugin::exportNATPunchProcess(const QString& transportId) {
+    if (m_reloading || !natPunchProcessExportAvailable() || !m_natPunchExportRequestId.isEmpty()) return {};
+    if (transportId.trimmed().isEmpty() || transportId.size() > 256 || m_pluginDirectory.isEmpty()) return {};
+    const QJsonObject params{
+        {QStringLiteral("transport_id"), transportId},
+        {QStringLiteral("directory"), QDir(m_pluginDirectory).filePath(QStringLiteral("exports"))}
+    };
+    m_natPunchExportRequestId = sendRequest(QStringLiteral("export_nat_punch_process"), params);
+    if (!m_natPunchExportRequestId.isEmpty()) {
+        m_natPunchExportRequests.append(m_natPunchExportRequestId);
+        while (m_natPunchExportRequests.size() > 8) m_natPunchExportRequests.removeFirst();
+        m_natPunchExportTimer.start();
+    }
+    return m_natPunchExportRequestId;
+}
+
 void HolePlugin::clearError() {
     setError({});
 }
@@ -425,6 +449,21 @@ void HolePlugin::handleLine(const QByteArray& line) {
 
     const QJsonObject errorObject = object.value(QStringLiteral("error")).toObject();
     const QString responseId = object.value(QStringLiteral("id")).toString();
+    if (m_natPunchExportRequests.contains(responseId)) {
+        m_natPunchExportRequests.removeOne(responseId);
+        if (responseId != m_natPunchExportRequestId) return;
+        m_natPunchExportRequestId.clear();
+        m_natPunchExportTimer.stop();
+        if (!errorObject.isEmpty()) {
+            const QJsonObject data = errorObject.value(QStringLiteral("data")).toObject();
+            emit natPunchProcessExportFailed(responseId, data.value(QStringLiteral("message")).toString(QStringLiteral("打洞过程导出失败")));
+        } else {
+            const QString path = object.value(QStringLiteral("result")).toObject().value(QStringLiteral("path")).toString();
+            if (path.isEmpty()) emit natPunchProcessExportFailed(responseId, QStringLiteral("核心未返回导出文件位置"));
+            else emit natPunchProcessExportReady(responseId, path);
+        }
+        return;
+    }
     if (m_natPunchProcessRequests.contains(responseId)) {
         m_natPunchProcessRequests.removeOne(responseId);
         if (responseId != m_natPunchProcessRequestId) return;
@@ -464,6 +503,7 @@ void HolePlugin::handleLine(const QByteArray& line) {
         // start request is lost and the UI gets a false running state.
         m_helloReceived = true;
         m_natPunchProcessAvailable = result.value(QStringLiteral("methods")).toArray().contains(QJsonValue(QStringLiteral("nat_punch_process")));
+        m_natPunchProcessExportAvailable = result.value(QStringLiteral("methods")).toArray().contains(QJsonValue(QStringLiteral("export_nat_punch_process")));
         emit capabilitiesChanged();
         if (m_reloading) {
             m_reloadTimer.stop();
@@ -516,11 +556,17 @@ void HolePlugin::handleLine(const QByteArray& line) {
 void HolePlugin::clearProcessState() {
     m_helloReceived = false;
     m_natPunchProcessAvailable = false;
+    m_natPunchProcessExportAvailable = false;
     m_natPunchProcessTimer.stop();
     const QString processRequest = m_natPunchProcessRequestId;
     m_natPunchProcessRequestId.clear();
     m_natPunchProcessRequests.clear();
     if (!processRequest.isEmpty()) emit natPunchProcessFailed(processRequest, QStringLiteral("核心进程已结束"));
+    m_natPunchExportTimer.stop();
+    const QString exportRequest = m_natPunchExportRequestId;
+    m_natPunchExportRequestId.clear();
+    m_natPunchExportRequests.clear();
+    if (!exportRequest.isEmpty()) emit natPunchProcessExportFailed(exportRequest, QStringLiteral("核心进程已结束，打洞过程导出未完成"));
     emit capabilitiesChanged();
     m_outputBuffer.clear();
     m_pendingMethod.clear();

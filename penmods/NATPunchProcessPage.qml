@@ -430,6 +430,7 @@ YBackButtonPage {
                 ActionButton { Layout.fillWidth: true; Layout.preferredWidth: 1; text: page.paused ? "回到实时" : "暂停画面"; iconName: page.paused ? "play" : "pause"; onClicked: page.pauseView() }
                 ActionButton { Layout.fillWidth: true; Layout.preferredWidth: 1; text: page.follow ? "跟随底部" : "回到底部"; iconName: "activity"; variant: page.follow ? "primary" : "secondary"; enabled: !page.paused; onClicked: page.showBottom() }
             }
+            NATPunchExport { Layout.fillWidth: true; plugin: holePlugin; transportId: page.transportId }
             NATPunchReplay { Layout.fillWidth: true; visible: page.paused; frame: page.frame; playing: page.playing; onPlayRequested: page.playReplay(); onStepRequested: page.command("step", direction); onSeekRequested: page.command("seek", fraction) }
             RowLayout {
                 Layout.fillWidth: true; visible: (page.frame.rounds || []).length > 1; spacing: 5
