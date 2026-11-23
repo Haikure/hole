@@ -122,25 +122,30 @@ internal fun DesktopApp(model: DesktopModel) {
                             }
                             "transfer" -> TransferPage(model, ::goBack)
                             "desktop-behavior", "background" -> DesktopSettingsPage("桌面与音频", ::goBack) {
-                                HoleSwitchPreference("打开应用时恢复连接", "只在上次仍请求运行时恢复连接", checked = stored.resumeOnOpen,
-                                    onCheckedChange = { value -> mutate { it.copy(resumeOnOpen = value) } })
-                                HoleButton("重新打开音频设备", { model.action { model.retryAudio() } }, enabled = snapshot.runRequested && stored.config.voice.enabled)
-                                Text("关闭窗口会停止连接并退出。语音使用系统默认设备，暂不提供应用内回声消除与降噪。")
-                            }
-                            else -> DesktopSettingsPage("设置", { navigate("home") }) {
-                                listOf("房间与身份" to "connection-settings", "连接方式" to "transport", "NAT 检测" to "nat-detection",
-                                    "外观" to "appearance", "配置文件" to "transfer", "桌面与音频" to "desktop-behavior").forEach { (label, destination) ->
-                                    HoleButton(label, { navigate(destination) }, modifier = Modifier.fillMaxWidth(), secondary = true)
+                                HoleSettingsGroup("窗口与连接") {
+                                    HoleSwitchPreference("打开应用时恢复连接", "只在上次仍请求运行时恢复连接", checked = stored.resumeOnOpen,
+                                        onCheckedChange = { value -> mutate { it.copy(resumeOnOpen = value) } })
+                                    Text("关闭窗口会停止连接并退出。", style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
+                                }
+                                HoleSettingsGroup("语音设备") {
+                                    Text("语音使用系统默认设备，暂不提供应用内回声消除与降噪。", style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
+                                    HoleButton("重新打开音频设备", { model.action { model.retryAudio() } },
+                                        modifier = Modifier.fillMaxWidth(), enabled = snapshot.runRequested && stored.config.voice.enabled, secondary = true)
                                 }
                             }
+                            else -> SettingsHub(backgroundTitle = "桌面与音频", backgroundSummary = "恢复连接、窗口与语音设备",
+                                showReleaseUpdate = false, onNavigate = ::navigate)
                         }
                     }
                     if (stored.reduceMotion) page(route) else PageMotion(route, backwards, page)
-                    if (!wide) Column(Modifier.align(Alignment.BottomCenter).widthIn(max = 650.dp).fillMaxWidth().padding(16.dp)) {
-                        FloatingSurface { Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.weight(1f)) { AppNavigation(route, ::navigate) }
-                            FloatingRunControl(snapshot, snapshot.nativeReady, toggleRun, docked = true)
-                        } }
+                    if (!wide) Row(
+                        Modifier.align(Alignment.BottomCenter).widthIn(max = 650.dp).fillMaxWidth().padding(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.weight(1f)) { AppNavigation(route, ::navigate) }
+                        FloatingRunControl(snapshot, snapshot.nativeReady && config.loaded, toggleRun, docked = true)
                     }
                     HoleSnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = if (wide) 16.dp else 100.dp))
                 }
@@ -153,7 +158,8 @@ internal fun DesktopApp(model: DesktopModel) {
 private fun DesktopSettingsPage(title: String, onBack: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     val inset = LocalFloatingInset.current
     HoleScaffold(title = title, navigationIcon = { HoleBackButton(onBack) }) { padding ->
-        HoleScrollColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(24.dp, 16.dp, 24.dp, inset + 24.dp), content = content)
+        HoleScrollColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp, 16.dp, 20.dp, inset + 24.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp), content = content)
     }
 }
 

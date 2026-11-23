@@ -318,7 +318,7 @@ private fun AppRoot(
       PageMotion(route, popping) { page ->
       pageState.SaveableStateProvider(page) {
        when {
-        page == "settings" -> SettingsHub(::navigate)
+        page == "settings" -> SettingsHub(onNavigate = ::navigate)
         page == "nat-detection" -> dev.hole.app.ui.NATDetectionScreen(
             snapshot.natDiagnostic, snapshot.nativeReady && configState.loaded, commandError,
             model::startNATProbe, model::cancelNATProbe, { goBack() }, { navigate("transport") },

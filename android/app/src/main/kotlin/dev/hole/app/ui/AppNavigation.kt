@@ -40,7 +40,12 @@ fun AppNavigation(route: String, onNavigate: (String) -> Unit) {
 }
 
 @Composable
-fun SettingsHub(onNavigate: (String) -> Unit) {
+fun SettingsHub(
+    backgroundTitle: String = "后台运行",
+    backgroundSummary: String = "悬浮球、电池与自动恢复",
+    showReleaseUpdate: Boolean = true,
+    onNavigate: (String) -> Unit,
+) {
     val floatingInset = LocalFloatingInset.current
     HoleScaffold(title = "设置") { insets ->
         HoleLazyColumn(Modifier.padding(insets).testTag("settings-hub"), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = floatingInset + 16.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -48,12 +53,14 @@ fun SettingsHub(onNavigate: (String) -> Unit) {
                 SettingsLink("房间与身份", "服务器、房间、设备名", Icons.Default.Home) { onNavigate("connection-settings") }
                 SettingsLink("连接方式", "直连与中继", Icons.Default.Settings) { onNavigate("transport") }
                 SettingsLink("NAT 检测", "映射、过滤与端口特征", Icons.Default.NetworkCheck) { onNavigate("nat-detection") }
-                SettingsLink("后台运行", "悬浮球、电池与自动恢复", Icons.Default.Refresh) { onNavigate("background") }
+                SettingsLink(backgroundTitle, backgroundSummary, Icons.Default.Refresh) { onNavigate("background") }
             } }
             item { HoleSettingsGroup("应用") {
                 SettingsLink("外观", "颜色与显示模式", Icons.Default.Edit) { onNavigate("appearance") }
                 SettingsLink("配置文件", "导入与导出", Icons.Default.List) { onNavigate("transfer") }
-                SettingsLink("检查更新", "获取最新正式发行版", Icons.Default.Download) { onNavigate("release-update") }
+                if (showReleaseUpdate) {
+                    SettingsLink("检查更新", "获取最新正式发行版", Icons.Default.Download) { onNavigate("release-update") }
+                }
             } }
         }
     }

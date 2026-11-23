@@ -9,6 +9,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -69,6 +71,34 @@ class RuntimeInteractionTest {
         compose.onNode(hasSetTextAction() and hasText("服务端口")).performScrollTo().performTextReplacement("22")
         compose.onNodeWithContentDescription("保存").performClick()
         compose.runOnIdle { assertEquals(1, saved) }
+    }
+    @Test fun draggingRunControlDoesNotToggleAndTapStillWorks() {
+        var toggles = 0
+        compose.setContent {
+            HoleTheme(mode = ThemeMode.LIGHT, dynamic = false) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    FloatingRunControl(CoreSnapshot(), true, { toggles++ }, docked = true)
+                }
+            }
+        }
+        val button = compose.onNodeWithTag("run-control")
+        button.performTouchInput {
+            down(center)
+            moveTo(center + Offset(width * .42f, 0f), 240)
+            moveTo(center, 240)
+            up()
+        }
+        compose.runOnIdle { assertEquals(0, toggles) }
+        button.performTouchInput { click() }
+        compose.runOnIdle { assertEquals(1, toggles) }
+        button.performTouchInput {
+            down(center)
+            moveTo(center + Offset(0f, height.toFloat()), 240)
+            cancel()
+        }
+        compose.runOnIdle { assertEquals(1, toggles) }
+        button.performTouchInput { click() }
+        compose.runOnIdle { assertEquals(2, toggles) }
     }
     @Test fun enteringAndReturningUseOppositeMotionAndRemoveOldPage() {
         var route by mutableStateOf("home")
