@@ -10,7 +10,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
-internal class DesktopCoreClient : CoreController {
+internal class DesktopCoreClient(
+    private val audioFactory: (Long, AtomicLong, () -> Boolean) -> DesktopAudio = { handle, sequence, muted ->
+        DesktopVoiceAudio(handle, sequence, muted)
+    },
+) : CoreController {
     private val handle = NativeCore.open().also { check(it != 0L) { "无法创建 Go 核心" } }
     private val lifecycle = Mutex()
     private val sampler = SnapshotSampler()
@@ -18,9 +22,9 @@ internal class DesktopCoreClient : CoreController {
     private val networks = MutableSharedFlow<String>(extraBufferCapacity = 1)
     override val networkEvents = networks.asSharedFlow()
     @Volatile private var closed = false
-    @Volatile private var audio: DesktopVoiceAudio? = null
+    @Volatile private var audio: DesktopAudio? = null
     @Volatile private var audioError: String? = null
-    private var muted = false
+    @Volatile private var muted = false
     private val captureSequence = AtomicLong()
 
     init {
@@ -63,14 +67,33 @@ internal class DesktopCoreClient : CoreController {
     }
     override suspend fun start(requestJSON: String) = command("start", requestJSON)
     override suspend fun stop() { stopVoiceAudio(); command("stop") }
-    override suspend fun applyConfig(requestJSON: String) { stopVoiceAudio(); command("apply", requestJSON) }
+    override suspend fun applyConfig(requestJSON: String) = lifecycle.withLock {
+        withContext(Dispatchers.IO) {
+            check(!closed) { "核心已关闭" }
+            try {
+                NativeCore.invoke(handle, "apply", requestJSON)
+                if (!voiceEnabled(requestJSON)) { audio?.close(); audio = null; audioError = null }
+            } finally { sampler.wake() }
+        }
+    }
     override suspend fun networkChanged(eventJSON: String) = command("network", eventJSON)
     override suspend fun renominateTransports() = command("renominate")
     override suspend fun startNATProbe(optionsJSON: String) = command("nat_start", optionsJSON)
     override suspend fun cancelNATProbe() = command("nat_cancel")
-    override suspend fun setVoiceMuted(muted: Boolean) {
-        command("mute", muted.toString())
-        this.muted = muted
+    override suspend fun setVoiceMuted(muted: Boolean) = lifecycle.withLock {
+        withContext(Dispatchers.IO) {
+            check(!closed) { "核心已关闭" }
+            val previous = this@DesktopCoreClient.muted
+            this@DesktopCoreClient.muted = muted
+            try { NativeCore.invoke(handle, "mute", muted.toString()) }
+            catch (failure: Exception) {
+                if (failure !is NativeCoreFault || !failure.voicePending) {
+                    this@DesktopCoreClient.muted = previous
+                    throw failure
+                }
+            } finally { sampler.wake() }
+            Unit
+        }
     }
     override fun setTelemetryActive(active: Boolean) = sampler.setUiVisible(active)
     override suspend fun natPunchProcess(transportId: String, afterSequence: String): NATPunchProcess = withContext(Dispatchers.IO) {
@@ -89,15 +112,17 @@ internal class DesktopCoreClient : CoreController {
     suspend fun exportSnapshot(): String = withContext(Dispatchers.IO) {
         JSONObject(NativeCore.invoke(handle, "snapshot")).toString(2) + "\n"
     }
+    private fun voiceEnabled(requestJSON: String) =
+        JSONObject(requestJSON).getJSONObject("config").optJSONObject("voice")?.optBoolean("enabled") == true
+
     override suspend fun startVoiceAudio(requestJSON: String, microphoneSource: String) = lifecycle.withLock {
         withContext(Dispatchers.IO) {
             check(!closed) { "核心已关闭" }
-            if (JSONObject(requestJSON).getJSONObject("config").optJSONObject("voice")?.optBoolean("enabled") != true) return@withContext
+            if (!voiceEnabled(requestJSON)) return@withContext
             if (audio?.state == "running") return@withContext
             audio?.close(); audio = null; audioError = null
             try {
-                NativeCore.invoke(handle, "mute", muted.toString())
-                audio = DesktopVoiceAudio(handle, captureSequence).also { it.start() }
+                audio = audioFactory(handle, captureSequence) { muted }.also { it.start() }
             } catch (failure: Exception) {
                 audioError = "音频设备启动失败：${failure.message}"
                 throw IllegalStateException(audioError, failure)

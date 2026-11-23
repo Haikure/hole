@@ -801,6 +801,94 @@ async function modernFixture() {
 function memberUpdate(declaration, revision) {
  return {...declaration,type:'member_update',member_revision:String(revision),request_id:revision.toString(16).padStart(32,'0')};
 }
+test('room notices survive carrier loss during encryption and retry without duplicating batches',async()=>{
+ const {r,socket}=await modernFixture(),a=socket(),b=socket(),control=r.control;
+ r.registered.set('alpha',{member:modernJoin('alpha'),ws:a});
+ r.registered.set('beta',{member:modernJoin('beta'),ws:b});
+ control.rebuild();
+ control.enqueue('alpha',{type:'notice_test',value:'alpha'});
+ control.enqueue('beta',{type:'notice_test',value:'beta'});
+ const queuedBytes=control.noticeBytes,sign=control.signNotice.bind(control);
+ let entered,release;
+ const signing=new Promise(resolve=>{entered=resolve}),resume=new Promise(resolve=>{release=resolve});
+ control.signNotice=async(...args)=>{
+  const frame=await sign(...args);
+  if(args[0]==='alpha'){entered();await resume;}
+  return frame;
+ };
+ const pending=control.flush();
+ await signing;
+ const inFlightCount=control.notices.length,inFlightBytes=control.noticeBytes;
+ a.close();
+ const overlapping=control.flush();
+ release();
+ await Promise.all([pending,overlapping]);
+ assert.equal(inFlightCount,2);
+ assert.equal(inFlightBytes,queuedBytes);
+ assert.equal(b.messages.length,1);
+ assert.equal(control.notices.length,1);
+ assert.equal(control.notices[0].target,'alpha');
+ assert.equal(control.noticeBytes,control.notices[0].size);
+
+ const replacement=socket(),send=replacement.send;
+ r.registered.get('alpha').ws=replacement;
+ replacement.send=()=>{throw new Error('carrier closed while sending')};
+ control.enqueue('beta',{type:'notice_test',value:'second'});
+ await control.flush();
+ assert.equal(b.messages.length,2);
+ assert.equal(control.notices.length,1);
+ replacement.send=send;
+ await control.flush();
+ assert.equal(replacement.messages.length,1);
+ assert.equal(control.notices.length,0);
+ assert.equal(control.noticeBytes,0);
+
+ control.enqueue('alpha',{type:'notice_test',value:'old identity'});
+ r.registered.get('alpha').member={...modernJoin('alpha'),runtime_id:'f'.repeat(32)};
+ await control.flush();
+ assert.equal(replacement.messages.length,1);
+ assert.equal(control.notices.length,0);
+ assert.equal(control.noticeBytes,0);
+});
+
+test('room snapshots retry failed sends and signatures without blocking other recipients',async()=>{
+ const {r,socket}=await modernFixture(),a=socket(),b=socket(),control=r.control;
+ r.registered.set('alpha',{member:modernJoin('alpha'),ws:a});
+ r.registered.set('beta',{member:modernJoin('beta'),ws:b});
+ control.rebuild();await control.ensureKey();
+ const send=a.send;
+ a.send=()=>{throw new Error('closed socket')};
+ await control.publishSnapshot();
+ assert.equal(a.messages.length,0);
+ assert.equal(b.messages.length,1);
+ assert.equal(control.lastSnapshot,'');
+ a.send=send;
+ const sign=control.signNotice.bind(control);
+ control.signNotice=async(...args)=>{const frame=await sign(...args);a.close();return frame;};
+ await control.publishSnapshot();
+ assert.equal(b.messages.length,2);
+ assert.equal(control.lastSnapshot,'');
+ const replacement=socket();
+ r.registered.get('alpha').ws=replacement;
+ control.signNotice=sign;
+ await control.publishSnapshot();
+ assert.equal(replacement.messages.length,1);
+ assert.equal(b.messages.length,3);
+ const published=control.lastSnapshot;
+ await control.publishSnapshot();
+ assert.equal(b.messages.length,3);
+
+ r.registered.get('alpha').member.voice=true;
+ control.signNotice=async()=>{throw new Error('signing failed')};
+ await assert.rejects(control.publishSnapshot(),/signing failed/);
+ assert.equal(control.lastSnapshot,published);
+ control.signNotice=sign;
+ await control.publishSnapshot();
+ assert.equal(replacement.messages.length,2);
+ assert.equal(b.messages.length,4);
+ assert.notEqual(control.lastSnapshot,published);
+});
+
 test('online declarations preserve transport, enforce identity and survive hibernation',async()=>{
  const {r,a,b,record,state}=await pair(),generation=record.generation;
  const send=message=>r.webSocketMessage(b,JSON.stringify(message));

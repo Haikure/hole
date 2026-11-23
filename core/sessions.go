@@ -150,6 +150,7 @@ func (m *sessionManager) consumerAuthorized(t tunnel, fingerprint string, allowe
 	}
 	m.clients[t.id] = client
 	client.emit = m.emit
+	client.listenerChanged = func(err error, retrying bool) { m.clientListenerChanged(client, err, retrying) }
 	address := ""
 	if client.tcpListener != nil {
 		address = client.tcpListener.Addr().String()
@@ -157,7 +158,30 @@ func (m *sessionManager) consumerAuthorized(t tunnel, fingerprint string, allowe
 		address = client.udpListener.LocalAddr().String()
 	}
 	m.listenerEventLocked(t, "ready", address, nil)
+	if client.tcpListener != nil {
+		go client.acceptTCP()
+	} else {
+		go client.readUDP()
+	}
 	return client, nil
+}
+
+func (m *sessionManager) clientListenerChanged(client *clientTunnel, err error, retrying bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || m.clients[client.t.id] != client || client.ctx.Err() != nil {
+		return
+	}
+	address := client.tcpListener.Addr().String()
+	if err == nil {
+		m.listenerEventLocked(client.t, "ready", address, nil)
+		return
+	}
+	m.listenerEventLocked(client.t, "error", address, classifyError(err))
+	if !retrying {
+		delete(m.clients, client.t.id)
+		client.close()
+	}
 }
 
 func (m *sessionManager) listenerEventLocked(t tunnel, state, address string, fault *Fault) {
@@ -172,7 +196,7 @@ func (m *sessionManager) listenerEventLocked(t tunnel, state, address string, fa
 
 func (m *sessionManager) listenerClosedLocked(client *clientTunnel) {
 	listener, ok := m.listeners[client.t.id]
-	if ok && listener.State == "ready" {
+	if ok && listener.State != "closed" {
 		m.listenerEventLocked(client.t, "closed", listener.Address, nil)
 	}
 }
@@ -353,6 +377,12 @@ type clientUDPSession struct {
 	lastSeen time.Time
 }
 
+type tcpSessionListener interface {
+	AcceptTCP() (*net.TCPConn, error)
+	Addr() net.Addr
+	Close() error
+}
+
 type clientTunnel struct {
 	logf        logFunc
 	t           tunnel
@@ -360,7 +390,7 @@ type clientTunnel struct {
 	id          sessionID
 	ctx         context.Context
 	cancel      context.CancelFunc
-	tcpListener *net.TCPListener
+	tcpListener tcpSessionListener
 	udpListener *net.UDPConn
 
 	mu              sync.Mutex
@@ -377,6 +407,7 @@ type clientTunnel struct {
 	tcpBudget       *atomic.Int32
 	udpBudget       *atomic.Int32
 	emit            func(Event)
+	listenerChanged func(error, bool)
 }
 
 func newClientTunnel(ctx context.Context, t tunnel, fingerprint string, logf logFunc, traffic *tcpTraffic, budgets ...*atomic.Int32) (*clientTunnel, error) {
@@ -404,11 +435,6 @@ func newClientTunnel(ctx context.Context, t tunnel, fingerprint string, logf log
 	if err != nil {
 		cancel()
 		return nil, err
-	}
-	if t.protocol == "tcp" {
-		go c.acceptTCP()
-	} else {
-		go c.readUDP()
 	}
 	return c, nil
 }
@@ -467,10 +493,40 @@ func (c *clientTunnel) unbind(transport *clientTransport) {
 }
 
 func (c *clientTunnel) acceptTCP() {
+	var retryDelay time.Duration
 	for {
 		socket, err := c.tcpListener.AcceptTCP()
 		if err != nil {
-			return
+			if c.ctx.Err() != nil {
+				return
+			}
+			var networkError net.Error
+			retrying := errors.As(err, &networkError) && networkError.Temporary()
+			if c.listenerChanged != nil && (retryDelay == 0 || !retrying) {
+				c.listenerChanged(err, retrying)
+			}
+			if !retrying {
+				return
+			}
+			if retryDelay == 0 {
+				retryDelay = 5 * time.Millisecond
+			} else {
+				retryDelay = min(2*retryDelay, time.Second)
+			}
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-c.ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+		if retryDelay != 0 {
+			retryDelay = 0
+			if c.listenerChanged != nil {
+				c.listenerChanged(nil, false)
+			}
 		}
 		id, err := newSessionID()
 		if err != nil {

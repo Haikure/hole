@@ -5,6 +5,7 @@ const decoder = new TextDecoder('utf-8', { fatal: true });
 const MAX_FRAME = 128 * 1024;
 const MAX_MEMBERS = 128;
 const MAX_HOPS = 16;
+class RoomNoticeTooLarge extends Error {}
 const encoded = value => encoder.encode(value);
 const b64 = bytes => {
   let text = '';
@@ -69,6 +70,7 @@ export class RoomControl {
     this.nodes = new Map(); this.keys = new Map(); this.notices = []; this.noticeBytes = 0;
     this.privateKey = null; this.publicKey = ''; this.revision = 0; this.lastSnapshot = '';
     this.keyInit = null; this.publishing = Promise.resolve(); this.graphUpdates = Promise.resolve();
+    this.flushing = Promise.resolve();
   }
 
   async init() {
@@ -117,8 +119,21 @@ export class RoomControl {
   enqueue(target, message) {
     const size = encoded(JSON.stringify(message)).length;
     if (size > MAX_FRAME || this.notices.length >= 512 || this.noticeBytes + size > 512 * 1024) throw new Error('room notice queue is full');
+    const member = this.room.registered.get(target)?.member;
     this.noticeBytes += size;
-    this.notices.push({ target, message });
+    this.notices.push({ target, message, size, runtime: member?.runtime_id, fingerprint: member?.cert_fingerprint });
+  }
+
+  noticeMember(notice) {
+    const member = this.room.registered.get(notice.target)?.member;
+    return member && modernMember(member) && member.runtime_id === notice.runtime && member.cert_fingerprint === notice.fingerprint ? member : null;
+  }
+
+  discardNotice(notice) {
+    const index = this.notices.indexOf(notice);
+    if (index < 0) return;
+    this.notices.splice(index, 1);
+    this.noticeBytes -= notice.size;
   }
 
   async acceptNode(frame, member, nodes = this.nodes) {
@@ -235,18 +250,25 @@ export class RoomControl {
     if (!this.privateKey) return;
     const snapshot = this.snapshot(), text = JSON.stringify(snapshot);
     if (text === this.lastSnapshot) return;
-    this.lastSnapshot = text;
+    const recipients = [...this.room.registered].filter(([device, entry]) => this.direct(device) && modernMember(entry.member)).map(([device]) => device);
     this.revision++;
     await this.state.storage.put('room_revision', this.revision);
     await this.state.storage.put('room_mirror', { ...snapshot, state_revision: String(this.revision) });
     const message = { type: 'room_state', version: 1, ...snapshot, state_revision: String(this.revision) };
     const frame = await this.signNotice('', message);
-    for (const [device, entry] of this.room.registered) if (entry.ws && modernMember(entry.member)) entry.ws.send(JSON.stringify({ type: 'room_frame', room_frame: frame }));
+    const raw = JSON.stringify({ type: 'room_frame', room_frame: frame });
+    let complete = true;
+    for (const device of recipients) {
+      const entry = this.room.registered.get(device);
+      const ws = this.direct(device);
+      if (!ws || !entry || !modernMember(entry.member)) { complete = false; continue; }
+      try { ws.send(raw); } catch { complete = false; }
+    }
+    if (complete) this.lastSnapshot = text;
   }
 
-  async signNotice(target, message) {
+  async signNotice(target, message, member = target ? this.room.registered.get(target)?.member : null) {
     await this.ensureKey();
-    const member = target ? this.room.registered.get(target)?.member : null;
     const id = hex(crypto.getRandomValues(new Uint8Array(16)));
     let body = encoded(JSON.stringify(message));
     if (member) {
@@ -262,20 +284,38 @@ export class RoomControl {
     const frame = { id, room: this.room.ice.roomName, origin: '$worker', runtime: 'worker', kind: 'notice', body: b64(body), hops: MAX_HOPS };
     if (member) Object.assign(frame, { target, target_runtime: member.runtime_id });
     frame.signature = b64(new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, this.privateKey, roomSigningBytes(frame))));
-    if (JSON.stringify(frame).length > MAX_FRAME) throw new Error('room notice too large');
+    if (JSON.stringify(frame).length > MAX_FRAME) throw new RoomNoticeTooLarge('room notice too large');
     return frame;
   }
 
-  async flush() {
-    const queue = this.notices;
-    this.notices = []; this.noticeBytes = 0;
-    for (const { target, message } of queue) {
-      const entry = this.room.registered.get(target);
-      if (!entry || !modernMember(entry.member)) continue;
-      const carriers = this.component(target).filter(device => this.direct(device));
-      if (!carriers.length) continue;
-      const frame = await this.signNotice(target, message);
-      for (const device of carriers) this.direct(device).send(JSON.stringify({ type: 'room_frame', room_frame: frame }));
+  flush() {
+    const next = this.flushing.catch(() => {}).then(() => this.flushNotices());
+    this.flushing = next;
+    return next;
+  }
+
+  async flushNotices() {
+    // Keep in-flight and retryable notices inside the bounded queue.
+    for (const notice of [...this.notices]) {
+      const member = this.noticeMember(notice);
+      if (!member) { this.discardNotice(notice); continue; }
+      if (!this.component(notice.target).some(device => this.direct(device))) continue;
+      let frame;
+      try { frame = await this.signNotice(notice.target, notice.message, member); }
+      catch (error) {
+        if (error instanceof RoomNoticeTooLarge || !this.noticeMember(notice)) this.discardNotice(notice);
+        continue;
+      }
+      if (!this.noticeMember(notice)) { this.discardNotice(notice); continue; }
+      const raw = JSON.stringify({ type: 'room_frame', room_frame: frame });
+      let sent = false;
+      // Signing and encryption yield; resolve the current routes afterwards.
+      for (const device of this.component(notice.target)) {
+        const ws = this.direct(device);
+        if (!ws) continue;
+        try { ws.send(raw); sent = true; } catch {}
+      }
+      if (sent) this.discardNotice(notice);
     }
   }
 }

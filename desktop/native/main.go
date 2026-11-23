@@ -165,7 +165,13 @@ func hole_push(id C.uint64_t, sequence C.int64_t, timestamp C.int64_t, data unsa
 	if entry.engine == nil {
 		return -1
 	}
-	if entry.engine.PushVoicePCM(int64(sequence), int64(timestamp), C.GoBytes(data, length)) != nil {
+	if err := entry.engine.PushVoicePCM(int64(sequence), int64(timestamp), C.GoBytes(data, length)); err != nil {
+		var fault struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal([]byte(err.Error()), &fault) == nil && (fault.Code == "voice_unavailable" || fault.Code == "voice_disabled") {
+			return 1 // Drop this frame while the shared core starts or changes scope.
+		}
 		return -1
 	}
 	return 0

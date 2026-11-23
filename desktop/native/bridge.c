@@ -52,7 +52,7 @@ JNIEXPORT void JNICALL Java_dev_hole_desktop_bridge_NativeCore_push(
     jbyte buffer[7680];
     (*env)->GetByteArrayRegion(env, input, 0, count, buffer);
     if ((*env)->ExceptionCheck(env)) return;
-    if (hole_push((uint64_t)handle, sequence, timestamp, buffer, count)) fail(env, "Voice capture failed");
+    if (hole_push((uint64_t)handle, sequence, timestamp, buffer, count) < 0) fail(env, "Voice capture failed");
 }
 
 JNIEXPORT jbyteArray JNICALL Java_dev_hole_desktop_bridge_NativeCore_pull(JNIEnv *env, jobject self, jlong handle) {

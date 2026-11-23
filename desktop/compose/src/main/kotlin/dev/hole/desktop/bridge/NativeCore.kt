@@ -3,6 +3,10 @@ package dev.hole.desktop.bridge
 import java.io.File
 import org.json.JSONObject
 
+internal class NativeCoreFault(val code: String?, message: String) : IllegalStateException(message) {
+    val voicePending get() = code == "voice_unavailable" || code == "voice_disabled"
+}
+
 /** One native library for the process lifetime. Engine close never unloads the Go runtime. */
 internal object NativeCore {
     init {
@@ -26,8 +30,9 @@ internal object NativeCore {
         val response = JSONObject(call(handle, operation, input.toByteArray(Charsets.UTF_8)).toString(Charsets.UTF_8))
         if (response.has("error")) {
             val raw = response.getString("error")
-            val message = runCatching { JSONObject(raw).getString("message") }.getOrDefault(raw)
-            error(message)
+            val fault = runCatching { JSONObject(raw) }.getOrNull()
+            throw NativeCoreFault(fault?.optString("code")?.takeIf { it.isNotEmpty() },
+                fault?.optString("message")?.takeIf { it.isNotEmpty() } ?: raw)
         }
         return response.getString("value")
     }
