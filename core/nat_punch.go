@@ -317,7 +317,7 @@ func makeNATPunchPlan(mapped netip.AddrPort, model NATSnapshot, mode string, cou
 		return makePoolPunchPlan(plan, model, width)
 	}
 	if model.PublicIP != "" && plan.IP != model.PublicIP {
-		return nil, fmt.Errorf("%w: public IP changed", errNATPunchModel)
+		return nil, fmt.Errorf("%w: public IP changed (model=%s, calibrated=%s)", errNATPunchModel, model.PublicIP, plan.IP)
 	}
 	if mode == "single" && natGroup(model) == "symmetric" {
 		plan.Width = width
@@ -437,6 +437,10 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				diagnostic.UDPReadError = redact(diagnostic.UDPReadError, cfg)
 				p.recordPunchDiagnostic(a, diagnostic)
 				a.process.diagnostic(diagnostic)
+				if a.diagnostics != nil {
+					a.diagnostics.log("round_finished", "nat_punch", fmt.Sprintf("round=%d mode=%s stage=%s calibrations=%d sockets=%d probes_sent=%d acks_received=%d acks_verified=%d quic_established=%t error=%q",
+						round, diagnostic.Mode, diagnostic.Stage, diagnostic.CalibrationAttempts, diagnostic.Sockets, diagnostic.ProbesSent, diagnostic.ACKsReceived, diagnostic.ACKsVerified, diagnostic.QUICEstablished, diagnostic.Error))
+				}
 				if roundError != nil {
 					a.process.record(NATPunchProcessEvent{Kind: "round_failed", Title: "本轮打洞已结束", Round: round, Detail: diagnostic.Error})
 				}

@@ -11,6 +11,70 @@ import (
 	"time"
 )
 
+func TestPunchCalibrationLogsRefreshOwnerAndPreservesReason(t *testing.T) {
+	for _, localRefresh := range []bool{true, false} {
+		name := "peer"
+		if localRefresh {
+			name = "local"
+		}
+		t.Run(name, func(t *testing.T) {
+			n, _, _ := simulatedNATs([2]int{1, 1}, [2]int{}, 0)
+			_, p := lifecycleCoordinator(t)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			a := &iceAttempt{ctx: ctx, ready: p.ready, events: make(chan iceSignalMessage, 2), failed: make(chan error, 1)}
+			a.ready.PunchCalibration = natPunchCalibration
+			var events []Event
+			a.diagnostics = newICEDiagnostics(ctx, a.ready, Config{}, func(e Event) { events = append(events, e) })
+			platform := &punchSimPlatform{nat: n.sides[0]}
+			open := func() (net.PacketConn, error) {
+				pc, err := platform.ListenPacket(ctx, "udp4", "0.0.0.0:0")
+				if err == nil {
+					t.Cleanup(func() { _ = pc.Close() })
+				}
+				return pc, err
+			}
+			pc, err := open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			model := NATSnapshot{Status: "complete", Type: "symmetric", MappingBehavior: "endpoint_dependent", Predictability: "incremental", PublicIP: "198.51.100.1", PortStep: 1, AllocationScope: "cross_socket"}
+			peer := natPunchSignal{Kind: "calibrated", Round: 1, Trial: 1, Mode: "single", Result: "refresh"}
+			if localRefresh {
+				model.PublicIP = "203.0.113.9"
+				peer.Result = "ok"
+				peer.Plan = &natPunchPlan{IP: "198.51.100.2", Port: 50001, Target: 50002, Width: 20, Sockets: 10}
+			}
+			a.events <- iceSignalMessage{Punch: &natPunchSignal{Kind: "calibrate", Round: 1, Trial: 1}}
+			a.events <- iceSignalMessage{Punch: &peer}
+			s := &natPunchSession{local: model, remote: NATSnapshot{PublicIP: "198.51.100.2"}, mode: "single", config: NATPunchConfig{ScanWidth: 20}}
+			previous := ""
+			_, err = p.calibrateNATPunch(ctx, a, s, 1, []*net.UDPAddr{{IP: net.IPv4(192, 0, 2, 1), Port: 3478}}, []net.PacketConn{pc}, open, &previous, &NATPunchDiagnostic{})
+			if !errors.Is(err, errNATPunchModel) || len(events) != 2 {
+				t.Fatalf("err=%v events=%+v", err, events)
+			}
+			for i, state := range []string{"calibration_local", "calibration_peer"} {
+				e := events[i]
+				if e.Kind != "log" || e.State != state || e.Stage != "nat_punch" || e.Peer != a.ready.PeerDevice || e.TransportGeneration != a.ready.TransportGeneration || !strings.Contains(e.Message, "round=1 trial=1 mode=single") {
+					t.Fatalf("calibration context missing: %+v", e)
+				}
+			}
+			if localRefresh {
+				for _, want := range []string{"result=refresh", "203.0.113.9", "198.51.100.1", "192.0.2.1:3478", "public IP changed"} {
+					if !strings.Contains(events[0].Message, want) {
+						t.Fatalf("local refresh lost %q: %+v", want, events)
+					}
+				}
+				if !strings.Contains(err.Error(), "local calibration") || !strings.Contains(err.Error(), "public IP changed") {
+					t.Fatalf("local refresh cause lost: %v", err)
+				}
+			} else if !strings.Contains(events[0].Message, "result=ok") || !strings.Contains(events[1].Message, "result=refresh") || !strings.Contains(events[1].Message, "mapped=unreported reason=unreported") || !strings.Contains(err.Error(), "peer calibration") {
+				t.Fatalf("peer refresh attributed to local calibration: err=%v events=%+v", err, events)
+			}
+		})
+	}
+}
+
 type calibrationDNSPlatform struct {
 	DefaultPlatform
 	resolve func(context.Context, string) (*net.UDPAddr, error)

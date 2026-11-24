@@ -167,6 +167,15 @@ func (p *icePeer) calibrateNATPunch(ctx context.Context, a *iceAttempt, s *natPu
 				}
 			}
 		}
+		if a.diagnostics != nil {
+			message := fmt.Sprintf("round=%d trial=%d mode=%s result=%s local=%s stun=%q mapped=%q model_ip=%q last_mapping_port=%d port_step=%d allocation_scope=%q predictability=%q ip_evidence=%+v plan=%+v retained=%t",
+				round, trial, s.mode, result, calibrator.LocalAddr(), diagnostic.STUNServer, diagnostic.MappedAddress,
+				s.local.PublicIP, s.local.LastMappingPort, s.local.PortStep, s.local.AllocationScope, s.local.Predictability, s.local.IPEvidence, plan, retained)
+			if err != nil {
+				message += fmt.Sprintf(" reason=%q", err.Error())
+			}
+			a.diagnostics.log("calibration_local", "nat_punch", message)
+		}
 		peerResult := "ok"
 		var remotePlan *natPunchPlan
 		if synchronized {
@@ -179,6 +188,15 @@ func (p *icePeer) calibrateNATPunch(ctx context.Context, a *iceAttempt, s *natPu
 			}
 			peerResult = peer.Result
 			remotePlan = peer.Plan
+			if a.diagnostics != nil {
+				message := fmt.Sprintf("round=%d trial=%d mode=%s result=%s model_ip=%q plan=%+v", round, trial, peer.Mode, peerResult, s.remote.PublicIP, remotePlan)
+				if remotePlan != nil {
+					message += fmt.Sprintf(" mapped=%s:%d", remotePlan.IP, remotePlan.Port)
+				} else {
+					message += " mapped=unreported reason=unreported"
+				}
+				a.diagnostics.log("calibration_peer", "nat_punch", message)
+			}
 			if peer.Mode != s.mode || peerResult == "ok" && remotePlan == nil {
 				return nil, errors.New("invalid peer calibration plan")
 			}
@@ -186,8 +204,11 @@ func (p *icePeer) calibrateNATPunch(ctx context.Context, a *iceAttempt, s *natPu
 				return nil, errors.New("invalid peer calibration result")
 			}
 		}
-		if result == "refresh" || peerResult == "refresh" {
-			return nil, errNATPunchModel
+		if result == "refresh" {
+			return nil, fmt.Errorf("local calibration requires model refresh: %w", lastErr)
+		}
+		if peerResult == "refresh" {
+			return nil, fmt.Errorf("%w: peer calibration requested model refresh", errNATPunchModel)
 		}
 		if result == "exhausted" || peerResult == "exhausted" {
 			if result == "exhausted" {

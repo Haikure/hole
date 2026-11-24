@@ -494,6 +494,60 @@ func TestCLIICEDiagnosticsAreDebugOnlyAndKeepAttemptContext(t *testing.T) {
 	}
 }
 
+func TestCLINATPunchCalibrationDebugLogs(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			r, output := testReporter(t)
+			r.format = format
+			events := []core.Event{
+				{Kind: "log", State: "calibration_local", Stage: "nat_punch", Peer: "nec", Phase: "direct", TransportGeneration: 149,
+					Message: `round=1 trial=1 mode=single result=refresh stun="192.0.2.1:3478" mapped="198.51.100.2:40001" model_ip="198.51.100.1" reason="public IP changed PRIVATE_TURN_CREDENTIAL"`},
+				{Kind: "log", State: "calibration_peer", Stage: "nat_punch", Peer: "nec", Phase: "direct", TransportGeneration: 149,
+					Message: "round=1 trial=1 mode=single result=ok"},
+				{Kind: "log", State: "round_finished", Stage: "nat_punch", Peer: "nec", Phase: "direct", TransportGeneration: 149,
+					Message: "round=1 mode=single probes_sent=0 acks_verified=0"},
+			}
+			for _, e := range events {
+				r.followEvent(e, core.Snapshot{})
+			}
+			if output.Len() != 0 {
+				t.Fatal("NAT calibration details appeared without -debug", output)
+			}
+			r.debug = true
+			for _, e := range events {
+				r.followEvent(e, core.Snapshot{})
+			}
+			lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+			if len(lines) != len(events) || strings.Contains(output.String(), "PRIVATE_") {
+				t.Fatal("NAT calibration logs were suppressed or revealed credentials", output)
+			}
+			for i, line := range lines {
+				if format == "json" {
+					var record cliLogRecord
+					if err := json.Unmarshal([]byte(line), &record); err != nil || record.Level != "DEBUG" || record.State != events[i].State || record.Peer != "nec" || record.Stage != "nat_punch" || record.TransportGeneration != 149 {
+						t.Fatalf("NAT calibration JSON context lost: err=%v line=%s", err, line)
+					}
+					line = record.Message
+				}
+				want := []string{events[i].State, "round=1"}
+				switch i {
+				case 0:
+					want = append(want, "trial=1", "mode=single", "result=refresh", "192.0.2.1:3478", "198.51.100.2:40001", "198.51.100.1", "public IP changed", "[redacted]")
+				case 1:
+					want = append(want, "result=ok")
+				case 2:
+					want = append(want, "probes_sent=0", "acks_verified=0")
+				}
+				for _, value := range want {
+					if !strings.Contains(line, value) {
+						t.Fatalf("NAT calibration evidence %q lost: %s", value, line)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestCLIRepeatedSessionFailuresAreSummarizedAndRecover(t *testing.T) {
 	r, output := testReporter(t)
 	e := core.Event{Kind: "session", MappingID: "SSH", Peer: "家里电脑", State: "error", Error: &core.Fault{Code: "service_refused", Message: "raw"}}
