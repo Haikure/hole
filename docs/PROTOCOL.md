@@ -664,6 +664,14 @@ Worker 接收带来源签名的 `room_graph`，按实际 WS 和双向连接图�
 不增加周期上报，不公开 ICE 凭据或业务地址。核心快照包含 `worker_version` 和 `room`；
 `room` 包含本组成员、分组 ID、可达信令入口及最近收到的房间分组。
 
+面板的 `/auth`、`/session`、`/room`、`/logout` 接口仅接受 HTTPS 同源 POST，`/live` 仅接受同源 WebSocket 升级。
+信令验证成功后发放随机会话 ID，以 `Secure` / `HttpOnly` / `SameSite=Strict` 的 `__Host-` Cookie 携带；
+默认会话上限 12 小时，可显式选择保持 7 天，均不自动续期。会话 ID 的摘要、认证绑定和当前房间授权存于现有会话 Durable Object，
+房间授权由对应房间验证口令后签发，绑定房间名及当前口令。恢复和重连只需会话 Cookie，无需再次传递两种密码；
+升级时服务器检查会话并验证房间授权，随后用无口令的 `watch` 请求订阅快照。退出撤销会话并关闭该会话的当前房间连接，
+撤销通知失败时保留待处理记录并由 alarm 重试，撤销中的会话不能恢复或新建连接。
+切换房间清除原授权；过期会话不能新建连接，已有连接也不再接收新的状态快照。内部会话对象名 `$hole-panel-sessions` 不能用作房间号。
+
 ### 授权与传输代次
 
 Worker 继续持久化设备对的 transport ID / generation，协调并发重启并检查发送者、目标和代次。

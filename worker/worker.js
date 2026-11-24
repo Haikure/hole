@@ -1,7 +1,7 @@
 import { RoomICE, TurnBroker, iceJoinFields, negotiateProfile, recordPhase, ICE_PROFILE, FIXED_PROFILE, RELAY_ONLY_POLICY, VOICE_MEMBER_LIMIT, HOLE_VERSION } from "./worker_ice.mjs";
 import { RoomControl } from "./worker_room.mjs";
 import { WORKER_VERSION, modernMember } from "./software_version.mjs";
-import { panelPath, panelPage, panelSession, validPanelSession, sameOrigin } from "./worker_panel.mjs";
+import { handlePanel, PanelSessions, storedPanelKey, panelRoomProof, validPanelRoomProof, PANEL_SESSION_NAME } from "./worker_panel.mjs";
 export { TurnBroker };
 const ROOM_PATH = "/ws";
 const MAX_MESSAGE_SIZE = 256 * 1024;
@@ -10,31 +10,8 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    const panel = panelPath(env.PANEL_PATH);
-    if (panel && url.pathname === panel && request.method === 'GET') return panelPage();
-    if (panel && url.pathname === panel + '/auth') {
-      if (request.method !== 'POST' || !sameOrigin(request)) return new Response('Forbidden', { status: 403 });
-      let password;
-      try {
-        const raw = await request.text();
-        if (raw.length > 8192) return new Response('request too large', { status: 413 });
-        password = JSON.parse(raw).password;
-      } catch { return new Response('invalid request', { status: 400 }); }
-      if (!await passwordMatches(password, env.PASSWORD)) return new Response('unauthorized', { status: 401 });
-      const broker = env.ROOMS.get(env.ROOMS.idFromName('$hole-panel-sessions'));
-      return broker.fetch(new Request('https://panel-internal/__panel_session', { method: 'POST', body: JSON.stringify({ issue: true, password: env.PASSWORD }) }));
-    }
-    if (panel && url.pathname === panel + '/live') {
-      if (!sameOrigin(request) || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response('Forbidden', { status: 403 });
-      const protocol = request.headers.get('Sec-WebSocket-Protocol') ?? '';
-      if (!/^hole\.[0-9]{10}\.[a-f0-9]{32}\.[a-f0-9]{64}$/.test(protocol)) return new Response('unauthorized', { status: 401 });
-      const broker = env.ROOMS.get(env.ROOMS.idFromName('$hole-panel-sessions'));
-      const check = await broker.fetch(new Request('https://panel-internal/__panel_session', { method: 'POST', body: JSON.stringify({ session: protocol, password: env.PASSWORD }) }));
-      if (!check.ok) return new Response('unauthorized', { status: 401 });
-      const room = url.searchParams.get('room');
-      if (!room || room.length > 128) return new Response('room is required', { status: 400 });
-      return env.ROOMS.get(env.ROOMS.idFromName(room)).fetch(request);
-    }
+    const panelResponse = await handlePanel(request, env, passwordMatches);
+    if (panelResponse) return panelResponse;
 
     if (url.pathname !== ROOM_PATH) {
       return new Response("Not found", { status: 404 });
@@ -54,6 +31,7 @@ export default {
     if (!room || room.length > 128) {
       return new Response("room is required", { status: 400 });
     }
+    if (room === PANEL_SESSION_NAME) return new Response('reserved room name', { status: 400 });
 
     const id = env.ROOMS.idFromName(room);
     return env.ROOMS.get(id).fetch(request);
@@ -96,6 +74,7 @@ async function passwordMatches(password, expected) {
 export class Room {
   constructor(state, env = {}) {
     this.state = state;
+    this.env = env;
     this.ice = new RoomICE(this, state, env);
     this.members = new Map();
     this.registered = new Map();
@@ -108,18 +87,21 @@ export class Room {
 
   async fetch(request) {
     if (new URL(request.url).pathname === '/__panel_session' && request.method === 'POST') {
+      this.panelSessions ||= new PanelSessions(this.state, this.env);
+      return this.panelSessions.fetch(request);
+    }
+    if (new URL(request.url).pathname === '/__panel_room' && request.method === 'POST') {
       const data = await request.json();
-      if (!this.panelKeyPromise) this.panelKeyPromise = (async () => {
-        let key = await this.state.storage.get('panel_session_key');
-        if (!key) {
-          key = [...crypto.getRandomValues(new Uint8Array(32))].map(n => n.toString(16).padStart(2, '0')).join('');
-          await this.state.storage.put('panel_session_key', key);
-        }
-        return key;
-      })();
-      const key = await this.panelKeyPromise;
-      if (data.issue === true) return Response.json({ session: await panelSession(key, data.password) }, { headers: { 'Cache-Control': 'no-store' } });
-      return new Response(null, { status: await validPanelSession(data.session, key, data.password) ? 204 : 401 });
+      if (typeof data.revoke === 'string') {
+        for (const ws of this.state.getWebSockets()) if (panelAttachment(ws) && ws.deserializeAttachment().session === data.revoke) ws.close(1008, 'panel session ended');
+        return new Response(null, { status: 204 });
+      }
+      await this.loadState();
+      if (typeof data.proof === 'string') {
+        return new Response(null, { status: await validPanelRoomProof(await this.panelRoomKey(), new URL(request.url).searchParams.get('room'), this.roomToken, data.proof) ? 204 : 403 });
+      }
+      if (this.roomToken === null || !await passwordMatches(data.token, this.roomToken)) return new Response(null, { status: 403 });
+      return Response.json({ proof: await panelRoomProof(await this.panelRoomKey(), new URL(request.url).searchParams.get('room'), this.roomToken) });
     }
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket upgrade required", { status: 426 });
@@ -129,14 +111,22 @@ export class Room {
     await this.ice.setRoomName(new URL(request.url).searchParams.get("room"));
     const isPanel = new URL(request.url).pathname !== ROOM_PATH;
     if (isPanel && this.state.getWebSockets().filter(ws => panelAttachment(ws)).length >= 32) return new Response('too many viewers', { status: 429 });
+    const proof = request.headers.get('X-Hole-Panel-Proof');
+    const expires = Number(request.headers.get('X-Hole-Panel-Expires'));
+    if (isPanel && (!Number.isFinite(expires) || expires <= Date.now() || !await validPanelRoomProof(await this.panelRoomKey(), this.ice.roomName, this.roomToken, proof))) return new Response(null, { status: 403 });
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     // acceptWebSocket 而非 ws.accept()：socket 关联到 DO 并允许休眠，
     // 空闲时实例被逐出内存但连接不断。
     this.state.acceptWebSocket(server);
-    if (isPanel) server.serializeAttachment({ panel: 'pending' });
-    return new Response(null, { status: 101, webSocket: client, ...(isPanel ? { headers: { 'Sec-WebSocket-Protocol': request.headers.get('Sec-WebSocket-Protocol') } } : {}) });
+    if (isPanel) server.serializeAttachment({ panel: 'authorized', session: request.headers.get('X-Hole-Panel-Session'), expires });
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  panelRoomKey() {
+    this.panelRoomKeyPromise ||= storedPanelKey(this.state.storage, 'panel_room_key').catch(error => { this.panelRoomKeyPromise = null; throw error; });
+    return this.panelRoomKeyPromise;
   }
 
   // loadState 从 storage 重建休眠期间丢失的内存状态。
@@ -182,6 +172,11 @@ export class Room {
   }
 
   async alarm() {
+    if (await this.state.storage.get('panel_session_key')) {
+      this.panelSessions ||= new PanelSessions(this.state, this.env);
+      await this.panelSessions.alarm();
+      return;
+    }
     await this.loadState();
     await this.ice.expireOffline();
     await this.pruneMembers();
@@ -207,8 +202,10 @@ export class Room {
     if (!message || typeof message !== "object" || typeof message.type !== "string") { sendError(ws, "invalid_json", "message must be an object with a type"); return; }
     const panel = panelAttachment(ws);
     if (panel) {
-      if (panel === 'pending' && message.type === 'watch' && typeof message.token === 'string' && this.roomToken !== null && message.token === this.roomToken) {
-        ws.serializeAttachment({ panel: 'watching' });
+      const attachment = ws.deserializeAttachment();
+      const authorized = panel === 'authorized' && attachment.expires > Date.now();
+      if (message.type === 'watch' && (authorized || (panel === 'pending' && typeof message.token === 'string' && this.roomToken !== null && message.token === this.roomToken))) {
+        ws.serializeAttachment({ ...attachment, panel: 'watching' });
         send(ws, this.panelSnapshot());
       } else {
         sendError(ws, 'panel_auth_failed', '房间不存在或房间密码错误');
@@ -435,7 +432,12 @@ export class Room {
   }
 
   broadcastPanel() {
-    const watchers = this.state.getWebSockets().filter(ws => panelAttachment(ws) === 'watching');
+    const watchers = this.state.getWebSockets().filter(ws => {
+      if (!panelAttachment(ws)) return false;
+      const attachment = ws.deserializeAttachment();
+      if (attachment.expires !== undefined && attachment.expires <= Date.now()) { ws.close(1008, 'panel session expired'); return false; }
+      return attachment.panel === 'watching';
+    });
     if (!watchers.length) { this.panelLast = ''; return; }
     const snapshot = this.panelSnapshot(), serialized = JSON.stringify(snapshot);
     if (serialized === this.panelLast) return;

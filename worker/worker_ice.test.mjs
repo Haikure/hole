@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto, timingSafeEqual } from 'node:crypto';
 import worker, { Room } from './worker.js';
-import { panelPath, validPanelSession } from './worker_panel.mjs';
+import { panelPath, PANEL_SESSION_NAME } from './worker_panel.mjs';
+import { PANEL_PAGE } from './worker_panel_page.mjs';
+import { runInNewContext } from 'node:vm';
 import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, RELAY_POLICY, negotiateProfile, iceJoinFields, validateTurnResponse, relayPairs, validFixedEndpoint } from './worker_ice.mjs';
 import {HOLE_VERSION,deviceRelayPlan,validNATPlan,validPunch} from './worker_ice.mjs';
 import { roomSigningBytes } from './worker_room.mjs';
@@ -696,36 +698,234 @@ function fixture(){
  return{values,state,socket,counts};
 }
 
-test('panel authentication is same-origin and rejects invalid sessions before opening a room', async () => {
+function panelFixture() {
  Object.defineProperty(webcrypto.subtle, 'timingSafeEqual', { value: timingSafeEqual, configurable: true });
- let touches=0;
- const broker=new Room(fixture().state,{});
- const env={PASSWORD:'信令 password',ROOMS:{idFromName(name){return name},get(name){if(name==='$hole-panel-sessions')return broker;touches++;return {fetch:async()=>new Response('forwarded')}}}};
+ const brokerState=fixture(), roomState=fixture();
+ let broker,room,touches=0;
+ const env={PASSWORD:'信令 password',ROOMS:{idFromName:name=>name,get(name){if(name===PANEL_SESSION_NAME)return broker;touches++;return room;}}};
+ broker=new Room(brokerState.state,env);room=new Room(roomState.state,env);
+ const request=(action,body={},cookie='',origin='https://example.test',extra={})=>new Request('https://example.test/panel/'+action,{
+  method:action.startsWith('live')?'GET':'POST',headers:{Origin:origin,Cookie:cookie,...(action.startsWith('live')?{Upgrade:'websocket'}:{}),...extra},
+  ...(action.startsWith('live')?{}:{body:JSON.stringify(body)})});
+ const call=(...args)=>worker.fetch(request(...args),env);
+ return {env,call,request,brokerState,roomState,get touches(){return touches},get room(){return room},get broker(){return broker},
+  hibernate(){broker=new Room(brokerState.state,env);room=new Room(roomState.state,env)}};
+}
+
+test('panel sessions use protected cookies and require HTTPS, same origin and both passwords', async () => {
+ const f=panelFixture();
  assert.equal(panelPath(undefined),'/panel');
  assert.equal(panelPath('/custom/view'),'/custom/view');
  assert.equal(panelPath('/ws'),null);
  assert.equal(panelPath('off'),null);
- const auth=(origin,password)=>new Request('https://example.test/panel/auth',{method:'POST',headers:{Origin:origin},body:JSON.stringify({password})});
- assert.equal((await worker.fetch(auth('https://evil.test',env.PASSWORD),env)).status,403);
- assert.equal((await worker.fetch(auth('https://example.test','bad'),env)).status,401);
- const response=await worker.fetch(auth('https://example.test',env.PASSWORD),env);
+ assert.equal((await f.call('auth',{password:f.env.PASSWORD},'','https://evil.test')).status,403);
+ assert.equal((await worker.fetch(new Request('http://example.test/panel/auth',{method:'POST',headers:{Origin:'http://example.test'},body:JSON.stringify({password:f.env.PASSWORD})}),f.env)).status,403);
+ assert.equal((await f.call('auth',{password:'bad'})).status,401);
+ assert.equal((await f.call('auth',null)).status,400);
+ assert.equal((await f.call('auth',{password:'x'.repeat(8192)})).status,413);
+ assert.equal((await f.call('room',{room:'demo',token:'room-secret'})).status,401);
+ assert.equal((await f.call('live',{},'',undefined,{'X-Hole-Panel-Proof':'forged'})).status,401);
+ const reserved=new Request('https://example.test/ws?room='+encodeURIComponent(PANEL_SESSION_NAME),{headers:{Authorization:'Bearer password',Upgrade:'websocket'}});
+ assert.equal((await worker.fetch(reserved,{...f.env,PASSWORD:'password'})).status,400);
+ assert.equal(f.touches,0);
+ const response=await f.call('auth',{password:f.env.PASSWORD});
  assert.equal(response.status,200);
- const {session}=await response.json();
- assert.equal(await validPanelSession(session,env.PASSWORD),false);
- assert.equal(await validPanelSession(session,'other'),false);
- assert.equal(await validPanelSession(session.slice(0,-1)+'x',env.PASSWORD),false);
- const live=(origin,protocol)=>new Request('https://example.test/panel/live?room=demo',{headers:{Origin:origin,Upgrade:'websocket','Sec-WebSocket-Protocol':protocol}});
- assert.equal((await worker.fetch(live('https://evil.test',session),env)).status,403);
- assert.equal((await worker.fetch(live('https://example.test','bad'),env)).status,401);
- assert.equal(touches,0);
- assert.equal((await worker.fetch(live('https://example.test',session),env)).status,200);
- assert.equal(touches,1);
- assert.equal((await worker.fetch(live('https://example.test',session),{...env,PASSWORD:'changed'})).status,401);
- const original=Date.now;
- try { Date.now=()=>original()+601000; assert.equal((await worker.fetch(live('https://example.test',session),env)).status,401); }
- finally { Date.now=original; }
+ const setCookie=response.headers.get('Set-Cookie'),cookie=setCookie.split(';')[0];
+ assert.match(setCookie,/^__Host-hole-panel=[a-f0-9]{64}; Path=\/; Secure; HttpOnly; SameSite=Strict$/);
+ assert.equal(response.headers.get('Cache-Control'),'no-store');
+ assert.deepEqual(Object.keys(await response.json()).sort(),['expires','room']);
+ assert.equal((await f.call('live',{},cookie)).status,409);
+ assert.equal((await f.call('room',{room:PANEL_SESSION_NAME,token:'room-secret'},cookie)).status,400);
+ assert.equal(f.touches,0);
+ assert.equal((await f.call('room',{room:'demo',token:'room-secret'},cookie)).status,403);
+ assert.equal(f.roomState.values.has('token'),false);
+ await f.room.webSocketMessage(f.roomState.socket(),JSON.stringify(join('alpha')));
+ assert.equal((await f.call('room',{room:'demo',token:'wrong'},cookie)).status,403);
+ assert.equal((await f.call('room',{room:'demo',token:'room-secret'},cookie)).status,200);
+ f.hibernate();
+ const restored=await f.call('session',{},cookie);
+ assert.equal((await restored.json()).room,'demo');
+ assert.equal(restored.headers.get('Set-Cookie'),null);
+ const stored=JSON.stringify([...f.brokerState.values]);
+ for(const secret of [f.env.PASSWORD,'room-secret',cookie.split('=')[1]]) assert.equal(stored.includes(secret),false);
+ assert.equal((await f.call('live?room=other',{},cookie)).status,403);
+ assert.equal((await f.call('session',{},cookie,'https://evil.test')).status,403);
+ assert.equal((await f.call('logout',{},cookie,'https://evil.test')).status,403);
+ assert.equal((await f.call('session',{},cookie+'; '+cookie)).status,401);
+ assert.equal((await worker.fetch(f.request('session',{},cookie),{...f.env,PASSWORD:'changed'})).status,401);
+ assert.equal((await worker.fetch(f.request('session',{},cookie),{...f.env,PASSWORD:''})).status,401);
+ const custom=new Request('https://example.test/custom/view/session',{method:'POST',headers:{Origin:'https://example.test',Cookie:cookie}});
+ assert.equal((await worker.fetch(custom,{...f.env,PANEL_PATH:'/custom/view'})).status,401);
  assert.equal((await worker.fetch(new Request('https://example.test/panel'),{PANEL_PATH:'off'})).status,404);
  assert.equal((await worker.fetch(new Request('https://example.test/custom/view'),{PANEL_PATH:'/custom/view'})).status,200);
+});
+
+test('panel lifetime is fixed, optional persistence lasts seven days and expired records are collected',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ const f=panelFixture();
+ for(const remember of [false,true]) {
+  const response=await f.call('auth',{password:f.env.PASSWORD,remember});
+  const setCookie=response.headers.get('Set-Cookie'),cookie=setCookie.split(';')[0];
+  const {expires}=await response.json();
+  assert.equal(expires-now,(remember?7*24:12)*3600_000);
+  assert.equal(setCookie.includes('Max-Age=604800'),remember);
+  now=expires-1;
+  assert.equal((await (await f.call('session',{},cookie)).json()).expires,expires);
+  now=expires;
+  assert.equal((await f.call('session',{},cookie)).status,401);
+  f.hibernate();await f.broker.alarm();
+  assert.equal([...f.brokerState.values.keys()].filter(k=>k.startsWith('panel_browser:')).length,0);
+  assert.equal(await f.brokerState.state.storage.getAlarm(),null);
+ }
+});
+
+test('panel room grants survive hibernation, enforce expiry, and logout revokes every tab',async t=>{
+ const NativeResponse=Response;
+ t.mock.method(globalThis,'Response',class extends NativeResponse {
+  constructor(body,init={}) {super(body,init.status===101?{...init,status:200}:init);if(init.status===101)Object.defineProperty(this,'status',{value:101});this.webSocket=init.webSocket;}
+ });
+ const f=panelFixture();
+ // Use the production upgrade and watch flow with only the runtime socket pair stubbed.
+ const pairDescriptor=Object.getOwnPropertyDescriptor(globalThis,'WebSocketPair');
+ Object.defineProperty(globalThis,'WebSocketPair',{value:class {constructor(){this[0]={};this[1]=f.roomState.socket();}},configurable:true});
+ t.after(()=>{if(pairDescriptor)Object.defineProperty(globalThis,'WebSocketPair',pairDescriptor);else delete globalThis.WebSocketPair;});
+ f.roomState.state.acceptWebSocket=()=>{};
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ await f.room.webSocketMessage(f.roomState.socket(),JSON.stringify(join('alpha')));
+ async function login() {return (await f.call('auth',{password:f.env.PASSWORD,remember:true})).headers.get('Set-Cookie').split(';')[0];}
+ async function watch(cookie) {
+  assert.equal((await f.call('live',{},cookie,undefined,{'X-Hole-Panel-Proof':'forged','X-Hole-Panel-Expires':'9999999999999'})).status,101);
+  const ws=f.roomState.state.getWebSockets().at(-1);
+  await f.room.webSocketMessage(ws,JSON.stringify({type:'watch'}));
+  assert.equal(ws.messages.at(-1).type,'panel_snapshot');return ws;
+ }
+ const cookie=await login();
+ assert.equal((await f.call('room',{room:'demo',token:'room-secret'},cookie)).status,200);
+ const a=await watch(cookie),b=await watch(cookie);
+ f.hibernate();
+ f.room.roomToken='changed';f.room.loaded=true;
+ assert.equal((await f.call('live',{},cookie)).status,403);
+ assert.equal((await (await f.call('session',{},cookie)).json()).roomExpired,true);
+ f.hibernate();
+ let release,started;
+ const ready=new Promise(resolve=>{started=resolve}),fetchRoom=f.room.fetch.bind(f.room);
+ f.room.fetch=async request=>{
+  if(request.headers.has('Upgrade')) {started();await new Promise(resolve=>{release=resolve});}
+  return fetchRoom(request);
+ };
+ const lateUpgrade=f.call('live',{},cookie);await ready;
+ const logout=await f.call('logout',{},cookie);
+ release();assert.equal((await lateUpgrade).status,401);
+ f.room.fetch=fetchRoom;
+ assert.equal(f.roomState.state.getWebSockets().filter(ws=>ws.attachment?.panel).length,0);
+ assert.equal(logout.status,200);assert.match(logout.headers.get('Set-Cookie'),/Max-Age=0/);
+ assert.equal(a.closed,true);assert.equal(b.closed,true);
+ assert.equal((await f.call('session',{},cookie)).status,401);
+ assert.equal((await f.call('live',{},cookie)).status,401);
+ const next=await login();
+ await f.call('room',{room:'demo',token:'room-secret'},next);
+ const switched=await watch(next);
+ await f.call('room',{room:''},next);
+ assert.equal(switched.closed,true);
+ assert.equal((await (await f.call('session',{},next)).json()).room,'');
+ assert.equal((await f.call('live',{},next)).status,409);
+ await f.call('room',{room:'demo',token:'room-secret'},next);
+ const expiring=await watch(next);
+ now=(await (await f.call('session',{},next)).json()).expires;
+ f.room.broadcastPanel();assert.equal(expiring.closed,true);
+ const interrupted=await login();
+ await f.call('room',{room:'demo',token:'room-secret'},interrupted);
+ const retained=await watch(interrupted);
+ t.mock.method(f.room,'fetch',async()=>{throw new Error('room RPC unavailable')});
+ assert.equal((await f.call('logout',{},interrupted)).status,503);
+ assert.equal((await f.call('session',{},interrupted)).status,401);
+ assert.equal(retained.closed,false);
+ assert.ok(await f.brokerState.state.storage.getAlarm()<=now+30_000);
+ f.hibernate();await f.broker.alarm();
+ assert.equal(retained.closed,true);
+ assert.equal([...f.brokerState.values.keys()].filter(k=>k.startsWith('panel_browser:')).length,0);
+});
+
+test('panel reauthentication replaces old sessions and refuses unbounded retained sessions',async()=>{
+ const f=panelFixture();
+ const first=(await f.call('auth',{password:f.env.PASSWORD,remember:true})).headers.get('Set-Cookie').split(';')[0];
+ const second=await f.call('auth',{password:f.env.PASSWORD},first);
+ assert.equal(second.status,200);assert.equal(second.headers.get('Set-Cookie').includes('Max-Age='),false);
+ assert.equal((await f.call('session',{},first)).status,401);
+ for(let i=0;i<1024;i++) f.brokerState.values.set('panel_browser:fixture'+i,{expires:Date.now()+60_000});
+ assert.equal((await f.call('auth',{password:f.env.PASSWORD})).status,429);
+});
+
+// Execute the page's actual login/restore handlers; rendering and browser I/O
+// are substituted so these tests can exercise delayed replies deterministically.
+function panelPageFixture(fetcher) {
+ const elements=new Map(),events=new Map(),sockets=[],timers=new Map();let timerID=0;
+ const $=id=>{
+  if(!elements.has(id)) elements.set(id,{value:'',checked:false,disabled:false,hidden:false,dataset:{},handlers:{},
+   addEventListener(type,fn){this.handlers[type]=fn},removeAttribute(){},setAttribute(){},focus(){},reset(){}});
+  return elements.get(id);
+ };
+ const context={$,URL,AbortController,Date,JSON,Math,Promise,location:{pathname:'/panel',href:'https://example.test/panel',protocol:'https:'},
+  roomName:'',watching:false,expiryTimer:null,requestChain:Promise.resolve(),socket:null,retryTimer:null,connectionTimer:null,epoch:0,retryAttempt:0,snapshot:null,
+  fetch:fetcher,setTimeout(fn,delay){const id=++timerID;timers.set(id,{fn,delay});return id},clearTimeout(id){timers.delete(id)},
+  busy(id,value){$(id).disabled=value},screen(page){context.page=page},setState(){},hidePasswords(){},
+  resetGraph(){context.snapshot=null},render(data){context.snapshot=data},addEventListener(type,fn){events.set(type,fn)},
+  WebSocket:class {constructor(...args){this.args=args;this.sent=[];sockets.push(this)}close(){this.closed=true}send(data){this.sent.push(JSON.parse(data))}}};
+ const script=PANEL_PAGE.match(/<script>([\s\S]*?)<\/script>/)[1];
+ new Function(script); // Also parse the complete inline script, not only its handlers.
+ runInNewContext(script.slice(script.indexOf('  function api('),script.lastIndexOf('})();')),context);
+ const settle=async()=>{await context.requestChain;await new Promise(resolve=>setImmediate(resolve));};
+ const submit=id=>$(id).handlers.submit({preventDefault(){}});
+ return {$,events,sockets,timers,context,settle,submit};
+}
+
+test('panel page restores the room without secrets and pagehide preserves the server session',async()=>{
+ const f=panelFixture();let cookie='';const requests=[];
+ const fetcher=async(path,options)=>{
+  const action=path.split('/').at(-1),body=JSON.parse(options.body);requests.push({action,body});
+  const response=await f.call(action,body,cookie),setCookie=response.headers.get('Set-Cookie');
+  if(setCookie)cookie=setCookie.split(';')[0];return response;
+ };
+ const page=panelPageFixture(fetcher);await page.settle();
+ assert.equal(page.context.page,'auth');
+ page.$('password').value=f.env.PASSWORD;page.$('remember').checked=true;
+ await page.submit('authForm');assert.equal(page.context.page,'room');assert.equal(page.$('password').value,'');
+ await f.room.webSocketMessage(f.roomState.socket(),JSON.stringify(join('alpha')));
+ page.$('roomId').value='demo';page.$('token').value='room-secret';
+ await page.submit('roomForm');assert.equal(page.$('token').value,'');assert.equal(page.sockets.length,1);
+ page.sockets[0].onopen();assert.deepEqual(page.sockets[0].sent,[{type:'watch'}]);
+ assert.equal(page.sockets[0].args.length,1);assert.equal(String(page.sockets[0].args[0]),'wss://example.test/panel/live');
+ page.events.get('pagehide')();assert.equal(page.sockets[0].closed,true);
+ assert.equal(requests.some(r=>r.action==='logout'),false);
+ const reopened=panelPageFixture(fetcher);await reopened.settle();
+ assert.equal(reopened.context.roomName,'demo');assert.equal(reopened.sockets.length,1);
+ assert.equal(requests.filter(r=>r.action==='auth').length,1);assert.equal(requests.filter(r=>r.action==='room').length,1);
+ reopened.events.get('pagehide')();reopened.events.get('pageshow')({persisted:true});await reopened.settle();
+ assert.equal(reopened.sockets.length,2);
+ await reopened.$('logout').handlers.click();assert.equal(reopened.context.page,'auth');
+ assert.equal((await f.call('session',{},cookie)).status,401);
+});
+
+test('panel page serializes logout after a delayed login and reports a failed logout',async()=>{
+ let release;const requests=[];
+ const page=panelPageFixture(async(path)=>{
+  const action=path.split('/').at(-1);requests.push(action);
+  if(action==='session')return new Response(null,{status:401});
+  if(action==='auth')await new Promise(resolve=>{release=resolve});
+  return Response.json({room:'',expires:Date.now()+3600_000});
+ });
+ await page.settle();page.$('password').value='password';
+ const login=page.submit('authForm');await new Promise(resolve=>setImmediate(resolve));
+ const logout=page.$('logout').handlers.click();release();await login;await logout;
+ assert.deepEqual(requests,['session','auth','logout']);assert.equal(page.context.page,'auth');
+ assert.equal(page.sockets.length,0);
+ const offline=panelPageFixture(async(path)=>{
+  if(path.endsWith('/logout'))throw new Error('offline');
+  return Response.json({room:'',expires:Date.now()+3600_000});
+ });
+ await offline.settle();await offline.$('logout').handlers.click();
+ assert.equal(offline.context.page,'room');assert.match(offline.$('roomError').textContent,/退出未完成/);
+ assert.equal(offline.$('logout').disabled,false);
 });
 
 test('panel watches only an existing authenticated room and receives event-driven state across hibernation', async () => {

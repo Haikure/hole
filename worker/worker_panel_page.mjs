@@ -380,8 +380,10 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
           <h2>验证信令密码</h2><p class="form-caption">使用部署 Worker 时设置的信令密码。</p>
           <label class="field-label" for="password">信令密码</label>
           <div class="input-wrap"><svg class="icon"><use href="#i-key"/></svg><input id="password" name="password" type="password" placeholder="输入信令密码" autocomplete="current-password" aria-describedby="authError" required><button class="password-toggle" type="button" data-password="password" aria-label="显示信令密码" aria-pressed="false"><svg class="icon"><use href="#i-eye"/></svg></button></div>
+          <label class="form-foot"><input id="remember" name="remember" type="checkbox">在此设备保持登录 7 天（仅限个人设备）</label>
           <button class="primary-button" id="authSubmit" type="submit"><span>验证并继续</span><svg class="icon"><use href="#i-arrow"/></svg></button>
-          <p class="form-error" id="authError" role="alert"></p><p class="form-foot"><svg class="icon"><use href="#i-lock"/></svg>凭据仅用于当前页面，关闭后清除。</p>
+          <p class="form-error" id="authError" role="alert"></p><p class="form-foot"><svg class="icon"><use href="#i-lock"/></svg>刷新可恢复登录；不在浏览器中保存密码。退出可清除登录状态。</p>
+          <button class="text-button" id="restoreRetry" type="button" hidden>重试恢复登录</button>
         </form>
         <form id="roomForm" hidden>
           <div class="form-symbol"><svg class="icon"><use href="#i-room"/></svg></div>
@@ -432,7 +434,8 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
   const pairKey = (a, b) => 'pair:' + JSON.stringify([a, b].sort());
   const nodes = new Map(), edges = new Map();
   let snapshot = null, selected = null, returnFocus = null, layer = 'all', feed = [];
-  let secret = '', session = '', roomName = '', roomToken = '', watching = false;
+  let roomName = '', watching = false, expiryTimer = null;
+  let requestChain = Promise.resolve();
   let socket = null, retryTimer = null, connectionTimer = null, epoch = 0, retryAttempt = 0;
   let frame = 0, world = { width: 1000, height: 600 }, camera = { x: 0, y: 0, scale: 1 }, manualCamera = false;
   let suppressClickUntil = 0, dragging = false;
@@ -1010,15 +1013,21 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     syncSheet();
   }
 
-  async function authenticate(password) {
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
-    try {
-      const response = await fetch(location.pathname + '/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }), signal: controller.signal });
-      if (!response.ok) { const error = new Error('authentication failed'); error.status = response.status; throw error; }
-      const data = await response.json();
-      if (typeof data.session !== 'string' || !data.session) throw new Error('missing session');
-      return data.session;
-    } finally { clearTimeout(timer); }
+  function api(path, body = {}) {
+    const next = requestChain.then(async () => {
+      const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 12000);
+      try {
+        const response = await fetch(location.pathname + '/' + path, { method: 'POST', credentials: 'same-origin', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+        if (!response.ok) { const error = new Error('request failed'); error.status = response.status; throw error; }
+        return await response.json();
+      } finally { clearTimeout(timer); }
+    });
+    requestChain = next.catch(() => {});
+    return next;
+  }
+  function sessionExpiry(expires) {
+    clearTimeout(expiryTimer);
+    expiryTimer = setTimeout(expired, Math.max(0, expires - Date.now()));
   }
   function stopWatching() {
     epoch++; watching = false; clearTimeout(retryTimer); clearTimeout(connectionTimer); retryTimer = null; connectionTimer = null;
@@ -1026,19 +1035,38 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     if (previous) previous.close();
     busy('roomSubmit', false);
   }
-  function logout(focus = true) {
-    stopWatching(); secret = ''; session = ''; roomToken = ''; roomName = ''; retryAttempt = 0;
+  function resetLogin(focus = true) {
+    stopWatching(); clearTimeout(expiryTimer); roomName = ''; retryAttempt = 0;
     $('authForm').reset(); $('roomForm').reset(); $('authError').textContent = ''; $('roomError').textContent = '';
     $('password').removeAttribute('aria-invalid'); $('token').removeAttribute('aria-invalid');
     hidePasswords(); resetGraph(); screen('auth'); setState('尚未连接');
     busy('authSubmit', false);
+    $('restoreRetry').hidden = true;
     if (focus) $('password').focus({ preventScroll: true });
   }
+  async function logout() {
+    stopWatching();
+    const currentEpoch = epoch;
+    $('logout').disabled = true; $('backToAuth').disabled = true;
+    busy('authSubmit', true, '正在退出…'); busy('roomSubmit', true, '正在退出…');
+    try {
+      await api('logout');
+      if (epoch === currentEpoch) resetLogin();
+    } catch (error) {
+      if (epoch !== currentEpoch) return;
+      if (error.status === 401) resetLogin();
+      else { screen('room'); $('roomError').textContent = '退出未完成，请检查网络后再次点击退出。'; setState('退出未完成', 'error'); }
+    } finally {
+      $('logout').disabled = false; $('backToAuth').disabled = false;
+      busy('authSubmit', false); busy('roomSubmit', false);
+    }
+  }
   function expired() {
-    logout(); $('authError').textContent = '信令验证已失效，请重新输入密码。';
+    resetLogin(); $('authError').textContent = '登录已过期或失效，请重新输入密码。';
   }
   function roomFailed(message, invalid = false) {
-    stopWatching(); roomToken = ''; resetGraph(); screen('room'); setState('未连接', 'error');
+    stopWatching(); resetGraph(); screen('room'); setState('未连接', 'error');
+    $('roomId').value = roomName;
     $('roomError').textContent = message;
     $('token').setAttribute('aria-invalid', String(invalid)); $('token').focus({ preventScroll: true });
   }
@@ -1053,9 +1081,12 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
   async function refreshAndConnect() {
     const currentEpoch = epoch;
     try {
-      const nextSession = await authenticate(secret);
+      const session = await api('session');
       if (!watching || epoch !== currentEpoch) return;
-      session = nextSession; connect();
+      sessionExpiry(session.expires);
+      if (!session.room) { roomFailed(session.roomExpired ? '房间验证已失效，请重新输入房间密码。' : '请选择房间并输入房间密码。'); return; }
+      if (roomName !== session.room) resetGraph();
+      roomName = session.room; connect();
     } catch (error) {
       if (!watching || epoch !== currentEpoch) return;
       if (error.status === 401 || error.status === 403) expired();
@@ -1068,9 +1099,8 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     setState(snapshot ? '正在重新连接' : '正在连接房间', 'busy');
     const url = new URL(location.pathname + '/live', location.href);
     url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    url.searchParams.set('room', roomName);
     let current;
-    try { current = new WebSocket(url, session); }
+    try { current = new WebSocket(url); }
     catch { if (snapshot) scheduleRetry(); else roomFailed('无法建立房间连接，请稍后重试。'); return; }
     socket = current;
     connectionTimer = setTimeout(() => {
@@ -1078,7 +1108,7 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
       if (snapshot) current.close();
       else roomFailed('房间连接超时，请检查网络后重试。');
     }, 12000);
-    current.onopen = () => { if (socket === current) current.send(JSON.stringify({ type: 'watch', token: roomToken })); };
+    current.onopen = () => { if (socket === current) current.send(JSON.stringify({ type: 'watch' })); };
     current.onmessage = event => {
       if (socket !== current) return;
       let data; try { data = JSON.parse(event.data); } catch { return; }
@@ -1101,11 +1131,13 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     if ($('authSubmit').disabled) return;
     $('authError').textContent = ''; $('password').removeAttribute('aria-invalid');
     busy('authSubmit', true, '正在验证…');
-    const currentEpoch = epoch, password = $('password').value;
+    const currentEpoch = epoch;
     try {
-      const nextSession = await authenticate(password);
+      const pending = api('auth', { password: $('password').value, remember: $('remember').checked });
+      $('password').value = ''; hidePasswords();
+      const session = await pending;
       if (epoch !== currentEpoch) return;
-      secret = password; session = nextSession; $('password').value = ''; hidePasswords();
+      sessionExpiry(session.expires); $('restoreRetry').hidden = true;
       screen('room'); setState('信令已验证', 'live'); $('roomId').focus({ preventScroll: true });
     } catch (error) {
       if (epoch !== currentEpoch) return;
@@ -1114,21 +1146,67 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
       $('password').setAttribute('aria-invalid', String(invalid));
     } finally { if (epoch === currentEpoch) busy('authSubmit', false); }
   });
-  $('roomForm').addEventListener('submit', event => {
+  $('roomForm').addEventListener('submit', async event => {
     event.preventDefault();
     if ($('roomSubmit').disabled) return;
     stopWatching(); resetGraph(); $('roomError').textContent = ''; $('token').removeAttribute('aria-invalid');
-    roomName = $('roomId').value; roomToken = $('token').value; $('token').value = ''; hidePasswords();
-    watching = true; retryAttempt = 0; busy('roomSubmit', true, '正在进入房间…');
-    setState('正在连接房间', 'busy'); refreshAndConnect();
+    roomName = $('roomId').value;
+    const currentEpoch = epoch;
+    busy('roomSubmit', true, '正在进入房间…'); setState('正在连接房间', 'busy');
+    try {
+      const pending = api('room', { room: $('roomId').value, token: $('token').value });
+      $('token').value = ''; hidePasswords();
+      const session = await pending;
+      if (epoch !== currentEpoch) return;
+      roomName = session.room; sessionExpiry(session.expires);
+      watching = true; retryAttempt = 0; connect();
+    } catch (error) {
+      if (epoch !== currentEpoch) return;
+      if (error.status === 401) expired();
+      else roomFailed(error.status === 403 ? '房间不存在或房间密码错误。' : '暂时无法进入房间，请稍后重试。', error.status === 403);
+    }
   });
-  $('switchRoom').addEventListener('click', () => {
-    stopWatching(); roomToken = ''; roomName = ''; resetGraph(); screen('room'); setState('信令已验证', 'live');
-    $('roomError').textContent = ''; $('token').value = ''; $('roomId').focus({ preventScroll: true });
+  $('switchRoom').addEventListener('click', async () => {
+    stopWatching(); resetGraph(); screen('room');
+    const currentEpoch = epoch;
+    busy('roomSubmit', true, '正在切换房间…'); $('roomError').textContent = ''; $('token').value = '';
+    try {
+      await api('room', { room: '' });
+      if (epoch !== currentEpoch) return;
+      roomName = ''; setState('信令已验证', 'live'); $('roomId').focus({ preventScroll: true });
+    } catch (error) {
+      if (epoch !== currentEpoch) return;
+      if (error.status === 401) expired();
+      else $('roomError').textContent = '切换未完成，请检查网络；重新打开时仍会恢复原房间。';
+    } finally { if (epoch === currentEpoch) busy('roomSubmit', false); }
   });
+  async function restore() {
+    resetLogin(false);
+    const currentEpoch = epoch;
+    busy('authSubmit', true, '正在恢复登录…'); setState('正在恢复登录', 'busy');
+    try {
+      const session = await api('session');
+      if (epoch !== currentEpoch) return;
+      sessionExpiry(session.expires); roomName = session.room;
+      if (roomName) { watching = true; connect(); }
+      else {
+        screen('room'); setState('信令已验证', 'live');
+        if (session.roomExpired) $('roomError').textContent = '房间验证已失效，请重新输入房间信息。';
+      }
+    } catch (error) {
+      if (epoch !== currentEpoch) return;
+      setState('尚未连接');
+      if (error.status !== 401) {
+        $('authError').textContent = '暂时无法恢复登录，请检查网络后重试。'; $('restoreRetry').hidden = false;
+      }
+    } finally { if (epoch === currentEpoch) busy('authSubmit', false); }
+  }
   $('backToAuth').addEventListener('click', () => logout());
   $('logout').addEventListener('click', () => logout());
-  addEventListener('pagehide', () => logout(false));
+  $('restoreRetry').addEventListener('click', restore);
+  addEventListener('pagehide', () => resetLogin(false));
+  addEventListener('pageshow', event => { if (event.persisted) restore(); });
+  restore();
 })();
 </script>
 </body>
