@@ -80,7 +80,7 @@ svg { display: block; flex-shrink: 0; }
 .auth-art::before { content: ""; position: absolute; inset: 15px 38px; background: radial-gradient(ellipse, var(--green-soft), transparent 70%); }
 .auth-wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; fill: none; stroke: var(--signal); stroke-width: 1.5; stroke-dasharray: 4 6; }
 .art-cloud { position: absolute; left: 50%; top: 26px; transform: translateX(-50%) rotate(-4deg); background: var(--surface); box-shadow: var(--lift); border-radius: 23px; padding: 22px 26px 18px; display: grid; justify-items: center; gap: 8px; }
-.cloud-icon { width: 57px; height: 37px; fill: none; stroke: none; }
+.cloud-icon { width: 57px; height: auto; aspect-ratio: 49 / 22; fill: none; stroke: none; }
 .art-cloud span { font-size: 9px; letter-spacing: 1.4px; color: var(--muted); font-weight: 650; }
 .art-device { position: absolute; top: 177px; width: 61px; height: 61px; border-radius: 20px; box-shadow: var(--lift); background: var(--surface); display: grid; place-items: center; color: var(--muted); }
 .art-device:nth-last-child(2) { left: 18%; transform: rotate(-8deg); }
@@ -143,6 +143,9 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
 .edge.signal .edge-line { stroke: var(--signal); stroke-width: 1.6; stroke-dasharray: 4 7; }
 .edge.pending .edge-line { stroke: var(--pending); stroke-dasharray: 8 6; }
 .edge.blocked .edge-line { stroke: var(--red); stroke-dasharray: 3 6; }
+.edge.turn:not(.pending):not(.blocked) .edge-line { stroke: #5d83c3; }
+.edge.hole:not(.pending):not(.blocked) .edge-line { stroke: #8265b7; }
+.edge.peer-relay:not(.pending):not(.blocked) .edge-line { stroke: #269b9b; }
 .edge-hit { fill: none; stroke: transparent; stroke-width: 19px; vector-effect: non-scaling-stroke; }
 .edge:hover .edge-line, .edge:focus-visible .edge-line, .edge.selected .edge-line { stroke-width: 3.5; }
 .edge.dim { opacity: .16; }
@@ -153,6 +156,18 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
 .graph-node.selected { background: var(--green-soft); box-shadow: var(--lift); z-index: 3; }
 .graph-node:focus-visible { background: var(--green-soft); box-shadow: var(--focus), var(--lift); }
 .graph-node.dim { opacity: .42; }
+.relay-node { border: 1px dashed var(--orange); }
+.relay-node .device-icon { color: var(--orange); background: var(--orange-soft); }
+.relay-node .node-status .status-dot { background: var(--orange); }
+.relay-node.relay-turn { border-color: #5d83c3; }
+.relay-node.relay-turn .device-icon { color: #5d83c3; background: #5d83c31c; }
+.relay-node.relay-turn .node-status .status-dot { background: #5d83c3; }
+.relay-node.relay-hole { border-color: #8265b7; }
+.relay-node.relay-hole .device-icon { color: #8265b7; background: #8265b71c; }
+.relay-node.relay-hole .node-status .status-dot { background: #8265b7; }
+.relay-node.relay-peer_relay { border-color: #269b9b; }
+.relay-node.relay-peer_relay .device-icon { color: #269b9b; background: #269b9b1c; }
+.relay-node.relay-peer_relay .node-status .status-dot { background: #269b9b; }
 .node-head { display: flex; align-items: center; gap: 10px; }
 .device-icon { width: 33px; height: 33px; border-radius: 11px; color: var(--green); background: var(--green-soft); display: grid; place-items: center; flex-shrink: 0; }
 .device-icon .icon { width: 20px; height: 20px; }
@@ -165,7 +180,7 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
 .node-foot span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .node-foot .icon { width: 12px; height: 12px; color: var(--green); }
 .cloud-node { width: 176px; padding: 20px 15px 17px; text-align: center; border-radius: 24px; }
-.cloud-node .cloud-icon { width: 66px; height: 42px; margin: 0 auto 10px; }
+.cloud-node .cloud-icon { width: 66px; margin: 0 auto 10px; }
 .cloud-name { font-size: 12px; font-weight: 650; }
 .cloud-caption { font-size: 10px; color: var(--muted); margin-top: 6px; }
 .cloud-node.selected { background: var(--orange-soft); box-shadow: var(--lift); }
@@ -179,6 +194,9 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
 .legend-line.signal { background: repeating-linear-gradient(90deg, var(--signal) 0 3px, transparent 3px 6px); }
 .legend-line.pending { background: repeating-linear-gradient(90deg, var(--pending) 0 6px, transparent 6px 10px); }
 .legend-line.blocked { background: repeating-linear-gradient(90deg, var(--red) 0 2px, transparent 2px 5px); }
+.legend-line.turn { background: #5d83c3; }
+.legend-line.hole { background: #8265b7; }
+.legend-line.peer-relay { background: #269b9b; }
 .map-hint { color: var(--subtle); font-size: 10px; white-space: nowrap; }
 .zoom-controls { position: absolute; bottom: 16px; left: 18px; display: flex; align-items: center; padding: 4px; gap: 1px; background: var(--surface); border-radius: 12px; box-shadow: var(--lift); z-index: 4; }
 .zoom-controls button { width: 33px; height: 33px; background: transparent; display: grid; place-items: center; border-radius: 9px; color: var(--muted); }
@@ -193,7 +211,7 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
 .close-details .icon { width: 15px; height: 15px; }
 .detail-symbol { width: 50px; height: 50px; border-radius: 17px; background: var(--green-soft); color: var(--green); display: grid; place-items: center; margin-bottom: 18px; }
 .detail-symbol.cloud { background: var(--orange-soft); }
-.detail-symbol .cloud-icon { width: 41px; height: 28px; }
+.detail-symbol .cloud-icon { width: 41px; }
 .detail-symbol .icon { width: 25px; height: 25px; }
 .detail-title { font-size: 21px; font-weight: 600; letter-spacing: -.5px; margin: 0 0 8px; overflow-wrap: anywhere; }
 .detail-caption { color: var(--muted); font-size: 11px; line-height: 1.8; margin: 0 0 22px; overflow-wrap: anywhere; }
@@ -302,7 +320,7 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
   .node-status { font-size: 8px; }
   .node-foot { font-size: 8px; margin-top: 9px; }
   .cloud-node { width: 152px; padding: 17px 12px 15px; border-radius: 21px; }
-  .cloud-node .cloud-icon { width: 54px; height: 35px; margin-bottom: 8px; }
+  .cloud-node .cloud-icon { width: 54px; margin-bottom: 8px; }
   .cloud-caption { font-size: 9px; }
   .panel-note { font-size: 9px; margin-top: 15px; }
   .inspector { border-radius: 23px; padding: 22px; }
@@ -320,7 +338,11 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
 <body>
 <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 <defs>
-  <symbol id="i-cloud" viewBox="0 0 64 40"><path fill="#f48120" d="M5 32a8 8 0 0 1 2-15 11 11 0 0 1 17-9 16 16 0 0 1 29 11l-5 13Z"/><path fill="#faae40" d="M35 32c0-7 5-12 12-12a12 12 0 0 1 11-8 12 12 0 0 1 11 15v5Z" transform="translate(-6 0)"/></symbol>
+  <!-- Cloudflare glyph from https://github.com/cloudflare/kumo/blob/main/packages/kumo/src/components/cloudflare-logo/cloudflare-logo.tsx -->
+  <symbol id="i-cloud" viewBox="0 0 49 22">
+    <path fill="#FF5E1F" d="M33.204 20.4C33.3649 19.9741 33.4217 19.5159 33.3695 19.0636C33.3173 18.6113 33.1577 18.1781 32.904 17.8C32.6435 17.4876 32.3239 17.2297 31.9636 17.0409C31.6032 16.8522 31.2092 16.7363 30.804 16.7L13.404 16.5C13.304 16.5 13.204 16.4 13.104 16.4C13.0808 16.3825 13.0618 16.3599 13.0488 16.3339C13.0358 16.3078 13.029 16.2791 13.029 16.25C13.029 16.2209 13.0358 16.1922 13.0488 16.1662C13.0618 16.1401 13.0808 16.1175 13.104 16.1C13.204 15.9 13.304 15.8 13.504 15.8L31.004 15.6C32.115 15.4767 33.1731 15.0597 34.0695 14.3918C34.9659 13.7239 35.6681 12.8293 36.104 11.8L37.104 9.20002C37.104 9.10002 37.204 9.00001 37.104 8.90001C36.5604 6.47843 35.2411 4.30052 33.3466 2.69721C31.4521 1.09391 29.086 0.152865 26.6079 0.0170769C24.1298 -0.118712 21.675 0.558179 19.6167 1.94489C17.5584 3.33161 16.009 5.35233 15.204 7.70002C14.159 6.95365 12.8843 6.59957 11.604 6.70002C10.4291 6.83102 9.33369 7.35777 8.49774 8.19372C7.66179 9.02966 7.13505 10.1251 7.00404 11.3C6.93745 11.9014 6.97125 12.5097 7.10404 13.1C5.20298 13.1526 3.39743 13.9448 2.07147 15.3081C0.745511 16.6714 0.00377461 18.4982 0.00403983 20.4C-0.0123708 20.7695 0.0212659 21.1395 0.104038 21.5C0.10863 21.5781 0.141713 21.6517 0.19701 21.707C0.252307 21.7623 0.325975 21.7954 0.404041 21.8H32.504C32.704 21.8 32.904 21.7 32.904 21.5L33.204 20.4Z"/>
+    <path fill="#FF9911" d="M38.704 9.20002H38.204C38.104 9.20002 38.004 9.30001 37.904 9.40001L37.204 11.8C37.0431 12.2259 36.9864 12.6841 37.0386 13.1364C37.0908 13.5887 37.2504 14.0219 37.504 14.4C37.7646 14.7124 38.0842 14.9704 38.4445 15.1591C38.8049 15.3479 39.1989 15.4637 39.604 15.5L43.304 15.7C43.404 15.7 43.504 15.8 43.604 15.8C43.6273 15.8175 43.6462 15.8401 43.6592 15.8662C43.6723 15.8922 43.679 15.9209 43.679 15.95C43.679 15.9791 43.6723 16.0078 43.6592 16.0339C43.6462 16.0599 43.6273 16.0826 43.604 16.1C43.504 16.3 43.404 16.4 43.204 16.4L39.404 16.6C38.293 16.7233 37.2349 17.1403 36.3386 17.8082C35.4422 18.4761 34.74 19.3707 34.304 20.4L34.104 21.3C34.004 21.4 34.104 21.6 34.304 21.6H47.504C47.5448 21.6058 47.5863 21.6021 47.6254 21.5891C47.6644 21.5761 47.6999 21.5541 47.729 21.525C47.7581 21.4959 47.7801 21.4604 47.7931 21.4214C47.8061 21.3823 47.8099 21.3408 47.804 21.3C48.0421 20.4527 48.1764 19.5797 48.204 18.7C48.1882 16.1854 47.1822 13.7782 45.404 12C43.6259 10.2218 41.2187 9.21587 38.704 9.20002Z"/>
+  </symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="9" r="4.5"/><path d="m11.5 12.5 8 8m-3-3 2-2m-5-1 2-2"/></symbol>
   <symbol id="i-room" viewBox="0 0 24 24"><path d="m3 7 9-4 9 4-9 4Z M3 7v10l9 4 9-4V7m-9 4v10"/></symbol>
@@ -408,7 +430,7 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
             <div class="zoom-controls" id="zoomControls" aria-label="画布缩放"><button type="button" id="zoomOut" aria-label="缩小" title="缩小"><svg class="icon"><use href="#i-minus"/></svg></button><span class="zoom-level" id="zoomLevel">100%</span><button type="button" id="zoomIn" aria-label="放大" title="放大"><svg class="icon"><use href="#i-plus"/></svg></button><button type="button" id="fitGraph" aria-label="居中显示" title="居中显示"><svg class="icon"><use href="#i-fit"/></svg></button></div>
             <div class="map-tooltip" id="tooltip" role="tooltip" hidden></div>
           </div>
-          <div class="map-bottom"><div class="legend"><span><i class="legend-line"></i>已连接</span><span><i class="legend-line pending"></i>协商中</span><span><i class="legend-line signal"></i>信令连接</span><span><i class="legend-line blocked"></i>受阻</span></div><span class="map-hint">拖动探索 · 点选查看详情</span></div>
+          <div class="map-bottom"><div class="legend"><span><i class="legend-line"></i>直连</span><span><i class="legend-line turn"></i>TURN</span><span><i class="legend-line hole"></i>Hole</span><span><i class="legend-line peer-relay"></i>节点中继</span><span><i class="legend-line pending"></i>协商中</span><span><i class="legend-line signal"></i>信令</span><span><i class="legend-line blocked"></i>受阻</span></div><span class="map-hint">拖动探索 · 点选查看详情</span></div>
         </section>
         <div>
           <aside class="inspector" id="inspector" role="region" aria-label="房间详情" tabindex="-1"><div class="inspector-header"><h2 id="detailLabel">房间一览</h2><button class="icon-button close-details" id="closeDetails" type="button" aria-label="关闭详情" title="关闭详情" hidden><svg class="icon"><use href="#i-close"/></svg></button></div><div class="inspector-content" id="detailContent"></div></aside>
@@ -581,24 +603,62 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     return index >= 0 ? '分组 ' + (index + 1) : '未分组';
   }
   function edgeLabel(edge) {
-    return edge.kind === 'signal' ? '信令直连' : edge.record ? phase(edge.record) : '房间图已确认';
+    if (edge.kind === 'signal') return '信令直连';
+    if (!edge.record) return '房间图已确认';
+    const route = edge.route;
+    if (route?.kind === 'turn') return 'TURN 中继 · ' + phase(edge.record);
+    if (route?.kind === 'hole') return 'Hole 中继 · ' + phase(edge.record);
+    if (route?.kind === 'peer_relay') return '节点中继 · ' + phase(edge.record);
+    return phase(edge.record);
+  }
+  function routeLabel(route) {
+    return route?.kind === 'turn' ? 'TURN 中继' : route?.kind === 'hole' ? 'Hole 中继' : route?.kind === 'peer_relay' ? '节点中继' : '直连';
+  }
+  function edgeCount(edgesToCount) {
+    return new Set(edgesToCount.map(edge => edge.logicalId || edge.id)).size;
+  }
+  function logicalConnections(edgesToFilter, predicate) {
+    const unique = new Map();
+    for (const edge of edgesToFilter) if (predicate(edge)) unique.set(edge.logicalId || edge.id, edge);
+    return [...unique.values()];
+  }
+  function edgePeerLabel(edge, member) {
+    if (member === edge.a) return edge.b + (edge.route ? ' · ' + routeLabel(edge.route) : '');
+    if (member === edge.b) return edge.a + (edge.route ? ' · ' + routeLabel(edge.route) : '');
+    return edge.a + ' ↔ ' + edge.b;
   }
   function buildEdges(data) {
     const next = new Map(), visible = new Set(data.members.map(member => member.device_name));
     for (const link of data.links) {
       if (!visible.has(link.from) || !visible.has(link.to)) continue;
       const id = pairKey(link.from, link.to);
-      next.set(id, { id, kind: 'transport', from: deviceKey(link.from), to: deviceKey(link.to), a: link.from, b: link.to, graphConfirmed: true, confirmed: true });
+      next.set(id, { id, logicalId: id, kind: 'transport', from: deviceKey(link.from), to: deviceKey(link.to), a: link.from, b: link.to, participants: [link.from, link.to], graphConfirmed: true, confirmed: true });
     }
     for (const record of data.transports) {
       if (!visible.has(record.a) || !visible.has(record.b)) continue;
-      const id = pairKey(record.a, record.b), graphConfirmed = next.get(id)?.graphConfirmed === true;
-      next.set(id, { id, kind: 'transport', from: deviceKey(record.a), to: deviceKey(record.b), a: record.a, b: record.b, record, graphConfirmed,
-        confirmed: !record.blocked && (graphConfirmed || (record.established?.length === 2 && record.established.every(Boolean))) });
+      const logicalId = pairKey(record.a, record.b), graphConfirmed = next.get(logicalId)?.graphConfirmed === true;
+      const confirmed = !record.blocked && (graphConfirmed || (record.established?.length === 2 && record.established.every(Boolean)));
+      const route = record.route;
+      if (!route) {
+        next.set(logicalId, { id: logicalId, logicalId, kind: 'transport', from: deviceKey(record.a), to: deviceKey(record.b), a: record.a, b: record.b, participants: [record.a, record.b], record, graphConfirmed, confirmed });
+        continue;
+      }
+      next.delete(logicalId);
+      const relayName = route.kind === 'turn' ? 'TURN 中继' : route.device;
+      const relayId = route.kind === 'turn' ? 'relay:turn:' + (record.id || logicalId) : deviceKey(relayName);
+      const relayNode = route.kind === 'turn' ? { kind: 'relay', node_id: relayId, device_name: relayName, relayKind: route.kind } :
+        visible.has(relayName) ? null : { kind: 'relay', node_id: relayId, device_name: relayName, relayKind: route.kind, synthetic: true };
+      const segments = [[record.a, relayName], [relayName, record.b]];
+      for (const [index, [fromName, toName]] of segments.entries()) {
+        const id = 'transport:' + (record.id || logicalId) + ':segment:' + index;
+        next.set(id, { id, logicalId, kind: 'transport', route, relayNode, from: index === 0 ? deviceKey(record.a) : relayId,
+          to: index === 0 ? relayId : deviceKey(record.b), a: record.a, b: record.b,
+          participants: [record.a, record.b, relayName], record, graphConfirmed, confirmed });
+      }
     }
     for (const member of data.members) if (member.signal_online) {
       const id = 'signal:' + member.device_name;
-      next.set(id, { id, kind: 'signal', from: deviceKey(member.device_name), to: CLOUD, a: member.device_name, b: 'Cloudflare', confirmed: true });
+      next.set(id, { id, kind: 'signal', from: deviceKey(member.device_name), to: CLOUD, a: member.device_name, b: 'Cloudflare', participants: [member.device_name, 'Cloudflare'], confirmed: true });
     }
     return next;
   }
@@ -640,8 +700,8 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     if (!selected) {
       $('detailLabel').textContent = '房间一览';
       detailIntro(parent, 'room', '房间连接', '选择设备或连线，查看详情。');
-      rows(parent, [['可见设备', snapshot.members.length + ' 台'], ['信令直连', online.length + ' 台'], ['已确认连接', connections.filter(edge => edge.confirmed).length + ' 条'], ['连通分组', snapshot.groups.length + ' 组']]);
-      parent.append(element('p', 'detail-note', '绿色实线表示设备已连接，灰色虚线表示协商中，红色虚线表示受阻。橙色虚线只连接 Cloudflare，表示信令连接。'));
+      rows(parent, [['可见设备', snapshot.members.length + ' 台'], ['信令直连', online.length + ' 台'], ['已确认连接', edgeCount(connections.filter(edge => edge.confirmed)) + ' 条'], ['连通分组', snapshot.groups.length + ' 组']]);
+      parent.append(element('p', 'detail-note', '绿色表示直连，蓝色表示 TURN，紫色表示 Hole，青色表示节点中继。灰色虚线表示协商中，红色虚线表示受阻，橙色虚线表示信令。'));
     } else if (selected.type === 'node' && selected.id === CLOUD) {
       $('detailLabel').textContent = '信令服务';
       detailIntro(parent, 'cloud', 'Cloudflare', 'Worker 负责房间协调，业务数据由设备之间的路径传输。');
@@ -652,27 +712,39 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     } else if (selected.type === 'node') {
       const member = nodes.get(selected.id)?.data;
       if (!member) { choose(null); return; }
+      if (member.kind === 'relay') {
+        const related = logicalConnections(connections, edge => edge.from === selected.id || edge.to === selected.id);
+        $('detailLabel').textContent = '中继节点';
+        detailIntro(parent, 'server', member.device_name, routeLabel({ kind: member.relayKind }));
+        const status = related.some(edge => edge.record?.blocked) ? 'blocked' : related.length && related.every(edge => edge.confirmed) ? '' : 'pending';
+        badge(parent, related[0] ? edgeLabel(related[0]) : routeLabel({ kind: member.relayKind }), status);
+        rows(parent, [['承载连接', edgeCount(related) + ' 条'], ['节点类型', member.relayKind === 'turn' ? '独立 TURN 服务' : '房间设备']]);
+        parent.append(element('p', 'detail-note', member.relayKind === 'turn' ? '这是当前传输专用的 TURN 逻辑节点。业务数据经 TURN 服务转发。' : '业务数据经这个房间设备转发，图中两段线属于同一条端到端传输。'));
+        for (const edge of related) peerButton(parent, edge.a + ' ↔ ' + edge.b, edgeLabel(edge), { type: 'edge', id: edge.id });
+        syncSheet();
+        return;
+      }
       $('detailLabel').textContent = '设备详情';
       detailIntro(parent, deviceIcon(member.device_name), member.device_name, groupLabel(member));
       badge(parent, signalLabel(member), member.signal_recovering ? 'pending' : '');
-      const related = connections.filter(edge => edge.a === member.device_name || edge.b === member.device_name);
-      rows(parent, [['核心版本', member.core_version || '未上报'], ['语音', member.voice ? '已启用' : '未启用'], ['已确认路径', related.filter(edge => edge.confirmed).length + ' 条'], ['分组标识', member.group_id || '未上报']]);
+      const related = logicalConnections(connections, edge => (edge.participants || [edge.a, edge.b]).includes(member.device_name));
+      rows(parent, [['核心版本', member.core_version || '未上报'], ['语音', member.voice ? '已启用' : '未启用'], ['已确认路径', edgeCount(related.filter(edge => edge.confirmed)) + ' 条'], ['分组标识', member.group_id || '未上报']]);
       parent.append(element('h4', 'detail-heading', '连接的设备'));
       if (!related.length) parent.append(element('p', 'detail-caption', '尚未收到这台设备的连接关系。'));
-      for (const edge of related) peerButton(parent, edge.a === member.device_name ? edge.b : edge.a, edge.record?.blocked ? '受阻' : edge.confirmed ? '已连接' : '协商中', { type: 'edge', id: edge.id });
+      for (const edge of related) peerButton(parent, edgePeerLabel(edge, member.device_name), edge.record ? edgeLabel(edge) : edge.record?.blocked ? '受阻' : edge.confirmed ? '已连接' : '协商中', { type: 'edge', id: edge.id });
       if (!member.signal_online) parent.append(element('p', 'detail-note', member.signal_recovering ? '设备正在恢复信令连接，图中保留最近的房间状态。' : '信令由同组入口同步，因此不会绘制到 Cloudflare 的直接连线。'));
     } else {
       const edge = edges.get(selected.id)?.data;
       if (!edge) { choose(null); return; }
       $('detailLabel').textContent = edge.kind === 'signal' ? '信令连接' : '路径详情';
-      detailIntro(parent, edge.kind === 'signal' ? 'cloud' : 'link', edge.a + ' ↔ ' + edge.b, edge.kind === 'signal' ? '设备与 Worker 的 WebSocket 连接。' : '设备双方最近上报的协商与路径状态。');
+      detailIntro(parent, edge.kind === 'signal' ? 'cloud' : 'link', edge.a + ' ↔ ' + edge.b, edge.kind === 'signal' ? '设备与 Worker 的 WebSocket 连接。' : (edge.route ? routeLabel(edge.route) + '路径，点击任一段查看同一条传输。' : '设备双方最近上报的协商与路径状态。'));
       badge(parent, edgeLabel(edge), edge.record?.blocked ? 'blocked' : edge.confirmed ? '' : 'pending');
       if (edge.kind === 'signal') {
         rows(parent, [['连接类型', '直接信令'], ['Worker 版本', snapshot.worker_version || '未上报'], ['用途', '房间协调与通知']]);
         parent.append(element('p', 'detail-note', '这条线表示信令连接，不表示业务流量经过 Cloudflare。'));
       } else if (edge.record) {
         const record = edge.record;
-        rows(parent, [['连接代次', String(record.generation)], [record.a + ' 路径', pathLabel(record.established?.[0])], [record.b + ' 路径', pathLabel(record.established?.[1])], ['房间图确认', edge.graphConfirmed ? '已确认' : '未确认'], ['语音', record.voice ? '已启用' : '未启用'], ['房间控制', record.control ? '已启用' : '未启用']]);
+        rows(parent, [['连接代次', String(record.generation)], ['路径类型', routeLabel(edge.route)], [record.a + ' 路径', pathLabel(record.established?.[0])], [record.b + ' 路径', pathLabel(record.established?.[1])], ['房间图确认', edge.graphConfirmed ? '已确认' : '未确认'], ['语音', record.voice ? '已启用' : '未启用'], ['房间控制', record.control ? '已启用' : '未启用']]);
         if (!edge.confirmed && !record.blocked) {
           parent.append(element('h4', 'detail-heading', '协商阶段'));
           rows(parent, [[record.a, phaseLabel(record.phases?.[0])], [record.b, phaseLabel(record.phases?.[1])]]);
@@ -728,13 +800,19 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     const highlighted = new Set(), related = new Set();
     if (selected?.type === 'node') {
       highlighted.add(selected.id);
+      const logicalIds = new Set();
       for (const [id, edge] of edges) if (edge.data.from === selected.id || edge.data.to === selected.id) {
         if (layer !== 'all' && layer !== edge.data.kind) continue;
+        logicalIds.add(edge.data.logicalId || id);
+      }
+      for (const [id, edge] of edges) if (logicalIds.has(edge.data.logicalId || id)) {
         related.add(id); highlighted.add(edge.data.from); highlighted.add(edge.data.to);
       }
     } else if (selected?.type === 'edge' && edges.has(selected.id)) {
       const edge = edges.get(selected.id).data;
-      related.add(selected.id); highlighted.add(edge.from); highlighted.add(edge.to);
+      for (const [id, segment] of edges) if ((segment.data.logicalId || id) === (edge.logicalId || selected.id)) {
+        related.add(id); highlighted.add(segment.data.from); highlighted.add(segment.data.to);
+      }
     }
     for (const [id, node] of nodes) {
       node.element.classList.toggle('selected', selected?.type === 'node' && selected.id === id);
@@ -761,10 +839,21 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
   function nodeContent(node, data) {
     node.element.replaceChildren();
     node.data = data;
+    node.element.classList.toggle('relay-node', data?.kind === 'relay');
+    for (const kind of ['turn', 'hole', 'peer_relay']) node.element.classList.toggle('relay-' + kind, data?.kind === 'relay' && data.relayKind === kind);
     if (node.id === CLOUD) {
       const count = snapshot.members.filter(member => member.signal_online).length;
       node.element.append(icon('cloud'), element('div', 'cloud-name', 'Cloudflare'), element('div', 'cloud-caption', count + ' 台设备直连信令'));
       node.element.setAttribute('aria-label', 'Cloudflare 信令服务，' + count + ' 台设备直接连接，点击查看详情');
+      return;
+    }
+    if (data?.kind === 'relay') {
+      const head = element('div', 'node-head'), symbol = element('span', 'device-icon'), text = element('div');
+      symbol.append(icon('server'));
+      text.append(element('div', 'node-name', data.device_name), element('div', 'node-status', routeLabel({ kind: data.relayKind })));
+      head.append(symbol, text);
+      node.element.append(head, element('div', 'node-foot', data.relayKind === 'turn' ? '外部 TURN 服务' : '房间中继设备'));
+      node.element.setAttribute('aria-label', data.device_name + '，' + routeLabel({ kind: data.relayKind }) + '，点击查看详情');
       return;
     }
     const head = element('div', 'node-head'), symbol = element('span', 'device-icon'), text = element('div');
@@ -781,14 +870,15 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     node.element.setAttribute('aria-label', data.device_name + '，' + signalLabel(data) + '，' + groupLabel(data) + '，点击查看详情');
   }
   function reconcileGraph(data, nextEdges) {
-    const nextNodes = new Map([[CLOUD, null], ...data.members.map(member => [deviceKey(member.device_name), member])]);
+    const relayNodes = new Map([...nextEdges.values()].filter(edge => edge.relayNode).map(edge => [edge.relayNode.node_id, edge.relayNode]));
+    const nextNodes = new Map([[CLOUD, null], ...data.members.map(member => [deviceKey(member.device_name), member]), ...relayNodes]);
     for (const [id, node] of nodes) if (!nextNodes.has(id)) {
       nodes.delete(id); removeAnimated(node.element);
     }
     for (const [id, member] of nextNodes) {
       let node = nodes.get(id);
       if (!node) {
-        const button = element('button', 'graph-node' + (id === CLOUD ? ' cloud-node' : ''));
+      const button = element('button', 'graph-node' + (id === CLOUD ? ' cloud-node' : ''));
         button.type = 'button'; button.dataset.nodeKey = id;
         node = { id, element: button, position: null };
         nodes.set(id, node); $('nodes').append(button);
@@ -814,7 +904,8 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
         animate(group, [{ opacity: 0 }, { opacity: 1 }], 500);
       }
       edge.data = data;
-      edge.element.setAttribute('class', 'edge ' + data.kind + (data.record?.blocked ? ' blocked' : data.confirmed ? '' : ' pending'));
+      const routeClass = data.route?.kind === 'peer_relay' ? ' peer-relay' : data.route ? ' ' + data.route.kind : '';
+      edge.element.setAttribute('class', 'edge ' + data.kind + routeClass + (data.record?.blocked ? ' blocked' : data.confirmed ? '' : ' pending'));
       edge.element.setAttribute('aria-label', data.a + ' 与 ' + data.b + '，' + edgeLabel(data) + '，点击查看详情');
     }
   }
@@ -839,6 +930,11 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
         const angle = (members.length <= 6 ? angles[index] : -90 + index * 360 / members.length) * Math.PI / 180;
         positions.set(deviceKey(member.device_name), members.length === 1 ? { x: center.x, y: 370 } : { x: center.x + rx * Math.cos(angle), y: center.y + ry * Math.sin(angle) });
       });
+    }
+    for (const [id, node] of nodes) if (node.data?.kind === 'relay') {
+      const edge = [...edges.values()].find(item => item.data.relayNode?.node_id === id)?.data;
+      const a = edge && positions.get(deviceKey(edge.a)), b = edge && positions.get(deviceKey(edge.b));
+      if (a && b) positions.set(id, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 + 100 });
     }
     $('scene').style.width = world.width + 'px'; $('scene').style.height = world.height + 'px';
     $('edges').setAttribute('width', world.width); $('edges').setAttribute('height', world.height);
@@ -949,7 +1045,7 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     const target = event.target.closest('[data-node-key],[data-edge-key]'), tip = $('tooltip');
     if (!target) { tip.hidden = true; return; }
     const node = nodes.get(target.dataset.nodeKey), edge = edges.get(target.dataset.edgeKey)?.data;
-    if (node) tip.textContent = node.id === CLOUD ? 'Cloudflare · 信令服务\n点击查看直连设备与 Worker 版本' : node.data.device_name + '\n' + signalLabel(node.data) + ' · ' + groupLabel(node.data) + '\n点击查看设备详情';
+    if (node) tip.textContent = node.id === CLOUD ? 'Cloudflare · 信令服务\n点击查看直连设备与 Worker 版本' : node.data?.kind === 'relay' ? node.data.device_name + ' · ' + routeLabel({ kind: node.data.relayKind }) + '\n点击查看中继详情' : node.data.device_name + '\n' + signalLabel(node.data) + ' · ' + groupLabel(node.data) + '\n点击查看设备详情';
     else if (edge) tip.textContent = edge.a + ' ↔ ' + edge.b + '\n' + edgeLabel(edge) + '\n点击展开路径详情';
     else { tip.hidden = true; return; }
     tip.hidden = false;
@@ -970,11 +1066,20 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
         else if (signalLabel(before) !== signalLabel(member)) changes.push(member.device_name + ' · ' + signalLabel(member));
       }
       for (const member of previous.members) if (!next.has(member.device_name)) changes.push(member.device_name + ' 离开房间');
+      const changed = new Set();
       for (const [id, edge] of nextEdges) if (edge.kind === 'transport') {
-        const before = edges.get(id)?.data;
+        const logicalId = edge.logicalId || id;
+        if (changed.has(logicalId)) continue;
+        changed.add(logicalId);
+        const before = [...edges.values()].find(item => (item.data.logicalId || item.data.id) === logicalId)?.data;
         if (!before || edgeLabel(before) !== edgeLabel(edge)) changes.push(edge.a + ' ↔ ' + edge.b + ' · ' + edgeLabel(edge));
       }
-      for (const [id, edge] of edges) if (edge.data.kind === 'transport' && !nextEdges.has(id)) changes.push(edge.data.a + ' ↔ ' + edge.data.b + ' · 连接移除');
+      const nextLogicalIds = new Set([...nextEdges.values()].filter(edge => edge.kind === 'transport').map(edge => edge.logicalId || edge.id));
+      const removed = new Set();
+      for (const [id, edge] of edges) if (edge.data.kind === 'transport') {
+        const logicalId = edge.data.logicalId || id;
+        if (!nextLogicalIds.has(logicalId) && !removed.has(logicalId)) { changes.push(edge.data.a + ' ↔ ' + edge.data.b + ' · 连接移除'); removed.add(logicalId); }
+      }
     }
     if (!changes.length) return;
     const time = new Date();
@@ -992,7 +1097,7 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     recordChanges(previous, data, nextEdges);
     snapshot = data;
     $('roomTitle').textContent = roomName;
-    const count = [...nextEdges.values()].filter(edge => edge.kind === 'transport' && edge.confirmed).length;
+    const count = edgeCount([...nextEdges.values()].filter(edge => edge.kind === 'transport' && edge.confirmed));
     $('roomSummary').textContent = data.members.length + ' 台设备 · ' + count + ' 条已确认连接 · ' + data.groups.length + ' 个连通分组';
     $('footerCaption').textContent = 'Worker ' + (data.worker_version || '版本未上报') + ' · 只读面板';
     $('mapEmpty').hidden = data.members.length !== 0;

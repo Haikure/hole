@@ -65,6 +65,13 @@ async function passwordMatches(password, expected) {
   }
 }
 
+function panelTransportRoute(record, established, phases) {
+  if (established.includes('peer_relay') || phases.includes('peer_relay')) return record.peer_relay?.device ? { kind: 'peer_relay', device: record.peer_relay.device } : null;
+  if (established.includes('hole') || phases.includes('hole')) return record.hole?.device ? { kind: 'hole', device: record.hole.device } : null;
+  if (established.includes('relay') || phases.some(phase => typeof phase === 'string' && phase.startsWith('relay_'))) return { kind: 'turn' };
+  return null;
+}
+
 // 成员声明、设备连接图和传输记录保存在 storage。
 // WebSocket attachment 只保存设备名，断开 WS 不代表设备连接已失效。
 // Hibernation 唤醒时构造函数会重新执行，内存里的 members/roomToken
@@ -424,9 +431,10 @@ export class Room {
         return last ? { kind: last.kind, round: last.round, result: last.result } : null;
       });
       const phases = [0, 1].map(index => r.peer_relay ? 'peer_relay' : r.profile === FIXED_PROFILE ? 'fixed' : r.round_mode ? recordPhase(r, r.round ?? 0, index) : r.phase);
-      return { a: r.a, b: r.b, generation: r.generation, profile: r.profile, phases, direct_stage: r.direct_stage, blocked: r.blocked ?? '',
+      return { id: r.id, a: r.a, b: r.b, generation: r.generation, profile: r.profile, phases, direct_stage: r.direct_stage, blocked: r.blocked ?? '',
         round: r.round, relay_required: r.relay_required, established, punch, voice: r.voice === true,
-        mappings: (r.mappings ?? []).map(m => m.mapping_id), control: r.room_control === true };
+        mappings: (r.mappings ?? []).map(m => m.mapping_id), control: r.room_control === true,
+        route: panelTransportRoute(r, established, phases) };
     }).sort((a, b) => a.a.localeCompare(b.a) || a.b.localeCompare(b.b));
     return { type: 'panel_snapshot', worker_version: WORKER_VERSION, members, groups: graph.groups, links: graph.links.map(l => ({from:l.from,to:l.to})), transports };
   }
