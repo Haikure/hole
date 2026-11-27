@@ -331,6 +331,8 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	}
 	p.stats.ConnectMS = time.Since(started).Milliseconds()
 	p.stats.RelayState = "active"
+	p.upgradeFailures = 0
+	p.nextUpgrade = time.Now().Add(upgradeInitialDelay)
 	p.mu.Unlock()
 	a.processStep("connected", "Hole 中继业务通道已就绪", 0, 0)
 	a.process.finish("connected", "Hole 中继已连接")
@@ -367,6 +369,12 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	p.mu.Unlock()
 	if current && p.ctx.Err() == nil {
 		p.stateChanged()
+		if currentReady.UpgradeProbe || currentReady.UpgradeIdle {
+			request := signalMessage("transport_restart")
+			request.TransportID, request.ExpectedGeneration, request.Reason = currentReady.TransportID, currentReady.TransportGeneration, "upgrade_path_lost"
+			_ = p.coordinator.send(request)
+			return
+		}
 		p.restartFrom(currentReady, "direct", "path_lost")
 	}
 }

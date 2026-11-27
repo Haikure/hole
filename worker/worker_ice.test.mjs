@@ -148,6 +148,170 @@ test('invalid discovery markers are rejected without changing the registered ser
  }
 });
 
+async function upgradeFixture(extra={}) {
+ const f=await modernFixture(),sockets=Object.fromEntries(['alpha','beta','relay'].map(n=>[n,f.socket()]));
+ const caps={voice:true,path_upgrade:true,relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1',...extra};
+ for(const [name,ws] of Object.entries(sockets)) await f.r.webSocketMessage(ws,JSON.stringify({...modernJoin(name),...caps}));
+ const record=[...f.r.ice.records.values()].find(r=>r.a==='alpha' && r.b==='beta');
+ const send=(name,m)=>f.r.webSocketMessage(sockets[name],JSON.stringify({transport_id:record.id,transport_generation:record.generation,expected_generation:record.generation,...m}));
+ const establish=async(path)=>{for(const n of ['alpha','beta']) await send(n,{type:'transport_established',path_type:path});};
+ const legs=async()=>{
+  for(const leg of [...f.r.ice.records.values()].filter(r=>r!==record)) for(const name of [leg.a,leg.b]) {
+   await f.r.webSocketMessage(sockets[name],JSON.stringify({type:'transport_established',transport_id:leg.id,transport_generation:leg.generation,path_type:'direct'}));
+  }
+ };
+ await send('alpha',{type:'transport_restart',relay_round:1,reason:'direct_exhausted'});
+ await establish('relay');
+ return {...f,sockets,record,send,establish,legs};
+}
+
+test('late Peer Relay availability upgrades an active relay then permits background direct probes',async()=>{
+ const f=await upgradeFixture(),{record:r,send,establish,legs}=f;
+ const original=r.generation;
+ await legs();
+ assert.equal(r.upgrade.active.generation,original);
+ assert.equal(r.upgrade.target,'peer_relay');
+ assert.ok(r.peer_relay);
+ const candidate=r.generation;
+ await send('alpha',{type:'transport_upgrade_prepared',path_type:'peer_relay'});
+ assert.equal(r.upgrade.committed,false);
+ await send('beta',{type:'transport_upgrade_prepared',path_type:'peer_relay',transport_generation:original});
+ assert.equal(r.upgrade.committed,false);
+ await send('beta',{type:'transport_upgrade_prepared',path_type:'relay'});
+ assert.equal(r.upgrade.committed,false);
+ await send('beta',{type:'transport_upgrade_prepared',path_type:'peer_relay'});
+ assert.equal(r.upgrade.committed,true);
+ for(const name of ['alpha','beta']) assert.equal(f.sockets[name].messages.filter(m=>m.type==='transport_ready' && m.transport_id===r.id).at(-1).upgrade_commit,true);
+ await establish('peer_relay');
+ assert.equal(r.upgrade,null);
+ const route=r.peer_relay.route;
+ await send('alpha',{type:'transport_restart',reason:'auto_upgrade'});
+ assert.equal(r.upgrade.active.generation,candidate);
+ assert.equal(r.upgrade.active.peer_relay.route,route);
+ assert.equal(r.upgrade.target,'direct');
+ assert.equal(f.sockets.relay.messages.some(m=>m.type==='peer_relay_revoke' && m.peer_relay.route===route),false);
+ await send('alpha',{type:'transport_restart',reason:'ice_failed'});
+ assert.equal(r.direct_stage,'punch');
+ const generation=r.generation;
+ await send('beta',{type:'transport_restart',reason:'ice_failed'});
+ assert.equal(r.generation,generation);
+ await send('alpha',{type:'transport_restart',reason:'upgrade_failed'});
+ assert.equal(r.upgrade.idle,true);
+ assert.equal(r.upgrade.active.peer_relay.route,route);
+ assert.equal(f.sockets.relay.messages.some(m=>m.type==='peer_relay_revoke' && m.peer_relay.route===route),false);
+ await send('alpha',{type:'transport_restart',reason:'auto_upgrade'});
+ for(const n of ['alpha','beta']) await send(n,{type:'transport_upgrade_prepared',path_type:'direct'});
+ await send('alpha',{type:'transport_established',path_type:'direct'});
+ assert.ok(r.upgrade,'retain old grant until both install the direct path');
+ await send('beta',{type:'transport_established',path_type:'direct'});
+ assert.equal(r.upgrade,null);
+ assert.equal(f.sockets.relay.messages.some(m=>m.type==='peer_relay_revoke' && m.peer_relay.route===route),true);
+});
+
+test('background upgrade replays a committed decision and drops stale failure messages',async()=>{
+ const f=await upgradeFixture(),{record:r,send}=f;
+ await send('alpha',{type:'transport_restart',reason:'auto_upgrade'});
+ const generation=r.generation;
+ for(const n of ['alpha','beta']) await send(n,{type:'transport_upgrade_prepared',path_type:'direct'});
+ const resumed=f.newRoom();
+ await resumed.webSocketMessage(f.sockets.beta,JSON.stringify({type:'transport_sync'}));
+ assert.equal(f.sockets.beta.messages.filter(m=>m.type==='transport_ready' && m.transport_id===r.id).at(-1).upgrade_commit,true);
+ const restored=[...resumed.ice.records.values()].find(x=>x.id===r.id);
+ await resumed.webSocketMessage(f.sockets.alpha,JSON.stringify({type:'transport_restart',transport_id:r.id,expected_generation:String(BigInt(generation)-1n),reason:'upgrade_failed'}));
+ assert.equal(restored.generation,generation);
+ assert.equal(restored.upgrade.committed,true);
+});
+
+test('node relay preempts direct probing without retiring the active relay and backs off after failure',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ const f=await upgradeFixture(),{record:r,send,legs}=f;
+ await send('alpha',{type:'transport_restart',reason:'auto_upgrade'});
+ const first=r.generation,active=r.upgrade.active.generation;
+ await legs();
+ assert.notEqual(r.generation,first);
+ assert.equal(r.upgrade.active.generation,active);
+ assert.equal(r.upgrade.target,'peer_relay');
+ await send('alpha',{type:'transport_restart',reason:'upgrade_failed'});
+ assert.equal(r.upgrade.idle,true);
+ await legs();
+ assert.equal(r.upgrade.idle,true,'topology replay must not retry the failed node immediately');
+ now+=30_001;
+ await legs();
+ assert.equal(r.upgrade.idle,false);
+ assert.equal(r.upgrade.target,'peer_relay');
+ await send('beta',{type:'transport_restart',reason:'upgrade_path_lost'});
+ assert.equal(r.upgrade,null);
+ assert.equal(r.phase,'direct');
+});
+
+test('automatic upgrades require bilateral capability and respect relay-only policy',async()=>{
+ for(const options of [{path_upgrade:false},{relay_only:true}]) {
+  const f=await upgradeFixture(options),{record:r,send,legs}=f;
+  const before=r.generation;
+  await legs();
+  await send('alpha',{type:'transport_restart',reason:'auto_upgrade'});
+  assert.equal(r.generation,before);
+  assert.ok(!r.upgrade);
+ }
+ const f=await upgradeFixture(),{record:r,send}=f;
+ const before=r.generation;
+ await send('beta',{type:'transport_restart',reason:'auto_upgrade'});
+ assert.equal(r.generation,before,'only initiator schedules direct probes');
+});
+
+test('Hole grant survives failed probes and hibernation, then is revoked after bilateral direct installation',async()=>{
+ const f=await modernFixture(),a=f.socket(),b=f.socket(),h=f.socket();
+ await f.r.webSocketMessage(h,JSON.stringify({...modernJoin('hole-node'),transport_profiles:[ICE_PROFILE,FIXED_PROFILE],fixed_endpoint:'127.0.0.1:39001',hole_serve:{enabled:true,max_pairs:8,bandwidth_mbps:0}}));
+ const caps={path_upgrade:true,relay_policy:RELAY_POLICY,relay_order:['hole'],relay_pairing:'all-pairs-v1',hole_device:'hole-node'};
+ await f.r.webSocketMessage(a,JSON.stringify({...modernJoin('alpha',['one']),...caps}));
+ await f.r.webSocketMessage(b,JSON.stringify({...modernJoin('beta',[],['one']),...caps}));
+ const r=[...f.r.ice.records.values()].find(r=>r.a==='alpha' && r.b==='beta');
+ const send=(ws,m)=>f.r.webSocketMessage(ws,JSON.stringify({transport_id:r.id,transport_generation:r.generation,expected_generation:r.generation,...m}));
+ await send(a,{type:'transport_restart',relay_round:1,reason:'direct_exhausted'});
+ for(const ws of [a,b])await send(ws,{type:'transport_established',path_type:'hole'});
+ const generation=r.generation,route=r.hole.route;
+ await send(a,{type:'transport_restart',reason:'auto_upgrade'});
+ assert.equal(r.upgrade.active.hole.route,route);
+ assert.equal(h.messages.some(m=>m.type==='hole_revoke' && m.transport_generation===generation),false);
+ await send(a,{type:'transport_restart',reason:'upgrade_failed'});
+ assert.equal(r.upgrade.idle,true);
+ const resumed=f.newRoom();
+ await resumed.webSocketMessage(h,JSON.stringify({type:'transport_sync'}));
+ assert.equal(h.messages.filter(m=>m.type==='hole_grant').at(-1).hole.route,route);
+ const restored=[...resumed.ice.records.values()].find(x=>x.id===r.id);
+ const next=(ws,m)=>resumed.webSocketMessage(ws,JSON.stringify({transport_id:restored.id,transport_generation:restored.generation,expected_generation:restored.generation,...m}));
+ await next(a,{type:'transport_restart',reason:'auto_upgrade'});
+ for(const ws of [a,b])await next(ws,{type:'transport_upgrade_prepared',path_type:'direct'});
+ await next(a,{type:'transport_established',path_type:'direct'});
+ assert.equal(h.messages.some(m=>m.type==='hole_revoke' && m.transport_generation===generation),false);
+ await next(b,{type:'transport_established',path_type:'direct'});
+ assert.equal(h.messages.some(m=>m.type==='hole_revoke' && m.transport_generation===generation),true);
+ assert.equal(restored.upgrade,null);
+});
+
+test('retained TURN credentials can refresh after an unsuccessful direct probe',async()=>{
+ const f=await upgradeFixture(),{record:r,send}=f;
+ await send('alpha',{type:'transport_restart',reason:'auto_upgrade'});
+ await send('alpha',{type:'transport_restart',reason:'upgrade_failed'});
+ assert.equal(r.upgrade.idle,true);
+ const generation=r.generation;
+ await send('alpha',{type:'transport_restart',reason:'turn_refresh',relay_round:1});
+ assert.equal(r.upgrade,null);
+ assert.notEqual(r.generation,generation);
+ assert.equal(r.round,1);
+ assert.equal(f.sockets.alpha.messages.filter(m=>m.type==='transport_ready' && m.transport_id===r.id).at(-1).phase,'relay_udp');
+});
+
+test('capability removal cancels an upgrade and mixed clients do not start it',async()=>{
+ const f=await upgradeFixture(),{record:r,send}=f;
+ await send('alpha',{type:'transport_restart',reason:'auto_upgrade'});
+ const generation=r.generation;
+ await f.r.webSocketMessage(f.sockets.beta,JSON.stringify(memberUpdate({...modernJoin('beta'),voice:true,path_upgrade:false,relay_policy:RELAY_POLICY,relay_order:['udp'],relay_pairing:'all-pairs-v1'},1)));
+ assert.notEqual(r.generation,generation);
+ assert.equal(r.path_upgrade,false);
+ assert.equal(r.upgrade,null);
+});
+
 test('Peer Relay requires two current direct legs and holds the ordinary fallback round',async()=>{
  for (const evidence of ['missing','relay','stale','direct']) {
   const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket(),relay=f.socket();
@@ -392,7 +556,7 @@ test('calibration capability requires ordered ICE first peers and resets generat
  assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).punch_calibration,'barrier-v1');
 });
 
-test('calibration barriers gate bilateral retries and GO and survive complete replay',async()=>{
+for (const modelReuse of [false,true]) test(`calibration barriers gate bilateral retries and GO and survive complete replay (model reuse: ${modelReuse})`,async()=>{
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
  const caps={punch_version:'nat-punch-v1',punch_schedule:'ordered-v1',direct_order:'ice-first-v1',punch_calibration:'barrier-v1'};
  await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
@@ -416,14 +580,18 @@ test('calibration barriers gate bilateral retries and GO and survive complete re
  };
  const snapshot={status:'complete',type:'symmetric',mapping_behavior:'endpoint_dependent',predictability:'incremental',samples:9,port_step:1,public_ip:'198.51.100.1',last_mapping_port:40000,allocation_scope:'cross_socket'};
  const plan={ip:'198.51.100.1',port:40001,target:40017,width:1,sockets:32};
- const offer={kind:'offer',nonce:'a'.repeat(64),snapshot,config:{sockets:10,scan_width:20,dual_sockets:32,dual_retry_sockets:64,timeout:'10s',round_timeout:'2.5s'}};
+ const offer={kind:'offer',nonce:'a'.repeat(64),snapshot,model_reuse:modelReuse,config:{sockets:10,scan_width:20,dual_sockets:32,dual_retry_sockets:64,timeout:'10s',round_timeout:'2.5s'}};
  await send(a,'beta',offer);await send(b,'alpha',offer);
  await rejected(a,'beta',{kind:'calibrate',round:1,trial:1});
  await send(a,'beta',{kind:'reserve'});await send(b,'alpha',{kind:'reserved'});
  for(let round=1;round<=3;round++) {
-  await send(a,'beta',{kind:'model',round,snapshot});
-  await rejected(a,'beta',{kind:'calibrate',round,trial:1});
-  await send(b,'alpha',{kind:'model',round,snapshot});
+  if (modelReuse) {
+   await rejected(a,'beta',{kind:'model',round,snapshot});
+  } else {
+   await send(a,'beta',{kind:'model',round,snapshot});
+   await rejected(a,'beta',{kind:'calibrate',round,trial:1});
+   await send(b,'alpha',{kind:'model',round,snapshot});
+  }
   await rejected(a,'beta',{kind:'ready',round,mode:'fixed',plan});
   for(let trial=1;trial<=3;trial++) {
    const start={kind:'calibrate',round,trial},ok={kind:'calibrated',round,trial,result:'ok',mode:'fixed',plan};
@@ -443,14 +611,14 @@ test('calibration barriers gate bilateral retries and GO and survive complete re
  }
  await send(a,'beta',{kind:'abort'});await send(b,'alpha',{kind:'abort'});
  const sent=punches(b);
- assert.equal(sent.length,30,'all three rounds and trials fit in bounded cache');
+ assert.equal(sent.length,modelReuse?27:30,'all three rounds and trials fit in bounded cache');
  const resumed=new Room(f.state,{});
  await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));
  assert.deepEqual(punches(b).slice(sent.length),sent);
  assert.equal(b.messages.filter(m=>m.type==='transport_ready').at(-1).punch_calibration,'barrier-v1');
 });
 
-test('retained cone pool negotiates, gates extra rounds and preserves plans through retries and replay',async()=>{
+for (const modelReuse of [false,true]) test(`retained cone pool negotiates, gates extra rounds and preserves plans through retries and replay (model reuse: ${modelReuse})`,async()=>{
  const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
  const caps={punch_version:'nat-punch-v1',punch_schedule:'ordered-v1',direct_order:'ice-first-v1',punch_calibration:'barrier-v1',punch_cone_pool:'retained-v1'};
  assert.equal(iceJoinFields({...join('alpha'),...caps,punch_calibration:undefined}),null);
@@ -471,13 +639,19 @@ test('retained cone pool negotiates, gates extra rounds and preserves plans thro
  const original={ip:'198.51.100.1',port:40000,target:40000,width:1,sockets:1};
  const remote={ip:'203.0.113.1',port:50000,target:50001,width:20,sockets:10};
  const selected={kind:'pool_select',round:4,mode:'single',plan:{...original,ip:'198.51.100.2'}};
+ if (modelReuse) {
+  const offer={kind:'offer',nonce:'a'.repeat(64),model_reuse:true,config:{sockets:10,scan_width:20,dual_sockets:32,dual_retry_sockets:64,timeout:'10s',round_timeout:'2.5s'}};
+  await send(a,'beta',{...offer,snapshot:cone});await send(b,'alpha',{...offer,snapshot:symmetric});
+ }
  await rejected(a,'beta',selected);
  await send(a,'beta',{kind:'reserve'});await send(b,'alpha',{kind:'reserved'});
  for(let round=1;round<=6;round++) {
   let plan=original;
   if(round<=3) {
-   await send(a,'beta',{kind:'model',round,snapshot:cone});
-   await send(b,'alpha',{kind:'model',round,snapshot:symmetric});
+   if (!modelReuse) {
+    await send(a,'beta',{kind:'model',round,snapshot:cone});
+    await send(b,'alpha',{kind:'model',round,snapshot:symmetric});
+   }
   } else {
    plan={...original,ip:`198.51.100.${round-2}`};
    const selection={...selected,round,plan:Object.fromEntries(Object.entries(plan).reverse())};
@@ -515,6 +689,49 @@ test('retained cone pool negotiates, gates extra rounds and preserves plans thro
  assert.equal(latest.punch_cone_pool,'');
  await resumed.webSocketMessage(a,JSON.stringify({type:'nat_punch',transport_id:latest.id,transport_generation:latest.generation,to_peer_id:'beta',punch:selected}));
  assert.equal(replacement.messages.some(m=>m.type==='nat_punch'),false);
+});
+
+test('reused models refresh only after bilateral failure and require both new models before calibration',async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const caps={punch_version:'nat-punch-v1',punch_schedule:'ordered-v1',direct_order:'ice-first-v1',punch_calibration:'barrier-v1'};
+ await r.webSocketMessage(a,JSON.stringify({...join('alpha',['one']),...caps}));
+ await r.webSocketMessage(b,JSON.stringify({...join('beta',[],['one']),...caps}));
+ const record=[...r.ice.records.values()][0];
+ assert.equal(a.messages.filter(m=>m.type==='transport_ready').at(-1).punch_model_reuse,true);
+ await r.webSocketMessage(a,JSON.stringify({type:'transport_restart',transport_id:record.id,expected_generation:record.generation,phase:'relay_udp',reason:'ice_failed'}));
+ const send=(ws,to,punch)=>r.webSocketMessage(ws,JSON.stringify({type:'nat_punch',transport_id:record.id,transport_generation:record.generation,to_peer_id:to,punch}));
+ const punches=ws=>ws.messages.filter(m=>m.type==='nat_punch').map(m=>m.punch);
+ const rejected=async(ws,to,punch)=>{
+  const receiver=ws===a?b:a,before=punches(receiver).length;
+  await send(ws,to,punch);assert.equal(punches(receiver).length,before,JSON.stringify(punch));
+ };
+ const snapshot={status:'complete',type:'symmetric',mapping_behavior:'endpoint_dependent',predictability:'incremental',samples:9,port_step:1,public_ip:'198.51.100.1',last_mapping_port:40000,allocation_scope:'cross_socket'};
+ const offer={kind:'offer',nonce:'a'.repeat(64),snapshot,model_reuse:true,config:{sockets:10,scan_width:20,dual_sockets:32,dual_retry_sockets:64,timeout:'10s',round_timeout:'2.5s'}};
+ assert.equal(validPunch({...offer,model_reuse:'true'}),false);
+ await send(a,'beta',offer);
+ await send(a,'beta',{kind:'reserve'});await send(b,'alpha',{kind:'reserved'});
+ await rejected(a,'beta',{kind:'calibrate',round:1,trial:1}); // Missing peer offer.
+ await send(b,'alpha',offer);
+ for(const [ws,to] of [[a,'beta'],[b,'alpha']]) await send(ws,to,{kind:'calibrate',round:1,trial:1});
+ await send(a,'beta',{kind:'failed',round:1});
+ await rejected(a,'beta',{kind:'calibrate',round:2,trial:1}); // Peer is still running.
+ await send(b,'alpha',{kind:'failed',round:1,result:'refresh'});
+ await rejected(a,'beta',{kind:'calibrate',round:2,trial:1});
+ const refreshed={...snapshot,port_step:2,last_mapping_port:41000};
+ await send(a,'beta',{kind:'model',round:2,snapshot:refreshed});
+ await rejected(a,'beta',{kind:'calibrate',round:2,trial:1});
+ await send(b,'alpha',{kind:'model',round:2,snapshot:refreshed});
+ for(const [ws,to] of [[a,'beta'],[b,'alpha']]) {
+  await send(ws,to,{kind:'calibrate',round:2,trial:1});
+  assert.deepEqual(punches(ws===a?b:a).at(-1),{kind:'calibrate',round:2,trial:1});
+ }
+ for(const [ws,to] of [[a,'beta'],[b,'alpha']]) await send(ws,to,{kind:'failed',round:2});
+ await rejected(a,'beta',{kind:'model',round:3,snapshot});
+ await send(a,'beta',{kind:'calibrate',round:3,trial:1});
+ assert.deepEqual(punches(b).at(-1),{kind:'calibrate',round:3,trial:1});
+ const sent=punches(b),resumed=new Room(f.state,{});
+ await resumed.webSocketMessage(b,JSON.stringify({type:'transport_sync'}));
+ assert.deepEqual(punches(b).slice(sent.length),sent);
 });
 
 test('calibration results validate plans and stop retries after terminal outcomes',async()=>{

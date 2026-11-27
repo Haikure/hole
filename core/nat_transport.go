@@ -144,7 +144,8 @@ func (c *iceCoordinator) monitorNAT() {
 				if v, ok := platform.(interface{ NATIPv4Available() bool }); ok && !v.NATIPv4Available() {
 					c.natMu.Lock()
 					if epoch == c.networkEpoch.Load() {
-						c.natSnapshot = NATSnapshot{Status: "not_applicable", Type: "unknown", Predictability: "unknown", Epoch: epoch, ProbedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+						c.natSnapshot = natUnknown()
+						c.natSnapshot.Status, c.natSnapshot.Epoch, c.natSnapshot.ProbedAt = "not_applicable", epoch, time.Now().UTC().Format(time.RFC3339Nano)
 					}
 					c.natMu.Unlock()
 					stopProbe()

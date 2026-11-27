@@ -484,7 +484,11 @@ func (p *icePeer) attemptPeerRelay(a *iceAttempt) {
 func (p *icePeer) allowRelayPath(a *iceAttempt) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return !p.closed && p.online && p.ready.TransportGeneration == a.ready.TransportGeneration && (a.ready.localAuthorization() || p.ready.LeaseUntil > time.Now().UnixMilli())
+	current := p.ready.TransportGeneration == a.ready.TransportGeneration
+	retained := p.ready.PathUpgrade && a.ready.localAuthorization() &&
+		(p.active != nil && p.active.ready.TransportGeneration == a.ready.TransportGeneration ||
+			p.retiring != nil && p.retiring.ready.TransportGeneration == a.ready.TransportGeneration)
+	return !p.closed && p.online && (current || retained) && (a.ready.localAuthorization() || p.ready.LeaseUntil > time.Now().UnixMilli())
 }
 
 func (c *iceCoordinator) markPeerRelayLocked(id string, generation uint64) {

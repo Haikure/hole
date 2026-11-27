@@ -30,6 +30,8 @@ type iceAttempt struct {
 	process         *natProcessRun
 	incoming        chan *fixedIncoming
 	fixedClaimed    bool // protected by icePeer.mu
+	upgradeCommit   chan struct{}
+	commitOnce      sync.Once
 }
 type liveICETransport struct {
 	ready        iceSignalMessage
@@ -77,12 +79,16 @@ type icePeer struct {
 	ready               iceSignalMessage
 	pending             *iceAttempt
 	active              *liveICETransport
+	retiring            *liveICETransport // retained until both endpoints install the upgrade
 	stats               PeerTransportSnapshot
 	requestedGeneration uint64
 	closed              bool
 	terminal            bool
 	online              bool
 	workers             sync.WaitGroup
+	nextUpgrade         time.Time
+	upgradeFailures     int
+	upgradeRequested    bool
 }
 
 func newICEPeer(c *iceCoordinator, m iceSignalMessage) *icePeer {
@@ -180,7 +186,26 @@ func (p *icePeer) update(m iceSignalMessage) {
 			p.pending = nil
 		}
 	}
+	var retired *liveICETransport
+	if p.retiring != nil && (retireActive || !m.UpgradeProbe || m.UpgradeIdle || p.active == nil || p.active.ready.TransportGeneration != m.TransportGeneration) {
+		retired, p.retiring = p.retiring, nil
+	}
 	same := old.TransportGeneration == m.TransportGeneration
+	if m.UpgradeIdle {
+		if p.pending != nil {
+			p.pending.cancel()
+			p.pending = nil
+		}
+		if !old.UpgradeIdle || !same {
+			p.deferUpgradeLocked(time.Now())
+		}
+		p.requestedGeneration = 0
+		p.upgradeRequested = false
+	}
+	if same && p.upgradeRequested && !m.UpgradeProbe && !m.UpgradeIdle {
+		p.requestedGeneration = 0
+		p.upgradeRequested = false
+	}
 	if same && m.Phase == "hole" && m.Hole != nil && m.Hole.Error != "" && p.pending != nil {
 		code := m.Hole.ErrorCode
 		if code == "" {
@@ -191,18 +216,22 @@ func (p *icePeer) update(m iceSignalMessage) {
 		default:
 		}
 	}
-	need := !same && !p.closed && !m.RoomControl
+	need := !same && !p.closed && !m.RoomControl && !m.UpgradeIdle
 	if need {
 		if p.pending != nil {
 			p.pending.cancel()
 		}
 		ctx, cancel := context.WithCancel(p.ctx)
 		a := &iceAttempt{ctx: ctx, cancel: cancel, ready: m, events: make(chan iceSignalMessage, maxICECandidates+4), failed: make(chan error, 1), incoming: make(chan *fixedIncoming, 1)}
+		if m.UpgradeProbe {
+			a.upgradeCommit = make(chan struct{})
+		}
 		if m.Profile == ProfileICE {
 			a.process = p.process.begin(m)
 		}
 		p.pending = a
 		p.requestedGeneration = 0
+		p.upgradeRequested = false
 		p.terminal = false
 		p.stats.State = "connecting"
 		p.stats.Phase = m.Phase
@@ -234,6 +263,9 @@ func (p *icePeer) update(m iceSignalMessage) {
 		}()
 	}
 	p.mu.Unlock()
+	if m.UpgradeCommit {
+		p.commitUpgrade(m.TransportGeneration)
+	}
 	if fallbackNotice && p.coordinator.emit != nil {
 		p.coordinator.emit(Event{Kind: "transport", State: "relay_order_fallback", Peer: m.PeerDevice, Profile: ProfileICE,
 			Phase: m.Phase, TransportGeneration: m.TransportGeneration,
@@ -244,6 +276,9 @@ func (p *icePeer) update(m iceSignalMessage) {
 	}
 	if retireActive && active != nil {
 		active.close()
+	}
+	if retired != nil {
+		retired.close()
 	}
 	if identityChanged {
 		for _, r := range old.Mappings {
@@ -316,6 +351,10 @@ func (p *icePeer) offline(reason string) {
 		p.terminal = false
 	}
 	active := p.active
+	retiring := p.retiring
+	if reason == "mapping_removed" || reason == "peer_runtime_changed" || reason == "revoked" || reason == "signal_offline" {
+		p.retiring = nil
+	}
 	if active != nil && reason == "signal_offline" {
 		// A signaling reconnect can replay the same generation. Retire the
 		// closed path so that replay starts a fresh ICE attempt.
@@ -341,6 +380,9 @@ func (p *icePeer) offline(reason string) {
 				voice.unbindPeer(active.ready.PeerDevice, active.mux)
 			}
 		}
+	}
+	if (revoked || reason == "signal_offline") && retiring != nil {
+		retiring.close()
 	}
 }
 func (p *icePeer) refreshPolicy() {
@@ -378,12 +420,20 @@ func (p *icePeer) requireRelay(localOnly bool) {
 		p.stats.State = "reconnecting"
 		p.stats.RTTMS = 0
 	}
+	var retiring *liveICETransport
+	if p.retiring != nil && !relayReadyConforms(p.retiring.ready, localOnly) {
+		retiring, p.retiring = p.retiring, nil
+	}
 	p.mu.Unlock()
 	if retired != nil {
 		// submit runs under the Engine lock: stop traffic now, but let the
 		// owning attempt drain its workers without waiting under that lock.
 		retired.cancel()
 		_ = retired.session.CloseWithError(0, "relay policy changed")
+	}
+	if retiring != nil {
+		retiring.cancel()
+		_ = retiring.session.CloseWithError(0, "relay policy changed")
 	}
 }
 func (p *icePeer) mappingError(id string, err error) {
@@ -575,6 +625,10 @@ func (p *icePeer) failed(a *iceAttempt, err error) {
 	}
 	a.process.finish("failed", detail)
 	if a.ctx.Err() != nil {
+		return
+	}
+	if a.ready.UpgradeProbe {
+		p.failedUpgrade(a, err)
 		return
 	}
 	fault := classifyError(err)
@@ -1233,6 +1287,14 @@ func (p *icePeer) attempt(a *iceAttempt) {
 // All direct and ICE paths enter the same per-device mux and lifecycle.
 func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, started time.Time) {
 	mux := live.mux
+	if a.ready.UpgradeProbe {
+		if err := p.prepareUpgrade(a, live); err != nil {
+			// Report before closing: close cancels the attempt context.
+			p.failed(a, err)
+			live.close()
+			return
+		}
+	}
 	p.mu.Lock()
 	if p.pending != a || p.closed {
 		p.mu.Unlock()
@@ -1242,10 +1304,15 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	old := p.active
 	live.pathType = p.stats.PathType
 	p.active = live
+	if a.ready.UpgradeProbe {
+		p.retiring = old
+	}
 	p.pending = nil
 	p.stats.State = "active"
 	p.stats.Error = nil
 	p.stats.ConnectMS = time.Since(started).Milliseconds()
+	p.upgradeFailures = 0
+	p.nextUpgrade = time.Now().Add(upgradeInitialDelay)
 	p.mu.Unlock()
 	p.coordinator.natConnectionEstablished()
 	if mux.roomEnabled {
@@ -1254,7 +1321,7 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	a.processStep("connected", "业务线路已建立", 0, 0)
 	a.process.finish("connected", "业务通道已就绪")
 	mux.syncMappings()
-	if old != nil {
+	if old != nil && !a.ready.UpgradeProbe {
 		old.close()
 	}
 	p.stateChanged()
@@ -1303,7 +1370,12 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	p.mu.Unlock()
 	if current && p.ctx.Err() == nil {
 		p.stateChanged()
-		if fatal {
+		if currentReady.UpgradeProbe || currentReady.UpgradeIdle {
+			request := signalMessage("transport_restart")
+			request.TransportID, request.ExpectedGeneration = currentReady.TransportID, currentReady.TransportGeneration
+			request.Reason = "upgrade_path_lost"
+			_ = p.coordinator.send(request)
+		} else if fatal {
 			p.transportEvent(a, "error", fault)
 			report := signalMessage("transport_failed")
 			report.TransportID, report.TransportGeneration = a.ready.TransportID, a.ready.TransportGeneration
@@ -1325,6 +1397,7 @@ func (p *icePeer) maintain() {
 			return
 		case <-ticker.C:
 			p.publishNAT()
+			p.probeUpgrade(time.Now())
 			p.mu.Lock()
 			active := p.active
 			lease := p.ready.LeaseUntil
@@ -1340,7 +1413,9 @@ func (p *icePeer) maintain() {
 				active.mux.syncMappings()
 				_, expires, _ := p.coordinator.servers()
 				if active.expires > 0 && expires > active.expires && pending == nil {
-					p.restartFrom(ready, ready.Phase, "turn_refresh")
+					// Keep the current signaling generation, but renew the
+					// active relay round rather than the upgrade candidate's.
+					p.restartWithRoundFrom(ready, active.ready.RelayRound, active.ready.Phase, "turn_refresh", nil)
 				}
 			} else if pending == nil && !terminal && !ready.RoomControl {
 				p.restartFrom(ready, "direct", "retry")
@@ -1376,6 +1451,13 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 		s.Generation = active.ready.TransportGeneration
 		s.Phase = active.ready.Phase
 		s.RelayPolicy = active.ready.RelayPolicy
+		if active.ready.Hole != nil {
+			s.RelayDevice, s.RelayEndpoint = active.ready.Hole.Device, active.ready.Hole.Endpoint
+		} else if active.ready.PeerRelay != nil {
+			s.RelayDevice, s.RelayEndpoint = active.ready.PeerRelay.Device, ""
+		} else {
+			s.RelayDevice, s.RelayEndpoint = "", ""
+		}
 		if pending != nil {
 			s.PendingPhase = pending.ready.Phase
 		}
@@ -1441,7 +1523,8 @@ func (p *icePeer) close() {
 	p.closed = true
 	p.online = false
 	p.stats.State = "closed"
-	pending, active := p.pending, p.active
+	pending, active, retiring := p.pending, p.active, p.retiring
+	p.retiring = nil
 	p.mu.Unlock()
 	p.cancel()
 	if pending != nil {
@@ -1449,6 +1532,9 @@ func (p *icePeer) close() {
 	}
 	if active != nil {
 		active.close()
+	}
+	if retiring != nil {
+		retiring.close()
 	}
 	p.workers.Wait()
 	p.stateChanged()

@@ -12,7 +12,7 @@ import (
 // Exercise the real reservation, calibration, QUIC and mux paths on three
 // APDM/APDF NATs. Each coordinator shares one allocator across both its peers.
 func TestNATPunchScheduledMesh(t *testing.T) {
-	for _, scenario := range []string{"symmetric", "mixed", "stale-model"} {
+	for _, scenario := range []string{"symmetric", "mixed", "stale-model", "legacy"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -44,6 +44,7 @@ func TestNATPunchScheduledMesh(t *testing.T) {
 				for side, node := range pair {
 					other := coords[pair[1-side]]
 					ready := iceSignalMessage{SignalMessage: SignalMessage{PeerDevice: other.deviceID(), PeerFingerprint: certFingerprint(other.identity.Certificates[0])}, TransportID: id, TransportGeneration: 1, InitiatorID: coords[pair[0]].deviceID(), Profile: ProfileICE, Phase: "direct", PunchSchedule: natPunchSchedule, PeerRuntimeID: other.runtimeID, LeaseUntil: time.Now().Add(time.Minute).UnixMilli(), Voice: true}
+					ready.PunchCalibration = natPunchCalibration
 					attemptCtx, stop := context.WithCancel(ctx)
 					aa[side] = &iceAttempt{ctx: attemptCtx, cancel: stop, ready: ready, events: make(chan iceSignalMessage, 64), failed: make(chan error, 1)}
 					pp[side] = &icePeer{ctx: attemptCtx, coordinator: coords[node], ready: ready, pending: aa[side], online: true}
@@ -91,6 +92,7 @@ func TestNATPunchScheduledMesh(t *testing.T) {
 				for side, node := range pair {
 					workers.Go(func() {
 						s := &natPunchSession{local: models[node], remote: models[pair[1-side]], config: config, key: []byte(id), mode: punchMode(models[node], models[pair[1-side]])}
+						s.modelReuse = scenario != "legacy"
 						live, err := peers[id][side].predictNATPunch(attempts[id][side], &punchSimPlatform{nat: n.sides[node]}, cfg, s)
 						completed <- result{id, side, live, err}
 					})
@@ -197,7 +199,7 @@ func TestNATPunchReconnectRefreshesBothModelsBeforeStrategy(t *testing.T) {
 	cfg := Config{ICE: ICEConfig{NATSTUNURLs: []string{"stun:192.0.2.1:3478", "stun:192.0.2.2:3478", "stun:192.0.2.3:3478"}}}
 	// Repeat quickly without another successful connection in between: the
 	// previous conclusive irregular result must never suppress reclassification.
-	for generation := uint64(2); generation <= 3; generation++ {
+	for generation := uint64(2); generation <= 5; generation++ {
 		stale := time.Now().UTC().Format(time.RFC3339Nano)
 		attempts := make([]*iceAttempt, 2)
 		for side, c := range coords {
@@ -207,6 +209,9 @@ func TestNATPunchReconnectRefreshesBothModelsBeforeStrategy(t *testing.T) {
 			c.natMu.Unlock()
 			ready := peers[side].ready
 			ready.TransportGeneration, ready.PunchSchedule = generation, natPunchSchedule
+			ready.PunchCalibration = natPunchCalibration
+			// Old Worker (3), mixed clients (4), and updated peers (2, 5).
+			ready.PunchModelReuse = generation != 3 && (generation != 4 || side == 0)
 			attempts[side] = &iceAttempt{ctx: ctx, ready: ready, events: make(chan iceSignalMessage, 8), failed: make(chan error, 1)}
 		}
 		type result struct {
@@ -229,6 +234,9 @@ func TestNATPunchReconnectRefreshesBothModelsBeforeStrategy(t *testing.T) {
 				if m.Punch == nil || m.Punch.Kind != "offer" || m.Punch.Snapshot.ProbedAt == stale || m.Punch.Snapshot.Predictability == "irregular" {
 					t.Fatalf("side %d reused cached model: %+v", side, m.Punch)
 				}
+				if m.Punch.ModelReuse != attempts[side].ready.PunchModelReuse {
+					t.Fatal("model reuse offered without Worker support")
+				}
 				gateCtx, stop := context.WithTimeout(ctx, time.Second)
 				release, err := c.natAllocation.acquire(gateCtx)
 				stop()
@@ -246,6 +254,9 @@ func TestNATPunchReconnectRefreshesBothModelsBeforeStrategy(t *testing.T) {
 			if got.err != nil || got.session == nil || got.session.mode != "fixed" {
 				t.Fatalf("side %d: session=%+v err=%v", got.side, got.session, got.err)
 			}
+			if got.session.modelReuse != (generation == 2 || generation == 5) {
+				t.Fatalf("generation %d side %d: invalid model reuse negotiation", generation, got.side)
+			}
 			if got.session.local.ProbedAt == stale || got.session.remote.ProbedAt == stale || coords[got.side].localNAT().ProbedAt != got.session.local.ProbedAt {
 				t.Fatal("fresh bilateral evidence was not published")
 			}
@@ -253,7 +264,13 @@ func TestNATPunchReconnectRefreshesBothModelsBeforeStrategy(t *testing.T) {
 	}
 }
 
-func TestNATPunchRoundWaitsForPeerBeforeNextModel(t *testing.T) {
+func TestNATPunchRoundModelReuse(t *testing.T) {
+	for _, scenario := range []string{"reuse", "peer-refresh", "expired", "legacy"} {
+		t.Run(scenario, func(t *testing.T) { testNATPunchRoundModelReuse(t, scenario) })
+	}
+}
+
+func testNATPunchRoundModelReuse(t *testing.T, scenario string) {
 	c, p := lifecycleCoordinator(t)
 	ctx, cancel := context.WithTimeout(c.ctx, 2*time.Second)
 	defer cancel()
@@ -261,6 +278,9 @@ func TestNATPunchRoundWaitsForPeerBeforeNextModel(t *testing.T) {
 	ready.InitiatorID, ready.PunchSchedule = c.deviceID(), natPunchSchedule
 	a := &iceAttempt{ctx: ctx, ready: ready, events: make(chan iceSignalMessage, 8), failed: make(chan error, 1)}
 	model := NATSnapshot{Status: "complete", Type: "symmetric", MappingBehavior: "endpoint_dependent", PublicIP: "198.51.100.1", PortStep: 1, AllocationScope: "cross_socket"}
+	if scenario == "expired" {
+		model.ProbedAt = time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339Nano)
+	}
 	config := NATPunchConfig{}
 	config.normalize()
 	done := make(chan error, 1)
@@ -270,31 +290,50 @@ func TestNATPunchRoundWaitsForPeerBeforeNextModel(t *testing.T) {
 	go func() {
 		// Failed STUN resolution stops calibration while the peer is still
 		// working on this round. No real socket or network is required.
-		_, err := p.predictNATPunch(a, platform, Config{ICE: ICEConfig{NATSTUNURLs: []string{}}}, &natPunchSession{local: model, remote: model, mode: "fixed", config: config})
+		_, err := p.predictNATPunch(a, platform, Config{ICE: ICEConfig{NATSTUNURLs: []string{}}}, &natPunchSession{local: model, remote: model, mode: "fixed", config: config, modelReuse: scenario != "legacy"})
 		done <- err
 	}()
 	defer func() { cancel(); <-done }()
-	next := func(kind string, round int) {
+	next := func(kind string, round int) *natPunchSignal {
 		t.Helper()
 		select {
 		case m := <-c.sink.messages:
 			if m.Punch == nil || m.Punch.Kind != kind || m.Punch.Round != round {
 				t.Fatalf("want %s round %d, got %+v", kind, round, m.Punch)
 			}
+			return m.Punch
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}
+		return nil
 	}
 	next("reserve", 0)
 	a.events <- iceSignalMessage{Punch: &natPunchSignal{Kind: "reserved"}}
-	next("model", 1)
-	a.events <- iceSignalMessage{Punch: &natPunchSignal{Kind: "model", Round: 1, Snapshot: &model}}
-	next("failed", 1)
+	if scenario == "legacy" {
+		next("model", 1)
+		a.events <- iceSignalMessage{Punch: &natPunchSignal{Kind: "model", Round: 1, Snapshot: &model}}
+	}
+	failed := next("failed", 1)
+	if (failed.Result == "refresh") != (scenario == "expired") {
+		t.Fatalf("unexpected refresh request: %+v", failed)
+	}
 	select {
 	case m := <-c.sink.messages:
 		t.Fatalf("advanced before peer finished first round: %+v", m.Punch)
 	case <-time.After(30 * time.Millisecond):
 	}
-	a.events <- iceSignalMessage{Punch: &natPunchSignal{Kind: "failed", Round: 1}}
-	next("model", 2)
+	result := ""
+	if scenario == "peer-refresh" {
+		result = "refresh"
+	}
+	a.events <- iceSignalMessage{Punch: &natPunchSignal{Kind: "failed", Round: 1, Result: result}}
+	if scenario != "reuse" {
+		next("model", 2)
+		return
+	}
+	for round := 2; round <= 3; round++ {
+		next("failed", round)
+		a.events <- iceSignalMessage{Punch: &natPunchSignal{Kind: "failed", Round: round}}
+	}
+	next("abort", 0)
 }

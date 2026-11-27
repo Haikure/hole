@@ -27,6 +27,7 @@ type natPunchSignal struct {
 	Config         *NATPunchConfig `json:"config,omitempty"`
 	Plan           *natPunchPlan   `json:"plan,omitempty"`
 	PoolPrediction bool            `json:"pool_prediction,omitempty"`
+	ModelReuse     bool            `json:"model_reuse,omitempty"`
 }
 
 type natPunchPlan struct {
@@ -43,6 +44,7 @@ type natPunchSession struct {
 	mode           string
 	key            []byte
 	poolPrediction bool
+	modelReuse     bool
 	conePoolPlan   *natPunchPlan // selected alternate IP, retaining round-three port
 	poolTried      map[string]bool
 }
@@ -268,7 +270,8 @@ func (p *icePeer) prepareNATPunch(a *iceAttempt, platform Platform, cfg Config) 
 	if len(natURLs(cfg.ICE)) == 0 || local.Status == "not_applicable" {
 		offerMode = "disabled"
 	}
-	if err := p.sendNATPunch(a, natPunchSignal{Kind: "offer", Mode: offerMode, Nonce: encoded, Snapshot: &local, Config: &config, PoolPrediction: true}); err != nil {
+	modelReuse := a.ready.PunchModelReuse && a.ready.PunchSchedule == natPunchSchedule && a.ready.PunchCalibration == natPunchCalibration
+	if err := p.sendNATPunch(a, natPunchSignal{Kind: "offer", Mode: offerMode, Nonce: encoded, Snapshot: &local, Config: &config, PoolPrediction: true, ModelReuse: modelReuse}); err != nil {
 		return nil, err
 	}
 	peer, err := p.waitNATPunch(ctx, a, "offer", 0)
@@ -293,6 +296,7 @@ func (p *icePeer) prepareNATPunch(a *iceAttempt, platform Platform, cfg Config) 
 	key := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%d/%s/%s", natPunchVersion, a.ready.TransportID, a.ready.TransportGeneration, first, second)))
 	s := &natPunchSession{local: local, remote: *peer.Snapshot, config: config, mode: punchMode(local, *peer.Snapshot), key: key[:]}
 	s.poolPrediction = peer.PoolPrediction
+	s.modelReuse = modelReuse && peer.ModelReuse
 	if s.mode == "pool" && !s.poolPrediction {
 		s.mode = "ice"
 	}
@@ -409,8 +413,8 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				break
 			}
 		}
-		a.processStep("model", "准备本轮 NAT 分配模型", round, 0)
-		if scheduled && !extra {
+		if scheduled && !extra && (!s.modelReuse || refresh) {
+			a.processStep("model", "同步更新 NAT 分配模型", round, 0)
 			if e := p.refreshNATPunchModel(a, platform, cfg, s, round, refresh); e != nil {
 				return nil, e
 			}
@@ -447,6 +451,12 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			}()
 			ctx, stopAttempt := context.WithDeadline(ctx, executionDeadline)
 			defer stopAttempt()
+			// Expiry may happen while queued for the device reservation. Use
+			// the failure barrier to agree on a refresh, never wait unilaterally
+			// for a model while the peer is waiting for calibration.
+			if s.modelReuse && (s.local.Current().Status != "complete" || s.remote.Current().Status != "complete") {
+				return nil, errNATPunchModel
+			}
 			if extra {
 				if err := p.selectConePoolIP(ctx, a, s, round, poolOriginal, poolIPs); err != nil {
 					return nil, err
@@ -662,9 +672,15 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 			return nil, ctx.Err()
 		}
 		refresh = errors.Is(roundErr, errNATPunchModel)
+		if extra && refresh {
+			return nil, roundErr
+		}
 		result := ""
 		if poolPair && roundUnreachable {
 			result = "unreachable"
+		}
+		if s.modelReuse && refresh {
+			result = "refresh"
 		}
 		if e := p.sendNATPunch(a, natPunchSignal{Kind: "failed", Round: round, Result: result}); e != nil {
 			return nil, e
@@ -681,6 +697,9 @@ func (p *icePeer) predictNATPunch(a *iceAttempt, platform Platform, cfg Config, 
 				return nil, e
 			}
 			poolUnreachable = poolUnreachable && roundUnreachable && peer.Result == "unreachable"
+			if s.modelReuse && peer.Result == "refresh" {
+				refresh = true
+			}
 		}
 		if !poolPair {
 			poolUnreachable = false

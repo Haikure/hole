@@ -68,8 +68,8 @@ func (p *icePeer) reserveNATPunch(a *iceAttempt) (func(), error) {
 	return release, nil
 }
 
-// Refresh under the allocator reservation, then exchange the new evidence
-// before choosing this round's algorithm. Both ends derive the same mode.
+// Refresh under the allocator reservation after the failure barrier requests
+// new evidence. Legacy peers also exchange unchanged models every round.
 func (p *icePeer) refreshNATPunchModel(a *iceAttempt, platform Platform, cfg Config, s *natPunchSession, round int, refresh bool) error {
 	ctx, cancel := context.WithTimeout(a.ctx, natprobe.DefaultTimeout+5*time.Second)
 	defer cancel()
@@ -110,7 +110,8 @@ func (p *icePeer) probeNATPunchModel(ctx context.Context, a *iceAttempt, platfor
 	a.processStep("model_refresh", "刷新本轮 NAT 分配模型", round, 0)
 	var s NATSnapshot
 	if source, ok := platform.(interface{ NATIPv4Available() bool }); ok && !source.NATIPv4Available() {
-		s = NATSnapshot{Status: "not_applicable", Type: "unknown", Predictability: "unknown", ProbedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+		s = natUnknown()
+		s.Status, s.ProbedAt = "not_applicable", time.Now().UTC().Format(time.RFC3339Nano)
 	} else {
 		s = probeNATWithRetriesObserved(probeCtx, platform, natURLs(cfg.ICE), a.process, round)
 	}

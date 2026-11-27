@@ -474,6 +474,7 @@ func (c *iceCoordinator) memberDeclaration(ctx context.Context, platform Platfor
 	}
 	join.LiveConfig = true
 	join.PeerRelayVersion = peerRelayVersion
+	join.PathUpgrade = true
 	join.PunchVersion = natPunchVersion
 	join.DirectOrder = directOrderICEFirst
 	join.PunchSchedule = natPunchSchedule
@@ -635,6 +636,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			return nil
 		}
 		cfg := c.request().Config
+		if (m.UpgradeProbe || m.UpgradeIdle || m.UpgradeCommit) && (!m.PathUpgrade || !m.localAuthorization() || m.Profile != ProfileICE || m.RelayRequired) {
+			return &Fault{Code: "protocol_mismatch", Message: "后台换路能力或路径策略无效"}
+		}
 		if m.Phase == "peer_relay" {
 			if err := c.validatePeerRelayReady(m); err != nil {
 				return err

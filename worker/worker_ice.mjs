@@ -1,4 +1,5 @@
 import { WORKER_VERSION, modernMember, versionAtLeast } from './software_version.mjs';
+import { clearUpgrade, grantUpgradeActive, handleUpgrade, finishUpgrade, scanPeerUpgrades } from './worker_upgrade.mjs';
 
 // ICE signaling is scoped by an authenticated socket and a persisted device pair.
 export const ICE_PROFILE = "ice-quic-mux-v1";
@@ -17,7 +18,7 @@ export function validPunch(p) {
   if (p.kind==='offer') {
     const c=p.config;
     const duration=v=>typeof v==='string' && /^(?:\d+(?:\.\d+)?)(?:ms|s)$/.test(v) ? parseFloat(v)*(v.endsWith('ms')?1:1000) : NaN;
-    return /^[a-f0-9]{64}$/.test(p.nonce??'') && (p.mode===undefined || p.mode==='disabled') && (p.pool_prediction===undefined || typeof p.pool_prediction==='boolean') && validNATPlan({snapshot:p.snapshot,addresses:[]}) && c && integer(c.sockets,1,64) && integer(c.scan_width,1,256) && integer(c.dual_sockets,1,64) && integer(c.dual_retry_sockets,c.dual_sockets,64) && duration(c.timeout)>=1000 && duration(c.timeout)<=30000 && duration(c.round_timeout)>=500 && duration(c.round_timeout)<=duration(c.timeout);
+    return /^[a-f0-9]{64}$/.test(p.nonce??'') && (p.mode===undefined || p.mode==='disabled') && (p.pool_prediction===undefined || typeof p.pool_prediction==='boolean') && (p.model_reuse===undefined || typeof p.model_reuse==='boolean') && validNATPlan({snapshot:p.snapshot,addresses:[]}) && c && integer(c.sockets,1,64) && integer(c.scan_width,1,256) && integer(c.dual_sockets,1,64) && integer(c.dual_retry_sockets,c.dual_sockets,64) && duration(c.timeout)>=1000 && duration(c.timeout)<=30000 && duration(c.round_timeout)>=500 && duration(c.round_timeout)<=duration(c.timeout);
   }
   if (['abort','ice_start','reserve','reserved'].includes(p.kind)) return p.round===undefined;
   if (!integer(p.round,1,6)) return false;
@@ -26,19 +27,24 @@ export function validPunch(p) {
   if (p.kind==='calibrated') return integer(p.trial,1,3) && ['ok','retry','refresh','exhausted'].includes(p.result) && ['single','fixed','next','pool'].includes(p.mode) && (p.result==='ok' ? validPunch({...p,kind:'ready'}) : p.plan===undefined);
   if (p.kind==='model') return validNATPlan({snapshot:p.snapshot,addresses:[]});
   if (p.kind==='go') return true;
-  if (p.kind==='failed') return p.result===undefined || p.result==='unreachable';
+  if (p.kind==='failed') return p.result===undefined || p.result==='unreachable' || p.round<=3 && p.result==='refresh';
   const v=p.plan;
   return p.kind==='ready' && ['single','fixed','next','pool'].includes(p.mode) && !!v && ipv4(v.ip) && integer(v.port,1,65535) && integer(v.target,1,65535) && integer(v.width,1,256) && v.target+v.width-1<=65535 && integer(v.sockets,1,64);
 }
 // Keep the cone's last actual mapping separate from its hypothetical exit IP.
 const samePunchPlan=(a,b)=>['ip','port','target','width','sockets'].every(k=>a?.[k]===b?.[k]);
+const reusePunchModels=both=>both.every(list=>list.some(v=>v.kind==='offer' && v.model_reuse===true));
+// Model updates supersede the offer only from their own round onward.
+function punchModel(list,round) {
+  return list.filter(v=>v.kind==='model' && v.round<=round).sort((a,b)=>b.round-a.round)[0]?.snapshot ?? list.find(v=>v.kind==='offer')?.snapshot;
+}
 function conePoolState(both, round) {
   if (both.some(list=>list.some(v=>v.kind==='abort'))) return null;
   for(let r=1;r<round;r++) {
     if (!both.every(list=>list.some(v=>v.kind==='failed' && v.round===r && v.result==='unreachable')) ||
         !both.some(list=>list.some(v=>v.kind==='go' && v.round===r))) return null;
   }
-  const models=both.map(list=>list.find(v=>v.kind==='model' && v.round===3)?.snapshot);
+  const models=both.map(list=>punchModel(list,3));
   const eligible=s=>s?.status==='complete' && s.mapping_behavior==='endpoint_independent' && s.no_pat==='suspected' && s.port_preservation==='preserved' &&
     s.ip_evidence?.length>=2 && s.ip_evidence.every(e=>e.ports===1 && ['stable','unknown'].includes(e.trend)) &&
     (!s.probed_at || Number.isFinite(Date.parse(s.probed_at)) && Date.now()-Date.parse(s.probed_at)<300_000);
@@ -221,7 +227,8 @@ export function iceJoinFields(message) {
   if (message.voice_group !== undefined && message.voice_group !== '' && (typeof message.voice_group !== 'string' || !/^[a-f0-9]{64}$/.test(message.voice_group) || message.live_config !== true)) return null;
   if (message.live_config !== undefined && typeof message.live_config !== "boolean") return null;
   if (message.peer_relay_version !== undefined && message.peer_relay_version !== PEER_RELAY_VERSION) return null;
-  return { ...(message.core_version ? { core_version: message.core_version, certificate: message.certificate, worker_version: message.worker_version ?? '' } : {}), peer_relay_version: message.peer_relay_version ?? "", live_config: message.live_config === true, ...(message.punch_cone_pool?{punch_cone_pool:PUNCH_CONE_POOL}:{}), ...(message.punch_calibration?{punch_calibration:PUNCH_CALIBRATION}:{}), ...(message.direct_order?{direct_order:DIRECT_ORDER}:{}), ...(message.punch_schedule?{punch_schedule:PUNCH_SCHEDULE}:{}), ...(message.punch_version?{punch_version:PUNCH_VERSION}:{}), ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
+  if (message.path_upgrade !== undefined && typeof message.path_upgrade !== 'boolean') return null;
+  return { path_upgrade: message.path_upgrade === true, ...(message.core_version ? { core_version: message.core_version, certificate: message.certificate, worker_version: message.worker_version ?? '' } : {}), peer_relay_version: message.peer_relay_version ?? "", live_config: message.live_config === true, ...(message.punch_cone_pool?{punch_cone_pool:PUNCH_CONE_POOL}:{}), ...(message.punch_calibration?{punch_calibration:PUNCH_CALIBRATION}:{}), ...(message.direct_order?{direct_order:DIRECT_ORDER}:{}), ...(message.punch_schedule?{punch_schedule:PUNCH_SCHEDULE}:{}), ...(message.punch_version?{punch_version:PUNCH_VERSION}:{}), ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
 }
 export function negotiateProfile(left, right) {
   if (modernMember(left) !== modernMember(right)) return null;
@@ -271,7 +278,8 @@ export class RoomICE {
   async markOfflineForReconnect(name) {
     let changed = false;
     for (const record of this.records.values()) {
-      if (!record.online || (record.a !== name && record.b !== name && record.hole?.device !== name)) continue;
+      if (!record.online || (record.a !== name && record.b !== name && record.hole?.device !== name && record.upgrade?.active.hole?.device!==name && record.upgrade?.active.peer_relay?.device!==name)) continue;
+      await clearUpgrade(this,record);
       await this.revokeHole(record);
       this.revokePeerRelay(record);
       record.online = false;
@@ -303,6 +311,8 @@ export class RoomICE {
     const b = a === left ? right : left;
     const key = pairKey(a.member.device_name, b.member.device_name);
     const localManagement = modernMember(a.member) && modernMember(b.member);
+    const pathUpgrade = localManagement && a.member.path_upgrade===true && b.member.path_upgrade===true &&
+      !a.member.relay_only && !b.member.relay_only && negotiateProfile(a.member,b.member)===ICE_PROFILE;
     seen.add(key);
     const mappings = matches.map(m => ({ map_key: JSON.stringify([this.roomName, m.provider_device, m.consumer_device, m.id]), mapping_id: m.id, provider_id: m.provider_device, consumer_id: m.consumer_device, service: m.service, expose: m.consumer_expose })).sort((x, y) => x.map_key.localeCompare(y.map_key));
     let record = this.records.get(key);
@@ -339,8 +349,9 @@ export class RoomICE {
     })??null;
     // Backup relay availability does not invalidate an authenticated direct
     // path (or a path through another relay). Only the selected Hole matters.
-    const holeIdentity = values => values?.find(([device])=>device===record?.hole?.device) ?? null;
-    const selectedHoleChanged = record?.hole && !same(holeIdentity(record.hole_identities),holeIdentity(identities));
+    const selectedHole=record?.hole??record?.upgrade?.active.hole;
+    const holeIdentity = values => values?.find(([device])=>device===selectedHole?.device) ?? null;
+    const selectedHoleChanged = selectedHole && !same(holeIdentity(record.hole_identities),holeIdentity(identities));
     const fixedEndpoints = [a.member.fixed_endpoint || "", b.member.fixed_endpoint || ""];
     const liveConfig = a.member.live_config === true && b.member.live_config === true;
     const peerRelay = profile===ICE_PROFILE && !relayRequired && pairing===ALL_PAIRS &&
@@ -355,7 +366,7 @@ export class RoomICE {
       record = { id: crypto.randomUUID(), pair_key: key, a: a.member.device_name, b: b.member.device_name, generation: "1", phase: "direct", round: 0, round_mode: roundMode, relay_orders: relayOrders, runtime, fingerprints, epochs, mappings, voice, ice: {}, retry: 0 };
       changed = true;
       resetPath = true;
-    } else if ((record.punch_cone_pool??"")!==punchConePool || (record.live_config ?? false) !== liveConfig || (record.punch_calibration??"")!==punchCalibration || (record.direct_order??"")!==directOrder || (record.punch_schedule??"")!==punchSchedule || (record.punch_version??"")!==punchVersion || (record.hole && !localManagement && record.lease_until<=Date.now()) || !same(record.hole_devices??null,holeDevices) || selectedHoleChanged || (record.profile ?? ICE_PROFILE) !== profile || !same(record.fixed_endpoints ?? ["", ""], fixedEndpoints) || (voiceChanged && !liveConfig) || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
+    } else if ((record.path_upgrade??false)!==pathUpgrade || (record.punch_cone_pool??"")!==punchConePool || (record.live_config ?? false) !== liveConfig || (record.punch_calibration??"")!==punchCalibration || (record.direct_order??"")!==directOrder || (record.punch_schedule??"")!==punchSchedule || (record.punch_version??"")!==punchVersion || (record.hole && !localManagement && record.lease_until<=Date.now()) || !same(record.hole_devices??null,holeDevices) || selectedHoleChanged || (record.profile ?? ICE_PROFILE) !== profile || !same(record.fixed_endpoints ?? ["", ""], fixedEndpoints) || (voiceChanged && !liveConfig) || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
       record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
       record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; record.voice = voice; changed = true;
       resetPath = true;
@@ -385,12 +396,14 @@ export class RoomICE {
     }
     if (voiceChanged) changed = true;
     record.local_management = localManagement;
+    record.path_upgrade = pathUpgrade && profile===ICE_PROFILE && !relayRequired;
     record.core_versions = [a.member.core_version ?? '', b.member.core_version ?? ''];
     record.room_control = false;
     record.live_config = liveConfig;
     record.voice_revision = voiceRevision;
     record.voice_group = voiceGroup;
     if (!record.online) changed = true;
+    if (resetPath) await clearUpgrade(this,record);
     if (resetPath) await this.revokeHole(record);
     if (resetPath) this.revokePeerRelay(record);
     record.peer_relay_enabled = peerRelay;
@@ -424,7 +437,8 @@ export class RoomICE {
     // Reconcile also runs after hibernation and before live mapping updates.
     // Refresh the route before persisting or replaying it to either endpoint.
     this.grantPeerRelay(record);
-    if (wantsHole && !record.peer_relay && (resetPath || !record.hole)) await this.prepareHole(record);
+    grantUpgradeActive(this,record);
+    if (wantsHole && !record.upgrade && !record.peer_relay && (resetPath || !record.hole)) await this.prepareHole(record);
     if (changed) { record.expires_at = Date.now() + OFFLINE_RETENTION_MS; await this.persist(record); }
     if (changed) { this.notify(record, a.member.device_name, true); this.notify(record, b.member.device_name, true); }
   }
@@ -452,22 +466,26 @@ export class RoomICE {
     }
     return {id:r.id,generation:r.generation};
   }
-  preparePeerRelay(record) {
+  peerRelayCandidate(record) {
     if (!record.peer_relay_enabled) return false;
     for (const device of [...this.room.members.keys()].sort()) {
       if (device===record.a || device===record.b) continue;
       const relay=this.member(device)?.member;
       if (record.local_management && !modernMember(relay)) continue;
       if (relay?.peer_relay_version!==PEER_RELAY_VERSION || relay.relay_only) continue;
-      if (!record.local_management && [...this.records.values()].filter(r=>liveRecord(r) && r.peer_relay?.device===device).length>=8) continue;
+      if ([...this.records.values()].filter(r=>liveRecord(r) && (r.peer_relay?.device===device || r.upgrade?.active.peer_relay?.device===device)).length>=8) continue;
       const links=[this.directLink(record.a,device),this.directLink(record.b,device)];
       if (links.some(link=>!link)) continue;
-      record.peer_relay={route:randomHex(16),device,runtime:relay.runtime_id,devices:[record.a,record.b],runtimes:record.runtime,
-        links,transport_id:record.id,generation:record.generation,lease_until:String(record.lease_until),local_management:record.local_management===true};
-      this.grantPeerRelay(record);
-      return true;
+      return {device,runtime:relay.runtime_id,links};
     }
     return false;
+  }
+  preparePeerRelay(record) {
+    const candidate=this.peerRelayCandidate(record);
+    if(!candidate) return false;
+    record.peer_relay={route:randomHex(16),...candidate,devices:[record.a,record.b],runtimes:record.runtime,
+      transport_id:record.id,generation:record.generation,lease_until:String(record.lease_until),local_management:record.local_management===true};
+    this.grantPeerRelay(record);return true;
   }
   grantPeerRelay(record) {
     const g=record.peer_relay, relay=g&&this.member(g.device);
@@ -518,10 +536,13 @@ export class RoomICE {
     if (record.voice_group) ready.voice_group = record.voice_group;
     if (record.punch_version) ready.punch_version = record.punch_version;
     if (record.manual_probe) ready.manual_probe = true;
+    if (record.path_upgrade) ready.path_upgrade = true;
+    if (record.upgrade) Object.assign(ready,{upgrade_probe:true,upgrade_idle:record.upgrade.idle===true,upgrade_commit:record.upgrade.committed===true});
     if (record.peer_relay) Object.assign(ready,{peer_relay_version:PEER_RELAY_VERSION,peer_relay:record.peer_relay});
     if (record.direct_order) Object.assign(ready,{direct_order:record.direct_order,direct_stage:record.direct_stage??'ice'});
     if (record.punch_schedule) ready.punch_schedule = record.punch_schedule;
     if (record.punch_calibration) ready.punch_calibration = record.punch_calibration;
+    if (record.punch_calibration===PUNCH_CALIBRATION && record.punch_schedule===PUNCH_SCHEDULE) ready.punch_model_reuse = true;
     if (record.punch_cone_pool) ready.punch_cone_pool = record.punch_cone_pool;
     if (record.hole_version) Object.assign(ready,{hole_version:HOLE_VERSION,hole_device:record.hole_devices[index],peer_hole_device:record.hole_devices[1-index],relay_plan:record.relay_plan,hole:record.hole});
     if (!fixed && record.round_mode) Object.assign(ready, {relay_round:record.round ?? 0,relay_order:record.relay_orders[index],peer_relay_order:record.relay_orders[1-index]});
@@ -552,6 +573,7 @@ export class RoomICE {
       if (record.local_management) {
         const declaredA = this.room.registered.get(record.a)?.member, declaredB = this.room.registered.get(record.b)?.member;
         if (!declaredA || !declaredB) {
+          await clearUpgrade(this,record);
           await this.revokeHole(record);
           this.revokePeerRelay(record);
           for (const [own, peer] of [[a, record.b], [b, record.a]]) if (own) send(own.ws, {type:'peer_state',peer_device:peer,transport_id:record.id,reason:'revoked'});
@@ -582,6 +604,7 @@ export class RoomICE {
         (wasOnline || record.resume_until > Date.now());
       if (record.online || removed) for (const [own, peer] of [[a, record.b], [b, record.a]]) if (own && !resumable) send(own.ws, { type: "peer_state", peer_device: peer, transport_id: record.id, reason: removed ? "mapping_removed" : "peer_offline" });
       if (!resumable) {
+        await clearUpgrade(this,record);
         await this.revokeHole(record);
         this.revokePeerRelay(record);
       }
@@ -595,6 +618,7 @@ export class RoomICE {
       else if (wasOnline) await this.persist(record);
     }
     await this.scheduleCleanup();
+    await scanPeerUpgrades(this);
   }
   staleJoin(member) {
     if (member.signal_version !== 2) return false;
@@ -630,11 +654,14 @@ export class RoomICE {
     return attachment.ice_rate_count <= 512;
   }
   async handle(ws, member, message) {
-    if (!['peer_relay_failed','nat_punch','nat_status','hole_failed','transport_sync','transport_renew','transport_restart','ice_description','ice_candidate','transport_established','transport_failed','turn_request'].includes(message.type)) return false;
+    if (!['transport_upgrade_prepared','peer_relay_failed','nat_punch','nat_status','hole_failed','transport_sync','transport_renew','transport_restart','ice_description','ice_candidate','transport_established','transport_failed','turn_request'].includes(message.type)) return false;
     if (member.signal_version !== 2) { fault(ws, "protocol_mismatch", "此消息需要新版协调协议", message); return true; }
     if (!this.takeRate(ws) || new TextEncoder().encode(JSON.stringify(message)).length > 64*1024) { fault(ws, "rate_limited", "协调消息过于频繁", message); return true; }
     const name = member.device_name;
     if (message.type==='peer_relay_failed') {
+      const retained=[...this.records.values()].find(r=>r.online && r.id===message.transport_id && r.upgrade?.active.peer_relay?.device===name &&
+        r.upgrade.active.peer_relay.runtime===member.runtime_id && r.upgrade.active.generation===message.transport_generation);
+      if(retained) {await handleUpgrade(this,retained,retained.a,{type:'transport_restart',reason:'upgrade_path_lost'});return true;}
       const r=[...this.records.values()].find(r=>r.online && r.id===message.transport_id && r.generation===message.transport_generation && r.peer_relay?.device===name && r.peer_relay.runtime===member.runtime_id);
       if (r) {
         const own=this.member(r.a);
@@ -644,6 +671,9 @@ export class RoomICE {
       return true;
     }
     if (message.type==='hole_failed') {
+      const retained=[...this.records.values()].find(r=>r.online && r.id===message.transport_id && r.upgrade?.active.hole?.device===name &&
+        r.upgrade.active.hole.relay_runtime===member.runtime_id && r.upgrade.active.generation===message.transport_generation);
+      if(retained) {await handleUpgrade(this,retained,retained.a,{type:'transport_restart',reason:'upgrade_path_lost'});return true;}
       const record=[...this.records.values()].find(r=>r.id===message.transport_id && r.hole?.device===name && r.hole.relay_runtime===member.runtime_id && r.hole.generation===message.transport_generation);
       if (record) {
         await this.revokeHole(record);record.hole={device:name,error:'中继路由不可用',generation:record.generation};
@@ -653,6 +683,7 @@ export class RoomICE {
     }
     if (message.type === "transport_sync" || message.type === "transport_renew") {
       const leases = [];
+      for (const r of this.records.values()) if(r.online) grantUpgradeActive(this,r);
       for (const r of this.records.values()) if (r.online && r.hole?.device===name) this.grantHole(r);
       for (const r of this.records.values()) if (r.online && r.peer_relay?.device===name) this.grantPeerRelay(r);
       for (const record of this.records.values()) if ((record.a === name || record.b === name) && record.online) {
@@ -688,6 +719,7 @@ export class RoomICE {
       if (record.blocked) { fault(ws,record.blocked,"传输校验失败，等待配置或运行实例更新",message); return true; }
       if (!decimal(message.expected_generation)) { fault(ws, "invalid_generation", "传输代次格式无效", message); return true; }
       if (message.expected_generation !== record.generation) { this.notify(record, name, true); return true; }
+      if (await handleUpgrade(this,record,name,message)) return true;
       // A successful endpoint can only lose its path explicitly. Delayed
       // discovery failures must not restart an already-established generation.
       if (record.established?.[name]?.generation===record.generation && ['direct','fixed'].includes(record.established[name].path_type) &&
@@ -758,7 +790,9 @@ export class RoomICE {
       await this.persist(record); this.notify(record, record.a); this.notify(record, record.b); return true;
     }
     if (!decimal(message.transport_generation) || message.transport_generation !== record.generation) return true;
+    if (message.type==='transport_upgrade_prepared') return handleUpgrade(this,record,name,message);
     if (message.type === "transport_established") {
+      if(record.upgrade && (!record.upgrade.committed || message.path_type!==record.upgrade.target)) return true;
       if (record.manual_probe) { record.manual_probe=false; await this.persist(record); }
       if (['direct','fixed','relay','hole','peer_relay'].includes(message.path_type)) {
         record.established??={};
@@ -767,6 +801,8 @@ export class RoomICE {
       }
       record.direct_failures=0;
       if (record.retry || record.retry_after_ms) { record.retry = 0; record.retry_after_ms = 0; await this.persist(record); }
+      await finishUpgrade(this,record);
+      await scanPeerUpgrades(this);
       return true;
     }
     if (record.profile === FIXED_PROFILE) { fault(ws, 'invalid_phase', '固定入口连接不接受 ICE 消息', message); return true; }
@@ -791,6 +827,13 @@ export class RoomICE {
       if(cached.punch.length>=(record.punch_cone_pool?80:record.punch_calibration?40:record.punch_schedule?20:12)) return rejectCalibration('本代次协调消息达到上限');
       const other=record.ice[peerName]?.punch??[];
       const both=[cached.punch,other];
+      const modelReuse=record.punch_calibration===PUNCH_CALIBRATION && record.punch_schedule===PUNCH_SCHEDULE && reusePunchModels(both);
+      const refreshModels=modelReuse && both.some(list=>list.some(v=>v.kind==='failed' && v.round===p.round-1 && v.result==='refresh'));
+      if (p.kind==='failed' && p.result==='refresh' && !modelReuse) return true;
+      if (modelReuse && ['model','calibrate','calibrated','ready','go'].includes(p.kind)) {
+        if (p.round>1 && !both.every(list=>list.some(v=>v.kind==='failed' && v.round===p.round-1))) return rejectCalibration('双方上一轮尚未结束');
+        if (p.kind==='model' && !refreshModels) return true;
+      }
       let pool;
       if (p.round>3) {
         if (record.punch_cone_pool!==PUNCH_CONE_POOL || !['pool_select','calibrate','calibrated','go','failed'].includes(p.kind)) return true;
@@ -820,7 +863,8 @@ export class RoomICE {
         const at=(list,kind,trial=p.trial)=>list.find(v=>v.kind===kind && v.round===p.round && (kind==='model' || v.trial===trial));
         if (both.some(list=>list.some(v=>v.kind==='abort' || v.kind==='failed' && v.round===p.round))) return true; // Late results after a round ended are harmless.
         if (p.kind==='calibrate') {
-          if (!pool && !both.every(list=>at(list,'model')) || both.some(list=>list.some(v=>v.kind==='go' && v.round===p.round))) return true;
+          const modelsReady=modelReuse && !refreshModels ? both.every(list=>punchModel(list,p.round)) : both.every(list=>at(list,'model'));
+          if (!pool && !modelsReady || both.some(list=>list.some(v=>v.kind==='go' && v.round===p.round))) return true;
           if (p.trial>1) {
             const results=both.map(list=>at(list,'calibrated',p.trial-1)?.result);
             if (!results.every(v=>v==='ok' || v==='retry') || !results.includes('retry')) return true;

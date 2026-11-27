@@ -14,6 +14,7 @@ import (
 	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
 	"github.com/pion/stun/v4"
+	"github.com/pion/transport/v5"
 	"github.com/pion/turn/v5"
 	"io"
 	"math/big"
@@ -107,8 +108,12 @@ func TestICETURNPlainTCPRelayUsesActualTCP(t *testing.T) { runRelayFixture(t, "t
 
 // startTURNRelay runs a real TURN server for the given access protocol and
 // returns the URL both ends are expected to use.
-func startTURNRelay(t *testing.T, protocol string) (string, func()) {
+func startTURNRelay(t *testing.T, protocol string, networks ...transport.Net) (string, func()) {
 	t.Helper()
+	var network transport.Net
+	if len(networks) > 0 {
+		network = networks[0]
+	}
 	socket, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +128,7 @@ func startTURNRelay(t *testing.T, protocol string) (string, func()) {
 			}
 			return attr.Username, turn.GenerateAuthKey("user", "fixture", "secret"), true
 		},
-		PacketConnConfigs: []turn.PacketConnConfig{{PacketConn: socket, RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{RelayAddress: net.IPv4(127, 0, 0, 1), Address: "127.0.0.1"}}},
+		PacketConnConfigs: []turn.PacketConnConfig{{PacketConn: socket, RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{RelayAddress: net.IPv4(127, 0, 0, 1), Address: "127.0.0.1", Net: network}}},
 	}
 	relayURL := fmt.Sprintf("turn:%s?transport=udp", socket.LocalAddr())
 	if protocol != "udp" {
@@ -143,7 +148,7 @@ func startTURNRelay(t *testing.T, protocol string) (string, func()) {
 			t.Fatal(e)
 		}
 		serverConfig.PacketConnConfigs = nil
-		serverConfig.ListenerConfigs = []turn.ListenerConfig{{Listener: listener, RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{RelayAddress: net.IPv4(127, 0, 0, 1), Address: "127.0.0.1"}}}
+		serverConfig.ListenerConfigs = []turn.ListenerConfig{{Listener: listener, RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{RelayAddress: net.IPv4(127, 0, 0, 1), Address: "127.0.0.1", Net: network}}}
 		scheme := "turn"
 		if protocol == "tls" {
 			scheme = "turns"
