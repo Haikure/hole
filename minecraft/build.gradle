@@ -1,0 +1,35 @@
+plugins {
+    id 'java'
+    id 'net.minecraftforge.gradle' version '6.0.54'
+}
+group = 'dev.hole'
+version = new groovy.json.JsonSlurper().parse(file('../versions.json')).frontends.minecraft.version
+base { archivesName = 'hole-forge-1.20.1' }
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            mods { hole { source sourceSets.main } }
+        }
+        client {}
+        server { args '--nogui' }
+    }
+}
+repositories { mavenCentral() }
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.0'
+    testImplementation 'junit:junit:4.13.2'
+}
+sourceSets.main.resources.srcDir layout.buildDirectory.dir('generated/resources')
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+tasks.named('jar') {
+    from('../LICENSE')
+    manifest { attributes 'Implementation-Version': project.version }
+    finalizedBy 'reobfJar'
+}
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}

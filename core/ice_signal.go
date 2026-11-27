@@ -52,6 +52,7 @@ type iceSignalMessage struct {
 	LiveConfig          bool                `json:"live_config,omitempty"`
 	MemberRevision      uint64              `json:"member_revision,string,omitempty"`
 	VoiceRevision       uint64              `json:"voice_revision,string,omitempty"`
+	VoiceGroup          string              `json:"voice_group,omitempty"`
 	Leases              []transportLease    `json:"leases,omitempty"`
 	AuthMode            string              `json:"auth_mode,omitempty"`
 	RuntimeID           string              `json:"runtime_id,omitempty"`
@@ -97,18 +98,19 @@ type iceSignalMessage struct {
 }
 
 type voiceRoomMember struct {
-	DeviceName            string `json:"device_name"`
-	Voice                 bool   `json:"voice"`
-	RuntimeID             string `json:"runtime_id,omitempty"`
-	CoreVersion           string `json:"core_version,omitempty"`
-	WorkerVersion         string `json:"worker_version,omitempty"`
-	ObservedWorkerVersion string `json:"observed_worker_version,omitempty"`
-	SignalRecovering      bool   `json:"signal_recovering"`
-	Certificate           string `json:"certificate,omitempty"`
-	CertFingerprint       string `json:"cert_fingerprint,omitempty"`
-	TransportEpoch        uint64 `json:"transport_epoch,string,omitempty"`
-	SignalOnline          bool   `json:"signal_online"`
-	GroupID               string `json:"group_id,omitempty"`
+	Services              []ServiceAdvertisement `json:"services,omitempty"`
+	DeviceName            string                 `json:"device_name"`
+	Voice                 bool                   `json:"voice"`
+	RuntimeID             string                 `json:"runtime_id,omitempty"`
+	CoreVersion           string                 `json:"core_version,omitempty"`
+	WorkerVersion         string                 `json:"worker_version,omitempty"`
+	ObservedWorkerVersion string                 `json:"observed_worker_version,omitempty"`
+	SignalRecovering      bool                   `json:"signal_recovering"`
+	Certificate           string                 `json:"certificate,omitempty"`
+	CertFingerprint       string                 `json:"cert_fingerprint,omitempty"`
+	TransportEpoch        uint64                 `json:"transport_epoch,string,omitempty"`
+	SignalOnline          bool                   `json:"signal_online"`
+	GroupID               string                 `json:"group_id,omitempty"`
 }
 
 type transportLease struct {

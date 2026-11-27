@@ -17,8 +17,10 @@ func netEndpoint(host string, port int) string { return net.JoinHostPort(host, s
 // The CLI format contains effective entries plus its required signaling URL.
 // Old URL-less documents remain importable as stopped Android drafts.
 type exchangeProvide struct {
-	ID      string `json:"id" yaml:"id"`
-	Service string `json:"service" yaml:"service"`
+	ID        string                 `json:"id" yaml:"id"`
+	Service   string                 `json:"service" yaml:"service"`
+	Discovery string                 `json:"discovery,omitempty" yaml:"discovery,omitempty"`
+	Minecraft core.MinecraftMetadata `json:"minecraft,omitzero" yaml:"minecraft,omitempty"`
 }
 type exchangeConsume struct {
 	ID     string `json:"id" yaml:"id"`
@@ -90,8 +92,10 @@ func exchangeDocument(text string) (exchangeConfig, error) {
 		SessionTimeout: cfg.SessionTimeout.String(), CandidateInterfaces: append([]string{}, cfg.CandidateInterfaces...),
 		CandidateAddresses: append([]string{}, cfg.CandidateAddresses...), Provide: []exchangeProvide{}, Consume: []exchangeConsume{},
 	}
+	// GUI serializers require an array for this non-nullable list.
+	doc.ICE.InterfaceAllowlist = append([]string{}, cfg.ICE.InterfaceAllowlist...)
 	for _, entry := range cfg.Provide {
-		doc.Provide = append(doc.Provide, exchangeProvide{entry.ID, fmt.Sprintf("%s://%s", entry.Service.Protocol, netEndpoint(entry.Service.Addr, entry.Service.Port))})
+		doc.Provide = append(doc.Provide, exchangeProvide{entry.ID, fmt.Sprintf("%s://%s", entry.Service.Protocol, netEndpoint(entry.Service.Addr, entry.Service.Port)), entry.Discovery, entry.Minecraft})
 	}
 	for _, entry := range cfg.Consume {
 		doc.Consume = append(doc.Consume, exchangeConsume{entry.ID, netEndpoint(entry.Expose.Addr, entry.Expose.Port)})

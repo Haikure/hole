@@ -67,6 +67,20 @@ with open(os.environ["BUILD_TEST_LOG"], "a") as log:
 
 
 class BuildTests(unittest.TestCase):
+    def test_minecraft_dispatches_once_with_project_output_and_offline(self):
+        script = self.root / "minecraft/scripts/package.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text('''#!/usr/bin/env bash
+set -eu
+[[ "$HOLE_BUILD_OFFLINE" == 1 && "$GOPROXY" == off ]]
+[[ "$GRADLE_USER_HOME" == "$HOLE_CACHE_ROOT/gradle" ]]
+mkdir -p "$1/minecraft"
+printf 'forge-fixture' >> "$1/minecraft/result"
+''')
+        self.invoke("minecraft", "minecraft", "--offline")
+        self.assertEqual("forge-fixture", (self.root / "dist/minecraft/result").read_text())
+        self.invoke("minecraft", "--os", "linux", success=False)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="hole build test ")
         self.addCleanup(self.temporary.cleanup)

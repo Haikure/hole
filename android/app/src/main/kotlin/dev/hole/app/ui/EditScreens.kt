@@ -55,7 +55,9 @@ fun ProvideEditScreen(
     val hostError = if (attempted && host.isBlank()) "服务地址不能为空" else null
     val portValue = parsePort(port)
     val portError = if (attempted && portValue == null) "端口必须是 1–65535 的数字" else null
-    val candidate = ProvideEntry(stableId, id.trim(), protocol, normalizeHostInput(host), portValue ?: 0, enabled)
+    val candidate = ProvideEntry(stableId, id.trim(), protocol, normalizeHostInput(host), portValue ?: 0, enabled,
+        discovery = if (protocol == "tcp") existing?.discovery.orEmpty() else "",
+        minecraft = existing?.minecraft.takeIf { protocol == "tcp" })
     val otherProvide = configState.config.provide.filter { it.entryId != stableId }
     val conflict = if (attempted) findIdConflict(otherProvide + candidate, configState.config.consume) else null
 

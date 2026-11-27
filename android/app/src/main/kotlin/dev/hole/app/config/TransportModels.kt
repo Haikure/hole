@@ -30,6 +30,15 @@ data class CoreTransport(
     @SerialName("allow_insecure_signal") val allowInsecureSignal: Boolean = false,
 )
 @Serializable
+data class NatPunchSettings(
+    val sockets: Int = 10,
+    @SerialName("scan_width") val scanWidth: Int = 20,
+    @SerialName("dual_sockets") val dualSockets: Int = 32,
+    @SerialName("dual_retry_sockets") val dualRetrySockets: Int = 64,
+    val timeout: String = "10s",
+    @SerialName("round_timeout") val roundTimeout: String = "6s",
+)
+@Serializable
 data class IceSettings(
 	@SerialName("port_mapping") val portMapping: String = "auto",
 	@SerialName("nat_stun_urls") val natStunUrls: List<String>? = null,
@@ -41,6 +50,7 @@ data class IceSettings(
     @SerialName("interface_allowlist") val interfaceAllowlist: List<String> = emptyList(),
     @SerialName("include_loopback") val includeLoopback: Boolean = false,
     @SerialName("relay_only") val relayOnly: Boolean = false,
+    val punch: NatPunchSettings = NatPunchSettings(),
 )
 @Serializable
 data class TurnSettings(

@@ -109,7 +109,7 @@ func TestFixedSharedListenerAuthenticatesBeforeRouting(t *testing.T) {
 func TestFixedReadyRejectsUnauthorizedMappingsAndPolicies(t *testing.T) {
 	r := iceFixtureRequest("ws://127.0.0.1:1", "alpha")
 	r.Config.Transport.FixedEndpoint = &FixedEndpointConfig{"0.0.0.0:40000", "gateway.example:50000"}
-	r.Config.Provide = []Provide{{"ssh", ServiceEndpoint{"tcp", "127.0.0.1", 22}}}
+	r.Config.Provide = []Provide{{ID: "ssh", Service: ServiceEndpoint{"tcp", "127.0.0.1", 22}}}
 	c := &iceCoordinator{desired: r, runtimeID: "local-runtime"}
 	record := peerMappingRecord{Key: "authorized-key", ID: "ssh", Provider: "alpha", Consumer: "beta", Service: r.Config.Provide[0].Service}
 	m := iceSignalMessage{SignalMessage: SignalMessage{PeerDevice: "beta"}, Profile: ProfileFixed, Phase: "fixed", RuntimeID: c.runtimeID, FixedEndpoint: r.Config.Transport.FixedEndpoint.Advertise, ListenerID: "alpha", DialerID: "beta", Mappings: []peerMappingRecord{record}}

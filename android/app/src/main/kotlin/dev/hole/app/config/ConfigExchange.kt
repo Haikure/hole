@@ -91,10 +91,11 @@ object ConfigExchange {
                 allowInsecureSignal = cli.transport.allowInsecureSignal, ice = cli.ice, turn = TurnSettings(cli.turn.mode, cli.turn.ttl, cli.turn.urls, cli.turn.username, normalizedTurnOrder(cli.turn.order)),
                 relay = cli.relay,
             ),
-            voice = current.voice.copy(enabled = cli.voice.enabled),
+            voice = current.voice.copy(enabled = cli.voice.enabled, group = cli.voice.group),
             provide = cli.provide.map {
                 val (host, port) = splitEndpoint(it.service.substringAfter("://"))
-                ProvideEntry(UUID.randomUUID().toString(), it.id, it.service.substringBefore("://"), host, port)
+                ProvideEntry(UUID.randomUUID().toString(), it.id, it.service.substringBefore("://"), host, port,
+                    discovery = it.discovery, minecraft = it.minecraft)
             },
             consume = cli.consume.map {
                 val (host, port) = splitEndpoint(it.expose)

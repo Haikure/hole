@@ -354,6 +354,18 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
   <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="m3 3 18 18M6 6.5A14 14 0 0 0 2.5 12s3.3 6 9.5 6a11 11 0 0 0 5.5-1.5M10 6.2A10 10 0 0 1 12 6c6.2 0 9.5 6 9.5 6a19 19 0 0 1-2.5 3M10 10a2.8 2.8 0 0 0 4 4"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
   <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M8 21h8m-4-4v4"/></symbol>
+  <symbol id="i-minecraft" viewBox="0 0 24 24">
+    <g stroke="none">
+      <path fill="#95643f" d="m2 7 10 5v10L2 17Z"/>
+      <path fill="#69462f" d="m12 12 10-5v10l-10 5Z"/>
+      <path fill="#7cbb48" d="m12 2 10 5-10 5L2 7Z"/>
+      <path fill="#579936" d="m2 7 10 5v4l-3-1.5v-2l-3-1.5v2l-4-2Z"/>
+      <path fill="#3d752b" d="m12 12 10-5v4l-3 1.5v-1l-3 1.5v2l-4 2Z"/>
+      <path fill="#a1d565" d="m8 4 3 1.5-3 1.5L5 5.5Zm6 3 3 1.5-3 1.5L11 8.5Z"/>
+      <path fill="#754c32" d="m4 13 2 1v2l-2-1Zm5 4 2 1v2l-2-1Z"/>
+      <path fill="#95643f" d="m14 17 2-1v2l-2 1Zm5-3 2-1v2l-2 1Z"/>
+    </g>
+  </symbol>
   <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4m-3 14h2"/></symbol>
   <symbol id="i-server" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="8" rx="2.5"/><rect x="4" y="13" width="16" height="8" rx="2.5"/><path d="M8 7h.01M8 17h.01m5-10h3m-3 10h3"/></symbol>
   <symbol id="i-watch" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="4"/><path d="m9 6 1-4h4l1 4m-6 12 1 4h4l1-4m-3-8v3l2 1"/></symbol>
@@ -579,6 +591,17 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
   systemTheme.addEventListener('change', () => { if (!chosenTheme) applyTheme(); });
   applyTheme();
 
+  function minecraftServices(member) {
+    return (member.services || []).filter(service => service.kind === 'minecraft' && service.protocol === 'tcp');
+  }
+  function minecraftTitle(service) {
+    const match = /^minecraft\.[a-f0-9]{16}\.([A-Za-z0-9_-]{0,36})$/.exec(service.id);
+    if (!match) return service.id;
+    try {
+      const bytes = Uint8Array.from(atob(match[1].replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/[\u0000-\u001f\u007f-\u009f§]/g, '').trim() || 'Minecraft 世界';
+    } catch { return service.id; }
+  }
   const signalLabel = member => member.signal_online ? '信令直连' : member.signal_recovering ? '信令恢复中' : '信令委托';
   const pathLabel = path => ({ direct: '直连', fixed: '固定入口', relay: 'TURN 中继', hole: 'Hole 中继', peer_relay: '节点中继' })[path] || path || '尚未确认';
   const phaseLabel = phase => ({ direct: '直连协商', fixed: '固定入口建连', relay: 'TURN 协商', hole: 'Hole 中继协商', peer_relay: '节点中继协商' })[phase] || phase || '等待协商';
@@ -597,6 +620,9 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     if (/watch|wear|手表/i.test(name)) return 'watch';
     if (/server|nas|router|服务器|路由/i.test(name)) return 'server';
     return 'monitor';
+  }
+  function memberIcon(member) {
+    return minecraftServices(member).length ? 'minecraft' : deviceIcon(member.device_name);
   }
   function groupLabel(member) {
     const index = snapshot.groups.findIndex(group => group.group_id === member.group_id);
@@ -682,10 +708,10 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     node.append(element('i', 'status-dot'), document.createTextNode(label));
     parent.append(node);
   }
-  function peerButton(parent, member, detail, action) {
+  function peerButton(parent, member, detail, action, iconName = deviceIcon(member)) {
     const button = element('button', 'peer-button');
     button.type = 'button';
-    button.append(icon(deviceIcon(member)), element('span', '', member), element('small', '', detail));
+    button.append(icon(iconName), element('span', '', member), element('small', '', detail));
     button.addEventListener('click', () => choose(action, button));
     parent.append(button);
   }
@@ -701,6 +727,9 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
       $('detailLabel').textContent = '房间一览';
       detailIntro(parent, 'room', '房间连接', '选择设备或连线，查看详情。');
       rows(parent, [['可见设备', snapshot.members.length + ' 台'], ['信令直连', online.length + ' 台'], ['已确认连接', edgeCount(connections.filter(edge => edge.confirmed)) + ' 条'], ['连通分组', snapshot.groups.length + ' 组']]);
+      const hosts = snapshot.members.filter(member => minecraftServices(member).length);
+      if (hosts.length) parent.append(element('h4', 'detail-heading', '已发布的 Minecraft 世界'));
+      for (const host of hosts) for (const service of minecraftServices(host)) peerButton(parent, minecraftTitle(service), 'MC · ' + host.device_name, { type: 'node', id: deviceKey(host.device_name) }, 'minecraft');
       parent.append(element('p', 'detail-note', '绿色表示直连，蓝色表示 TURN，紫色表示 Hole，青色表示节点中继。灰色虚线表示协商中，红色虚线表示受阻，橙色虚线表示信令。'));
     } else if (selected.type === 'node' && selected.id === CLOUD) {
       $('detailLabel').textContent = '信令服务';
@@ -708,7 +737,7 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
       badge(parent, '当前房间的信令入口');
       rows(parent, [['Worker 版本', snapshot.worker_version || '未上报'], ['信令直连', online.length + ' 台'], ['信令委托', snapshot.members.filter(member => !member.signal_online && !member.signal_recovering).length + ' 台'], ['信令恢复中', snapshot.members.filter(member => !member.signal_online && member.signal_recovering).length + ' 台']]);
       if (online.length) parent.append(element('h4', 'detail-heading', '直接连接的设备'));
-      for (const member of online) peerButton(parent, member.device_name, '查看', { type: 'node', id: deviceKey(member.device_name) });
+      for (const member of online) peerButton(parent, member.device_name, '查看', { type: 'node', id: deviceKey(member.device_name) }, memberIcon(member));
     } else if (selected.type === 'node') {
       const member = nodes.get(selected.id)?.data;
       if (!member) { choose(null); return; }
@@ -725,8 +754,18 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
         return;
       }
       $('detailLabel').textContent = '设备详情';
-      detailIntro(parent, deviceIcon(member.device_name), member.device_name, groupLabel(member));
+      detailIntro(parent, memberIcon(member), member.device_name, groupLabel(member));
       badge(parent, signalLabel(member), member.signal_recovering ? 'pending' : '');
+      const worlds = minecraftServices(member);
+      if (worlds.length) {
+        badge(parent, 'MC · Minecraft');
+        parent.append(element('h4', 'detail-heading', '已发布的世界'));
+        for (const service of worlds) {
+          parent.append(element('p', 'detail-caption', minecraftTitle(service)));
+          rows(parent, [['服务类型', 'Minecraft Java'], ['协议', 'TCP'], ['服务 ID', service.id]]);
+          if (service.minecraft) rows(parent, [['在线玩家', service.minecraft.online + ' / ' + service.minecraft.max], ['MC 版本', service.minecraft.version], ['简介', service.minecraft.description || '暂无简介']]);
+        }
+      }
       const related = logicalConnections(connections, edge => (edge.participants || [edge.a, edge.b]).includes(member.device_name));
       rows(parent, [['核心版本', member.core_version || '未上报'], ['语音', member.voice ? '已启用' : '未启用'], ['已确认路径', edgeCount(related.filter(edge => edge.confirmed)) + ' 条'], ['分组标识', member.group_id || '未上报']]);
       parent.append(element('h4', 'detail-heading', '连接的设备'));
@@ -858,16 +897,16 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
     }
     const head = element('div', 'node-head'), symbol = element('span', 'device-icon'), text = element('div');
     text.style.minWidth = '0';
-    symbol.append(icon(deviceIcon(data.device_name)));
+    symbol.append(icon(memberIcon(data)));
     const status = element('div', 'node-status' + (data.signal_online ? '' : data.signal_recovering ? ' recovering' : ' delegated'));
-    status.append(element('i', 'status-dot'), document.createTextNode(signalLabel(data)));
+    status.append(element('i', 'status-dot'), document.createTextNode((minecraftServices(data).length ? 'MC · ' : '') + signalLabel(data)));
     text.append(element('div', 'node-name', data.device_name), status);
     head.append(symbol, text);
     const foot = element('div', 'node-foot');
     foot.append(element('span', '', groupLabel(data) + ' · ' + (data.core_version ? 'v' + data.core_version : '版本未上报')));
     if (data.voice) foot.append(icon('mic'));
     node.element.append(head, foot);
-    node.element.setAttribute('aria-label', data.device_name + '，' + signalLabel(data) + '，' + groupLabel(data) + '，点击查看详情');
+    node.element.setAttribute('aria-label', data.device_name + (minecraftServices(data).length ? '，Minecraft 世界发布者' : '') + '，' + signalLabel(data) + '，' + groupLabel(data) + '，点击查看详情');
   }
   function reconcileGraph(data, nextEdges) {
     const relayNodes = new Map([...nextEdges.values()].filter(edge => edge.relayNode).map(edge => [edge.relayNode.node_id, edge.relayNode]));

@@ -41,6 +41,29 @@ func TestHoleGUIDefaultServerSettings(t *testing.T) {
 	}
 }
 
+func TestCLIExchangePreservesExplicitDiscovery(t *testing.T) {
+	for _, discovery := range []string{"", "    discovery: minecraft\n", "    discovery: minecraft\n    minecraft: {description: 海岛, version: 1.20.1, online: 2, max: 20}\n"} {
+		text, err := DecodeCLIConfig("provide:\n  - id: world\n    service: tcp://127.0.0.1:25565\n" + discovery)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(text, `"discovery":"minecraft"`) != (discovery != "") {
+			t.Fatal(text)
+		}
+		if strings.Contains(discovery, "description:") && !strings.Contains(text, `"online":2`) {
+			t.Fatal("lost Minecraft metadata", text)
+		}
+		exported, err := EncodeCLIConfig(text, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		back, err := DecodeCLIConfig(exported)
+		if err != nil || back != text {
+			t.Fatal("discovery round trip", err, back, text)
+		}
+	}
+}
+
 func TestOldCLIImportRetainsEmptyServerAndWorkerDefaults(t *testing.T) {
 	text, err := DecodeCLIConfig("room: fixture\nprovide: []\nconsume: []\n")
 	if err != nil {
@@ -52,6 +75,9 @@ func TestOldCLIImportRetainsEmptyServerAndWorkerDefaults(t *testing.T) {
 	}
 	if doc.ServerURL != "" || doc.TURN.Mode != "worker" || doc.TURN.TTL.Duration() != 6*time.Hour || doc.TURN.URLs == nil {
 		t.Fatal("old draft import changed defaults")
+	}
+	if doc.ICE.InterfaceAllowlist == nil {
+		t.Fatal("CLI JSON must encode the GUI interface allowlist as an array")
 	}
 }
 

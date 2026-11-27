@@ -139,6 +139,22 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestProvideDiscoveryRequiresExplicitMinecraftTCP(t *testing.T) {
+	for _, tc := range []struct {
+		discovery, protocol string
+		valid               bool
+	}{
+		{"", "tcp", true}, {"", "udp", true}, {"minecraft", "tcp", true},
+		{"minecraft", "udp", false}, {"unknown", "tcp", false},
+	} {
+		cfg := validConfig()
+		cfg.Provide[0].Discovery, cfg.Provide[0].Service.Protocol = tc.discovery, tc.protocol
+		if err := cfg.Validate(); (err == nil) != tc.valid {
+			t.Fatalf("%+v: %v", tc, err)
+		}
+	}
+}
+
 func TestVoiceConfigDefaultsAndParsing(t *testing.T) {
 	cfg := validConfig()
 	if cfg.Voice.Enabled {

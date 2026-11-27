@@ -21,5 +21,8 @@ __pycache__/
 /desktop/compose/.gradle/
 /desktop/compose/.kotlin/
 /desktop/compose/build/
+/minecraft/.gradle/
+/minecraft/build/
+/minecraft/run/
 /signing.env
 /signing.*.env

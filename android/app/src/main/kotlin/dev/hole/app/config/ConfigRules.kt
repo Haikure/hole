@@ -79,6 +79,10 @@ fun isValidMappingId(id: String): Boolean {
     return value.isNotEmpty() && value.length <= 64 && value.none { it.isWhitespace() || it.isISOControl() }
 }
 
+private fun validMinecraftText(value: String, limit: Int): Boolean =
+    value.toByteArray(Charsets.UTF_8).size <= limit &&
+        value.codePoints().allMatch { !Character.isISOControl(it) && it !in 0xD800..0xDFFF }
+
 /** 信令入口：默认 wss://；明文 ws:// 保留为显式开发配置。 */
 fun validateServerUrl(text: String): String? {
     val value = text.trim()
@@ -150,6 +154,7 @@ fun toStartRequest(
 ): StartRequest {
     findConnectionError(stored.connection, password, token)?.let { throw IllegalArgumentException(it) }
     findIdConflict(stored.provide, stored.consume)?.let { throw IllegalArgumentException(it) }
+    require(stored.voice.group.isEmpty() || stored.voice.group.matches(Regex("[a-f0-9]{64}"))) { "语音世界标识需要 64 位小写十六进制字符" }
     val connection = stored.connection
     require(!connection.relay.serve.enabled) { "中继服务仅 CLI 支持" }
     require(connection.relay.device.isEmpty() || (connection.relay.device.matches(Regex("[a-zA-Z0-9._-]{1,128}")) && connection.relay.device != connection.deviceName)) { "中继设备名无效或指向本机" }
@@ -166,7 +171,12 @@ fun toStartRequest(
         require(parsePort(it.port.toString()) == it.port) { "provide \"${it.id}\" 的端口无效" }
         require(it.host.isNotBlank()) { "provide \"${it.id}\" 缺少服务地址" }
         require(it.protocol in setOf("tcp", "udp")) { "仅支持 TCP 或 UDP" }
-        CoreProvide(it.id.trim(), composeServiceUrl(it.protocol, it.host, it.port))
+        require(it.discovery.isEmpty() || (it.discovery == "minecraft" && it.protocol == "tcp")) { "Minecraft 世界发现仅支持 TCP 服务" }
+        val metadata = it.minecraft?.takeUnless { value -> value == MinecraftMetadata() }
+        if (metadata != null) require(it.discovery == "minecraft" && metadata.version.isNotEmpty() &&
+            validMinecraftText(metadata.version, 32) && validMinecraftText(metadata.description, 192) &&
+            metadata.online in 0..1000000 && metadata.max in 0..1000000) { "Minecraft 世界信息无效" }
+        CoreProvide(it.id.trim(), composeServiceUrl(it.protocol, it.host, it.port), it.discovery, metadata)
     }
     val consume = stored.consume.filter { it.enabled }.map {
         require(isValidMappingId(it.id)) { "consume 项缺少有效的映射 ID" }
@@ -187,7 +197,7 @@ fun toStartRequest(
             provide = provide,
             consume = consume,
             transport = connection.coreTransport(), ice = connection.ice, turn = connection.coreTurn(turnCredential),
-            voice = CoreVoiceSettings(enabled = stored.voice.enabled),
+            voice = CoreVoiceSettings(enabled = stored.voice.enabled, group = stored.voice.group),
         ),
     )
 }

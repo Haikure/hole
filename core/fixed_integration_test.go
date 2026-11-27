@@ -226,9 +226,9 @@ func TestFixedActualWorkerBidirectionalMappingsRecoveryAndSharedListener(t *test
 	platforms[2].resolved.Store(public)
 	ta, tb, tc := unusedTCPPort(t), unusedTCPPort(t), unusedTCPPort(t)
 	ua, ub := unusedUDPPort(t), unusedUDPPort(t)
-	ra.Config.Provide = []Provide{{"tcp-a", tcp}, {"udp-a", udp}}
+	ra.Config.Provide = []Provide{{ID: "tcp-a", Service: tcp}, {ID: "udp-a", Service: udp}}
 	ra.Config.Consume = []Consume{{"tcp-b", HostPort{"127.0.0.1", ta}}, {"udp-b", HostPort{"127.0.0.1", ua}}}
-	rb.Config.Provide = []Provide{{"tcp-b", tcp}, {"udp-b", udp}}
+	rb.Config.Provide = []Provide{{ID: "tcp-b", Service: tcp}, {ID: "udp-b", Service: udp}}
 	rb.Config.Consume = []Consume{{"tcp-a", HostPort{"127.0.0.1", tb}}, {"udp-a", HostPort{"127.0.0.1", ub}}}
 	rc.Config.Consume = []Consume{{"tcp-a", HostPort{"127.0.0.1", tc}}}
 	// Even with Worker TURN enabled neither fixed-only runtime may request it.
@@ -378,7 +378,7 @@ func TestFixedBothEndpointsTryOtherDirectionIPv6(t *testing.T) {
 	// generation alpha must dial beta's reachable IPv6 endpoint.
 	ra.Config.Transport.FixedEndpoint.Advertise = fixedEndpoint(t, "udp6").Advertise
 	port := unusedTCPPort(t)
-	ra.Config.Provide = []Provide{{"tcp", tcp}}
+	ra.Config.Provide = []Provide{{ID: "tcp", Service: tcp}}
 	rb.Config.Consume = []Consume{{"tcp", HostPort{"127.0.0.1", port}}}
 	if err := a.Start(ra); err != nil {
 		t.Fatal(err)
@@ -409,7 +409,7 @@ func TestFixedUnreachableKeepsRetryingWithoutICEOrTURN(t *testing.T) {
 	}
 	defer blackhole.Close()
 	ra.Config.Transport.FixedEndpoint.Advertise = blackhole.LocalAddr().String()
-	ra.Config.Provide = []Provide{{"one", ServiceEndpoint{"tcp", "127.0.0.1", 22}}}
+	ra.Config.Provide = []Provide{{ID: "one", Service: ServiceEndpoint{"tcp", "127.0.0.1", 22}}}
 	rb.Config.Consume = []Consume{{"one", HostPort{"127.0.0.1", unusedTCPPort(t)}}}
 	ra.Config.TURN.Mode, rb.Config.TURN.Mode = "worker", "worker"
 	if err := a.Start(ra); err != nil {
@@ -462,7 +462,7 @@ func TestFixedEnableRetiresICEAndPreservesApplicationSession(t *testing.T) {
 	defer b.Close()
 	ra, rb := iceFixtureRequest(server, "alpha"), iceFixtureRequest(server, "beta")
 	port := unusedTCPPort(t)
-	ra.Config.Provide = []Provide{{"one", tcp}}
+	ra.Config.Provide = []Provide{{ID: "one", Service: tcp}}
 	rb.Config.Consume = []Consume{{"one", HostPort{"127.0.0.1", port}}}
 	if err := a.Start(ra); err != nil {
 		t.Fatal(err)

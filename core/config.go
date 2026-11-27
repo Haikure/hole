@@ -35,13 +35,17 @@ type Config struct {
 // VoiceConfig controls the optional room voice mesh. Media format and
 // transport details remain fixed in the protocol for compatibility.
 type VoiceConfig struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Group   string `yaml:"group,omitempty" json:"group,omitempty"`
 }
 
 // Provide 声明本机向房间内其他设备提供的服务。
 type Provide struct {
 	ID      string          `yaml:"id" json:"id"`
 	Service ServiceEndpoint `yaml:"service" json:"service"`
+	// Empty registers a mapping without advertising it in the room directory.
+	Discovery string            `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	Minecraft MinecraftMetadata `yaml:"minecraft,omitempty" json:"minecraft,omitzero"`
 }
 
 // Consume 声明本机要使用的服务：id 对应某台设备 provide 的映射（id 在房间内
@@ -142,6 +146,9 @@ func ParseConfig(data []byte) (Config, error) {
 // 端口范围）已在 YAML 反序列化时由自定义 UnmarshalYAML 把关并带出出错行号。
 func (cfg Config) Validate() error {
 	cfg = cfg.normalized()
+	if cfg.Voice.Group != "" && (len(cfg.Voice.Group) != 64 || strings.Trim(cfg.Voice.Group, "0123456789abcdef") != "") {
+		return errors.New("voice.group 必须是 64 位小写十六进制世界标识")
+	}
 	if err := cfg.validateTransport(); err != nil {
 		return err
 	}
@@ -171,6 +178,12 @@ func (cfg Config) Validate() error {
 		}
 		if p.Service.Addr == "" || p.Service.Port < 1 || p.Service.Port > 65535 {
 			return fmt.Errorf("provide %q 的服务地址或端口无效", p.ID)
+		}
+		if p.Discovery != "" && (p.Discovery != "minecraft" || p.Service.Protocol != "tcp") {
+			return fmt.Errorf("provide %q 的 discovery 仅支持 TCP 服务的 minecraft 标识", p.ID)
+		}
+		if !validMinecraftMetadata(p.Minecraft, p.Discovery) {
+			return fmt.Errorf("provide %q 的 minecraft 世界信息无效", p.ID)
 		}
 	}
 	consumed := make(map[string]bool, len(cfg.Consume))

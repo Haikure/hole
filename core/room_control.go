@@ -53,11 +53,13 @@ type roomGroup struct {
 }
 
 type RoomSnapshot struct {
-	GroupID       string            `json:"group_id"`
-	WorkerVersion string            `json:"worker_version"`
-	SignalVia     []string          `json:"signal_via"`
-	Members       []voiceRoomMember `json:"members"`
-	Groups        []roomGroup       `json:"groups"`
+	DiscoverySupported bool                `json:"discovery_supported"`
+	Services           []DiscoveredService `json:"services"`
+	GroupID            string              `json:"group_id"`
+	WorkerVersion      string              `json:"worker_version"`
+	SignalVia          []string            `json:"signal_via"`
+	Members            []voiceRoomMember   `json:"members"`
+	Groups             []roomGroup         `json:"groups"`
 }
 
 type roomPeer interface {
@@ -714,6 +716,9 @@ func (r *roomControl) installDirectory(message iceSignalMessage, frame *roomFram
 		return false
 	}
 	for _, member := range message.RoomState {
+		if !validServiceAdvertisements(member.Services) {
+			return false
+		}
 		if member.DeviceName == "" || member.RuntimeID == "" || len(member.DeviceName) > 128 {
 			return false
 		}
@@ -728,6 +733,7 @@ func (r *roomControl) installDirectory(message iceSignalMessage, frame *roomFram
 		if _, exists := directory[member.DeviceName]; exists {
 			return false
 		}
+		member.Services = slices.Clone(member.Services)
 		directory[member.DeviceName] = member
 	}
 	if _, exists := directory[r.device]; !exists {
@@ -758,6 +764,7 @@ func (r *roomControl) bindPeer(device, runtime, fingerprint, version string) {
 	member := r.directory[device]
 	if member.RuntimeID != runtime || member.CertFingerprint != fingerprint {
 		delete(r.nodes, device)
+		member.Services = nil
 	}
 	member.DeviceName, member.RuntimeID, member.CertFingerprint, member.CoreVersion = device, runtime, fingerprint, version
 	r.directory[device] = member
@@ -843,6 +850,7 @@ func (r *roomControl) snapshot() RoomSnapshot {
 	ids := make([]string, 0, len(reachable))
 	for device := range reachable {
 		member := r.directory[device]
+		member.Services = slices.Clone(member.Services)
 		member.SignalOnline = r.nodes[device].node.SignalOnline
 		member.SignalRecovering = r.nodes[device].node.SignalRecovering
 		member.ObservedWorkerVersion = r.nodes[device].node.WorkerVersion
@@ -862,7 +870,7 @@ func (r *roomControl) snapshot() RoomSnapshot {
 	for i, group := range r.remoteGroups {
 		groups[i] = roomGroup{ID: group.ID, Members: slices.Clone(group.Members), Signaling: slices.Clone(group.Signaling)}
 	}
-	return RoomSnapshot{GroupID: groupID, WorkerVersion: r.workerVersion, SignalVia: r.signalViaLocked(), Members: members, Groups: groups}
+	return RoomSnapshot{DiscoverySupported: r.directory[r.device].Services != nil, Services: r.servicesLocked(), GroupID: groupID, WorkerVersion: r.workerVersion, SignalVia: r.signalViaLocked(), Members: members, Groups: groups}
 }
 
 func (r *roomControl) run(ctx context.Context) {

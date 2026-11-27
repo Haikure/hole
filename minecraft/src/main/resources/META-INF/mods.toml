@@ -1,0 +1,21 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="GPL-3.0-only"
+[[mods]]
+modId="hole"
+version="${file.jarVersion}"
+displayName="Hole 联机"
+description='''通过 Hole 房间发现并连接 Minecraft 世界与服务器。'''
+displayTest="IGNORE_ALL_VERSION"
+[[dependencies.hole]]
+modId="forge"
+mandatory=true
+versionRange="[47.4.0,48)"
+ordering="NONE"
+side="BOTH"
+[[dependencies.hole]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1]"
+ordering="NONE"
+side="BOTH"

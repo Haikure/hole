@@ -87,4 +87,49 @@ class ConfigExchangeTest {
             assertFailsWith<IllegalArgumentException> { ConfigExchange.readCLIJSON(oldDocument.toString(), original) }
         }
     }
+    @Test fun minecraftDiscoveryAndVoiceGroupSurviveImportBackupAndRuntimeConversion() {
+        val metadata = MinecraftMetadata("海岛世界", "1.20.1", 2, 20)
+        val group = "a".repeat(64)
+        val configured = original.copy(
+            voice = VoiceSettings(true, MICROPHONE_SOURCE_HEADSET, group),
+            connection = original.connection.copy(ice = IceSettings(punch = NatPunchSettings(sockets = 12))),
+            provide = listOf(original.provide.first().copy(discovery = "minecraft", minecraft = metadata)),
+        )
+        val text = ConfigExchange.cliJSON(configured, "password", "token", true)
+        val imported = ConfigExchange.readCLIJSON(text, original.copy(voice = configured.voice))
+        assertEquals(metadata, imported.config.provide.single().minecraft)
+        assertEquals("minecraft", imported.config.provide.single().discovery)
+        assertEquals(configured.voice, imported.config.voice)
+        assertEquals(configured.connection.ice.punch, imported.config.connection.ice.punch)
+        val backup = ConfigExchange.backup(imported.config, imported.password, imported.token, true, false)
+        val restored = ConfigExchange.readBackup(backup)
+        assertEquals(imported.config, restored.config)
+        val runtime = toStartRequest(restored.config, restored.password, restored.token)
+        assertEquals(metadata, runtime.config.provide.single().minecraft)
+        assertEquals("minecraft", runtime.config.provide.single().discovery)
+        assertEquals(group, runtime.config.voice.group)
+        assertEquals(text, ConfigExchange.cliJSON(restored.config, restored.password, restored.token, true))
+    }
+    @Test fun optionalDiscoveryAndGroupAreOmittedForOrdinaryConfigurations() {
+        val text = ConfigExchange.cliJSON(original, "", "", false)
+        assertFalse(text.contains("\"discovery\""))
+        assertFalse(text.contains("\"minecraft\""))
+        assertFalse(text.contains("\"group\""))
+    }
+    @Test fun importedWorldFieldsAreValidatedBeforeSaving() {
+        val good = original.copy(provide = listOf(original.provide.first().copy(
+            discovery = "minecraft", minecraft = MinecraftMetadata("世界", "1.20.1", 1, 20))))
+        val entry = good.provide.single()
+        val metadata = requireNotNull(entry.minecraft)
+        for (invalid in listOf(
+            good.copy(voice = VoiceSettings(group = "invalid")),
+            good.copy(provide = listOf(entry.copy(protocol = "udp"))),
+            good.copy(provide = listOf(entry.copy(discovery = "unknown"))),
+            good.copy(provide = listOf(entry.copy(discovery = ""))),
+            good.copy(provide = listOf(entry.copy(minecraft = metadata.copy(description = "界".repeat(65))))),
+            good.copy(provide = listOf(entry.copy(minecraft = metadata.copy(description = "a\nb")))),
+            good.copy(provide = listOf(entry.copy(minecraft = metadata.copy(version = "")))),
+            good.copy(provide = listOf(entry.copy(minecraft = metadata.copy(online = -1)))),
+        )) assertFailsWith<IllegalArgumentException> { ConfigExchange.validateDraft(invalid) }
+    }
 }

@@ -26,6 +26,8 @@ func TestPortableConfigurationMatchesAndroidExchange(t *testing.T) {
 		"device_name: desktop\nrelay:\n  device: relay-node\n  order: [hole, tls]\n",
 		`{}`,
 		"room: ROOM\nprovide: []\nconsume: []\n",
+		"provide:\n  - id: world\n    service: tcp://127.0.0.1:25565\n    discovery: minecraft\n",
+		"provide:\n  - id: world\n    service: tcp://127.0.0.1:25565\n    discovery: minecraft\n    minecraft: {description: 海岛, version: 1.20.1, online: 2, max: 20}\n",
 		"server_url: wss://HOST/ws\nice:\n  stun_urls: []\nturn:\n  mode: off\n",
 		`{"server_url":"wss://HOST/ws","room":"ROOM","password":"PRIVATE_PASSWORD","token":"PRIVATE_TOKEN","device_name":"desktop","transport":{},"ice":{"stun_urls":[],"relay_only":true,"include_loopback":true,"interface_allowlist":["lo"],"direct_probe_timeout":"4s"},"turn":{"mode":"manual","ttl":"2h","urls":["turn:HOST:3478?transport=udp"],"username":"TURN_USER","credential":"PRIVATE_TURN"},"provide":[{"id":"tcp","service":"tcp://[::1]:22"},{"id":"udp","service":"udp://HOST:53"}],"consume":[{"id":"other","expose":"127.0.0.1:8022"}]}`,
 		`{"transport":{},"candidate_interfaces":["eth0"],"session_timeout":"30m","turn":{"mode":"manual","urls":["turn:HOST:3478"]}}`,

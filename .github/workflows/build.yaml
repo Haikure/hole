@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       type:
-        description: 构建类型；all 包含 Android 手机、Wear、desktop、core 和 cli
+        description: 构建类型；all 包含 Android 手机、Wear、desktop、Minecraft、core 和 cli
         required: true
         default: all
         type: choice
@@ -16,10 +16,11 @@ on:
           - android
           - wear
           - desktop
+          - minecraft
           - core
           - cli
       arch:
-        description: 非 Android 目标架构；手机固定 ARM64，Wear 固定 ARM32 + ARM64
+        description: CLI / core / desktop 目标架构；Android、Wear、Minecraft 忽略此项
         required: true
         default: all
         type: choice
@@ -28,7 +29,7 @@ on:
           - amd64
           - arm64
       os:
-        description: 非 Android 目标系统；选择 android 或 wear 时忽略此项
+        description: CLI / core / desktop 目标系统；Android、Wear、Minecraft 忽略此项
         required: true
         default: all
         type: choice
@@ -59,6 +60,7 @@ jobs:
       has_targets: ${{ steps.matrix.outputs.has_targets }}
       android: ${{ steps.matrix.outputs.android }}
       android_matrix: ${{ steps.matrix.outputs.android_matrix }}
+      minecraft: ${{ steps.matrix.outputs.minecraft }}
     steps:
       - name: Resolve requested targets
         id: matrix
@@ -76,7 +78,7 @@ jobs:
           build_arch = os.environ["BUILD_ARCH"]
           build_os = os.environ["BUILD_OS"]
 
-          if build_type not in {"all", "android", "wear", "desktop", "core", "cli"}:
+          if build_type not in {"all", "android", "wear", "desktop", "minecraft", "core", "cli"}:
               raise SystemExit(f"unsupported type: {build_type}")
           if build_arch not in {"all", "amd64", "arm64"}:
               raise SystemExit(f"unsupported arch: {build_arch}")
@@ -130,6 +132,7 @@ jobs:
               output.write(f"has_targets={str(bool(matrix)).lower()}\n")
               output.write(f"android={str(bool(android_matrix)).lower()}\n")
               output.write(f"android_matrix={json.dumps({'include': android_matrix}, separators=(',', ':'))}\n")
+              output.write(f"minecraft={str(build_type in {'all', 'minecraft'}).lower()}\n")
           PY
 
   build:
@@ -385,11 +388,94 @@ jobs:
           compression-level: 0
           retention-days: 30
 
+  minecraft:
+    name: Minecraft Forge / desktop + FCL ARM64
+    needs: plan
+    if: ${{ needs.plan.outputs.minecraft == 'true' }}
+    runs-on: ubuntu-24.04
+    env:
+      GRADLE_USER_HOME: ${{ github.workspace }}/.cache/gradle
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.4'
+          cache: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358'
+
+      - name: Cache project build data
+        uses: actions/cache@v5
+        with:
+          path: |
+            .cache/go-build
+            .cache/go/pkg/mod
+            .cache/gradle
+            .cache/gradle-project-minecraft
+          key: hole-minecraft-linux-amd64-${{ hashFiles('go.sum', 'minecraft/build.gradle', 'minecraft/settings.gradle', 'minecraft/gradle.properties', 'minecraft/scripts/*.sh', 'versions.json') }}
+          restore-keys: |
+            hole-minecraft-linux-amd64-
+
+      - name: Set up Forge Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.14.3'
+          cache-disabled: true
+
+      - name: Pin the Minecraft environment to this runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain_env="$RUNNER_TEMP/hole-minecraft-toolchain.env"
+          : > "$toolchain_env"
+          printf 'HOLE_TOOLCHAIN_ENV=%s\n' "$toolchain_env" >> "$GITHUB_ENV"
+          printf 'HOLE_MINECRAFT_JAVA_HOME=%s\n' "$JAVA_HOME" >> "$GITHUB_ENV"
+          printf 'HOLE_MINECRAFT_GRADLE=%s\n' "$(command -v gradle)" >> "$GITHUB_ENV"
+
+      - name: Build Minecraft release
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./build.sh minecraft --output dist
+          shopt -s nullglob
+          jars=(dist/minecraft/*.jar)
+          if [[ "${#jars[@]}" -ne 1 ]]; then
+            echo "期望 dist/minecraft 中恰好有一个 Forge JAR，实际为 ${#jars[@]} 个" >&2
+            exit 1
+          fi
+
+      - name: Upload Minecraft artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: hole-minecraft-forge-1.20.1
+          path: dist/minecraft/*.jar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
   release:
     name: Publish GitHub release
     needs:
       - build
       - android
+      - minecraft
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-24.04
     permissions:

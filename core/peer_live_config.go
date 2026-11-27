@@ -61,20 +61,25 @@ func (p *muxPeer) syncVoice() {
 		return
 	}
 	voice := p.owner.coordinator.voiceRuntimePtr()
-	wanted := ready.Voice && voice != nil && (ready.localAuthorization() || ready.LeaseUntil > time.Now().UnixMilli())
+	group := p.owner.coordinator.request().Config.Voice.Group
+	wanted := ready.Voice && voice != nil && ready.VoiceGroup == group && (group == "" || p.liveConfig) && (ready.localAuthorization() || ready.LeaseUntil > time.Now().UnixMilli())
 	enabled := wanted && p.ready.Voice
 	if p.liveConfig {
 		if ready.VoiceRevision == 0 {
 			return
 		}
 		if p.voiceSentRevision != ready.VoiceRevision || p.voiceSentEnabled != wanted {
-			if err := p.writeControl(mappingControl{Type: "VOICE_STATE", Voice: wanted, VoiceRevision: ready.VoiceRevision}); err != nil {
+			announcedGroup := ""
+			if wanted {
+				announcedGroup = group
+			}
+			if err := p.writeControl(mappingControl{Type: "VOICE_STATE", Voice: wanted, VoiceRevision: ready.VoiceRevision, VoiceGroup: announcedGroup}); err != nil {
 				p.stop()
 				return
 			}
 			p.voiceSentRevision, p.voiceSentEnabled = ready.VoiceRevision, wanted
 		}
-		enabled = wanted && p.voiceRemoteEnabled && p.voiceRemoteRevision == ready.VoiceRevision
+		enabled = wanted && p.voiceRemoteEnabled && p.voiceRemoteRevision == ready.VoiceRevision && p.voiceRemoteGroup == group
 	}
 	// Stop the old codec and drain bounded queues before publishing a new epoch.
 	if p.voiceRevision.Load() != ready.VoiceRevision || !enabled {

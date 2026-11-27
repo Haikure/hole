@@ -9,6 +9,145 @@ import { TurnBroker, ICE_PROFILE, FIXED_PROFILE, RELAY_POLICY, negotiateProfile,
 import {HOLE_VERSION,deviceRelayPlan,validNATPlan,validPunch} from './worker_ice.mjs';
 import { roomSigningBytes } from './worker_room.mjs';
 
+test('room directory advertises bounded service IDs without exposing endpoints or accepting injected metadata', async()=>{
+ const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket();
+ const names=Array.from({length:64},(_,i)=>`service-${String(i).padStart(2,'0')}`);
+ await r.webSocketMessage(a,JSON.stringify({...published(join('alpha',names)),services:[{id:'forged',protocol:'tcp'}]}));
+ await r.webSocketMessage(b,JSON.stringify(join('beta')));
+ const host=r.control.snapshot().members.find(m=>m.device_name==='alpha');
+ assert.equal(host.services.length,32);
+ assert.deepEqual(host.services[0],{id:'service-00',protocol:'tcp',kind:'minecraft'});
+ assert.equal(JSON.stringify(host.services).includes('127.0.0.1'),false);
+ assert.equal(JSON.stringify(host.services).includes('forged'),false);
+ assert.equal(r.ice.records.size,0);
+ const declaration=r.members.get('alpha').member;
+ declaration.provide=names.map(id=>({id:'世'.repeat(50)+id,service:endpoint,discovery:'minecraft'}));
+ const bounded=r.control.snapshot().members.find(m=>m.device_name==='alpha').services;
+ assert.ok(bounded.length>0 && bounded.length<32);
+ assert.ok(new TextEncoder().encode(JSON.stringify(bounded)).length<=2048);
+});
+
+test('service directory survives hibernation without polling writes or new alarms',async()=>{
+ const f=await modernFixture(),host=f.socket(),viewer=f.socket();
+ await f.r.webSocketMessage(host,JSON.stringify(published(modernJoin('alpha',['minecraft.world']))));
+ await f.r.webSocketMessage(viewer,JSON.stringify(modernJoin('beta')));
+ const expected=[{id:'minecraft.world',protocol:'tcp',kind:'minecraft'}];
+ const directory=r=>r.control.snapshot().members.find(m=>m.device_name==='alpha').services;
+ assert.deepEqual(directory(f.r),expected);
+ assert.equal(f.r.ice.records.size,0);
+ const writes=f.counts.puts,alarms=f.counts.alarms,messages=viewer.messages.length;
+ for(let i=0;i<5;i++) await f.r.control.publishSnapshot();
+ assert.equal(f.counts.puts,writes);
+ assert.equal(f.counts.alarms,alarms);
+ assert.equal(viewer.messages.length,messages);
+ const resumed=f.newRoom();
+ await resumed.loadState();
+ assert.deepEqual(directory(resumed),expected);
+ assert.equal(f.counts.alarms,alarms);
+ assert.deepEqual(f.values.get('member:alpha').provide,[{id:'minecraft.world',service:endpoint,discovery:'minecraft'}]);
+ assert.equal(JSON.stringify(host.deserializeAttachment()).includes('minecraft.world'),false);
+ await resumed.control.publishSnapshot();
+ const frame=viewer.messages.filter(m=>m.type==='room_frame').at(-1).room_frame;
+ const body=JSON.parse(Buffer.from(frame.body,'base64').toString());
+ assert.deepEqual(body.members.find(m=>m.device_name==='alpha').services,expected);
+ const restored=f.newRoom();
+ await restored.webSocketMessage(host,JSON.stringify(memberUpdate(modernJoin('alpha'),1)));
+ assert.deepEqual(directory(restored),[]);
+ assert.equal(restored.ice.records.size,0);
+ assert.equal(f.counts.alarms,alarms);
+});
+
+test('publishing Minecraft preserves ordinary mappings and legacy room messages across hibernation',async()=>{
+ const f=await modernFixture(),host=f.socket(),ordinary=f.socket(),legacyViewer=f.socket();
+ const ids=Array.from({length:40},(_,i)=>`service-${String(i).padStart(2,'0')}`);
+ const declaration={...modernJoin('alpha',ids),live_config:true};
+ await f.r.webSocketMessage(host,JSON.stringify(declaration));
+ await f.r.webSocketMessage(ordinary,JSON.stringify({...modernJoin('beta',[],ids),live_config:true}));
+ await f.r.webSocketMessage(legacyViewer,JSON.stringify(join('legacy')));
+ const record=[...f.r.ice.records.values()][0],generation=record.generation;
+ assert.equal(record.mappings.length,40); // Discovery limits never truncate forwarding.
+ await f.r.webSocketMessage(host,JSON.stringify(memberUpdate({...declaration,provide:[...declaration.provide,{id:'minecraft.world',service:endpoint,discovery:'minecraft'}]},1)));
+ assert.deepEqual(f.r.control.snapshot().members.find(m=>m.device_name==='alpha').services,[{id:'minecraft.world',protocol:'tcp',kind:'minecraft'}]);
+ assert.equal(record.generation,generation);
+ assert.deepEqual(record.mappings.map(m=>m.mapping_id).sort(),ids);
+ const legacy=legacyViewer.messages.filter(m=>m.type==='room_state').at(-1);
+ assert.deepEqual(legacy.members,[{device_name:'alpha',voice:false},{device_name:'beta',voice:false},{device_name:'legacy',voice:false}]);
+ const resumed=f.newRoom();
+ await resumed.webSocketMessage(ordinary,JSON.stringify({type:'transport_sync'}));
+ const recovered=[...resumed.ice.records.values()][0];
+ assert.equal(recovered.id,record.id);
+ assert.equal(recovered.generation,generation);
+ assert.deepEqual(recovered.mappings.map(m=>m.mapping_id).sort(),ids);
+ await resumed.webSocketMessage(host,JSON.stringify(memberUpdate(declaration,2)));
+ assert.equal(recovered.generation,generation);
+ assert.equal(recovered.mappings.length,40);
+ assert.equal(host.closed,false);
+ assert.equal(ordinary.closed,false);
+});
+
+test('ordinary registrations stay private to discovery and explicit Minecraft publication reaches the panel',async()=>{
+ const f=await modernFixture(),host=f.socket(),viewer=f.socket();
+ const declaration={...modernJoin('alpha',['ssh','minecraft.0123456789abcdef.V29ybGQ']),live_config:true};
+ await f.r.webSocketMessage(host,JSON.stringify(declaration));
+ await f.r.webSocketMessage(viewer,JSON.stringify(modernJoin('beta')));
+ const services=r=>r.control.snapshot().members.find(m=>m.device_name==='alpha').services;
+ assert.deepEqual(services(f.r),[]);
+ assert.deepEqual(f.r.panelSnapshot().members.find(m=>m.device_name==='alpha').services,[]);
+ const advertised={...declaration,provide:declaration.provide.map((p,i)=>i?{...p,discovery:'minecraft'}:p)};
+ await f.r.webSocketMessage(host,JSON.stringify(memberUpdate(advertised,1)));
+ const expected=[{id:declaration.provide[1].id,protocol:'tcp',kind:'minecraft'}];
+ assert.deepEqual(services(f.r),expected);
+ const panel=f.r.panelSnapshot();
+ assert.deepEqual(panel.members.find(m=>m.device_name==='alpha').services,expected);
+ assert.equal(JSON.stringify(panel).includes('127.0.0.1'),false);
+ assert.equal(JSON.stringify(panel).includes('ssh'),false);
+ const restored=f.newRoom();await restored.loadState();
+ assert.deepEqual(restored.panelSnapshot().members.find(m=>m.device_name==='alpha').services,expected);
+ await restored.webSocketMessage(host,JSON.stringify(memberUpdate(declaration,2)));
+ assert.deepEqual(services(restored),[]);
+ assert.equal(restored.members.get('alpha').member.provide.length,2);
+ assert.deepEqual(restored.panelSnapshot().members.find(m=>m.device_name==='alpha').services,[]);
+});
+
+test('Minecraft metadata follows directory updates and hibernation without exposing extra fields',async()=>{
+ const f=await modernFixture(),host=f.socket();
+ const info={description:'海岛世界',version:'1.20.1',online:2,max:20};
+ const declaration={...published(modernJoin('alpha',['world'])),live_config:true};
+ declaration.provide[0].minecraft={...info,private_address:'127.0.0.1',players:['private-name']};
+ await f.r.webSocketMessage(host,JSON.stringify(declaration));
+ const services=r=>r.control.snapshot().members.find(m=>m.device_name==='alpha').services;
+ assert.deepEqual(services(f.r)[0].minecraft,info);
+ assert.equal(JSON.stringify(f.r.panelSnapshot()).includes('private-name'),false);
+ declaration.provide[0].minecraft={...info,online:0};
+ await f.r.webSocketMessage(host,JSON.stringify(memberUpdate(declaration,1)));
+ assert.equal(services(f.r)[0].minecraft.online,0);
+ const restored=f.newRoom();await restored.loadState();
+ assert.deepEqual(services(restored)[0].minecraft,{...info,online:0});
+});
+
+test('invalid world metadata does not alter current registrations',async()=>{
+ const info={description:'world',version:'1.20.1',online:0,max:20};
+ for(const minecraft of [null,{}, {...info,description:'界'.repeat(65)}, {...info,description:'a\nb'}, {...info,version:''}, {...info,online:-1}, {...info,max:1000001}, {...info,online:0.5}]){
+  const f=await modernFixture(),host=f.socket(),declaration={...published(modernJoin('alpha',['world'])),live_config:true};
+  await f.r.webSocketMessage(host,JSON.stringify(declaration));
+  await f.r.webSocketMessage(host,JSON.stringify(memberUpdate({...declaration,provide:[{...declaration.provide[0],minecraft}]},1)));
+  assert.equal(host.messages.at(-1).type,'error');
+  assert.equal(f.r.control.snapshot().members[0].services[0].minecraft,undefined);
+ }
+});
+
+test('invalid discovery markers are rejected without changing the registered services',async()=>{
+ for(const change of [{discovery:true},{discovery:'unknown'},{discovery:'minecraft',service:{...endpoint,protocol:'udp'}},{discovery:'minecraft',id:'bad\u0085id'}]) {
+  const f=await modernFixture(),host=f.socket();
+  const declaration={...modernJoin('alpha',['world']),live_config:true};
+  await f.r.webSocketMessage(host,JSON.stringify(declaration));
+  await f.r.webSocketMessage(host,JSON.stringify(memberUpdate({...declaration,provide:[{...declaration.provide[0],...change}]},1)));
+  assert.deepEqual(f.r.members.get('alpha').member.provide,declaration.provide);
+  assert.deepEqual(f.r.control.snapshot().members[0].services,[]);
+  assert.equal(host.messages.at(-1).type,'error');
+ }
+});
+
 test('Peer Relay requires two current direct legs and holds the ordinary fallback round',async()=>{
  for (const evidence of ['missing','relay','stale','direct']) {
   const f=fixture(),r=new Room(f.state,{}),a=f.socket(),b=f.socket(),relay=f.socket();
@@ -858,6 +997,21 @@ test('panel reauthentication replaces old sessions and refuses unbounded retaine
 
 // Execute the page's actual login/restore handlers; rendering and browser I/O
 // are substituted so these tests can exercise delayed replies deterministically.
+test('panel identifies Minecraft only from explicit metadata and decodes world names',()=>{
+ const script=PANEL_PAGE.match(/<script>([\s\S]*?)<\/script>/)[1];
+ const context={atob,TextDecoder,Uint8Array};
+ runInNewContext(script.slice(script.indexOf('  function minecraftServices('),script.indexOf('  const signalLabel')),context);
+ const service={id:'minecraft.0123456789abcdef.'+Buffer.from('海岛世界🌊').toString('base64url'),protocol:'tcp'};
+ assert.equal(context.minecraftServices({services:[service]}).length,0);
+ service.kind='minecraft';
+ assert.equal(context.minecraftServices({services:[service]}).length,1);
+ assert.equal(context.minecraftTitle(service),'海岛世界🌊');
+ assert.equal(context.minecraftTitle({...service,id:'minecraft.0123456789abcdef._w'}),'minecraft.0123456789abcdef._w');
+ assert.equal(context.minecraftTitle({...service,id:'minecraft.0123456789abcdef.'}),'Minecraft 世界');
+ assert.equal(context.minecraftServices({}).length,0);
+ assert.equal(context.minecraftServices({services:[{...service,protocol:'udp'}]}).length,0);
+});
+
 function panelPageFixture(fetcher) {
  const elements=new Map(),events=new Map(),sockets=[],timers=new Map();let timerID=0;
  const $=id=>{
@@ -989,6 +1143,33 @@ async function pair(){const f=fixture();const r=new Room(f.state,{});const a=f.s
 function modernJoin(name, provide = [], consume = []) {
  return {...join(name, provide, consume), core_version:'1.1.0', certificate:'fixture-'+name};
 }
+function published(declaration) {
+ return {...declaration,provide:declaration.provide.map(p=>({...p,discovery:'minecraft'}))};
+}
+
+test('world voice isolates groups, updates authorization and survives hibernation',async()=>{
+ const f=await modernFixture(),sockets=['alpha','beta','gamma','delta'].map(()=>f.socket());
+ const groups=['a'.repeat(64),'a'.repeat(64),'b'.repeat(64),''];
+ const declarations=['alpha','beta','gamma','delta'].map((name,i)=>({...modernJoin(name),live_config:true,voice:true,voice_group:groups[i]}));
+ for(let i=0;i<4;i++)await f.r.webSocketMessage(sockets[i],JSON.stringify(declarations[i]));
+ const active=r=>[...r.ice.records.values()].filter(x=>x.online && x.voice);
+ assert.equal(active(f.r).length,1);
+ assert.deepEqual([active(f.r)[0].a,active(f.r)[0].b],['alpha','beta']);
+ assert.equal(active(f.r)[0].voice_group,groups[0]);
+ assert.equal(JSON.stringify(f.r.panelSnapshot()).includes(groups[0]),false);
+ const restored=f.newRoom();await restored.loadState();
+ await restored.webSocketMessage(sockets[1],JSON.stringify(memberUpdate({...declarations[1],voice_group:groups[2]},1)));
+ assert.equal(active(restored).length,1);
+ assert.deepEqual([active(restored)[0].a,active(restored)[0].b],['beta','gamma']);
+ const record=active(restored)[0],revision=BigInt(record.voice_revision);
+ for(const name of [record.a,record.b])await restored.webSocketMessage(sockets[name==='beta'?1:2],JSON.stringify({type:'transport_established',transport_id:record.id,transport_generation:record.generation,path_type:'direct'}));
+ await restored.webSocketMessage(sockets[1],JSON.stringify(memberUpdate({...declarations[1],voice_group:'c'.repeat(64)},2)));
+ assert.equal(active(restored).length,0);
+ await restored.webSocketMessage(sockets[2],JSON.stringify(memberUpdate({...declarations[2],voice_group:'c'.repeat(64)},1)));
+ assert.equal(active(restored).length,1);
+ assert.ok(BigInt(active(restored)[0].voice_revision)>revision);
+ assert.equal(active(restored)[0].voice_group,'c'.repeat(64));
+});
 async function modernFixture() {
  const f=fixture();
  const keys=await webcrypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);

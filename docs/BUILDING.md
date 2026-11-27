@@ -11,11 +11,17 @@
 | 独立核心宿主 | `./build.sh core` | `dist/core/` |
 | Linux / Windows 桌面 | `./build.sh desktop` | `dist/desktop/` |
 | 旧 Rust 桌面 | `./build.sh desktop-rust` | `dist/desktop-rust/` |
+| Minecraft Forge 1.20.1 | `./build.sh minecraft` | `dist/minecraft/` |
 | Android 手机 | `./build.sh android` | `dist/android/` |
 | Wear OS | `./build.sh wear` | `dist/wear/` |
-| CLI + 手机 + 手表 | `./build.sh all` | 各自目录；不含桌面或独立核心 |
+| CLI + 手机 + 手表 | `./build.sh all` | 各自目录；不含桌面、独立核心或 Minecraft 模组 |
 
 PenMods 使用 [插件构建入口](../penmods/README.md#构建)。
+
+Minecraft 模组当前在 Linux x64 构建，需要已有 Go 1.27.4、JDK 17、Gradle 8，以及下述 Android SDK / NDK。
+通过 `HOLE_MINECRAFT_JAVA_HOME` / `HOLE_MINECRAFT_GRADLE` 指定已有工具。
+一次打包 Windows x64、Linux x64 / ARM64 和 FCL Android ARM64，不接受 `--os` / `--arch`，不包含在 `all`。
+该目标支持 `--offline` 与 `--output`，不使用 APK 签名配置。使用与验收边界见 [Minecraft 模组](../minecraft/README.md)。
 
 ## 工具链
 
@@ -115,15 +121,21 @@ Release 不再上传 `.sha256` / `SHA256SUMS` 校验文件；GitHub Release 页�
 - Android 手机 ARM64；
 - Wear OS 单个 APK，包含 ARM32 + ARM64；
 - `desktop` 的 Linux AMD64 / ARM64、Windows AMD64；Windows ARM64 需要本地原生工具链，尚未配置 CI runner；
+- Minecraft Forge 1.20.1 单个 JAR，内含 Windows x64、Linux x64 / ARM64 核心和 FCL Android ARM64 JNI 库；
 - `core` 的 Linux / Windows AMD64 / ARM64；
 - `cli` 的 Linux / Windows AMD64 / ARM64。
 
 | 工作流选项 / 产物 | 行为 |
 | --- | --- |
-| `type` | 可选 `all` / `android` / `wear` / `desktop` / `core` / `cli`；`android` 仅手机 ARM64，`wear` 仅手表双 ARM ABI，均忽略 `arch` / `os` |
+| `type` | 可选 `all` / `android` / `wear` / `desktop` / `minecraft` / `core` / `cli`；`android` 仅手机 ARM64，`wear` 仅手表双 ARM ABI，`minecraft` 打包所有支持的平台，三者均忽略 `arch` / `os` |
 | `arch` / `os` | 筛选 CLI / `core` / `desktop` 矩阵 |
-| Artifact | 每个矩阵任务独立上传；手机 `hole-android-arm64`、手表 `hole-wear-arm32-arm64`，各只含一个 APK |
+| Artifact | 每个矩阵任务独立上传；手机 `hole-android-arm64`、手表 `hole-wear-arm32-arm64`，各只含一个 APK；模组 `hole-minecraft-forge-1.20.1` 只含一个 JAR |
 | 压缩 | `compression-level: 0`；GitHub 下载接口仍提供归档容器 |
+
+Minecraft 任务在 Linux x64 运行器上准备 Go 1.27.4、JDK 17、Gradle 8.14.3 和上述 Android SDK / NDK，
+调用 `build.sh minecraft --output dist`，同时执行 Gradle `build` 中的 JVM 测试。Go / Gradle 构建缓存统一使用根 `.cache/`。
+单独选择 `type=minecraft` 不需要 Android APK 签名 secrets。tag 发布等待模组构建成功，
+并保留 `hole-forge-1.20.1-<版本>.jar` 原名上传到同名 Release；工作流的 `all` 包含模组，本地 `./build.sh all` 的目标保持上述定义。
 
 Android 手机与 Wear Release 共用以下仓库或组织 Actions secrets：
 
@@ -138,6 +150,8 @@ Android 手机与 Wear Release 共用以下仓库或组织 Actions secrets：
 ## 版本号
 
 ### 版本清单与同步
+
+Minecraft 模组使用 `frontends.minecraft.version`；Gradle 和打包脚本直接读取该字段，无需额外同步。
 
 编辑根目录 `versions.json`：`core.version` 是共享核心版本，CLI、独立核心宿主和 Android AAR 始终使用同一个值；Android 手机与 Wear OS 共用 `frontends.android` 的版本名和版本码。桌面 GUI 与 PenMods 插件各自维护前端版本。`worker.version` 独立定义 Worker 软件版本，由 Worker 模块直接读取并上报；客户端能力依据实际共享核心版本和已确认的 Worker 版本判断。
 修改后运行 `python3 scripts/sync_versions.py`，同步 Cargo package/lock 元数据以及 PenMods 的 `xmake.lua` 和 `metadata.json`。Android Gradle 配置直接读取该清单。桌面 GUI 与 PenMods 正式构建会先检查同步状态；也可手动运行 `python3 scripts/sync_versions.py --check`。

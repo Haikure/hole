@@ -106,4 +106,47 @@ class NativeBridgeTest {
         val request = toStartRequest(restored.config, restored.password, restored.token)
         assertEquals(listOf("ssh"), request.config.provide.map { it.id })
     }
+    @Test fun minecraftCLIFieldsSurviveNativeImportStorageExportAndValidation() {
+        val document = """
+            server_url: wss://example.invalid/ws
+            room: room
+            password: password
+            token: token
+            device_name: desktop-test
+            ice: {punch: {sockets: 12, scan_width: 24, timeout: 12s}}
+            voice: {enabled: true, group: ${"a".repeat(64)}}
+            provide:
+              - id: world
+                service: tcp://127.0.0.1:25565
+                discovery: minecraft
+                minecraft: {description: 海岛世界, version: 1.20.1, online: 2, max: 20}
+            consume: []
+        """.trimIndent()
+        val directory = Files.createTempDirectory("hole-desktop-discovery")
+        try {
+            DesktopStorage(directory).use { storage ->
+                val imported = ConfigExchange.readCLI(document, StoredConfig())
+                assertEquals("minecraft", imported.config.provide.single().discovery)
+                assertEquals(MinecraftMetadata("海岛世界", "1.20.1", 2, 20), imported.config.provide.single().minecraft)
+                assertEquals("a".repeat(64), imported.config.voice.group)
+                assertEquals(NatPunchSettings(sockets = 12, scanWidth = 24, timeout = "12s"), imported.config.connection.ice.punch)
+                val state = DesktopState(config = imported.config, password = imported.password, token = imported.token)
+                storage.save(state)
+                val loaded = storage.load()
+                assertEquals(state, loaded)
+                val exported = ConfigExchange.cli(loaded.config, loaded.password, loaded.token, true)
+                val restored = ConfigExchange.readCLI(exported, StoredConfig())
+                assertEquals(imported.config.provide.single().copy(entryId = restored.config.provide.single().entryId), restored.config.provide.single())
+                assertEquals(imported.config.voice, restored.config.voice)
+                val runtime = toStartRequest(restored.config, restored.password, restored.token)
+                val normalized = JSONObject(NativeCore.invoke(0, "decode", kotlinx.serialization.json.Json.encodeToString(
+                    CoreConfig.serializer(), runtime.config)))
+                assertEquals("a".repeat(64), normalized.getJSONObject("voice").getString("group"))
+                assertEquals(2, normalized.getJSONArray("provide").getJSONObject(0).getJSONObject("minecraft").getInt("online"))
+                assertEquals(12, normalized.getJSONObject("ice").getJSONObject("punch").getInt("sockets"))
+            }
+        } finally {
+            Files.walk(directory).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+        }
+    }
 }

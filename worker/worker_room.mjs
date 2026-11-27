@@ -7,6 +7,17 @@ const MAX_MEMBERS = 128;
 const MAX_HOPS = 16;
 class RoomNoticeTooLarge extends Error {}
 const encoded = value => encoder.encode(value);
+function discoverableServices(provide) {
+  const services = [];
+  for (const item of [...(provide ?? [])].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (item.discovery !== 'minecraft' || item.service.protocol !== 'tcp') continue;
+    if (services.length === 32) break;
+    const next = {id: item.id, protocol: item.service.protocol, kind: item.discovery, ...(item.minecraft ? {minecraft: item.minecraft} : {})};
+    if (encoded(JSON.stringify([...services, next])).length > 2048) break;
+    services.push(next);
+  }
+  return services;
+}
 const b64 = bytes => {
   let text = '';
   for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode(...bytes.subarray(i, i + 8192));
@@ -226,6 +237,9 @@ export class RoomControl {
     }
     const members = [...this.room.members.values()].map(({ member }) => ({
       device_name: member.device_name, voice: member.voice === true, runtime_id: member.runtime_id,
+      // Bound the signed directory even when all 16 devices declare 64 maps.
+      // Only explicitly advertised names/protocols/kinds are discoverable.
+      services: discoverableServices(member.provide),
       core_version: member.core_version ?? '', worker_version: WORKER_VERSION,
       certificate: member.certificate ?? '', cert_fingerprint: member.cert_fingerprint,
       transport_epoch: member.transport_epoch, signal_online: !!this.direct(member.device_name),

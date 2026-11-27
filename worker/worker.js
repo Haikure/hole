@@ -422,7 +422,7 @@ export class Room {
   panelSnapshot() {
     const graph = this.control.snapshot();
     const members = graph.members.map(m => ({ device_name: m.device_name, voice: m.voice, core_version: m.core_version,
-      signal_online: m.signal_online, signal_recovering: m.signal_recovering, group_id: m.group_id }));
+      signal_online: m.signal_online, signal_recovering: m.signal_recovering, group_id: m.group_id, services: m.services }));
     const transports = [...this.ice.records.values()].filter(r => r.online).map(r => {
       const established = [r.a, r.b].map(name => r.established?.[name]?.generation === r.generation ? r.established[name].path_type : '');
       const punch = [r.a, r.b].map(name => {
@@ -542,6 +542,7 @@ export class Room {
         const left = entries[i], right = entries[j];
         const pairMappings = [...matchingPairs(left, right, providersById), ...matchingPairs(right, left, providersById)];
         const voicePair = left.member.voice === true && right.member.voice === true &&
+          (left.member.voice_group ?? '') === (right.member.voice_group ?? '') &&
           allowedVoice.has(left.member.device_name) && allowedVoice.has(right.member.device_name);
         if (!pairMappings.length && !voicePair) continue;
         if ((left.member.fixed_endpoint || right.member.fixed_endpoint) && (left.member.relay_only || right.member.relay_only)) {
@@ -653,6 +654,7 @@ function validateJoin(message) {
 
   return {
     ...iceFields,
+    voice_group: message.voice_group ?? '',
     voice: message.voice === true,
     token: String(message.token),
     device_name: message.device_name,
@@ -672,9 +674,21 @@ function normalizeProvide(entry) {
   const protocol = service.protocol;
   if (protocol !== "tcp" && protocol !== "udp") return null;
   if (typeof service.addr !== "string" || !service.addr || service.addr.length > 255 || !validPort(service.port)) return null;
+  const discovery = entry.discovery ?? '';
+  if (discovery !== '' && (discovery !== 'minecraft' || protocol !== 'tcp' || /\u0085/.test(entry.id))) return null;
+  let minecraft;
+  if (entry.minecraft !== undefined) {
+    const m = entry.minecraft;
+    const clean = (value, limit) => typeof value === 'string' && new TextEncoder().encode(value).length <= limit && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+    if (discovery !== 'minecraft' || !m || typeof m !== 'object' || !clean(m.description, 192) || !clean(m.version, 32) || !m.version ||
+        !Number.isInteger(m.online) || m.online < 0 || m.online > 1000000 || !Number.isInteger(m.max) || m.max < 0 || m.max > 1000000) return null;
+    minecraft = {description: m.description, version: m.version, online: m.online, max: m.max};
+  }
   return {
     id: entry.id,
     service: { protocol, addr: service.addr, port: Number(service.port) },
+    ...(discovery ? {discovery} : {}),
+    ...(minecraft ? {minecraft} : {}),
   };
 }
 

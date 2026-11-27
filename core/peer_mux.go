@@ -53,6 +53,7 @@ type mappingControl struct {
 	MappingToken  string            `json:"mapping_token,omitempty"`
 	Voice         bool              `json:"voice,omitempty"`
 	VoiceRevision uint64            `json:"voice_revision,string,omitempty"`
+	VoiceGroup    string            `json:"voice_group,omitempty"`
 }
 type receivedPacket struct {
 	id   sessionID
@@ -97,6 +98,7 @@ type muxPeer struct {
 	voiceSentEnabled     bool
 	voiceRemoteRevision  uint64
 	voiceRemoteEnabled   bool
+	voiceRemoteGroup     string
 	voiceSend            chan voiceSendRequest
 	voiceDatagrams       chan []byte
 	voiceFeedback        chan []byte
@@ -348,6 +350,7 @@ func (p *muxPeer) readControl() {
 			p.voiceSyncMu.Lock()
 			if m.VoiceRevision >= p.voiceRemoteRevision {
 				p.voiceRemoteRevision, p.voiceRemoteEnabled = m.VoiceRevision, m.Voice
+				p.voiceRemoteGroup = m.VoiceGroup
 			}
 			p.voiceSyncMu.Unlock()
 			p.syncVoice()

@@ -178,7 +178,8 @@ func (m *sessionManager) reconfigure(old, next Config) {
 			delete(m.listeners, id)
 		}
 	}
-	changed := func(id string) bool { a, ok := after[id]; return !ok || a != before[id] }
+	// Discovery metadata changes visibility, not the endpoint of live sessions.
+	changed := func(id string) bool { a, ok := after[id]; return !ok || a.Service != before[id].Service }
 	for key, entry := range m.tcp {
 		if changed(key.mapping) {
 			if entry.cancel != nil {

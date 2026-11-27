@@ -218,6 +218,7 @@ export function iceJoinFields(message) {
   if (message.relay_pairing !== undefined && (message.relay_pairing !== ALL_PAIRS || message.relay_order === undefined)) return null;
   const relayEnabled = message.relay_enabled ?? true;
   if (message.voice !== undefined && typeof message.voice !== "boolean") return null;
+  if (message.voice_group !== undefined && message.voice_group !== '' && (typeof message.voice_group !== 'string' || !/^[a-f0-9]{64}$/.test(message.voice_group) || message.live_config !== true)) return null;
   if (message.live_config !== undefined && typeof message.live_config !== "boolean") return null;
   if (message.peer_relay_version !== undefined && message.peer_relay_version !== PEER_RELAY_VERSION) return null;
   return { ...(message.core_version ? { core_version: message.core_version, certificate: message.certificate, worker_version: message.worker_version ?? '' } : {}), peer_relay_version: message.peer_relay_version ?? "", live_config: message.live_config === true, ...(message.punch_cone_pool?{punch_cone_pool:PUNCH_CONE_POOL}:{}), ...(message.punch_calibration?{punch_calibration:PUNCH_CALIBRATION}:{}), ...(message.direct_order?{direct_order:DIRECT_ORDER}:{}), ...(message.punch_schedule?{punch_schedule:PUNCH_SCHEDULE}:{}), ...(message.punch_version?{punch_version:PUNCH_VERSION}:{}), ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
@@ -344,7 +345,8 @@ export class RoomICE {
     const liveConfig = a.member.live_config === true && b.member.live_config === true;
     const peerRelay = profile===ICE_PROFILE && !relayRequired && pairing===ALL_PAIRS &&
       [a,b].every(e=>e.member.peer_relay_version===PEER_RELAY_VERSION);
-    const voiceChanged = record && record.voice !== voice;
+    const voiceGroup = voice ? a.member.voice_group ?? '' : '';
+    const voiceChanged = record && (record.voice !== voice || (record.voice_group ?? '') !== voiceGroup);
     const voiceRevision = !record ? "1" : String(BigInt(record.voice_revision ?? "1") + (voiceChanged ? 1n : 0n));
     let changed = false;
     let resetPath = false;
@@ -387,6 +389,7 @@ export class RoomICE {
     record.room_control = false;
     record.live_config = liveConfig;
     record.voice_revision = voiceRevision;
+    record.voice_group = voiceGroup;
     if (!record.online) changed = true;
     if (resetPath) await this.revokeHole(record);
     if (resetPath) this.revokePeerRelay(record);
@@ -512,6 +515,7 @@ export class RoomICE {
     const phase = record.peer_relay ? 'peer_relay' : fixed ? "fixed" : record.round_mode ? recordPhase(record, record.round ?? 0, index) : record.phase;
     const ready = { type: "transport_ready", transport_id: record.id, transport_generation: record.generation, profile: record.profile ?? ICE_PROFILE, session_version: 2, phase, relay_policy: fixed ? "" : record.relay_policy ?? "", peer_device: peerName, peer_runtime_id: record.runtime[1-index], peer_fingerprint: record.fingerprints[1-index], runtime_id: record.runtime[index], initiator_id: fixed ? direction.dialer_id : record.a, ...direction, mappings: record.mappings, voice: record.voice === true, live_config: record.live_config === true, voice_revision: record.voice_revision ?? "1", lease_until: String(record.lease_until), retry_after_ms: record.retry_after_ms ?? 0 };
     if (record.local_management) Object.assign(ready, {core_version:record.core_versions[index],peer_core_version:record.core_versions[1-index],worker_version:WORKER_VERSION,room_control:record.room_control===true});
+    if (record.voice_group) ready.voice_group = record.voice_group;
     if (record.punch_version) ready.punch_version = record.punch_version;
     if (record.manual_probe) ready.manual_probe = true;
     if (record.peer_relay) Object.assign(ready,{peer_relay_version:PEER_RELAY_VERSION,peer_relay:record.peer_relay});

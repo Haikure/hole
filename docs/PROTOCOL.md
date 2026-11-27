@@ -373,6 +373,12 @@ Hole 通道的 QUIC 空闲保活间隔设为 5 秒，保活响应也用于更新
 
 ### 语音能力与房间状态
 
+`voice.group` 是可选的 64 位小写十六进制世界会话标识，经 `join/member_update.voice_group` 注册。
+默认空组沿用普通房间语音；Worker 只在组相同时授权语音，返回 `transport_ready.voice_group`。
+改变组会更新 `voice_revision`，核心立即替换语音运行时、清空音频，并在 HMX `VOICE_STATE.voice_group` 中再次核对双方组与 Worker 授权。
+带组的语音要求在线配置协商，不支持此字段的旧 Worker 或对端不能回退为普通房间语音。
+组标识不进入发现目录或面板快照；房间语音设备总限额仍为 8。
+
 新版 `join` 可携带可选的 `voice: true` 能力声明。Worker 保留 `joined.room_members` 的旧字符串
 数组，同时向成员发送版本化 `room_state`：`members` 是包含 `device_name` 与 `voice` 的完整在线快照。
 只有两个成员都声明语音且位于前 8 个语音参与者内时，Worker 才创建 `transport_ready.voice: true`
@@ -593,6 +599,20 @@ TCP / UDP 各有 256 个会话限额；ICE 消费侧还执行设备级总量限�
 网络切换期间业务可能暂停，进程重启后建立新会话，不恢复旧进程 socket。
 
 ## 房间控制与按需信令
+
+普通 `provide` 只注册用于配对的服务，默认不进入发现目录。只有显式设置 `provide[].discovery: minecraft` 的 TCP 服务才发布到
+新版 Worker 的签名 `room_state.members[].services`，每项包含 `id`、`protocol` 与 `kind: minecraft`，不包含提供方的本地地址。
+显式发布者可以携带 `provide[].minecraft: {description, version, online, max}`，Worker 仅复制这四个字段至目录中的 `minecraft`。
+`description` 最多 192 UTF-8 字节，`version` 非空且最多 32 字节，两者不能含控制字符；`online` / `max` 为 0–1000000 的整数。
+无世界信息时省略该对象，普通注册不能携带非空世界信息。核心使用值拷贝隔离配置与快照，旧客户端忽略可选字段。
+人数 / 简介更新沿用 `member_update` 与签名目录事件，不重建已有映射或传输，不添加 Worker 定时器；Minecraft 发布端只在信息变化时提交。
+按 ID 排序，每成员最多 32 项且 JSON 不超过 2048 UTF-8 字节，目录限额不影响实际注册和转发数量。
+同房间成员无需建立数据连接即可发现这些服务；创建实际映射仍需匹配的 `consume` 与既有身份认证。
+核心快照 `room.services` 列出整个已认证目录，附带 `device_name` / `runtime_id`；它不同于只反映可达图的 `room.members`。
+`room.discovery_supported` 表示当前 Worker 已提供目录字段，旧 Worker 为 false。配置撤回、离线及运行实例更换沿用房间快照更新。
+此扩展不更改映射协议或 API 版本；旧核心忽略新增字段。撤回 discovery 标识只撤下发现条目，不停止该服务的原有映射。
+Minecraft 模组使用 `minecraft.<实例短ID>.<名称Base64URL>` 的服务 ID，同时显式声明 discovery；仅有 ID 前缀不会自动发布。
+模组只识别 `kind: minecraft` 的目录项。`panel_snapshot.members[].services` 复用同一目录，在无人连接时也能显示 MC 发布标识与世界名称。
 
 ### 连接图与分组
 

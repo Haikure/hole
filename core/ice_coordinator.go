@@ -129,7 +129,7 @@ func (c *iceCoordinator) submit(r Request) {
 			p.retireForFixedPolicy()
 		}
 	}
-	if old.Config.Voice.Enabled != r.Config.Voice.Enabled {
+	if old.Config.Voice != r.Config.Voice {
 		c.voiceMu.Lock()
 		previous := c.voice
 		if r.Config.Voice.Enabled {
@@ -464,6 +464,7 @@ func (c *iceCoordinator) memberDeclaration(ctx context.Context, platform Platfor
 		SignalVersion: 2, AuthMode: "shared-secret", RuntimeID: c.runtimeID, TransportEpoch: c.networkEpoch.Load(), TransportProfiles: profiles, SessionVersions: []int{sessionProtocol}, RelayPolicy: RelayPolicyUDPTCPTLS,
 		RelayEnabled: &relayEnabled, RelayOrder: order, RelayPairing: relayPairingAll, RelayOnly: r.Config.ICE.RelayOnly}
 	join.Voice = r.Config.Voice.Enabled
+	join.VoiceGroup = r.Config.Voice.Group
 	join.CoreVersion = CoreVersion
 	join.Certificate = base64.StdEncoding.EncodeToString(c.identity.Certificates[0].Certificate[0])
 	if c.room != nil {

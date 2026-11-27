@@ -17,8 +17,10 @@ import (
 // parity without changing the existing mobile API or adding a production
 // desktop -> mobile dependency (and its Android socket adapters).
 type portableProvide struct {
-	ID      string `json:"id" yaml:"id"`
-	Service string `json:"service" yaml:"service"`
+	ID        string                 `json:"id" yaml:"id"`
+	Service   string                 `json:"service" yaml:"service"`
+	Discovery string                 `json:"discovery,omitempty" yaml:"discovery,omitempty"`
+	Minecraft core.MinecraftMetadata `json:"minecraft,omitzero" yaml:"minecraft,omitempty"`
 }
 type portableConsume struct {
 	ID     string `json:"id" yaml:"id"`
@@ -86,8 +88,9 @@ func portableDocument(data []byte) (portableConfig, *rpcError) {
 		SessionTimeout: cfg.SessionTimeout.String(), CandidateInterfaces: append([]string{}, cfg.CandidateInterfaces...),
 		CandidateAddresses: append([]string{}, cfg.CandidateAddresses...), Provide: []portableProvide{}, Consume: []portableConsume{},
 	}
+	doc.ICE.InterfaceAllowlist = append([]string{}, cfg.ICE.InterfaceAllowlist...)
 	for _, p := range cfg.Provide {
-		doc.Provide = append(doc.Provide, portableProvide{p.ID, fmt.Sprintf("%s://%s", p.Service.Protocol, net.JoinHostPort(p.Service.Addr, strconv.Itoa(p.Service.Port)))})
+		doc.Provide = append(doc.Provide, portableProvide{p.ID, fmt.Sprintf("%s://%s", p.Service.Protocol, net.JoinHostPort(p.Service.Addr, strconv.Itoa(p.Service.Port))), p.Discovery, p.Minecraft})
 	}
 	for _, c := range cfg.Consume {
 		doc.Consume = append(doc.Consume, portableConsume{c.ID, net.JoinHostPort(c.Expose.Addr, strconv.Itoa(c.Expose.Port))})

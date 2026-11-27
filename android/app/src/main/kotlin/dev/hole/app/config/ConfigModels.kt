@@ -1,5 +1,8 @@
+@file:OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+
 package dev.hole.app.config
 
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -16,6 +19,16 @@ data class ProvideEntry(
     val host: String = "",
     val port: Int = 0,
     val enabled: Boolean = true,
+    val discovery: String = "",
+    val minecraft: MinecraftMetadata? = null,
+)
+
+@Serializable
+data class MinecraftMetadata(
+    val description: String = "",
+    val version: String = "",
+    val online: Int = 0,
+    val max: Int = 0,
 )
 
 @Serializable
@@ -68,8 +81,9 @@ data class StoredConfig(
 @Serializable
 data class VoiceSettings(
     val enabled: Boolean = false,
-    // Android-only audio input preference. The shared core only receives enabled.
+    // Android-only audio input preference; the core receives enabled and group.
     val microphoneSource: String = MICROPHONE_SOURCE_AUTO,
+    val group: String = "",
 )
 
 const val MICROPHONE_SOURCE_AUTO = "auto"
@@ -90,6 +104,7 @@ fun normalizeMicrophoneSource(source: String): String = when (source) {
 @Serializable
 data class CoreVoiceSettings(
     val enabled: Boolean = false,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val group: String = "",
 )
 
 // ---- 交给 Go 核心的有效配置（mobile facade API 1 请求格式，字段名与 mobile/README.md 一致）----
@@ -98,6 +113,8 @@ data class CoreVoiceSettings(
 data class CoreProvide(
     @SerialName("id") val id: String,
     @SerialName("service") val service: String,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val discovery: String = "",
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val minecraft: MinecraftMetadata? = null,
 )
 
 @Serializable

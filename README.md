@@ -47,8 +47,9 @@
 | [桌面](desktop/compose/README.md) | Kotlin Compose；Windows 安装包 / Linux AppImage，支持映射、语音与网络诊断 | `./build.sh desktop` |
 | [旧 Rust 桌面](desktop/README.md) | Rust + Yororen UI，内嵌 stdio 核心宿主 | `./build.sh desktop-rust` |
 | [PenMods](penmods/README.md) | 使用 `hole-core` 的插件 | [插件构建说明](penmods/README.md#构建) |
+| [Minecraft Forge](minecraft/README.md) | 实验版 1.20.1 联机模组，世界发现与人数、按需测延迟、连接进度、世界内语音，支持独立服务器和 FCL ARM64 适配 | `./build.sh minecraft` |
 
-构建产物放在 `dist/`。`./build.sh all` 构建 CLI、Android 手机和 Wear，不包含桌面或独立核心宿主。工具链、签名与验证方法见 [构建指南](docs/BUILDING.md)。
+构建产物放在 `dist/`。`./build.sh all` 构建 CLI、Android 手机和 Wear，不包含桌面、独立核心宿主或 Minecraft 模组。工具链、签名与验证方法见 [构建指南](docs/BUILDING.md)。
 
 ## 快速开始
 
@@ -87,6 +88,7 @@ device_name: device-a      # 设备 B 改为 device-b
 ### 3. 配对服务
 
 删除示例中本端不需要的映射项，两端使用相同的服务 `id`。
+普通 `provide` 默认只注册用于配对的服务，不进入房间发现列表。Minecraft 模组共享世界时会显式声明发布，信令面板以 `MC` 标识展示。
 
 **设备 A · 提供 SSH**（本机 SSH 服务监听 `22` 端口）：
 
