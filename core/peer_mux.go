@@ -428,6 +428,9 @@ func (p *muxPeer) readControl() {
 }
 
 func (p *muxPeer) syncMappings() {
+	if p.owner.parallelParent.Load() != nil && !p.owner.selectedMux(p) {
+		return
+	}
 	p.syncVoice()
 	p.mu.Lock()
 	list := make([]*muxChannel, 0, len(p.channels))
@@ -493,7 +496,14 @@ func (p *muxPeer) openMapping(c *muxChannel) {
 		}
 		return
 	}
+	activation := p.owner.activationMutex()
+	activation.Lock()
+	if !p.owner.selectedMux(p) {
+		activation.Unlock()
+		return
+	}
 	transport, err := client.bind(c.ctx, c)
+	activation.Unlock()
 	if err != nil {
 		return
 	}

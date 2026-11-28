@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -225,6 +226,7 @@ func (c *iceCoordinator) send(m iceSignalMessage) error {
 				if peer == nil {
 					return errors.New("signal disconnected")
 				}
+				peer = peer.signalPeer(m.ExpectedGeneration)
 				peer.mu.Lock()
 				ready := peer.ready
 				stale := peer.closed || !peer.online || ready.TransportGeneration != m.ExpectedGeneration
@@ -237,10 +239,16 @@ func (c *iceCoordinator) send(m iceSignalMessage) error {
 			switch m.Type {
 			case "transport_restart", "transport_established", "transport_failed", "hole_failed", "peer_relay_failed", "nat_status":
 				c.mu.Lock()
+				peer := c.peers[m.TransportID]
+				c.mu.Unlock()
+				key := m.Type + "/" + m.TransportID
+				if peer != nil && peer.relayPeer() != nil {
+					key += "/" + strconv.FormatUint(max(m.TransportGeneration, m.ExpectedGeneration), 10)
+				}
+				c.mu.Lock()
 				if c.pendingSignals == nil {
 					c.pendingSignals = map[string]iceSignalMessage{}
 				}
-				key := m.Type + "/" + m.TransportID
 				if _, exists := c.pendingSignals[key]; exists || len(c.pendingSignals) < 128 {
 					c.pendingSignals[key] = m
 					queued = true
@@ -336,7 +344,7 @@ func (c *iceCoordinator) run() error {
 			c.fixed.relay.revokeAll()
 		}
 		c.fixedMu.Unlock()
-		for _, peer := range c.peerList() {
+		for _, peer := range c.transportPeers() {
 			peer.mu.Lock()
 			// A queued restart may have been lost with the old WebSocket.
 			// Keep healthy media paths, but let the next replay request recovery.
@@ -475,6 +483,7 @@ func (c *iceCoordinator) memberDeclaration(ctx context.Context, platform Platfor
 	join.LiveConfig = true
 	join.PeerRelayVersion = peerRelayVersion
 	join.PathUpgrade = true
+	join.ParallelStart = true
 	join.PunchVersion = natPunchVersion
 	join.DirectOrder = directOrderICEFirst
 	join.PunchSchedule = natPunchSchedule
@@ -636,6 +645,9 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			return nil
 		}
 		cfg := c.request().Config
+		if err := c.validateParallelReady(m); err != nil {
+			return err
+		}
 		if (m.UpgradeProbe || m.UpgradeIdle || m.UpgradeCommit) && (!m.PathUpgrade || !m.localAuthorization() || m.Profile != ProfileICE || m.RelayRequired) {
 			return &Fault{Code: "protocol_mismatch", Message: "后台换路能力或路径策略无效"}
 		}
@@ -769,6 +781,7 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			c.peers[m.TransportID] = p
 		}
 		c.mu.Unlock()
+		p = c.promoteParallelDirect(p, m)
 		p.update(m)
 		if m.Profile != ProfileFixed {
 			c.requestTURN()
@@ -854,8 +867,13 @@ func (c *iceCoordinator) handle(m iceSignalMessage, sessionRequest Request, plat
 			if p == nil {
 				return nil
 			} // queued old-generation messages after last mapping removal
+			p = p.signalPeer(m.TransportGeneration)
 			p.mu.Lock()
 			pending := p.pending
+			if m.TransportGeneration != 0 && m.TransportGeneration != p.ready.TransportGeneration {
+				p.mu.Unlock()
+				return nil
+			}
 			p.stats.Error = &Fault{Code: m.Code, Message: m.Message}
 			p.mu.Unlock()
 			if pending != nil {
@@ -1097,7 +1115,7 @@ func (c *iceCoordinator) leaseRequest() (iceSignalMessage, bool) {
 }
 
 func (c *iceCoordinator) needsTURN() bool {
-	for _, p := range c.peerList() {
+	for _, p := range c.transportPeers() {
 		p.mu.Lock()
 		needed := p.online && !p.closed && p.ready.Profile != ProfileFixed && ((p.pending != nil && p.pending.ready.Phase != "direct" && p.pending.ready.Phase != "hole" && p.pending.ready.Phase != "peer_relay" && p.pending.ready.Phase != "relay_wait") || (p.active != nil && p.active.expires > 0))
 		p.mu.Unlock()

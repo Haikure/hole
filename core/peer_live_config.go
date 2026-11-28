@@ -53,10 +53,13 @@ func (p *muxPeer) receiveVoice(data []byte) bool {
 func (p *muxPeer) syncVoice() {
 	p.voiceSyncMu.Lock()
 	defer p.voiceSyncMu.Unlock()
+	activation := p.owner.activationMutex()
+	activation.Lock()
+	defer activation.Unlock()
 	p.owner.mu.Lock()
 	ready := p.owner.ready
-	active := p.owner.active != nil && p.owner.active.mux == p
 	p.owner.mu.Unlock()
+	active := p.owner.selectedMux(p)
 	if !active || p.ctx.Err() != nil {
 		return
 	}

@@ -28,7 +28,13 @@ for await (const line of inputLines) {
  chain = chain.then(async()=>{
   const input=JSON.parse(line);
   if(input.kind==='open') {
-   const ws={id:input.id,attachment:null,closed:false,serializeAttachment(a){this.attachment=structuredClone(a)},deserializeAttachment(){return structuredClone(this.attachment)},send(data){if(!this.closed)process.stdout.write(JSON.stringify({id:this.id,data})+'\n')},close(code,reason){this.closed=true;process.stdout.write(JSON.stringify({id:this.id,close:{code,reason}})+'\n')}};
+   const ws={id:input.id,attachment:null,closed:false,serializeAttachment(a){this.attachment=structuredClone(a)},deserializeAttachment(){return structuredClone(this.attachment)},send(data){
+    if(process.env.HOLE_FIXTURE_DROP_PARALLEL_DIRECT_ICE==='1') {
+     const m=JSON.parse(data),r=[...room.ice.records.values()].find(r=>r.id===m.transport_id);
+     if(['ice_description','ice_candidate'].includes(m.type) && r?.upgrade?.bootstrap && m.transport_generation===r.generation) return;
+    }
+    if(!this.closed)process.stdout.write(JSON.stringify({id:this.id,data})+'\n');
+   },close(code,reason){this.closed=true;process.stdout.write(JSON.stringify({id:this.id,close:{code,reason}})+'\n')}};
    // Model unequal signaling latency without reordering frames on a socket.
    if(process.env.HOLE_FIXTURE_COMMIT_DELAY) {
     const deliver=ws.send.bind(ws);let pending=Promise.resolve(),delayed=false;

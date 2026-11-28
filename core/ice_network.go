@@ -18,13 +18,14 @@ import (
 // Implements Pion's network boundary without creating stdnet (which enumerates
 // netlink on Android). Every socket/DNS operation stays on the pinned Platform.
 type iceNetwork struct {
-	process   *natProcessRun
-	ctx       context.Context
-	platform  Platform
-	facts     ICEPlatform
-	mu        sync.Mutex
-	sockets   []net.PacketConn
-	checkPace *iceCheckPacer
+	process    *natProcessRun
+	allocation *natAllocationGate
+	ctx        context.Context
+	platform   Platform
+	facts      ICEPlatform
+	mu         sync.Mutex
+	sockets    []net.PacketConn
+	checkPace  *iceCheckPacer
 }
 
 // rawSocket is the part of *net.UDPConn that quic-go tunes: the DF bit through
@@ -43,9 +44,10 @@ func newICENetwork(ctx context.Context, p Platform) (*iceNetwork, error) {
 	return &iceNetwork{ctx: ctx, platform: p, facts: facts}, nil
 }
 func (n *iceNetwork) ListenPacket(network, address string) (net.PacketConn, error) {
-	pc, err := n.platform.ListenPacket(n.ctx, network, address)
+	pc, err := n.listenPacket(n.ctx, network, address)
 	if err == nil {
 		n.track(pc)
+		pc = n.guardAllocation(pc)
 		pc = n.paced(pc)
 		if n.process != nil {
 			id := n.process.socket(pc, "ice", 0, 0)
@@ -110,7 +112,18 @@ func (n *iceNetwork) ListenTCP(string, *net.TCPAddr) (transport.TCPListener, err
 func (n *iceNetwork) Dial(network, address string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
 	defer cancel()
-	return n.platform.DialSignal(ctx, network, address)
+	if n.allocation != nil && strings.HasPrefix(network, "udp") {
+		release, err := n.allocation.acquire(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+	}
+	conn, err := n.platform.DialSignal(ctx, network, address)
+	if udp, ok := conn.(transport.UDPConn); err == nil && ok {
+		return n.guardAllocation(udp).(transport.UDPConn), nil
+	}
+	return conn, err
 }
 func (n *iceNetwork) DialUDP(network string, local, remote *net.UDPAddr) (transport.UDPConn, error) {
 	if local != nil && !local.IP.IsUnspecified() {
@@ -257,9 +270,10 @@ func (l iceListenConfig) Listen(context.Context, string, string) (net.Listener, 
 	return nil, transport.ErrNotSupported
 }
 func (l iceListenConfig) ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error) {
-	pc, err := l.n.platform.ListenPacket(ctx, network, address)
+	pc, err := l.n.listenPacket(ctx, network, address)
 	if err == nil {
 		l.n.track(pc)
+		pc = l.n.guardAllocation(pc)
 		pc = l.n.paced(pc)
 	}
 	return pc, err

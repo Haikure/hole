@@ -67,7 +67,7 @@ async function passwordMatches(password, expected) {
 
 function panelTransportRoute(record, established, phases) {
   if (established.includes('peer_relay') || phases.includes('peer_relay')) return record.peer_relay?.device ? { kind: 'peer_relay', device: record.peer_relay.device } : null;
-  if (established.includes('hole') || phases.includes('hole')) return record.hole?.device ? { kind: 'hole', device: record.hole.device } : null;
+  if (!record.hole?.error && (established.includes('hole') || phases.includes('hole'))) return record.hole?.device ? { kind: 'hole', device: record.hole.device } : null;
   if (established.includes('relay') || phases.some(phase => typeof phase === 'string' && phase.startsWith('relay_'))) return { kind: 'turn' };
   return null;
 }
@@ -80,7 +80,7 @@ function panelTransportPath(record) {
     return last ? { kind: last.kind, round: last.round, result: last.result } : null;
   });
   return { generation: record.generation, phases, direct_stage: record.direct_stage, round: record.round,
-    established, punch, route: panelTransportRoute(record, established, phases) };
+    established, punch, hole_error: record.hole?.error ?? '', route: panelTransportRoute(record, established, phases) };
 }
 
 // 成员声明、设备连接图和传输记录保存在 storage。
@@ -439,8 +439,10 @@ export class Room {
       // retained route until both endpoints acknowledge the replacement.
       const active = r.upgrade ? { ...r, ...r.upgrade.active, ice: {} } : r;
       const upgrade = r.upgrade ? { ...panelTransportPath(r), target: r.upgrade.target,
+        starting: r.upgrade.bootstrap === true,
         idle: r.upgrade.idle === true, committed: r.upgrade.committed === true,
         prepared: [r.a, r.b].map(name => r.upgrade.prepared?.[name] === true) } : null;
+      if (upgrade?.starting && !upgrade.target) upgrade.target = 'direct';
       return { id: r.id, a: r.a, b: r.b, ...panelTransportPath(active), profile: r.profile, blocked: r.blocked ?? '',
         relay_required: r.relay_required, voice: r.voice === true, upgrade,
         mappings: (r.mappings ?? []).map(m => m.mapping_id), control: r.room_control === true,

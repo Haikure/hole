@@ -955,6 +955,134 @@ test('Hole authorization needs only a real endpoint relation and both sides supp
  assert.ok(old.messages.some(m=>m.code==='peer_upgrade_required'));
  assert.equal([...f.r.ice.records.values()].filter(r=>r.online).length,0);
 });
+test('parallel Hole startup keeps independent generations and replays a bilateral direct decision',async()=>{
+ const f=await modernFixture(),a=f.socket(),b=f.socket(),h=f.socket();
+ const caps={path_upgrade:true,parallel_start:true,relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1',relay_order:['hole','udp'],hole_device:'hole-node'};
+ await f.r.webSocketMessage(h,JSON.stringify({...modernJoin('hole-node'),transport_profiles:[ICE_PROFILE,FIXED_PROFILE],fixed_endpoint:'127.0.0.1:39001',hole_serve:{enabled:true,max_pairs:8,bandwidth_mbps:0}}));
+ await f.r.webSocketMessage(a,JSON.stringify({...modernJoin('alpha',['one']),...caps}));
+ await f.r.webSocketMessage(b,JSON.stringify({...modernJoin('beta',[],['one']),...caps}));
+ let room=f.r,record=[...room.ice.records.values()][0];
+ const send=async(ws,message)=>room.webSocketMessage(ws,JSON.stringify({transport_id:record.id,...message}));
+ const ready=()=>b.messages.filter(m=>m.type==='transport_ready').at(-1);
+ const page=panelGraphFixture();
+ const panel=()=>room.panelSnapshot().transports.find(t=>t.id===record.id);
+ let first=record.generation;
+ const relay=record.upgrade.active.generation;
+ assert.equal(ready().phase,'direct');assert.equal(ready().parallel_relay.phase,'hole');
+ assert.notEqual(first,relay);assert.equal(record.upgrade.committed,false);
+ assert.equal(panel().generation,relay);
+ assert.deepEqual(panel().route,{kind:'hole',device:'hole-node'});
+ assert.deepEqual(panel().established,['','']);
+ assert.equal(panel().upgrade.generation,first);assert.equal(panel().upgrade.target,'direct');
+ assert.equal(panel().upgrade.starting,true);
+ assert.equal(page.phase(panel()),'Hole 中继建连中 · 后台尝试直连');
+ await room.webSocketMessage(h,JSON.stringify({type:'hole_failed',transport_id:record.id,transport_generation:relay}));
+ assert.equal(panel().route,null);
+ assert.equal(page.phase(panel()),'Hole 中继不可用 · 后台尝试直连');
+ await send(a,{type:'transport_restart',expected_generation:relay,relay_round:2,reason:'path_failed'});
+ assert.equal(record.generation,first,'relay failure canceled direct');
+ const fallback=record.upgrade.active.generation;
+ assert.equal(ready().parallel_relay.phase,'relay_udp');
+ assert.deepEqual(panel().route,{kind:'turn'});
+ assert.equal(page.phase(panel()),'TURN 中继建连中 · 后台尝试直连');
+ await send(a,{type:'ice_description',transport_generation:fallback,to_peer_id:'beta',ufrag:'abcd',pwd:'a'.repeat(24)});
+ room=f.newRoom();await send(b,{type:'transport_sync'});record=[...room.ice.records.values()][0];
+ assert.equal(record.upgrade.active.generation,fallback);
+ assert.ok(b.messages.some(m=>m.type==='ice_description' && m.transport_generation===fallback));
+ await send(a,{type:'transport_restart',expected_generation:fallback,relay_round:0,reason:'path_failed'});
+ const retained=record.upgrade.active.generation;
+ assert.equal(ready().parallel_relay.phase,'hole');
+ assert.deepEqual(panel().route,{kind:'hole',device:'hole-node'});
+ assert.equal(page.phase(panel()),'Hole 中继建连中 · 后台尝试直连');
+ await send(a,{type:'transport_restart',expected_generation:first,reason:'upgrade_failed'});
+ assert.equal(record.upgrade.idle,true);
+ await send(a,{type:'transport_restart',expected_generation:first,reason:'auto_upgrade'});
+ assert.equal(record.upgrade.idle,false,'direct retry waited for relay availability');
+ first=record.generation;
+ await send(a,{type:'transport_restart',expected_generation:first,reason:'ice_failed'});
+ const direct=record.generation;
+ assert.equal(record.direct_stage,'punch');assert.equal(record.upgrade.active.generation,retained);
+ assert.ok(BigInt(direct)>BigInt(retained));
+ for(const ws of [a,b]) await send(ws,{type:'transport_established',transport_generation:retained,path_type:'hole'});
+ assert.equal(page.phase(panel()),'Hole 中继已连接 · 后台预测打洞中');
+ await send(a,{type:'transport_upgrade_prepared',transport_generation:direct,path_type:'direct'});
+ assert.equal(record.upgrade.committed,false);
+ await send(b,{type:'transport_upgrade_prepared',transport_generation:direct,path_type:'direct'});
+ assert.equal(record.upgrade.committed,true);
+ await send(a,{type:'transport_established',transport_generation:direct,path_type:'direct'});
+ await send(b,{type:'transport_restart',expected_generation:retained,reason:'path_lost',relay_round:0});
+ assert.equal(record.generation,direct,'retiring relay failure aborted commit');
+ h.closed=true;await room.webSocketClose(h,1000,'closed',true);
+ assert.equal(record.generation,direct,'relay departure aborted commit');
+ assert.equal(record.upgrade.committed,true);
+ room=f.newRoom();await send(b,{type:'transport_sync'});record=[...room.ice.records.values()][0];
+ assert.equal(ready().upgrade_commit,true);
+ await send(b,{type:'transport_established',transport_generation:direct,path_type:'direct'});
+ assert.equal(record.upgrade,null);assert.equal(ready().parallel_relay,undefined);
+ assert.equal(record.generation,direct);
+});
+for(const scenario of ['idle','peer_candidate']) test(`parallel TURN direct survives ${scenario}, hibernation and stale candidates`,async()=>{
+ const f=await modernFixture(),sockets=Object.fromEntries(['alpha','beta','hole-node','relay'].map(n=>[n,f.socket()]));
+ let room=f.r;
+ const caps={voice:true,path_upgrade:true,parallel_start:true,relay_policy:RELAY_POLICY,relay_pairing:'all-pairs-v1',relay_order:['hole','udp'],hole_device:'hole-node'};
+ await room.webSocketMessage(sockets['hole-node'],JSON.stringify({...modernJoin('hole-node'),transport_profiles:[ICE_PROFILE,FIXED_PROFILE],fixed_endpoint:'127.0.0.1:39001',hole_serve:{enabled:true,max_pairs:8,bandwidth_mbps:0}}));
+ for(const name of ['alpha','beta']) await room.webSocketMessage(sockets[name],JSON.stringify({...modernJoin(name),...caps}));
+ let record=[...room.ice.records.values()].find(r=>r.a==='alpha' && r.b==='beta');
+ const id=record.id;
+ const send=(name,m)=>room.webSocketMessage(sockets[name],JSON.stringify({transport_id:id,transport_generation:record.generation,expected_generation:record.generation,...m}));
+ const resume=async()=>{room=f.newRoom();await room.loadState();record=[...room.ice.records.values()].find(r=>r.id===id);};
+ const ready=()=>sockets.beta.messages.filter(m=>m.type==='transport_ready' && m.transport_id===id).at(-1);
+ await send('alpha',{type:'transport_restart',expected_generation:record.upgrade.active.generation,relay_round:2,reason:'path_failed'});
+ await send('alpha',{type:'transport_restart',reason:'ice_failed'});
+ await send('alpha',{type:'transport_restart',reason:'upgrade_failed'});
+ assert.equal(record.upgrade.idle,true);
+ let direct=record.upgrade.active.generation;
+ assert.ok(BigInt(record.generation)>BigInt(direct),'exercise adopting an older, live generation');
+ if(scenario==='peer_candidate') {
+  for(const name of ['alpha','beta']) await send(name,{type:'transport_established',transport_generation:direct,path_type:'relay'});
+ } else {
+  await send('alpha',{type:'transport_established',transport_generation:direct,path_type:'direct'});
+ }
+ await room.webSocketMessage(sockets.relay,JSON.stringify({...modernJoin('relay'),...caps,relay_order:['udp'],hole_device:undefined}));
+ for(const leg of [...room.ice.records.values()].filter(r=>[r.a,r.b].includes('relay'))) {
+  // These legs also negotiate parallel startup; complete their direct branch.
+  for(const name of [leg.a,leg.b]) await room.webSocketMessage(sockets[name],JSON.stringify({type:'transport_upgrade_prepared',transport_id:leg.id,transport_generation:leg.generation,path_type:'direct'}));
+  for(const name of [leg.a,leg.b]) await room.webSocketMessage(sockets[name],JSON.stringify({type:'transport_established',transport_id:leg.id,transport_generation:leg.generation,path_type:'direct'}));
+ }
+ let grant;
+ if(scenario==='peer_candidate') {
+  assert.equal(record.upgrade.target,'peer_relay');
+  grant=record.peer_relay.route;
+  await send('alpha',{type:'transport_restart',expected_generation:direct,relay_round:2,reason:'turn_refresh'});
+  direct=record.upgrade.active.generation;
+  await send('alpha',{type:'transport_established',transport_generation:direct,path_type:'direct'});
+  for(const name of ['alpha','beta']) await send(name,{type:'transport_upgrade_prepared',path_type:'peer_relay'});
+  assert.equal(record.upgrade.committed,false,'a pending node relay cannot replace an installed direct path');
+ } else {
+  assert.equal(record.upgrade.target,'direct','late relay availability downgraded a direct TURN branch');
+ }
+ const discarded=record.generation,highest=record.generation_cursor;
+ assert.ok(record.upgrade,'one direct report must retain the other startup attempt');
+ await resume();
+ assert.equal(record.upgrade.active.generation,direct);
+ await send('beta',{type:'transport_established',transport_generation:direct,path_type:'direct'});
+ assert.equal(record.generation,direct);
+ assert.equal(record.upgrade,null);
+ assert.equal(record.phase,'direct');assert.equal(record.round,0);
+ assert.equal(ready().parallel_relay,undefined);assert.equal(ready().upgrade_probe,undefined);
+ const panel=room.panelSnapshot().transports.find(r=>r.id===id);
+ assert.equal(panel.route,null);assert.equal(panel.upgrade,null);
+ assert.deepEqual(panel.established,['direct','direct']);
+ if(grant) assert.ok(sockets.relay.messages.some(m=>m.type==='peer_relay_revoke' && m.peer_relay.route===grant));
+ await send('alpha',{type:'transport_upgrade_prepared',transport_generation:discarded,path_type:'peer_relay'});
+ await send('alpha',{type:'transport_restart',expected_generation:discarded,reason:'upgrade_failed'});
+ await send('alpha',{type:'transport_restart',reason:'auto_upgrade'});
+ assert.equal(record.generation,direct);assert.equal(record.upgrade,null);
+ await resume();await send('beta',{type:'transport_sync'});
+ assert.equal(ready().transport_generation,direct);assert.equal(ready().parallel_relay,undefined);
+ await send('alpha',{type:'transport_restart',reason:'manual_renomination'});
+ assert.ok(BigInt(record.generation)>BigInt(highest),'promotion forgot the discarded candidate generation');
+});
 test('Hole direct-first, offline fallback, lease renewal, hibernation and revocation',async()=>{
  const f=await holeFixture({only:false});assert.equal(f.record.round,0);assert.equal(f.record.hole,undefined);
  await f.r.webSocketMessage(f.a,JSON.stringify({type:'transport_restart',transport_id:f.record.id,expected_generation:f.record.generation,relay_round:1}));

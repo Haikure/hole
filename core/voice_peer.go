@@ -375,13 +375,17 @@ func (r *voiceRuntime) pullPCM(maxFrames int) []int16 {
 }
 
 func (r *voiceRuntime) bindPeer(peerID, transportID string, generation uint64, link voiceLink) {
+	selected := false
+	if mux, ok := link.(*muxPeer); ok {
+		selected = mux.owner.selectedMux(mux)
+	}
 	r.mu.Lock()
 	if r.closed || link.Context().Err() != nil {
 		r.mu.Unlock()
 		return
 	}
 	old := r.peers[peerID]
-	if old != nil && (old.link == link || (old.transport == transportID && old.generation > generation)) {
+	if old != nil && (old.link == link || (!selected && old.transport == transportID && old.generation > generation)) {
 		r.mu.Unlock()
 		return
 	}

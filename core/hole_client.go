@@ -112,7 +112,7 @@ func (p *holeClientPath) SetReadDeadline(t time.Time) error         { return p.c
 func (p *holeClientPath) SetWriteDeadline(t time.Time) error        { return p.conn.SetWriteDeadline(t) }
 func (p *holeClientPath) Close() error                              { return p.conn.Close() }
 
-func openHolePath(ctx context.Context, platform Platform, g *holeGrant, side int) (*holeClientPath, error) {
+func openHolePath(ctx context.Context, platform Platform, g *holeGrant, side int, allocation ...*natAllocationGate) (*holeClientPath, error) {
 	address, err := platform.ResolveUDP(ctx, g.Endpoint)
 	if err != nil {
 		return nil, err
@@ -120,6 +120,13 @@ func openHolePath(ctx context.Context, platform Platform, g *holeGrant, side int
 	network, local := "udp4", "0.0.0.0:0"
 	if address.IP.To4() == nil {
 		network, local = "udp6", "[::]:0"
+	}
+	if len(allocation) > 0 {
+		release, err := allocation[0].acquire(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 	}
 	conn, err := platform.ListenPacket(ctx, network, local)
 	if err != nil {
@@ -220,7 +227,11 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	if p.coordinator.deviceID() == g.Devices[1] {
 		side = 1
 	}
-	packet, err := openHolePath(handshakeCtx, platform, g, side)
+	var allocation []*natAllocationGate
+	if p.parallelParent.Load() != nil {
+		allocation = append(allocation, p.coordinator.natAllocation)
+	}
+	packet, err := openHolePath(handshakeCtx, platform, g, side, allocation...)
 	if err != nil {
 		p.failed(a, err)
 		return
@@ -311,9 +322,12 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	}
 	cleanup := sync.OnceFunc(func() { _ = transport.Close(); _ = packet.Close() })
 	live := &liveICETransport{ready: a.ready, pathType: "hole", mux: mux, session: conn, cancel: a.cancel, fixedCleanup: cleanup}
+	activation := p.activationMutex()
+	activation.Lock()
 	p.mu.Lock()
 	if p.pending != a || p.closed || a.ctx.Err() != nil {
 		p.mu.Unlock()
+		activation.Unlock()
 		live.close()
 		return
 	}
@@ -334,11 +348,14 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 	p.upgradeFailures = 0
 	p.nextUpgrade = time.Now().Add(upgradeInitialDelay)
 	p.mu.Unlock()
-	a.processStep("connected", "Hole 中继业务通道已就绪", 0, 0)
-	a.process.finish("connected", "Hole 中继已连接")
-	if mux.roomEnabled {
+	p.coordinator.natConnectionEstablished()
+	selected := p.installParallelRelay(live)
+	if selected && mux.roomEnabled {
 		p.coordinator.room.attach(mux)
 	}
+	activation.Unlock()
+	a.processStep("connected", "Hole 中继业务通道已就绪", 0, 0)
+	a.process.finish("connected", "Hole 中继已连接")
 	mux.syncMappings()
 	if old != nil {
 		old.close()
@@ -367,6 +384,9 @@ func (p *icePeer) attemptHole(a *iceAttempt) {
 		p.stats.RTTMS = 0
 	}
 	p.mu.Unlock()
+	if current {
+		current = p.lostParallelRelay(live)
+	}
 	if current && p.ctx.Err() == nil {
 		p.stateChanged()
 		if currentReady.UpgradeProbe || currentReady.UpgradeIdle {

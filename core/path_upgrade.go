@@ -11,10 +11,15 @@ const upgradeInitialDelay = 15 * time.Second
 // Only one endpoint schedules probes. The Worker makes topology-triggered
 // Peer Relay attempts immediately, independently of this direct retry timer.
 func (p *icePeer) probeUpgrade(now time.Time) {
+	if p.parallelParent.Load() != nil {
+		return
+	}
 	p.mu.Lock()
 	m, active := p.ready, p.active
+	starting := p.parallelRelay != nil && m.UpgradeIdle
 	if p.closed || !p.online || p.terminal || !m.PathUpgrade || m.RoomControl || m.RelayRequired || m.Profile != ProfileICE ||
-		m.InitiatorID != p.coordinator.deviceID() || active == nil || active.mux.ctx.Err() != nil || active.pathType == "direct" ||
+		m.InitiatorID != p.coordinator.deviceID() || (active == nil && !starting) ||
+		(active != nil && (active.mux.ctx.Err() != nil || active.pathType == "direct")) ||
 		p.pending != nil || p.retiring != nil || p.requestedGeneration != 0 || now.Before(p.nextUpgrade) {
 		p.mu.Unlock()
 		return
@@ -30,7 +35,7 @@ func (p *icePeer) probeUpgrade(now time.Time) {
 	p.mu.Unlock()
 	request := signalMessage("transport_restart")
 	request.TransportID, request.ExpectedGeneration, request.Reason = m.TransportID, m.TransportGeneration, "auto_upgrade"
-	if m.UpgradeProbe && !m.UpgradeIdle && active.ready.TransportGeneration != m.TransportGeneration {
+	if m.UpgradeProbe && !m.UpgradeIdle && active != nil && active.ready.TransportGeneration != m.TransportGeneration {
 		request.Reason = "upgrade_failed"
 	}
 	if err := p.coordinator.send(request); err != nil {
@@ -112,6 +117,9 @@ func (p *icePeer) failedUpgrade(a *iceAttempt, err error) {
 	}
 	p.pending = nil
 	p.stats.State = "active"
+	if p.active == nil {
+		p.stats.State = "reconnecting"
+	}
 	p.nextUpgrade = time.Now().Add(upgradeInitialDelay)
 	p.mu.Unlock()
 	fault := classifyError(err)

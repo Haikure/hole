@@ -616,7 +616,7 @@ func (e *Engine) NATPunchProcess(transportID string, after uint64) NATPunchProce
 		peer := coordinator.peers[transportID]
 		coordinator.mu.Unlock()
 		if peer != nil {
-			return peer.process.snapshot(after)
+			return peer.processRecorder().snapshot(after)
 		}
 	}
 	return NATPunchProcess{TransportID: transportID, Attempts: []NATPunchProcessRun{}, Events: []NATPunchProcessEvent{}}

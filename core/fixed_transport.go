@@ -289,6 +289,9 @@ func (c *iceCoordinator) validateFixedReady(m iceSignalMessage) error {
 }
 
 func (p *icePeer) retireForFixedPolicy() {
+	if relay := p.relayPeer(); relay != nil {
+		relay.retireForFixedPolicy()
+	}
 	p.mu.Lock()
 	if p.pending != nil {
 		p.pending.cancel()

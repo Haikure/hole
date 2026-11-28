@@ -1,11 +1,13 @@
 // One active path and at most one candidate per pair. The active route keeps
 // its original generation and grant until both endpoints install a successor.
-const fields=['generation','phase','round','direct_stage','hole','peer_relay','established'];
-const snapshot=r=>Object.fromEntries(fields.map(k=>[k,structuredClone(r[k]??null)]));
-const activeRecord=r=>({...r,...r.upgrade.active,upgrade:null});
+const fields=['generation','phase','round','direct_stage','hole','peer_relay','established','ice','retry','retry_after_ms','blocked'];
+export const snapshot=r=>Object.fromEntries(fields.map(k=>[k,structuredClone(r[k]??null)]));
+export const relayParent=Symbol('parallel relay parent');
+export const activeRecord=r=>({...r,...r.upgrade.active,upgrade:null});
 const relayPaths=new Set(['relay','hole','peer_relay']);
 const enabled=r=>r.path_upgrade && r.local_management && !r.room_control && !r.relay_required && !r.blocked && r.online;
 const activeRelay=r=>[r.a,r.b].every(n=>r.established?.[n]?.generation===r.generation && relayPaths.has(r.established[n].path_type));
+const hasDirect=r=>[r.a,r.b].some(n=>r.established?.[n]?.generation===r.generation && r.established[n].path_type==='direct');
 
 export function grantUpgradeActive(ice,r) {
   if (!r.upgrade) return;
@@ -28,7 +30,7 @@ async function publish(ice,r) {
 async function candidate(ice,r,target) {
   // The caller has already verified a better path exists or is due to probe.
   ice.revokePeerRelay(r);
-  r.generation=String(BigInt(r.generation)+1n);
+  r.generation=ice.nextGeneration(r);
   r.ice={};r.established={};r.hole=null;r.peer_relay=null;
   r.phase='direct';r.round=0;r.direct_stage='ice';r.retry_after_ms=0;
   Object.assign(r.upgrade,{target,idle:false,prepared:{},committed:false});
@@ -40,8 +42,22 @@ async function candidate(ice,r,target) {
   await publish(ice,r);
 }
 
+// The retained route may still be handshaking. Its generation and signaling
+// cache remain independently addressable until both endpoints install direct.
+export async function startParallel(ice,r) {
+  if(!r.parallel_start || !enabled(r) || r.upgrade || r.round!==0 || !r.relay_plan?.[0]?.device) return false;
+  r.round=1;r.phase='hole';r.established={};
+  await ice.prepareHole(r);
+  r.upgrade={active:snapshot(r),bootstrap:true};
+  r.hole=null;
+  await candidate(ice,r,'direct');
+  return true;
+}
+
 export async function startUpgrade(ice,r,peerOnly=false) {
   if(!enabled(r) || r.upgrade?.committed) return false;
+  if(r.upgrade?.bootstrap && hasDirect(activeRecord(r))) return false;
+  if(r.upgrade?.bootstrap && !ice.established(activeRecord(r)) && (peerOnly || !r.upgrade.idle)) return false;
   if(!r.upgrade && !activeRelay(r)) return false;
   const active=r.upgrade?activeRecord(r):r;
   const alreadyPeer=[r.a,r.b].some(n=>active.established?.[n]?.path_type==='peer_relay');
@@ -63,6 +79,7 @@ export async function handleUpgrade(ice,r,name,m) {
   if(m.type==='transport_upgrade_prepared') {
     const u=r.upgrade;
     if(!enabled(r) || !u || u.idle || m.transport_generation!==r.generation || m.path_type!==u.target) return true;
+    if(u.bootstrap && u.target==='peer_relay' && hasDirect(activeRecord(r))) return true;
     u.prepared[name]=true;
     if([r.a,r.b].every(n=>u.prepared[n])) u.committed=true;
     await ice.persist(r);
@@ -90,14 +107,15 @@ export async function handleUpgrade(ice,r,name,m) {
     // The active route really failed, or a committed candidate was lost.
     // Return to normal recovery with a fresh generation, never revive a grant.
     await clearUpgrade(ice,r);ice.revokePeerRelay(r);
-    r.generation=String(BigInt(r.generation)+1n);r.ice={};r.established={};
+    r.generation=ice.nextGeneration(r);r.ice={};r.established={};
     r.round=0;r.phase='direct';r.direct_stage='ice';r.retry_after_ms=0;
+    if(await startParallel(ice,r)) return true;
     await publish(ice,r);return true;
   }
   if(m.reason==='manual_renomination') {await candidate(ice,r,'direct');return true;}
   if(r.upgrade.idle) {ice.notify(r,name,true);return true;}
   if(m.reason==='ice_failed' && r.upgrade.target==='direct' && r.direct_order==='ice-first-v1' && r.direct_stage==='ice') {
-    r.generation=String(BigInt(r.generation)+1n);r.ice={};r.upgrade.prepared={};r.direct_stage='punch';
+    r.generation=ice.nextGeneration(r);r.ice={};r.upgrade.prepared={};r.direct_stage='punch';
     await publish(ice,r);return true;
   }
   // Coalesce a late ICE failure after the other endpoint began punching.
@@ -113,4 +131,16 @@ export async function finishUpgrade(ice,r) {
   await clearUpgrade(ice,r);
   await ice.persist(r);
   ice.notify(r,r.a);ice.notify(r,r.b);
+}
+
+// A TURN round can nominate host/srflx candidates and become a direct path.
+// Both endpoints already installed this generation; retain it and retire the
+// other startup attempt rather than replacing direct with a slower node path.
+export async function finishParallelDirect(ice,r) {
+  const parent=r[relayParent];
+  if(!parent?.upgrade?.bootstrap || parent.upgrade.committed || !ice.established(r) ||
+      ![r.a,r.b].every(n=>r.established[n].path_type==='direct')) return;
+  ice.revokePeerRelay(parent);
+  Object.assign(parent,snapshot(r),{upgrade:null,phase:'direct',round:0,direct_stage:'ice',retry:0,retry_after_ms:0});
+  await publish(ice,parent);
 }

@@ -789,7 +789,7 @@ func (c *iceCoordinator) signalNeeded() bool {
 	}
 	for _, p := range c.peerList() {
 		p.mu.Lock()
-		negotiating := !p.closed && (p.pending != nil || p.retiring != nil || p.requestedGeneration != 0)
+		negotiating := !p.closed && (p.pending != nil || p.parallelRelay != nil || p.retiring != nil || p.requestedGeneration != 0)
 		recovering := !p.closed && !p.terminal && p.online && p.active == nil && (len(p.ready.Mappings) > 0 || p.ready.Voice)
 		ready := p.ready
 		p.mu.Unlock()

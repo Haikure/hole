@@ -29,6 +29,8 @@ type iceSignalMessage struct {
 	RoomControl      bool              `json:"room_control,omitempty"`
 	ManualProbe      bool              `json:"manual_probe,omitempty"`
 	PathUpgrade      bool              `json:"path_upgrade,omitempty"`
+	ParallelStart    bool              `json:"parallel_start,omitempty"`
+	ParallelRelay    *iceSignalMessage `json:"parallel_relay,omitempty"`
 	UpgradeProbe     bool              `json:"upgrade_probe,omitempty"`
 	UpgradeIdle      bool              `json:"upgrade_idle,omitempty"`
 	UpgradeCommit    bool              `json:"upgrade_commit,omitempty"`

@@ -616,6 +616,14 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
   }
   function phase(record) {
     if (record.blocked) return record.blocked === 'peer_identity_mismatch' ? '对端身份校验失败' : '协议不兼容';
+    if (record.upgrade?.starting) {
+      if (record.hole_error) return 'Hole 中继不可用 · ' + upgradeLabel(record.upgrade);
+      const relayName = record.route?.kind === 'hole' ? 'Hole 中继' : record.route?.kind === 'turn' ? 'TURN 中继' : '中继';
+      const relay = record.established?.length === 2 && record.established.every(Boolean) ? relayName + '已连接'
+        : record.established?.some(Boolean) ? relayName + '一端已连接' : relayName + '建连中';
+      return relay + ' · ' + upgradeLabel(record.upgrade);
+    }
+    if (record.hole_error) return 'Hole 中继不可用';
     if (record.upgrade) return '已连接 · ' + upgradeLabel(record.upgrade);
     if (record.established?.length === 2 && record.established.every(Boolean)) return '双方已确认连接';
     if (record.established?.some(Boolean)) return '一端已确认连接';

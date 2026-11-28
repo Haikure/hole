@@ -1,5 +1,5 @@
 import { WORKER_VERSION, modernMember, versionAtLeast } from './software_version.mjs';
-import { clearUpgrade, grantUpgradeActive, handleUpgrade, finishUpgrade, scanPeerUpgrades } from './worker_upgrade.mjs';
+import { clearUpgrade, grantUpgradeActive, handleUpgrade, finishUpgrade, finishParallelDirect, scanPeerUpgrades, startParallel, activeRecord, snapshot, relayParent } from './worker_upgrade.mjs';
 
 // ICE signaling is scoped by an authenticated socket and a persisted device pair.
 export const ICE_PROFILE = "ice-quic-mux-v1";
@@ -99,7 +99,7 @@ const SIGNAL_RESUME_GRACE_MS = LEASE_MS;
 const MAX_CANDIDATES = 64;
 export const VOICE_MEMBER_LIMIT = 8;
 const send = (ws, value) => { try { ws.send(JSON.stringify(value)); } catch {} };
-const fault = (ws, code, message, request = {}) => send(ws, { type: "error", code, message, request_id: request.request_id, transport_id: request.transport_id });
+const fault = (ws, code, message, request = {}) => send(ws, { type: "error", code, message, request_id: request.request_id, transport_id: request.transport_id, transport_generation:request.transport_generation??request.expected_generation });
 const liveRecord = record => !!record?.online && (record.local_management || record.lease_until > Date.now());
 const decimal = value => typeof value === "string" && /^(0|[1-9][0-9]{0,19})$/.test(value) && BigInt(value) <= 18446744073709551615n;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -228,7 +228,8 @@ export function iceJoinFields(message) {
   if (message.live_config !== undefined && typeof message.live_config !== "boolean") return null;
   if (message.peer_relay_version !== undefined && message.peer_relay_version !== PEER_RELAY_VERSION) return null;
   if (message.path_upgrade !== undefined && typeof message.path_upgrade !== 'boolean') return null;
-  return { path_upgrade: message.path_upgrade === true, ...(message.core_version ? { core_version: message.core_version, certificate: message.certificate, worker_version: message.worker_version ?? '' } : {}), peer_relay_version: message.peer_relay_version ?? "", live_config: message.live_config === true, ...(message.punch_cone_pool?{punch_cone_pool:PUNCH_CONE_POOL}:{}), ...(message.punch_calibration?{punch_calibration:PUNCH_CALIBRATION}:{}), ...(message.direct_order?{direct_order:DIRECT_ORDER}:{}), ...(message.punch_schedule?{punch_schedule:PUNCH_SCHEDULE}:{}), ...(message.punch_version?{punch_version:PUNCH_VERSION}:{}), ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
+  if (message.parallel_start !== undefined && typeof message.parallel_start !== 'boolean') return null;
+  return { parallel_start: message.parallel_start === true, path_upgrade: message.path_upgrade === true, ...(message.core_version ? { core_version: message.core_version, certificate: message.certificate, worker_version: message.worker_version ?? '' } : {}), peer_relay_version: message.peer_relay_version ?? "", live_config: message.live_config === true, ...(message.punch_cone_pool?{punch_cone_pool:PUNCH_CONE_POOL}:{}), ...(message.punch_calibration?{punch_calibration:PUNCH_CALIBRATION}:{}), ...(message.direct_order?{direct_order:DIRECT_ORDER}:{}), ...(message.punch_schedule?{punch_schedule:PUNCH_SCHEDULE}:{}), ...(message.punch_version?{punch_version:PUNCH_VERSION}:{}), ...(hole?{hole_version:HOLE_VERSION,hole_device:message.hole_device??"",hole_serve:message.hole_serve??null}:{}), signal_version: 2, auth_mode: "shared-secret", runtime_id: message.runtime_id, transport_epoch: message.transport_epoch, transport_profiles: [...new Set(message.transport_profiles)], session_versions: [2], voice: message.voice === true, relay_only: message.relay_only === true, fixed_endpoint: message.fixed_endpoint ?? "", relay_policy: message.relay_policy ?? "", relay_pairing: message.relay_pairing ?? "", ...(message.relay_order === undefined ? {} : {relay_order:relayEnabled ? [...message.relay_order] : hole ? message.relay_order.filter(t=>t==='hole') : []}) };
 }
 export function negotiateProfile(left, right) {
   if (modernMember(left) !== modernMember(right)) return null;
@@ -264,7 +265,18 @@ export class RoomICE {
     if (!this.roomName && name) { this.roomName = name; await this.state.storage.put("room_name", name); }
   }
   async persist(record) {
+    if(record[relayParent]) {
+      const parent=record[relayParent];
+      if(!parent.upgrade?.bootstrap) return;
+      parent.upgrade.active=snapshot(record);
+      record=parent;
+    }
     await this.state.storage.put(`transport:${record.id}`, record);
+  }
+  nextGeneration(record) {
+    const parent=record[relayParent]??record;
+    const latest=[parent.generation,parent.generation_cursor??'0',parent.upgrade?.active.generation??'0'].map(BigInt).reduce((a,b)=>a>b?a:b);
+    return parent.generation_cursor=String(latest+1n);
   }
   async scheduleCleanup() {
     let next = null;
@@ -313,6 +325,7 @@ export class RoomICE {
     const localManagement = modernMember(a.member) && modernMember(b.member);
     const pathUpgrade = localManagement && a.member.path_upgrade===true && b.member.path_upgrade===true &&
       !a.member.relay_only && !b.member.relay_only && negotiateProfile(a.member,b.member)===ICE_PROFILE;
+    const parallelStart=pathUpgrade && a.member.parallel_start===true && b.member.parallel_start===true;
     seen.add(key);
     const mappings = matches.map(m => ({ map_key: JSON.stringify([this.roomName, m.provider_device, m.consumer_device, m.id]), mapping_id: m.id, provider_id: m.provider_device, consumer_id: m.consumer_device, service: m.service, expose: m.consumer_expose })).sort((x, y) => x.map_key.localeCompare(y.map_key));
     let record = this.records.get(key);
@@ -351,7 +364,17 @@ export class RoomICE {
     // path (or a path through another relay). Only the selected Hole matters.
     const selectedHole=record?.hole??record?.upgrade?.active.hole;
     const holeIdentity = values => values?.find(([device])=>device===selectedHole?.device) ?? null;
-    const selectedHoleChanged = selectedHole && !same(holeIdentity(record.hole_identities),holeIdentity(identities));
+    let selectedHoleChanged = selectedHole && !same(holeIdentity(record.hole_identities),holeIdentity(identities));
+    if(selectedHoleChanged && record.upgrade?.bootstrap && same(record.runtime,runtime) && same(record.epochs,epochs)) {
+      if(!record.upgrade.committed) {
+        const relay=activeRecord(record);
+        relay[relayParent]=record;
+        relay.generation=this.nextGeneration(relay);relay.ice={};relay.established={};
+        await this.prepareHole(relay);
+        record.upgrade.active=snapshot(relay);
+      }
+      selectedHoleChanged=false;
+    }
     const fixedEndpoints = [a.member.fixed_endpoint || "", b.member.fixed_endpoint || ""];
     const liveConfig = a.member.live_config === true && b.member.live_config === true;
     const peerRelay = profile===ICE_PROFILE && !relayRequired && pairing===ALL_PAIRS &&
@@ -366,8 +389,8 @@ export class RoomICE {
       record = { id: crypto.randomUUID(), pair_key: key, a: a.member.device_name, b: b.member.device_name, generation: "1", phase: "direct", round: 0, round_mode: roundMode, relay_orders: relayOrders, runtime, fingerprints, epochs, mappings, voice, ice: {}, retry: 0 };
       changed = true;
       resetPath = true;
-    } else if ((record.path_upgrade??false)!==pathUpgrade || (record.punch_cone_pool??"")!==punchConePool || (record.live_config ?? false) !== liveConfig || (record.punch_calibration??"")!==punchCalibration || (record.direct_order??"")!==directOrder || (record.punch_schedule??"")!==punchSchedule || (record.punch_version??"")!==punchVersion || (record.hole && !localManagement && record.lease_until<=Date.now()) || !same(record.hole_devices??null,holeDevices) || selectedHoleChanged || (record.profile ?? ICE_PROFILE) !== profile || !same(record.fixed_endpoints ?? ["", ""], fixedEndpoints) || (voiceChanged && !liveConfig) || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
-      record.generation = (BigInt(record.generation) + 1n).toString(); record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
+    } else if ((record.parallel_start??false)!==parallelStart || (record.path_upgrade??false)!==pathUpgrade || (record.punch_cone_pool??"")!==punchConePool || (record.live_config ?? false) !== liveConfig || (record.punch_calibration??"")!==punchCalibration || (record.direct_order??"")!==directOrder || (record.punch_schedule??"")!==punchSchedule || (record.punch_version??"")!==punchVersion || (record.hole && !localManagement && record.lease_until<=Date.now()) || !same(record.hole_devices??null,holeDevices) || selectedHoleChanged || (record.profile ?? ICE_PROFILE) !== profile || !same(record.fixed_endpoints ?? ["", ""], fixedEndpoints) || (voiceChanged && !liveConfig) || !same(record.runtime, runtime) || !same(record.fingerprints, fingerprints) || !same(record.epochs, epochs) || !same(record.relay_only ?? [false,false], relayOnly) || (record.relay_policy ?? "") !== relayPolicy || (record.round_mode ?? false) !== roundMode || (record.relay_pairing ?? "") !== pairing || (roundMode && !same(record.relay_orders, relayOrders))) {
+      record.generation = this.nextGeneration(record); record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
       record.runtime = runtime; record.fingerprints = fingerprints; record.epochs = epochs; record.blocked = null; record.voice = voice; changed = true;
       resetPath = true;
     } else if (!record.online) {
@@ -380,7 +403,7 @@ export class RoomICE {
         record.resume_until = 0;
         changed = true;
       } else {
-        record.generation = (BigInt(record.generation) + 1n).toString();
+        record.generation = this.nextGeneration(record);
         record.phase = "direct"; record.round = 0; record.ice = {}; record.retry = 0;
         record.blocked = null;
         changed = true;
@@ -391,12 +414,13 @@ export class RoomICE {
     if (!same(record.hole_identities??null,identities)) changed = true;
     if (record.peer_relay && !peerRelay) {
       this.revokePeerRelay(record);
-      record.generation=(BigInt(record.generation)+1n).toString();
+      record.generation=this.nextGeneration(record);
       record.round=0;record.phase='direct';record.ice={};resetPath=true;changed=true;
     }
     if (voiceChanged) changed = true;
     record.local_management = localManagement;
     record.path_upgrade = pathUpgrade && profile===ICE_PROFILE && !relayRequired;
+    record.parallel_start = parallelStart;
     record.core_versions = [a.member.core_version ?? '', b.member.core_version ?? ''];
     record.room_control = false;
     record.live_config = liveConfig;
@@ -439,6 +463,7 @@ export class RoomICE {
     this.grantPeerRelay(record);
     grantUpgradeActive(this,record);
     if (wantsHole && !record.upgrade && !record.peer_relay && (resetPath || !record.hole)) await this.prepareHole(record);
+    if(resetPath) await startParallel(this,record);
     if (changed) { record.expires_at = Date.now() + OFFLINE_RETENTION_MS; await this.persist(record); }
     if (changed) { this.notify(record, a.member.device_name, true); this.notify(record, b.member.device_name, true); }
   }
@@ -518,6 +543,7 @@ export class RoomICE {
       runtime_id:h.relay_runtime,transport_epoch:h.relay_epoch,lease_until:String(record.lease_until),hole:h});
   }
   notify(record, name, replay = false) {
+    record=record[relayParent]??record;
     if (record.local_management && !record.room_control && !this.established(record) && !this.bothDirect(record)) {
       for (const device of [record.a, record.b]) {
         const entry = this.member(device);
@@ -526,6 +552,15 @@ export class RoomICE {
       return;
     }
     const own = this.member(name); if (!own) return;
+    const ready=this.ready(record,name);
+    if(record.upgrade?.bootstrap) ready.parallel_relay=this.ready(activeRecord(record),name);
+    send(own.ws,ready);
+    if(replay && record.profile!==FIXED_PROFILE) {
+      this.replayICE(record,name,own.ws);
+      if(record.upgrade?.bootstrap) this.replayICE(activeRecord(record),name,own.ws);
+    }
+  }
+  ready(record,name) {
     const index = name === record.a ? 0 : 1;
     const peerName = index === 0 ? record.b : record.a;
     const fixed = record.profile === FIXED_PROFILE;
@@ -537,6 +572,7 @@ export class RoomICE {
     if (record.punch_version) ready.punch_version = record.punch_version;
     if (record.manual_probe) ready.manual_probe = true;
     if (record.path_upgrade) ready.path_upgrade = true;
+    if (record.parallel_start) ready.parallel_start = true;
     if (record.upgrade) Object.assign(ready,{upgrade_probe:true,upgrade_idle:record.upgrade.idle===true,upgrade_commit:record.upgrade.committed===true});
     if (record.peer_relay) Object.assign(ready,{peer_relay_version:PEER_RELAY_VERSION,peer_relay:record.peer_relay});
     if (record.direct_order) Object.assign(ready,{direct_order:record.direct_order,direct_stage:record.direct_stage??'ice'});
@@ -549,17 +585,17 @@ export class RoomICE {
     if (!fixed && record.relay_pairing) ready.relay_pairing = record.relay_pairing;
     Object.assign(ready, {relay_only_policy:RELAY_ONLY_POLICY, relay_required:record.relay_required === true,
       relay_only:record.relay_only?.[index] === true, peer_relay_only:record.relay_only?.[1-index] === true});
-    send(own.ws, ready);
-    // Capability and credentials are scoped to this authorized generation.
-    if (replay && !fixed) {
+    return ready;
+  }
+  replayICE(record,name,ws) {
+      const peerName=record.a===name?record.b:record.a;
       const cached = record.ice[peerName]; if (!cached) return;
       const common = { transport_id: record.id, transport_generation: record.generation, peer_device: peerName };
-      if (cached.description) send(own.ws, { ...common, type: "ice_description", ...cached.description });
-      for (const candidate of cached.candidates ?? []) send(own.ws, { ...common, type: "ice_candidate", candidate });
-      if (cached.end) send(own.ws, { ...common, type: "ice_candidate", end_of_candidates: true });
-      for (const punch of cached.punch ?? []) send(own.ws, {...common,type:'nat_punch',punch});
-      if (cached.nat_status) send(own.ws, {...common,type:'nat_status',nat:cached.nat_status});
-    }
+      if (cached.description) send(ws, { ...common, type: "ice_description", ...cached.description });
+      for (const candidate of cached.candidates ?? []) send(ws, { ...common, type: "ice_candidate", candidate });
+      if (cached.end) send(ws, { ...common, type: "ice_candidate", end_of_candidates: true });
+      for (const punch of cached.punch ?? []) send(ws, {...common,type:'nat_punch',punch});
+      if (cached.nat_status) send(ws, {...common,type:'nat_status',nat:cached.nat_status});
   }
   async finish(seen, resumeNames = new Set()) {
     for (const [key, record] of this.records) {
@@ -673,7 +709,15 @@ export class RoomICE {
     if (message.type==='hole_failed') {
       const retained=[...this.records.values()].find(r=>r.online && r.id===message.transport_id && r.upgrade?.active.hole?.device===name &&
         r.upgrade.active.hole.relay_runtime===member.runtime_id && r.upgrade.active.generation===message.transport_generation);
-      if(retained) {await handleUpgrade(this,retained,retained.a,{type:'transport_restart',reason:'upgrade_path_lost'});return true;}
+      if(retained) {
+        if(retained.upgrade.bootstrap && !retained.upgrade.committed) {
+          const relay=activeRecord(retained);relay[relayParent]=retained;
+          await this.revokeHole(relay);
+          relay.hole={device:name,error:'中继路由不可用',generation:relay.generation};
+          await this.persist(relay);this.notify(retained,retained.a);this.notify(retained,retained.b);
+        } else if(!retained.upgrade.committed) await handleUpgrade(this,retained,retained.a,{type:'transport_restart',reason:'upgrade_path_lost'});
+        return true;
+      }
       const record=[...this.records.values()].find(r=>r.id===message.transport_id && r.hole?.device===name && r.hole.relay_runtime===member.runtime_id && r.hole.generation===message.transport_generation);
       if (record) {
         await this.revokeHole(record);record.hole={device:name,error:'中继路由不可用',generation:record.generation};
@@ -690,7 +734,7 @@ export class RoomICE {
         // A lease is a fresh authorization reply, not persistent topology.
         // Reconstructing this value after hibernation requires no storage write.
         if (!record.local_management && record.lease_until<=Date.now() && record.hole && !record.hole.error) {
-          record.generation=(BigInt(record.generation)+1n).toString();record.ice={};
+          record.generation=this.nextGeneration(record);record.ice={};
           record.lease_until=record.local_management?0:Date.now()+LEASE_MS;await this.prepareHole(record);await this.persist(record);
           this.notify(record,record.a);this.notify(record,record.b);
         }
@@ -705,8 +749,14 @@ export class RoomICE {
       return true;
     }
     if (message.type === "turn_request") { await this.turn(ws, member, message); return true; }
-    const record = [...this.records.values()].find(r => r.id === message.transport_id && (r.a === name || r.b === name));
+    let record = [...this.records.values()].find(r => r.id === message.transport_id && (r.a === name || r.b === name));
     if (!record || !record.online || (record.mappings.length === 0 && record.voice !== true && !record.room_control)) { fault(ws, "transport_not_authorized", "当前设备没有该对端传输关系", message); return true; }
+    const generation=message.type==='transport_restart'?message.expected_generation:message.transport_generation;
+    if(record.upgrade?.bootstrap && generation===record.upgrade.active.generation) {
+      if(record.upgrade.committed && message.type!=='transport_established') return true;
+      const parent=record;
+      record=activeRecord(parent);record[relayParent]=parent;
+    }
     const peerName = record.a === name ? record.b : record.a;
     if (message.type === "transport_failed") {
       if (message.transport_generation === record.generation && ["peer_identity_mismatch", "protocol_mismatch"].includes(message.code)) {
@@ -729,7 +779,7 @@ export class RoomICE {
       const manual = message.reason==='manual_renomination';
       if (record.profile === FIXED_PROFILE) {
         if (message.phase !== 'fixed') { fault(ws, 'invalid_phase', '固定入口连接只能重试固定路径', message); return true; }
-        record.generation = (BigInt(record.generation) + 1n).toString();
+        record.generation = this.nextGeneration(record);
         record.fixed_direction = (record.fixed_direction ?? 0) + 1;
         record.retry = manual ? 1 : (record.retry ?? 0) + 1;
         record.retry_after_ms = manual ? 0 : Math.min(15_000, 1000 * 2 ** Math.min(record.retry - 1, 4));
@@ -760,6 +810,7 @@ export class RoomICE {
           next = usableRelayRound(record, next || 1);
           if (!next) { next = usableRelayRound(record, 1); wrapped = true; }
         }
+        if(record[relayParent] && !next) {next=usableRelayRound(record,1);wrapped=true;}
         record.round = next;
       } else {
         const phaseOrder = record.relay_policy === RELAY_POLICY ? orderedPhases : compatiblePhases;
@@ -778,7 +829,7 @@ export class RoomICE {
       if (manual) { record.direct_failures=0; record.retry=0; }
       record.manual_probe = manual || (record.manual_probe===true && !wrapped &&
         ['ice_failed','path_failed','direct_exhausted','peer_relay_failed'].includes(message.reason));
-      record.generation = (BigInt(record.generation) + 1n).toString(); record.ice = {};
+      record.generation = this.nextGeneration(record); record.ice = {};record.established={};
       record.retry = (record.retry ?? 0) + 1;
       record.relay_only ??= [false,false];
       record.retry_after_ms = wrapped && !manual && message.reason !== "turn_refresh" ? Math.min(15_000, 1000 * 2 ** Math.min(record.retry, 4)) : 0;
@@ -787,6 +838,7 @@ export class RoomICE {
       const tryPeer=direct && !startPunch && !retryDirect && ['ice_failed','path_failed','direct_exhausted'].includes(message.reason);
       if (tryPeer) this.preparePeerRelay(record);
       if (record.hole_version && !record.peer_relay) await this.prepareHole(record);
+      if(!record[relayParent] && !manual && await startParallel(this,record)) return true;
       await this.persist(record); this.notify(record, record.a); this.notify(record, record.b); return true;
     }
     if (!decimal(message.transport_generation) || message.transport_generation !== record.generation) return true;
@@ -801,6 +853,7 @@ export class RoomICE {
       }
       record.direct_failures=0;
       if (record.retry || record.retry_after_ms) { record.retry = 0; record.retry_after_ms = 0; await this.persist(record); }
+      await finishParallelDirect(this,record);
       await finishUpgrade(this,record);
       await scanPeerUpgrades(this);
       return true;

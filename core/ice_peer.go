@@ -76,10 +76,16 @@ type icePeer struct {
 	ctx                 context.Context
 	cancel              context.CancelFunc
 	mu                  sync.Mutex
+	activationMu        sync.Mutex          // serialize sender binding with path selection
+	activation          *sync.Mutex         // immutable; shared with the startup relay
+	recorder            *natProcessRecorder // immutable; survives relay promotion
+	generationFloor     uint64              // highest accepted generation, including discarded startup candidates
 	ready               iceSignalMessage
 	pending             *iceAttempt
 	active              *liveICETransport
-	retiring            *liveICETransport // retained until both endpoints install the upgrade
+	parallelParent      atomic.Pointer[icePeer] // cleared when the startup relay becomes the primary peer
+	parallelRelay       *icePeer                // a second attempt, never another registered pair
+	retiring            *liveICETransport       // retained until both endpoints install the upgrade
 	stats               PeerTransportSnapshot
 	requestedGeneration uint64
 	closed              bool
@@ -92,8 +98,16 @@ type icePeer struct {
 }
 
 func newICEPeer(c *iceCoordinator, m iceSignalMessage) *icePeer {
+	return newICEPeerWithParent(c, m, nil)
+}
+func newICEPeerWithParent(c *iceCoordinator, m iceSignalMessage, parent *icePeer) *icePeer {
 	ctx, cancel := context.WithCancel(c.ctx)
 	p := &icePeer{coordinator: c, ctx: ctx, cancel: cancel, stats: PeerTransportSnapshot{PeerID: m.PeerDevice, TransportID: m.TransportID, Profile: m.Profile, Voice: m.Voice, State: "connecting"}}
+	p.activation, p.recorder = &p.activationMu, &p.process
+	if parent != nil {
+		p.parallelParent.Store(parent)
+		p.activation, p.recorder = parent.activationMutex(), parent.processRecorder()
+	}
 	p.workers.Add(1)
 	go func() { defer p.workers.Done(); p.maintain() }()
 	return p
@@ -130,9 +144,10 @@ func (p *icePeer) authorized(r peerMappingRecord) bool {
 	return !closed && ok && current == r && (local || until > time.Now().UnixMilli())
 }
 func (p *icePeer) update(m iceSignalMessage) {
+	p.syncParallelRelay(m)
 	customOrderConfigured := len(p.coordinator.request().Config.TURN.Order) > 0
 	p.mu.Lock()
-	if p.closed || m.TransportGeneration < p.ready.TransportGeneration {
+	if p.closed || !p.acceptsGenerationLocked(m.TransportGeneration) {
 		p.mu.Unlock()
 		return
 	}
@@ -147,9 +162,10 @@ func (p *icePeer) update(m iceSignalMessage) {
 	identityChanged := old.PeerFingerprint != "" && (old.PeerFingerprint != m.PeerFingerprint || old.PeerRuntimeID != m.PeerRuntimeID)
 	if identityChanged {
 		p.stats.PunchDiagnostics = nil
-		p.process.reset()
+		p.processRecorder().reset()
 	}
 	p.ready = m
+	p.generationFloor = max(p.generationFloor, m.TransportGeneration)
 	// Keep the room identity ordered with accepted transport generations.
 	p.coordinator.room.bindPeer(m.PeerDevice, m.PeerRuntimeID, m.PeerFingerprint, m.PeerCoreVersion)
 	p.stats.Profile = m.Profile
@@ -178,6 +194,9 @@ func (p *icePeer) update(m iceSignalMessage) {
 	retireHole := active != nil && active.ready.Phase == "hole" && !active.ready.localAuthorization() && (m.Hole == nil || m.Hole.Error != "" || active.ready.Hole == nil || active.ready.Hole.Route != m.Hole.Route)
 	retireActive := retireHole || identityChanged || (active != nil && (active.ready.Profile != m.Profile || (m.Profile == ProfileFixed && (active.ready.FixedEndpoint != m.FixedEndpoint || active.ready.ListenerID != m.ListenerID)))) || (m.RelayRequired && active != nil && !relayReadyConforms(active.ready, m.RelayOnly))
 	retireActive = retireActive || (active != nil && !active.mux.liveConfig && active.ready.Voice != m.Voice)
+	// Hole grants are revoked when their relay generation changes. TURN paths
+	// remain usable during credential renewal until a replacement is ready.
+	retireActive = retireActive || (p.parallelParent.Load() != nil && active != nil && active.ready.Phase == "hole" && active.ready.TransportGeneration != m.TransportGeneration)
 	if retireActive {
 		p.active = nil
 		p.stats.RTTMS = 0
@@ -227,7 +246,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 			a.upgradeCommit = make(chan struct{})
 		}
 		if m.Profile == ProfileICE {
-			a.process = p.process.begin(m)
+			a.process = p.processRecorder().begin(m)
 		}
 		p.pending = a
 		p.requestedGeneration = 0
@@ -275,6 +294,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 		p.stateChanged()
 	}
 	if retireActive && active != nil {
+		p.lostParallelRelay(active)
 		active.close()
 	}
 	if retired != nil {
@@ -305,7 +325,7 @@ func (p *icePeer) update(m iceSignalMessage) {
 	}
 	if same {
 		p.mu.Lock()
-		retry := p.ready.TransportGeneration == m.TransportGeneration && p.active == nil && p.pending == nil && !p.terminal && p.requestedGeneration != m.TransportGeneration
+		retry := p.ready.TransportGeneration == m.TransportGeneration && p.active == nil && p.pending == nil && p.parallelRelay == nil && !p.terminal && p.requestedGeneration != m.TransportGeneration
 		p.mu.Unlock()
 		if retry {
 			p.restartFrom(m, "direct", "retry")
@@ -313,6 +333,10 @@ func (p *icePeer) update(m iceSignalMessage) {
 	}
 }
 func (p *icePeer) receive(m iceSignalMessage) {
+	if peer := p.signalPeer(m.TransportGeneration); peer != p {
+		peer.receive(m)
+		return
+	}
 	p.mu.Lock()
 	if m.Type == "nat_status" {
 		if p.closed || m.TransportID != p.ready.TransportID || m.TransportGeneration != p.ready.TransportGeneration || m.NAT == nil {
@@ -339,6 +363,9 @@ func (p *icePeer) receive(m iceSignalMessage) {
 	}
 }
 func (p *icePeer) offline(reason string) {
+	if relay := p.relayPeer(); relay != nil {
+		relay.offline(reason)
+	}
 	p.mu.Lock()
 	p.online = false
 	p.requestedGeneration = 0
@@ -409,6 +436,9 @@ func relayReadyConforms(m iceSignalMessage, localOnly bool) bool {
 }
 
 func (p *icePeer) requireRelay(localOnly bool) {
+	if relay := p.relayPeer(); relay != nil {
+		relay.requireRelay(localOnly)
+	}
 	p.mu.Lock()
 	if p.pending != nil && !relayReadyConforms(p.pending.ready, localOnly) {
 		p.pending.cancel()
@@ -774,6 +804,9 @@ func (p *icePeer) attempt(a *iceAttempt) {
 		return
 	}
 	network.process = a.process
+	if p.parallelParent.Load() != nil {
+		network.allocation = p.coordinator.natAllocation
+	}
 	if punch != nil && punch.mode == "cone" {
 		network.checkPace = newICECheckPacer()
 	}
@@ -1295,9 +1328,12 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 			return
 		}
 	}
+	activation := p.activationMutex()
+	activation.Lock()
 	p.mu.Lock()
 	if p.pending != a || p.closed {
 		p.mu.Unlock()
+		activation.Unlock()
 		live.close()
 		return
 	}
@@ -1315,9 +1351,11 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 	p.nextUpgrade = time.Now().Add(upgradeInitialDelay)
 	p.mu.Unlock()
 	p.coordinator.natConnectionEstablished()
-	if mux.roomEnabled {
+	selected := p.installParallelRelay(live)
+	if selected && mux.roomEnabled {
 		p.coordinator.room.attach(mux)
 	}
+	activation.Unlock()
 	a.processStep("connected", "业务线路已建立", 0, 0)
 	a.process.finish("connected", "业务通道已就绪")
 	mux.syncMappings()
@@ -1368,6 +1406,9 @@ func (p *icePeer) serveICETransport(a *iceAttempt, live *liveICETransport, start
 		}
 	}
 	p.mu.Unlock()
+	if current {
+		current = p.lostParallelRelay(live)
+	}
 	if current && p.ctx.Err() == nil {
 		p.stateChanged()
 		if currentReady.UpgradeProbe || currentReady.UpgradeIdle {
@@ -1396,7 +1437,9 @@ func (p *icePeer) maintain() {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			p.publishNAT()
+			if p.parallelParent.Load() == nil {
+				p.publishNAT()
+			}
 			p.probeUpgrade(time.Now())
 			p.mu.Lock()
 			active := p.active
@@ -1404,6 +1447,7 @@ func (p *icePeer) maintain() {
 			pending := p.pending
 			terminal := p.terminal
 			ready := p.ready
+			relay := p.parallelRelay
 			p.mu.Unlock()
 			if active != nil {
 				if !ready.localAuthorization() && lease <= time.Now().UnixMilli() {
@@ -1412,12 +1456,18 @@ func (p *icePeer) maintain() {
 				}
 				active.mux.syncMappings()
 				_, expires, _ := p.coordinator.servers()
-				if active.expires > 0 && expires > active.expires && pending == nil {
+				refresh := active.mux.owner == p && active.expires > 0 && expires > active.expires && pending == nil
+				if parent := p.parallelParent.Load(); refresh && parent != nil {
+					parent.mu.Lock()
+					refresh = parent.pending == nil && !parent.ready.UpgradeCommit
+					parent.mu.Unlock()
+				}
+				if refresh {
 					// Keep the current signaling generation, but renew the
 					// active relay round rather than the upgrade candidate's.
 					p.restartWithRoundFrom(ready, active.ready.RelayRound, active.ready.Phase, "turn_refresh", nil)
 				}
-			} else if pending == nil && !terminal && !ready.RoomControl {
+			} else if pending == nil && relay == nil && !terminal && !ready.RoomControl {
 				p.restartFrom(ready, "direct", "retry")
 			}
 		}
@@ -1429,12 +1479,30 @@ func (p *icePeer) snapshot() PeerTransportSnapshot {
 	s.PunchDiagnostics = append([]NATPunchDiagnostic(nil), s.PunchDiagnostics...)
 	active := p.active
 	pending := p.pending
+	relay := p.parallelRelay
 	online := p.online
 	if s.Error != nil {
 		f := *s.Error
 		s.Error = &f
 	}
 	p.mu.Unlock()
+	if relay != nil && (active == nil || active.mux.owner == relay) {
+		base := relay.snapshot()
+		base.PeerNAT = s.PeerNAT.Current()
+		base.PunchDiagnostics = s.PunchDiagnostics
+		if pending != nil {
+			base.PendingPhase = pending.ready.Phase
+			base.Error = nil
+			base.State = "connecting"
+			if active != nil && active.mux.ctx.Err() == nil {
+				base.State = "switching"
+			}
+		}
+		if !online {
+			base.State = "paused"
+		}
+		return base
+	}
 	s.LocalNAT = p.coordinator.localNAT()
 	s.PeerNAT = s.PeerNAT.Current()
 	if active != nil && active.mux.ctx.Err() == nil {
@@ -1524,9 +1592,14 @@ func (p *icePeer) close() {
 	p.online = false
 	p.stats.State = "closed"
 	pending, active, retiring := p.pending, p.active, p.retiring
+	relay := p.parallelRelay
+	p.parallelRelay = nil
 	p.retiring = nil
 	p.mu.Unlock()
 	p.cancel()
+	if relay != nil {
+		relay.close()
+	}
 	if pending != nil {
 		pending.cancel()
 	}
