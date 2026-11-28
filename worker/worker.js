@@ -72,6 +72,17 @@ function panelTransportRoute(record, established, phases) {
   return null;
 }
 
+function panelTransportPath(record) {
+  const established = [record.a, record.b].map(name => record.established?.[name]?.generation === record.generation ? record.established[name].path_type : '');
+  const phases = [0, 1].map(index => record.peer_relay ? 'peer_relay' : record.profile === FIXED_PROFILE ? 'fixed' : record.round_mode ? recordPhase(record, record.round ?? 0, index) : record.phase);
+  const punch = [record.a, record.b].map(name => {
+    const last = record.ice?.[name]?.punch?.at(-1);
+    return last ? { kind: last.kind, round: last.round, result: last.result } : null;
+  });
+  return { generation: record.generation, phases, direct_stage: record.direct_stage, round: record.round,
+    established, punch, route: panelTransportRoute(record, established, phases) };
+}
+
 // 成员声明、设备连接图和传输记录保存在 storage。
 // WebSocket attachment 只保存设备名，断开 WS 不代表设备连接已失效。
 // Hibernation 唤醒时构造函数会重新执行，内存里的 members/roomToken
@@ -424,17 +435,16 @@ export class Room {
     const members = graph.members.map(m => ({ device_name: m.device_name, voice: m.voice, core_version: m.core_version,
       signal_online: m.signal_online, signal_recovering: m.signal_recovering, group_id: m.group_id, services: m.services }));
     const transports = [...this.ice.records.values()].filter(r => r.online).map(r => {
-      const established = [r.a, r.b].map(name => r.established?.[name]?.generation === r.generation ? r.established[name].path_type : '');
-      const punch = [r.a, r.b].map(name => {
-        const events = r.ice?.[name]?.punch ?? [];
-        const last = events.at(-1);
-        return last ? { kind: last.kind, round: last.round, result: last.result } : null;
-      });
-      const phases = [0, 1].map(index => r.peer_relay ? 'peer_relay' : r.profile === FIXED_PROFILE ? 'fixed' : r.round_mode ? recordPhase(r, r.round ?? 0, index) : r.phase);
-      return { id: r.id, a: r.a, b: r.b, generation: r.generation, profile: r.profile, phases, direct_stage: r.direct_stage, blocked: r.blocked ?? '',
-        round: r.round, relay_required: r.relay_required, established, punch, voice: r.voice === true,
+      // The candidate owns r's generation during an upgrade. Keep drawing the
+      // retained route until both endpoints acknowledge the replacement.
+      const active = r.upgrade ? { ...r, ...r.upgrade.active, ice: {} } : r;
+      const upgrade = r.upgrade ? { ...panelTransportPath(r), target: r.upgrade.target,
+        idle: r.upgrade.idle === true, committed: r.upgrade.committed === true,
+        prepared: [r.a, r.b].map(name => r.upgrade.prepared?.[name] === true) } : null;
+      return { id: r.id, a: r.a, b: r.b, ...panelTransportPath(active), profile: r.profile, blocked: r.blocked ?? '',
+        relay_required: r.relay_required, voice: r.voice === true, upgrade,
         mappings: (r.mappings ?? []).map(m => m.mapping_id), control: r.room_control === true,
-        route: panelTransportRoute(r, established, phases) };
+      };
     }).sort((a, b) => a.a.localeCompare(b.a) || a.b.localeCompare(b.b));
     return { type: 'panel_snapshot', worker_version: WORKER_VERSION, members, groups: graph.groups, links: graph.links.map(l => ({from:l.from,to:l.to})), transports };
   }

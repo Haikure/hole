@@ -607,8 +607,16 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
   const phaseLabel = phase => ({ direct: '直连协商', fixed: '固定入口建连', relay: 'TURN 协商', hole: 'Hole 中继协商', peer_relay: '节点中继协商' })[phase] || phase || '等待协商';
   const punchLabel = kind => ({ ready: '准备就绪', attempt: '尝试打洞', result: '打洞结果', calibrated: '校准完成', pool_select: '选择探测端口', exhausted: '尝试耗尽' })[kind] || kind;
   const resultLabel = result => ({ ok: '成功', success: '成功', failed: '失败', retry: '重试', refresh: '重新校准', exhausted: '尝试耗尽', timeout: '超时' })[result] || result;
+  function upgradeLabel(upgrade) {
+    if (upgrade.idle) return '后台探测未成功，等待重试';
+    if (upgrade.committed) return '正在切换至' + pathLabel(upgrade.target) + '，等待双方确认';
+    if (upgrade.prepared?.some(Boolean)) return '候选路径已就绪，等待另一端';
+    if (upgrade.target === 'peer_relay') return '后台尝试节点中继';
+    return upgrade.direct_stage === 'punch' ? '后台预测打洞中' : '后台尝试直连';
+  }
   function phase(record) {
     if (record.blocked) return record.blocked === 'peer_identity_mismatch' ? '对端身份校验失败' : '协议不兼容';
+    if (record.upgrade) return '已连接 · ' + upgradeLabel(record.upgrade);
     if (record.established?.length === 2 && record.established.every(Boolean)) return '双方已确认连接';
     if (record.established?.some(Boolean)) return '一端已确认连接';
     if (record.profile === 'fixed-quic-mux-v1') return '固定入口建连中';
@@ -686,7 +694,30 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
       const id = 'signal:' + member.device_name;
       next.set(id, { id, kind: 'signal', from: deviceKey(member.device_name), to: CLOUD, a: member.device_name, b: 'Cloudflare', participants: [member.device_name, 'Cloudflare'], confirmed: true });
     }
+    // Independent links and relay segments can share the same two devices.
+    // Assign lanes by physical endpoints, keeping their logical identities.
+    const lanes = new Map();
+    for (const edge of next.values()) {
+      const key = pairKey(edge.from, edge.to);
+      if (!lanes.has(key)) lanes.set(key, []);
+      lanes.get(key).push(edge);
+    }
+    for (const group of lanes.values()) {
+      group.sort((a, b) => a.id.localeCompare(b.id));
+      group.forEach((edge, index) => { edge.lane = index - (group.length - 1) / 2; edge.parallel = group.length > 1; });
+    }
     return next;
+  }
+
+  function edgePath(edge, from, to, compact) {
+    // Normalize direction so opposite-facing relay segments use the same lanes.
+    if (edge.from > edge.to) [from, to] = [to, from];
+    const dx = to.x - from.x, dy = to.y - from.y, length = Math.hypot(dx, dy) || 1;
+    const bend = edge.parallel ? edge.lane * 48 : edge.kind === 'signal' || compact ? 0 : Math.min(40, length * .08);
+    const c1 = compact ? { x: from.x, y: from.y + dy * .45 } : { x: from.x + dx * .38, y: from.y + dy * .15 };
+    const c2 = compact ? { x: to.x, y: to.y - dy * .45 } : { x: to.x - dx * .38, y: to.y - dy * .15 };
+    for (const point of [c1, c2]) { point.x -= dy / length * bend; point.y += dx / length * bend; }
+    return 'M' + from.x + ' ' + from.y + 'C' + c1.x + ' ' + c1.y + ' ' + c2.x + ' ' + c2.y + ' ' + to.x + ' ' + to.y;
   }
 
   function rows(parent, values) {
@@ -784,6 +815,14 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
       } else if (edge.record) {
         const record = edge.record;
         rows(parent, [['连接代次', String(record.generation)], ['路径类型', routeLabel(edge.route)], [record.a + ' 路径', pathLabel(record.established?.[0])], [record.b + ' 路径', pathLabel(record.established?.[1])], ['房间图确认', edge.graphConfirmed ? '已确认' : '未确认'], ['语音', record.voice ? '已启用' : '未启用'], ['房间控制', record.control ? '已启用' : '未启用']]);
+        if (record.upgrade) {
+          const upgrade = record.upgrade;
+          parent.append(element('h4', 'detail-heading', '后台换路'));
+          rows(parent, [['状态', upgradeLabel(upgrade)], ['目标路径', pathLabel(upgrade.target)], ['候选代次', String(upgrade.generation)]]);
+          if (upgrade.route?.device) rows(parent, [['候选中继', upgrade.route.device]]);
+          rows(parent, [record.a, record.b].map((name, index) => [name, upgrade.established?.[index] ? '已确认切换' : upgrade.prepared?.[index] ? '候选已就绪' : '尚未就绪']));
+          parent.append(element('p', 'detail-note', '图中保留最近由双方确认的路径；双方确认切换后更新为新路径。'));
+        }
         if (!edge.confirmed && !record.blocked) {
           parent.append(element('h4', 'detail-heading', '协商阶段'));
           rows(parent, [[record.a, phaseLabel(record.phases?.[0])], [record.b, phaseLabel(record.phases?.[1])]]);
@@ -792,8 +831,8 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
           parent.append(element('h4', 'detail-heading', '映射 ID'));
           parent.append(element('p', 'detail-caption', record.mappings.join('、')));
         }
-        for (const [index, punch] of (record.punch || []).entries()) if (punch) {
-          parent.append(element('h4', 'detail-heading', (index ? record.b : record.a) + ' · 打洞进度'));
+        for (const [index, punch] of (record.upgrade?.punch || record.punch || []).entries()) if (punch) {
+          parent.append(element('h4', 'detail-heading', (index ? record.b : record.a) + (record.upgrade ? ' · 后台打洞进度' : ' · 打洞进度')));
           const values = [['阶段', punchLabel(punch.kind)]];
           if (punch.round !== undefined) values.push(['轮次', String(punch.round)]);
           if (punch.result) values.push(['结果', resultLabel(punch.result)]);
@@ -991,11 +1030,7 @@ input::placeholder { color: var(--subtle); font-size: 12px; }
       for (const edge of edges.values()) {
         const from = nodes.get(edge.data.from)?.position, to = nodes.get(edge.data.to)?.position;
         if (!from || !to) continue;
-        const dx = to.x - from.x, dy = to.y - from.y, length = Math.hypot(dx, dy) || 1;
-        const bend = edge.data.kind === 'signal' ? 0 : Math.min(40, length * .08);
-        const c1 = compact ? { x: from.x, y: from.y + dy * .45 } : { x: from.x + dx * .38 - dy / length * bend, y: from.y + dy * .15 + dx / length * bend };
-        const c2 = compact ? { x: to.x, y: to.y - dy * .45 } : { x: to.x - dx * .38 - dy / length * bend, y: to.y - dy * .15 + dx / length * bend };
-        const path = 'M' + from.x + ' ' + from.y + 'C' + c1.x + ' ' + c1.y + ' ' + c2.x + ' ' + c2.y + ' ' + to.x + ' ' + to.y;
+        const path = edgePath(edge.data, from, to, compact);
         edge.line.setAttribute('d', path); edge.hit.setAttribute('d', path);
       }
       frame = progress < 1 ? requestAnimationFrame(tick) : 0;

@@ -167,11 +167,16 @@ async function upgradeFixture(extra={}) {
 
 test('late Peer Relay availability upgrades an active relay then permits background direct probes',async()=>{
  const f=await upgradeFixture(),{record:r,send,establish,legs}=f;
+ const panel=()=>f.r.panelSnapshot().transports.find(t=>t.id===r.id);
  const original=r.generation;
  await legs();
  assert.equal(r.upgrade.active.generation,original);
  assert.equal(r.upgrade.target,'peer_relay');
  assert.ok(r.peer_relay);
+ assert.equal(panel().generation,original);
+ assert.deepEqual(panel().route,{kind:'turn'});
+ assert.deepEqual(panel().established,['relay','relay']);
+ assert.deepEqual(panel().upgrade.route,{kind:'peer_relay',device:'relay'});
  const candidate=r.generation;
  await send('alpha',{type:'transport_upgrade_prepared',path_type:'peer_relay'});
  assert.equal(r.upgrade.committed,false);
@@ -184,11 +189,17 @@ test('late Peer Relay availability upgrades an active relay then permits backgro
  for(const name of ['alpha','beta']) assert.equal(f.sockets[name].messages.filter(m=>m.type==='transport_ready' && m.transport_id===r.id).at(-1).upgrade_commit,true);
  await establish('peer_relay');
  assert.equal(r.upgrade,null);
+ assert.deepEqual(panel().route,{kind:'peer_relay',device:'relay'});
+ assert.equal(panel().upgrade,null);
  const route=r.peer_relay.route;
  await send('alpha',{type:'transport_restart',reason:'auto_upgrade'});
  assert.equal(r.upgrade.active.generation,candidate);
  assert.equal(r.upgrade.active.peer_relay.route,route);
  assert.equal(r.upgrade.target,'direct');
+ assert.equal(panel().generation,candidate);
+ assert.deepEqual(panel().route,{kind:'peer_relay',device:'relay'});
+ assert.deepEqual(panel().established,['peer_relay','peer_relay']);
+ assert.equal(panel().upgrade.target,'direct');
  assert.equal(f.sockets.relay.messages.some(m=>m.type==='peer_relay_revoke' && m.peer_relay.route===route),false);
  await send('alpha',{type:'transport_restart',reason:'ice_failed'});
  assert.equal(r.direct_stage,'punch');
@@ -197,14 +208,20 @@ test('late Peer Relay availability upgrades an active relay then permits backgro
  assert.equal(r.generation,generation);
  await send('alpha',{type:'transport_restart',reason:'upgrade_failed'});
  assert.equal(r.upgrade.idle,true);
+ assert.deepEqual(panel().route,{kind:'peer_relay',device:'relay'});
+ assert.equal(panel().upgrade.idle,true);
  assert.equal(r.upgrade.active.peer_relay.route,route);
  assert.equal(f.sockets.relay.messages.some(m=>m.type==='peer_relay_revoke' && m.peer_relay.route===route),false);
  await send('alpha',{type:'transport_restart',reason:'auto_upgrade'});
  for(const n of ['alpha','beta']) await send(n,{type:'transport_upgrade_prepared',path_type:'direct'});
  await send('alpha',{type:'transport_established',path_type:'direct'});
  assert.ok(r.upgrade,'retain old grant until both install the direct path');
+ assert.deepEqual(panel().route,{kind:'peer_relay',device:'relay'});
+ assert.deepEqual(panel().upgrade.established,['direct','']);
  await send('beta',{type:'transport_established',path_type:'direct'});
  assert.equal(r.upgrade,null);
+ assert.equal(panel().route,null);
+ assert.deepEqual(panel().established,['direct','direct']);
  assert.equal(f.sockets.relay.messages.some(m=>m.type==='peer_relay_revoke' && m.peer_relay.route===route),true);
 });
 
@@ -259,32 +276,85 @@ test('automatic upgrades require bilateral capability and respect relay-only pol
  assert.equal(r.generation,before,'only initiator schedules direct probes');
 });
 
-test('Hole grant survives failed probes and hibernation, then is revoked after bilateral direct installation',async()=>{
+test('Hole panel route and grant survive probes and hibernation alongside an independent direct relay leg',async()=>{
  const f=await modernFixture(),a=f.socket(),b=f.socket(),h=f.socket();
- await f.r.webSocketMessage(h,JSON.stringify({...modernJoin('hole-node'),transport_profiles:[ICE_PROFILE,FIXED_PROFILE],fixed_endpoint:'127.0.0.1:39001',hole_serve:{enabled:true,max_pairs:8,bandwidth_mbps:0}}));
+ await f.r.webSocketMessage(h,JSON.stringify({...modernJoin('hole-node'),voice:true,transport_profiles:[ICE_PROFILE,FIXED_PROFILE],fixed_endpoint:'127.0.0.1:39001',hole_serve:{enabled:true,max_pairs:8,bandwidth_mbps:0}}));
  const caps={path_upgrade:true,relay_policy:RELAY_POLICY,relay_order:['hole'],relay_pairing:'all-pairs-v1',hole_device:'hole-node'};
  await f.r.webSocketMessage(a,JSON.stringify({...modernJoin('alpha',['one']),...caps}));
- await f.r.webSocketMessage(b,JSON.stringify({...modernJoin('beta',[],['one']),...caps}));
+ await f.r.webSocketMessage(b,JSON.stringify({...modernJoin('beta',[],['one']),...caps,hole_device:undefined,relay_order:['udp'],voice:true,transport_profiles:[ICE_PROFILE,FIXED_PROFILE]}));
  const r=[...f.r.ice.records.values()].find(r=>r.a==='alpha' && r.b==='beta');
+ const leg=[...f.r.ice.records.values()].find(r=>r.a==='beta' && r.b==='hole-node');
+ for(const ws of [b,h])await f.r.webSocketMessage(ws,JSON.stringify({type:'transport_established',transport_id:leg.id,transport_generation:leg.generation,path_type:'fixed'}));
  const send=(ws,m)=>f.r.webSocketMessage(ws,JSON.stringify({transport_id:r.id,transport_generation:r.generation,expected_generation:r.generation,...m}));
  await send(a,{type:'transport_restart',relay_round:1,reason:'direct_exhausted'});
  for(const ws of [a,b])await send(ws,{type:'transport_established',path_type:'hole'});
  const generation=r.generation,route=r.hole.route;
+ // A room graph confirms connectivity, including A-B over Hole; it does not
+ // prove that the candidate generation has become a direct transport.
+ const frames=await Promise.all([...f.r.members.values()].map(({member})=>f.nodeFrame(member,
+  [r,leg].filter(link=>[link.a,link.b].includes(member.device_name)).map(link=>{
+   const peer=f.r.members.get(link.a===member.device_name?link.b:link.a).member;
+   return {peer_id:peer.device_name,runtime_id:peer.runtime_id,transport_id:link.id,generation:link.generation};
+  }))));
+ await f.r.webSocketMessage(a,JSON.stringify({type:'room_graph',room_frames:frames}));
+ const watch=f.socket();watch.serializeAttachment({panel:'pending'});
+ await f.r.webSocketMessage(watch,JSON.stringify({type:'watch',token:'room-secret'}));
+ const page=panelGraphFixture();
+ const panel=()=>watch.messages.at(-1).transports.find(t=>t.id===r.id);
+ const assertHole=()=>{
+  const snapshot=watch.messages.at(-1),record=panel();
+  assert.equal(snapshot.type,'panel_snapshot');
+  assert.equal(record.generation,generation);
+  assert.deepEqual(record.route,{kind:'hole',device:'hole-node'});
+  assert.deepEqual(record.established,['hole','hole']);
+  const edges=[...page.buildEdges(snapshot).values()].filter(e=>e.kind==='transport');
+  const segments=edges.filter(e=>e.record?.id===r.id),direct=edges.find(e=>e.record?.id===leg.id);
+  assert.equal(segments.length,2);
+  assert.ok(segments.every(e=>e.route.kind==='hole' && e.confirmed && e.graphConfirmed));
+  assert.equal(direct.route,undefined);
+  assert.equal(direct.confirmed,true);
+  assert.equal(page.edgeCount(edges),2);
+  assert.match(page.edgeLabel(segments[0]),/^Hole 中继/);
+  assert.equal(JSON.stringify(snapshot).includes(route),false,'panel must not disclose relay grants');
+  assert.equal(JSON.stringify(snapshot).includes('127.0.0.1'),false);
+ };
+ assertHole();
  await send(a,{type:'transport_restart',reason:'auto_upgrade'});
+ assertHole();
+ assert.equal(panel().upgrade.target,'direct');
+ assert.match(page.phase(panel()),/后台尝试直连/);
  assert.equal(r.upgrade.active.hole.route,route);
  assert.equal(h.messages.some(m=>m.type==='hole_revoke' && m.transport_generation===generation),false);
+ await send(a,{type:'transport_restart',reason:'ice_failed'});
+ assertHole();
+ assert.match(page.phase(panel()),/后台预测打洞/);
  await send(a,{type:'transport_restart',reason:'upgrade_failed'});
  assert.equal(r.upgrade.idle,true);
+ assertHole();
+ assert.match(page.phase(panel()),/等待重试/);
  const resumed=f.newRoom();
  await resumed.webSocketMessage(h,JSON.stringify({type:'transport_sync'}));
+ assertHole();
  assert.equal(h.messages.filter(m=>m.type==='hole_grant').at(-1).hole.route,route);
  const restored=[...resumed.ice.records.values()].find(x=>x.id===r.id);
  const next=(ws,m)=>resumed.webSocketMessage(ws,JSON.stringify({transport_id:restored.id,transport_generation:restored.generation,expected_generation:restored.generation,...m}));
  await next(a,{type:'transport_restart',reason:'auto_upgrade'});
- for(const ws of [a,b])await next(ws,{type:'transport_upgrade_prepared',path_type:'direct'});
+ await next(a,{type:'transport_upgrade_prepared',path_type:'direct'});
+ assertHole();
+ assert.match(page.phase(panel()),/等待另一端/);
+ await next(b,{type:'transport_upgrade_prepared',path_type:'direct'});
+ assertHole();
+ assert.match(page.phase(panel()),/等待双方确认/);
  await next(a,{type:'transport_established',path_type:'direct'});
+ assertHole();
+ assert.deepEqual(panel().upgrade.established,['direct','']);
  assert.equal(h.messages.some(m=>m.type==='hole_revoke' && m.transport_generation===generation),false);
  await next(b,{type:'transport_established',path_type:'direct'});
+ assert.equal(panel().upgrade,null);
+ assert.equal(panel().route,null);
+ assert.equal(panel().generation,restored.generation);
+ assert.deepEqual(panel().established,['direct','direct']);
+ assert.equal([...page.buildEdges(watch.messages.at(-1)).values()].filter(e=>e.record?.id===r.id).length,1);
  assert.equal(h.messages.some(m=>m.type==='hole_revoke' && m.transport_generation===generation),true);
  assert.equal(restored.upgrade,null);
 });
@@ -1227,6 +1297,33 @@ test('panel identifies Minecraft only from explicit metadata and decodes world n
  assert.equal(context.minecraftTitle({...service,id:'minecraft.0123456789abcdef.'}),'Minecraft 世界');
  assert.equal(context.minecraftServices({}).length,0);
  assert.equal(context.minecraftServices({services:[{...service,protocol:'udp'}]}).length,0);
+});
+
+function panelGraphFixture() {
+ const script=PANEL_PAGE.match(/<script>([\s\S]*?)<\/script>/)[1],context={};
+ runInNewContext(script.slice(script.indexOf('  const CLOUD'),script.indexOf('  const nodes'))+
+  script.slice(script.indexOf('  const signalLabel'),script.indexOf('  function rows(')),context);
+ return context;
+}
+
+test('panel keeps overlapping direct links and relay segments distinct in both layouts and endpoint orders',()=>{
+ const page=panelGraphFixture();
+ for(const [a,b] of [['A','B'],['B','A']]) {
+  const snapshot={members:['A','B','C'].map(device_name=>({device_name})),links:[{from:'A',to:'B'},{from:'B',to:'C'}],
+   transports:[{id:'ab',a,b,established:['hole','hole'],route:{kind:'hole',device:'C'}},
+    {id:'bc',a:'B',b:'C',established:['direct','direct'],route:null}]};
+  const edges=[...page.buildEdges(snapshot).values()];
+  const overlapping=edges.filter(e=>[e.from,e.to].sort().join(',')==='device:B,device:C');
+  assert.equal(overlapping.length,2);
+  assert.equal(page.edgeCount(edges),2);
+  for(const compact of [false,true]) {
+   const positions={'device:B':{x:20,y:30},'device:C':{x:20,y:330}};
+   const paths=overlapping.map(edge=>page.edgePath(edge,positions[edge.from],positions[edge.to],compact));
+   assert.equal(new Set(paths).size,2,'the direct link must not cover the relay segment');
+  }
+  const reversed=page.buildEdges({...snapshot,transports:[...snapshot.transports].reverse()});
+  for(const edge of edges)assert.equal(reversed.get(edge.id).lane,edge.lane,'snapshot order must not move the lanes');
+ }
 });
 
 function panelPageFixture(fetcher) {
